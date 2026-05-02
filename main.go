@@ -2458,6 +2458,19 @@ func cmdCleanup(args []string) {
 			continue
 		}
 
+		// Only prompt for disassociation on clear mismatches,
+		// not "unverified" issues where F95Zone simply lacks engine tags.
+		hasHardMismatch := false
+		for _, s := range issues {
+			if strings.Contains(s, "mismatch") && !strings.Contains(s, "unverified") {
+				hasHardMismatch = true
+				break
+			}
+		}
+		if !hasHardMismatch {
+			continue // just flag, don't prompt
+		}
+
 		if autoDisassociate {
 			disassociateGame(database, &g)
 			disassociated++
@@ -2547,12 +2560,48 @@ func checkEngineMismatch(g db.Game) string {
 	}
 
 	detected := engine.Detect(g.Path)
+	if detected.Engine == "Others" || detected.Engine == "" {
+		return "" // can't determine local engine
+	}
+
+	f95Engine := findF95Engine(g)
+	if f95Engine == "" {
+		return fmt.Sprintf("engine unverified — F95Zone tags don't mention an engine (scanner found: %s)", detected.Engine)
+	}
+
 	if engineMatchesTags(detected, g.Tags) {
 		return ""
 	}
 
-	return fmt.Sprintf("engine mismatch (scanner: %s, F95Zone tags: %s)",
-		detected.Engine, formatTagsBrief(g.Tags, 4))
+	return fmt.Sprintf("engine mismatch (scanner: %s, F95Zone: %s)",
+		detected.Engine, f95Engine)
+}
+
+// findF95Engine looks through F95Zone thread tags and the game title
+// for an engine indicator.  Returns the engine name implied by the data,
+// or "" if no engine is found.
+func findF95Engine(g db.Game) string {
+	// 1. Check tags (most reliable — explicitly tagged by thread author).
+	for _, tag := range g.Tags {
+		tagLower := strings.ToLower(tag)
+		for engine, variants := range engineTagVariants {
+			for _, variant := range variants {
+				if strings.Contains(tagLower, variant) {
+					return engine
+				}
+			}
+		}
+	}
+	// 2. Fall back to title prefix (RPGM, Unity, RenPy, etc. in thread title).
+	titleLower := strings.ToLower(g.Title)
+	for engine, variants := range engineTagVariants {
+		for _, variant := range variants {
+			if strings.HasPrefix(titleLower, variant+" ") || strings.HasPrefix(titleLower, variant+"\t") {
+				return engine
+			}
+		}
+	}
+	return ""
 }
 
 // checkExeMismatch returns a description when no executable in the game
