@@ -17,6 +17,7 @@ import (
 
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/scanner"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/steam"
@@ -46,6 +47,12 @@ func main() {
 		cmdInfo(os.Args[2:])
 	case "scrape":
 		cmdScrape(os.Args[2:])
+	case "scrape-batch":
+		cmdScrapeBatch(os.Args[2:])
+	case "set-path":
+		cmdSetPath(os.Args[2:])
+	case "set-exe":
+		cmdSetExe(os.Args[2:])
 	case "list":
 		cmdList(os.Args[2:])
 	case "remove":
@@ -62,6 +69,8 @@ func main() {
 		cmdSteam(os.Args[2:])
 	case "config":
 		cmdConfig(os.Args[2:])
+	case "cleanup":
+		cmdCleanup(os.Args[2:])
 	case "refresh-versions":
 		cmdRefreshVersions(os.Args[2:])
 	default:
@@ -93,6 +102,7 @@ Usage:
   moxie steam proton-set <id>          Set Proton version for a Steam game
   moxie steam fix-artwork <id>         Re-download Steam artwork for a game
   moxie config <set|get|show>          Manage configuration settings
+  moxie cleanup [flags]                Detect and fix wrong F95Zone thread associations
   moxie refresh-versions [flags]       Re-extract versions from directory names
 
 Flags for 'scan':
@@ -109,12 +119,18 @@ Flags for 'list':
   --json           Output as JSON
   --engine <type>  Filter by engine
   --status <s>     Filter by status
+  --warnings       Add warnings column (engine/exe mismatch indicators)
 
 Flags for 'add':
   --title <name>   Game title
   --engine <type>  Game engine
   --version <ver>  Game version
   --tags <tags>    Comma-separated tags
+
+Flags for 'cleanup':
+  --dry-run        Preview issues without making changes
+  --assume-yes     Auto-disassociate flagged games without prompting
+  -y               Shorthand for --assume-yes
 
 Flags for 'sync' and 'check-updates':
   --cookie <str>     Cookie header string from browser DevTools
@@ -340,6 +356,7 @@ func cmdList(args []string) {
 	jsonOut := fs.Bool("json", false, "Output as JSON")
 	engineFilter := fs.String("engine", "", "Filter by engine")
 	statusFilter := fs.String("status", "", "Filter by status")
+	warnings := fs.Bool("warnings", false, "Show warnings column with detected issues (engine/exe mismatches)")
 	fs.Parse(args)
 
 	database := openDB()
@@ -363,15 +380,40 @@ func cmdList(args []string) {
 		return
 	}
 
-	fmt.Printf("%-4s %-30s %-12s %-8s %-10s %s\n", "ID", "Title", "Engine", "Version", "Status", "Path")
-	fmt.Println(strings.Repeat("-", 90))
-	for _, g := range games {
-		ver := g.Version
-		if ver == "" {
-			ver = "-"
+	if *warnings {
+		fmt.Printf("%-4s %-30s %-12s %-8s %-10s %s\n", "ID", "Title", "Engine", "Version", "Status", "Warnings")
+		fmt.Println(strings.Repeat("-", 100))
+		for _, g := range games {
+			ver := g.Version
+			if ver == "" {
+				ver = "-"
+			}
+			// Collect compact warning indicators.
+			var warns []string
+			if s := checkEngineMismatch(g); s != "" {
+				warns = append(warns, "engine")
+			}
+			if s := checkExeMismatch(g); s != "" {
+				warns = append(warns, "exe")
+			}
+			warnStr := strings.Join(warns, "/")
+			if warnStr == "" {
+				warnStr = "-"
+			}
+			fmt.Printf("%-4d %-30s %-12s %-8s %-10s %s\n",
+				g.ID, truncate(g.Title, 30), g.Engine, ver, g.Status, warnStr)
 		}
-		fmt.Printf("%-4d %-30s %-12s %-8s %-10s %s\n",
-			g.ID, truncate(g.Title, 30), g.Engine, ver, g.Status, truncate(g.Path, 30))
+	} else {
+		fmt.Printf("%-4s %-30s %-12s %-8s %-10s %s\n", "ID", "Title", "Engine", "Version", "Status", "Path")
+		fmt.Println(strings.Repeat("-", 90))
+		for _, g := range games {
+			ver := g.Version
+			if ver == "" {
+				ver = "-"
+			}
+			fmt.Printf("%-4d %-30s %-12s %-8s %-10s %s\n",
+				g.ID, truncate(g.Title, 30), g.Engine, ver, g.Status, truncate(g.Path, 30))
+		}
 	}
 
 	count, err := database.GameCount()
@@ -608,6 +650,116 @@ func cmdScrape(args []string) {
 	}
 }
 
+// cmdScrapeBatch scrapes F95Zone metadata for multiple games from a file.
+// File format: one entry per line — "<id> <url>"
+// Lines starting with # and blank lines are ignored.
+func cmdScrapeBatch(args []string) {
+	fs := flag.NewFlagSet("scrape-batch", flag.ExitOnError)
+	cookieStr := fs.String("cookie", "", "Cookie header from browser")
+	cookieFile := fs.String("cookie-file", "", "File containing cookie header")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: moxie scrape-batch <file>\n")
+		fmt.Fprintf(os.Stderr, "File format: one entry per line — \"<id> <url>\"\n")
+		os.Exit(1)
+	}
+
+	cookie := resolveCookie(*cookieStr, *cookieFile)
+	if cookie == "" {
+		fmt.Fprintf(os.Stderr, "Cookie required. Log into f95zone.to in Firefox.\n")
+		os.Exit(1)
+	}
+
+	data, err := os.ReadFile(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
+		os.Exit(1)
+	}
+
+	type entry struct {
+		id  int64
+		url string
+	}
+	var entries []entry
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			fmt.Fprintf(os.Stderr, "Skipping malformed line: %q\n", line)
+			continue
+		}
+		id, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Skipping invalid ID %q: %v\n", parts[0], err)
+			continue
+		}
+		entries = append(entries, entry{id: id, url: parts[1]})
+	}
+
+	if len(entries) == 0 {
+		fmt.Fprintln(os.Stderr, "No valid entries found in file.")
+		os.Exit(1)
+	}
+
+	database := openDB()
+	defer database.Close()
+
+	client := scraper.NewClient(cookie)
+	ok, failed := 0, 0
+
+	for i, e := range entries {
+		fmt.Fprintf(os.Stderr, "[%d/%d] Scraping ID %d — %s\n", i+1, len(entries), e.id, e.url)
+
+		game, err := database.GetGame(e.id)
+		if err != nil || game == nil {
+			fmt.Fprintf(os.Stderr, "  ✗ Game ID %d not found\n", e.id)
+			failed++
+			continue
+		}
+
+		td, err := client.ScrapeThread(e.url)
+		if err != nil {
+			if isBlocked(err) {
+				fmt.Fprintf(os.Stderr, "\n⚠ BLOCKED: %v\nStopping batch.\n", err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "  ✗ %v\n", err)
+			failed++
+			continue
+		}
+
+		applyThreadData(game, td, e.url)
+		if err := database.UpdateGame(game); err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ Save error: %v\n", err)
+			failed++
+			continue
+		}
+
+		if td.Developer != "" || td.Overview != "" || td.CoverURL != "" {
+			meta := &db.ScrapedMeta{
+				GameID:    e.id,
+				Developer: td.Developer,
+				Overview:  td.Overview,
+				CoverURL:  td.CoverURL,
+			}
+			_ = database.UpsertScrapedMeta(meta)
+		}
+
+		fmt.Fprintf(os.Stderr, "  ✓ %s", td.Title)
+		if td.Version != "" {
+			fmt.Fprintf(os.Stderr, " [v%s]", td.Version)
+		}
+		fmt.Fprintln(os.Stderr)
+		ok++
+	}
+
+	fmt.Fprintf(os.Stderr, "\nDone: %d scraped, %d failed.\n", ok, failed)
+}
+
 // resolveCookie returns a cookie string from the most available source:
 // 1. Explicit --cookie flag, 2. --cookie-file, 3. Firefox auto-detect.
 func resolveCookie(explicit, file string) string {
@@ -615,6 +767,14 @@ func resolveCookie(explicit, file string) string {
 		return explicit
 	}
 	if file != "" {
+		if strings.HasSuffix(strings.ToLower(file), ".sqlite") {
+			cookie, err := browser.GetF95CookiesFromSQLite(file)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Reading cookie database: %v\n", err)
+				return ""
+			}
+			return cookie
+		}
 		data, err := os.ReadFile(file)
 		if err != nil {
 			return ""
@@ -715,7 +875,6 @@ func runScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 
 	searchCache := make(map[string][]scraper.SearchResult) // sanitized_title -> search results
 	urlCache := make(map[string]string)                    // sanitized_title -> thread URL
-	seenURLs := make(map[string]bool)                      // prevent duplicate thread associations
 
 	for i, game := range queue {
 		elapsed := time.Since(startTime).Truncate(time.Second)
@@ -783,15 +942,6 @@ func runScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 			continue
 		}
 
-		// Check if this thread was already associated with another game
-		// in this run (prevents duplicate DB entries from different
-		// directories mapping to the same F95Zone thread).
-		if seenURLs[best.URL] {
-			fmt.Fprintf(os.Stderr, "  ✗ Thread already associated (duplicate entry)\n\n")
-			skipped++
-			continue
-		}
-
 		// Scrape the best match.
 		fmt.Fprintf(os.Stderr, "  ⬇ Scraping %s...\n", best.URL)
 		data, err := client.ScrapeThread(best.URL)
@@ -806,6 +956,20 @@ func runScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 			continue
 		}
 
+		// Signal: prevent bad associations by checking engine consistency
+		// BEFORE saving.  If the scanner-detected engine conflicts with
+		// the F95Zone thread tags, skip this candidate — it's probably
+		// the wrong thread.
+		if len(data.Tags) > 0 {
+			detEngine := engine.Detect(game.Path)
+			if !engineMatchesTags(detEngine, data.Tags) {
+				fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread tags: %s) — skipping\n",
+					detEngine.Engine, formatTagsBrief(data.Tags, 4))
+				skipped++
+				continue
+			}
+		}
+
 		applyThreadData(&game, data, best.URL)
 		game.VersionCheckedAt = time.Now()
 
@@ -817,7 +981,6 @@ func runScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 
 		// Cache the successful association so future runs return instantly.
 		urlCache[query] = best.URL
-		seenURLs[best.URL] = true
 
 		fmt.Fprintf(os.Stderr, "  ✓ Saved (%s)", game.Title)
 		if data.Version != "" {
@@ -862,6 +1025,67 @@ func cmdScrapeAutoWrapper(cookie string, unsafe bool) {
 // ---------------------------------------------------------------------------
 // remove command
 // ---------------------------------------------------------------------------
+
+func cmdSetExe(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: moxie set-exe <id> <exe-path>\n")
+		os.Exit(1)
+	}
+	id := mustParseInt(args[0])
+	exePath := filepath.Clean(args[1])
+
+	if _, err := os.Stat(exePath); err != nil {
+		fmt.Fprintf(os.Stderr, "Executable does not exist: %s\n", exePath)
+		os.Exit(1)
+	}
+
+	database := openDB()
+	defer database.Close()
+
+	game, err := database.GetGame(id)
+	if err != nil || game == nil {
+		fmt.Fprintf(os.Stderr, "Game with ID %d not found.\n", id)
+		os.Exit(1)
+	}
+
+	game.ExePath = exePath
+	if err := database.UpdateGame(game); err != nil {
+		fmt.Fprintf(os.Stderr, "Error updating exe: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Updated %q\n  exe: %s\n", game.Title, exePath)
+}
+
+func cmdSetPath(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: moxie set-path <id> <new-path>\n")
+		os.Exit(1)
+	}
+	id := mustParseInt(args[0])
+	newPath := filepath.Clean(args[1])
+
+	if _, err := os.Stat(newPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Path does not exist: %s\n", newPath)
+		os.Exit(1)
+	}
+
+	database := openDB()
+	defer database.Close()
+
+	game, err := database.GetGame(id)
+	if err != nil || game == nil {
+		fmt.Fprintf(os.Stderr, "Game with ID %d not found.\n", id)
+		os.Exit(1)
+	}
+
+	old := game.Path
+	game.Path = newPath
+	if err := database.UpdateGame(game); err != nil {
+		fmt.Fprintf(os.Stderr, "Error updating path: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Updated %q\n  %s\n  → %s\n", game.Title, old, newPath)
+}
 
 func cmdRemove(args []string) {
 	if len(args) < 1 {
@@ -976,6 +1200,16 @@ func runUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 			}
 			isNew := latest != "" && knownVer != "" && normalizeVersion(latest) != normalizeVersion(knownVer)
 
+			// Signal: check for engine mismatch between scanner and F95Zone tags.
+			var engineWarn string
+			if len(data.Tags) > 0 {
+				detEngine := engine.Detect(g.Path)
+				if !engineMatchesTags(detEngine, data.Tags) {
+					engineWarn = fmt.Sprintf(" ⚠ engine mismatch (scanner: %s)",
+						detEngine.Engine)
+				}
+			}
+
 			g.LatestVersion = latest
 			g.VersionCheckedAt = time.Now()
 			saveMu.Lock()
@@ -983,18 +1217,27 @@ func runUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save version data for %q: %v\n", g.Title, err)
 			}
 			saveMu.Unlock()
+			// Save scraped metadata (cover, developer, overview).
+			if data.Developer != "" || data.Overview != "" || data.CoverURL != "" {
+				_ = database.UpsertScrapedMeta(&db.ScrapedMeta{
+					GameID:    g.ID,
+					Developer: data.Developer,
+					Overview:  data.Overview,
+					CoverURL:  data.CoverURL,
+				})
+			}
 			mu.Lock()
 			if isNew {
 				updatesFound++
-				fmt.Fprintf(os.Stderr, "  %q 🔄 %s → %s\n", g.Title, knownVer, latest)
+				fmt.Fprintf(os.Stderr, "  %q 🔄 %s → %s%s\n", g.Title, knownVer, latest, engineWarn)
 			} else if knownVer != "" {
 				// Local version is known and matches F95Zone.
-				fmt.Fprintf(os.Stderr, "  %q ✓ %s\n", g.Title, latest)
+				fmt.Fprintf(os.Stderr, "  %q ✓ %s%s\n", g.Title, latest, engineWarn)
 			} else if latest != "" {
 				// F95Zone has a version but we don't know the local version.
-				fmt.Fprintf(os.Stderr, "  %q ? %s (local version unknown)\n", g.Title, latest)
+				fmt.Fprintf(os.Stderr, "  %q ? %s (local version unknown)%s\n", g.Title, latest, engineWarn)
 			} else {
-				fmt.Fprintf(os.Stderr, "  %q ? no version detected\n", g.Title)
+				fmt.Fprintf(os.Stderr, "  %q ? no version detected%s\n", g.Title, engineWarn)
 			}
 			results = append(results, checkUpdateResult{Game: g, Current: knownVer, Latest: latest, IsNew: isNew})
 			mu.Unlock()
@@ -1039,12 +1282,9 @@ func cmdCheckUpdates(args []string) {
 		os.Exit(1)
 	}
 
-	// Deduplicate by F95URL to prevent checking the same thread twice.
-	urlSeen := make(map[string]bool)
 	var trackable []db.Game
 	for _, g := range allGames {
-		if g.F95URL != "" && !urlSeen[g.F95URL] {
-			urlSeen[g.F95URL] = true
+		if g.F95URL != "" {
 			trackable = append(trackable, g)
 		}
 	}
@@ -1149,6 +1389,22 @@ func cmdSyncGame(id int64, cookie string, unsafe bool, force bool) {
 			os.Exit(1)
 		}
 
+		// Signal: check engine consistency before associating.
+		if len(data.Tags) > 0 {
+			detEngine := engine.Detect(game.Path)
+			if !engineMatchesTags(detEngine, data.Tags) {
+				fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread tags: %s)\n",
+					detEngine.Engine, formatTagsBrief(data.Tags, 4))
+				fmt.Fprintf(os.Stderr, "  Associate anyway? [y/N]: ")
+				var answer string
+				fmt.Scanln(&answer)
+				if strings.ToLower(answer) != "y" {
+					fmt.Fprintln(os.Stderr, "  Cancelled.")
+					os.Exit(1)
+				}
+			}
+		}
+
 		applyThreadData(game, data, best.URL)
 		game.VersionCheckedAt = time.Now() // prevent double-scrape in Phase 2
 		if err := database.UpdateGame(game); err != nil {
@@ -1182,6 +1438,15 @@ func cmdSyncGame(id int64, cookie string, unsafe bool, force bool) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  ✗ %v\n", err)
 		os.Exit(1)
+	}
+
+	// Signal: check engine consistency with freshly scraped tags.
+	if len(data.Tags) > 0 {
+		detEngine := engine.Detect(game.Path)
+		if !engineMatchesTags(detEngine, data.Tags) {
+			fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread tags: %s)\n",
+				detEngine.Engine, formatTagsBrief(data.Tags, 4))
+		}
 	}
 
 	latest := data.Version
@@ -1259,12 +1524,9 @@ func cmdSync(args []string) {
 		return
 	}
 
-	// Deduplicate by F95URL to prevent checking the same thread twice.
-	urlSeen := make(map[string]bool)
 	var trackable []db.Game
 	for _, g := range allGames {
-		if g.F95URL != "" && !urlSeen[g.F95URL] {
-			urlSeen[g.F95URL] = true
+		if g.F95URL != "" {
 			trackable = append(trackable, g)
 		}
 	}
@@ -2131,6 +2393,247 @@ func truncateVer(v string) string {
 		return "(none)"
 	}
 	return v
+}
+
+// ---------------------------------------------------------------------------
+// cleanup command — detect and fix wrong F95Zone thread associations
+// ---------------------------------------------------------------------------
+
+func cmdCleanup(args []string) {
+	fs := flag.NewFlagSet("cleanup", flag.ExitOnError)
+	dryRun := fs.Bool("dry-run", false, "Preview issues without making changes")
+	assumeYes := fs.Bool("assume-yes", false, "Auto-disassociate flagged games without prompting")
+	yes := fs.Bool("y", false, "Auto-disassociate flagged games (shorthand for --assume-yes)")
+	fs.Parse(args)
+
+	database := openDB()
+	defer database.Close()
+
+	games, err := database.ListGames("", "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading games: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Only check games that have an F95Zone URL.
+	var toCheck []db.Game
+	for _, g := range games {
+		if g.F95URL != "" {
+			toCheck = append(toCheck, g)
+		}
+	}
+
+	if len(toCheck) == 0 {
+		fmt.Println("No games have F95Zone URLs. Nothing to clean up.")
+		return
+	}
+
+	autoDisassociate := *assumeYes || *yes
+
+	flagged := 0
+	disassociated := 0
+	for _, g := range toCheck {
+		var issues []string
+
+		// Signal 1: Engine mismatch.
+		if s := checkEngineMismatch(g); s != "" {
+			issues = append(issues, s)
+		}
+
+		// Signal 2: Executable name mismatch.
+		if s := checkExeMismatch(g); s != "" {
+			issues = append(issues, s)
+		}
+
+		if len(issues) == 0 {
+			continue
+		}
+
+		flagged++
+		for _, issue := range issues {
+			fmt.Printf("  #%d %q — %s\n", g.ID, g.Title, issue)
+		}
+
+		if *dryRun {
+			continue
+		}
+
+		if autoDisassociate {
+			disassociateGame(database, &g)
+			disassociated++
+			continue
+		}
+
+		// Interactive mode: prompt for each flagged game.
+		fmt.Fprintf(os.Stderr, "  Disassociate? [y/N]: ")
+		var answer string
+		fmt.Scanln(&answer)
+		if strings.ToLower(answer) == "y" {
+			disassociateGame(database, &g)
+			disassociated++
+		}
+	}
+
+	if *dryRun && flagged > 0 {
+		fmt.Fprintf(os.Stderr, "\n%d game(s) flagged. Use --assume-yes or -y to auto-disassociate, or run without --dry-run for interactive mode.\n", flagged)
+	}
+	if flagged == 0 {
+		fmt.Println("No issues found. All F95Zone associations look correct.")
+	}
+	if disassociated > 0 {
+		fmt.Fprintf(os.Stderr, "\nDisassociated %d game(s).\n", disassociated)
+	}
+}
+
+// engineTagVariants maps canonical engine names to substrings that commonly
+// appear in F95Zone thread tags.  A match is found when any variant appears
+// within any tag (case-insensitive).
+var engineTagVariants = map[string][]string{
+	"RenPy":        {"ren'py", "renpy"},
+	"Unity":        {"unity"},
+	"RPGM":         {"rpg maker", "rpgm", "rmmv", "rmmz"},
+	"HTML":         {"html", "html5"},
+	"Flash":        {"flash"},
+	"Java":         {"java"},
+	"UnrealEngine": {"unreal", "unreal engine"},
+	"WebGL":        {"webgl"},
+	"WolfRPG":      {"wolf rpg", "wolfrpg"},
+	"ADRIFT":       {"adrift"},
+	"QSP":          {"qsp"},
+	"RAGS":         {"rags"},
+	"Tads":         {"tads", "tads"},
+}
+
+// engineMatchesTags checks whether the scanner-detected engine is consistent
+// with the F95Zone thread tags.  Returns true when:
+//   - There are no tags to compare (inconclusive)
+//   - The detected engine is "Others" or empty (inconclusive)
+//   - No tag variant mapping exists for the engine (inconclusive)
+//   - At least one tag contains a variant of the detected engine (match)
+//
+// Returns false only when there is a clear engine mismatch (specific engine
+// was detected, tags exist, and no variant matches any tag).
+func engineMatchesTags(detected engine.Result, tags []string) bool {
+	if len(tags) == 0 {
+		return true // no metadata to compare against
+	}
+	if detected.Engine == "Others" || detected.Engine == "" {
+		return true // detection inconclusive — don't flag
+	}
+
+	variants := engineTagVariants[string(detected.Engine)]
+	if len(variants) == 0 {
+		return true // no mapping known for this engine — don't flag
+	}
+
+	for _, tag := range tags {
+		tagLower := strings.ToLower(tag)
+		for _, variant := range variants {
+			if strings.Contains(tagLower, variant) {
+				return true // engine matches
+			}
+		}
+	}
+
+	return false
+}
+
+// checkEngineMismatch returns a description of the mismatch, or "" if no
+// issue is found.  It compares the scanner-detected engine (via
+// engine.Detect) against the F95Zone thread tags stored on the game.
+func checkEngineMismatch(g db.Game) string {
+	if len(g.Tags) == 0 {
+		return "" // no F95Zone metadata to compare against
+	}
+
+	detected := engine.Detect(g.Path)
+	if engineMatchesTags(detected, g.Tags) {
+		return ""
+	}
+
+	return fmt.Sprintf("engine mismatch (scanner: %s, F95Zone tags: %s)",
+		detected.Engine, formatTagsBrief(g.Tags, 4))
+}
+
+// checkExeMismatch returns a description when no executable in the game
+// directory shares a word (case-insensitive) with the game title, or ""
+// if at least one executable matches.
+func checkExeMismatch(g db.Game) string {
+	entries, err := os.ReadDir(g.Path)
+	if err != nil {
+		return "" // directory inaccessible — skip
+	}
+
+	// Build a set of lowercase meaningful words from the title.
+	titleWords := make(map[string]bool)
+	for _, w := range strings.Fields(strings.ToLower(g.Title)) {
+		w = strings.Trim(w, ".,!?-:;\"'()[]{}")
+		if w != "" {
+			titleWords[w] = true
+		}
+	}
+
+	if len(titleWords) == 0 {
+		return ""
+	}
+
+	// Collect executable filenames.
+	var exeNames []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		lower := strings.ToLower(name)
+		if strings.HasSuffix(lower, ".exe") ||
+			strings.HasSuffix(lower, ".sh") ||
+			strings.HasSuffix(lower, ".x86_64") ||
+			strings.HasSuffix(lower, ".appimage") {
+			exeNames = append(exeNames, name)
+		}
+	}
+
+	if len(exeNames) == 0 {
+		return "" // no executables to check
+	}
+
+	// Check if any exe name contains any title word.
+	for _, exe := range exeNames {
+		exeLower := strings.ToLower(exe)
+		// Strip extension for a cleaner comparison.
+		exeBase := strings.TrimSuffix(exeLower, filepath.Ext(exeLower))
+		for word := range titleWords {
+			if strings.Contains(exeBase, word) {
+				return "" // at least one executable shares a title word
+			}
+		}
+	}
+
+	return fmt.Sprintf("unmatched executable (found: %s)", strings.Join(exeNames, ", "))
+}
+
+// disassociateGame clears the F95Zone URL and thread ID from a game and
+// saves the change to the database.
+func disassociateGame(database *db.Database, g *db.Game) {
+	g.F95URL = ""
+	g.F95ThreadID = 0
+	if err := database.UpdateGame(g); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠ Failed to disassociate #%d: %v\n", g.ID, err)
+	} else {
+		fmt.Fprintf(os.Stderr, "  ✓ Disassociated #%d\n", g.ID)
+	}
+}
+
+// formatTagsBrief returns a comma-separated tag string, limited to max tags
+// to keep output readable.
+func formatTagsBrief(tags []string, max int) string {
+	if len(tags) == 0 {
+		return ""
+	}
+	if len(tags) <= max {
+		return strings.Join(tags, ", ")
+	}
+	return strings.Join(tags[:max], ", ") + fmt.Sprintf(" (+%d more)", len(tags)-max)
 }
 
 // ---------------------------------------------------------------------------
