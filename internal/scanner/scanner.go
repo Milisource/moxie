@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mili/moxie/internal/engine"
@@ -15,6 +16,7 @@ type DetectedGame struct {
 	Path      string        `json:"path"`      // absolute directory path
 	ExePath   string        `json:"exe_path"`  // path to main executable
 	Engine    engine.Engine `json:"engine"`
+	Version   string        `json:"version"`   // version extracted from directory name
 	SizeBytes int64         `json:"size_bytes"`
 }
 
@@ -84,10 +86,12 @@ func ScanSingle(dir string) (DetectedGame, error) {
 // analyzeDir runs engine detection and computes size for a directory.
 func analyzeDir(dir, root string) DetectedGame {
 	result := engine.Detect(dir)
+	name := filepath.Base(dir)
 	g := DetectedGame{
-		Title:     filepath.Base(dir),
+		Title:     name,
 		Path:      dir,
 		Engine:    result.Engine,
+		Version:   ExtractVersion(name),
 		SizeBytes: dirSize(dir),
 	}
 	// Find the main executable.
@@ -95,6 +99,50 @@ func analyzeDir(dir, root string) DetectedGame {
 		g.ExePath = exe
 	}
 	return g
+}
+
+// version patterns tried in order; first match wins.
+var (
+	// Date-based versions: "2025-11-14", "2026-03-31"
+	dateVerRE = regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2})\b`)
+	// Dot-separated with optional v/V prefix: v1.0.3, 1.0, V5.4.91, B.0.10.7.5.2
+	dotVerRE = regexp.MustCompile(`\b[vV]?[a-zA-Z]?\d+\.\d+(?:\.\d+)*(?:\s*HotFix)?\b`)
+	// Underscore-separated: v1_0_3, 1_0, V5_4_91
+	usVerRE = regexp.MustCompile(`\b[vV]?\d+_\d+(?:_\d+)*\b`)
+	// Dash-separated: 0-20-16, v1-0-3 (converts to dots)
+	dashVerRE = regexp.MustCompile(`\b[vV]?\d+(?:[._-]\d+)+\b`)
+)
+
+// ExtractVersion attempts to pull a version string from a directory/file name.
+// Patterns are tried: date-like, dot-separated, then underscore-separated.
+// Returns empty string if no version is found.
+func ExtractVersion(name string) string {
+	if name == "" {
+		return ""
+	}
+	// Try date pattern first (most specific).
+	if m := dateVerRE.FindString(name); m != "" {
+		return m
+	}
+	// Try dot-separated version.
+	if m := dotVerRE.FindString(name); m != "" {
+		// Clean: strip leading v/V prefix.
+		ver := strings.TrimLeft(m, "vV")
+		return strings.TrimSpace(ver)
+	}
+	// Try dash-separated, convert dashes to dots.
+	if m := dashVerRE.FindString(name); m != "" {
+		ver := strings.TrimLeft(m, "vV")
+		ver = strings.ReplaceAll(ver, "-", ".")
+		ver = strings.ReplaceAll(ver, "_", ".")
+		return strings.TrimSpace(ver)
+	}
+	// Try underscore-separated, convert underscores to dots.
+	if m := usVerRE.FindString(name); m != "" {
+		ver := strings.TrimLeft(m, "vV")
+		return strings.ReplaceAll(ver, "_", ".")
+	}
+	return ""
 }
 
 // looksLikeGameRoot checks if a directory contains game-like files.
