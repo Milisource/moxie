@@ -240,7 +240,7 @@ func (db *Database) InsertGame(g *Game) (int64, error) {
 		g.Title, g.Engine, g.Path,
 		nullableString(g.ExePath), nullableString(g.Version), g.SizeBytes,
 		nullableString(g.F95URL), nullableInt64(g.F95ThreadID), tagsStr,
-		g.Status, nil, nil, g.Notes,
+		g.Status, nullableString(g.LatestVersion), nullableTime(g.VersionCheckedAt), g.Notes,
 		now, now,
 	)
 	if err != nil {
