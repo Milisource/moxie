@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
-**Version:** 2.2 (May 2026)
-**Status:** Phase 2 Complete (Steam integration + scraper optimizations)
+**Version:** 0.1.0-alpha (May 2026)
+**Status:** Alpha — 0.1.0 (Steam integration, 22 CLI commands, 200+ tests)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
