@@ -9,7 +9,7 @@ moxie is a local game library manager. It scans directories for installed games,
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
 │                          main.go (CLI)                                     │
-│  Parses flags, opens DB, calls one of 19 command handlers                 │
+│  Parses flags, opens DB, calls one of 22 command handlers                 │
 └──────┬──────────┬──────────┬──────────┬──────────┬──────────┬──────────────┘
        │          │          │          │          │          │
        ▼          ▼          ▼          ▼          ▼          ▼
@@ -29,6 +29,8 @@ moxie is a local game library manager. It scans directories for installed games,
     └──────────┘                    │ extraction   │
                                      └──────────────┘
 ```
+
+`config.json` is stored in the platform-standard config directory (Go's `os.UserConfigDir`) — `~/.config/moxie/` on Linux, `%APPDATA%/moxie/` on Windows, `~/Library/Application Support/moxie/` on macOS. The `internal/config/` package provides typed get/set access to settings like the SteamGridDB API key.
 
 ### Data Flow Through the System
 

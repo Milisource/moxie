@@ -3,4 +3,5 @@
 .dolt/
 *.db
 .beads-credential-key
-/.beads
+/.beadsmoxie
+workflow.log

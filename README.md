@@ -19,6 +19,23 @@ moxie recursively scans your game directories, detects engines (Unity, Ren'Py, R
 
 ---
 
+## How it works
+
+```
+ ┌──────────┐     ┌──────────────┐     ┌───────────────┐     ┌──────────┐
+ │  Scan    │────▶│  Scrape      │────▶│  Sync +       │────▶│  TUI /   │
+ │  ~/Games │     │  F95Zone     │     │  Check Updates│     │  CLI     │
+ └──────────┘     └──────────────┘     └───────┬───────┘     └──────────┘
+                                               │
+                                               ▼
+                                        ┌──────────────┐     ┌──────────┐
+                                        │  Steam Add   │────▶│  Play    │
+                                        │  + Artwork   │     │  Launch  │
+                                        └──────────────┘     └──────────┘
+```
+
+---
+
 ## Quick Start
 
 ```bash
@@ -199,7 +216,7 @@ The directory and database are created automatically on first run. You can safel
 
 ## Building from Source
 
-**Prerequisites:** Go 1.22 or later. No CGO dependencies.
+**Prerequisites:** Go 1.24 or later. No CGO dependencies.
 
 ```bash
 # Single binary (~10 MB, static, cross-compilable)
@@ -214,6 +231,32 @@ go build -ldflags="-s -w" -o moxie .
 # Run tests (170+ across scanner, engine, scraper, DB)
 go test ./...
 ```
+
+---
+
+## FAQ
+
+**Q: How do I get artwork to appear in Steam?**
+A: `moxie steam fix-artwork <id>` downloads cover art from F95Zone. For premium artwork via SteamGridDB:
+```bash
+moxie config set steamgriddb-key YOUR_KEY
+moxie steam fix-artwork <id>
+```
+
+**Q: Steam says "No cover artwork URL found"?**
+A: The game's F95Zone thread doesn't have a downloadable cover image. Run `moxie sync <id>` to scrape metadata, then retry. If the thread only has SVG placeholders, configure a SteamGridDB API key for better results.
+
+**Q: Games don't appear in Steam after `moxie steam add`?**
+A: Steam must be **fully closed** before adding games, and **restarted** afterward. The tool checks this, but if Steam auto-restarts, you may need to close it again.
+
+**Q: How do I set specific Proton versions for games?**
+A: `moxie steam proton-set <id> --version GE-Proton9-7`, or see available versions with `moxie steam proton-list`.
+
+**Q: Where is my data stored?**
+A: Everything lives under `~/.config/moxie/` (Linux), `%APPDATA%/moxie/` (Windows), or `~/Library/Application Support/moxie/` (macOS). Delete `games.db` to reset your library.
+
+**Q: How do I contribute?**
+A: This is a hobby project. Open an issue on GitHub if you find a bug or have a feature request.
 
 ---
 
