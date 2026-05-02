@@ -627,7 +627,13 @@ func applyThreadData(game *db.Game, data *scraper.ThreadData, url string) {
 		game.Title = stripThreadPrefix(data.Title)
 	}
 	if data.Version != "" {
-		game.Version = data.Version
+		// Preserve the locally-installed version. Only set Version
+		// on first-ever association (when it's empty). Always record
+		// the F95Zone version as LatestVersion for update checking.
+		game.LatestVersion = data.Version
+		if game.Version == "" {
+			game.Version = data.Version
+		}
 	}
 	if data.ThreadID > 0 {
 		game.F95ThreadID = data.ThreadID
@@ -702,6 +708,7 @@ func runScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 
 	searchCache := make(map[string][]scraper.SearchResult) // sanitized_title -> search results
 	urlCache := make(map[string]string)                    // sanitized_title -> thread URL
+	seenURLs := make(map[string]bool)                      // prevent duplicate thread associations
 
 	for i, game := range queue {
 		elapsed := time.Since(startTime).Truncate(time.Second)
@@ -769,6 +776,15 @@ func runScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 			continue
 		}
 
+		// Check if this thread was already associated with another game
+		// in this run (prevents duplicate DB entries from different
+		// directories mapping to the same F95Zone thread).
+		if seenURLs[best.URL] {
+			fmt.Fprintf(os.Stderr, "  ✗ Thread already associated (duplicate entry)\n\n")
+			skipped++
+			continue
+		}
+
 		// Scrape the best match.
 		fmt.Fprintf(os.Stderr, "  ⬇ Scraping %s...\n", best.URL)
 		data, err := client.ScrapeThread(best.URL)
@@ -793,6 +809,7 @@ func runScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 
 		// Cache the successful association so future runs return instantly.
 		urlCache[query] = best.URL
+		seenURLs[best.URL] = true
 
 		fmt.Fprintf(os.Stderr, "  ✓ Saved (%s)", game.Title)
 		if data.Version != "" {
@@ -926,10 +943,7 @@ func runUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 				return
 			}
 			latest := data.Version
-			current := g.LatestVersion
-			if current == "" {
-				current = g.Version
-			}
+			current := g.Version
 			isNew := latest != "" && current != "" && latest != current
 
 			g.LatestVersion = latest
@@ -978,9 +992,12 @@ func cmdCheckUpdates(args []string) {
 		os.Exit(1)
 	}
 
+	// Deduplicate by F95URL to prevent checking the same thread twice.
+	urlSeen := make(map[string]bool)
 	var trackable []db.Game
 	for _, g := range allGames {
-		if g.F95URL != "" {
+		if g.F95URL != "" && !urlSeen[g.F95URL] {
+			urlSeen[g.F95URL] = true
 			trackable = append(trackable, g)
 		}
 	}
@@ -1116,10 +1133,7 @@ func cmdSyncGame(id int64, cookie string, unsafe bool) {
 	}
 
 	latest := data.Version
-	current := game.LatestVersion
-	if current == "" {
-		current = game.Version
-	}
+	current := game.Version
 
 	game.LatestVersion = latest
 	game.VersionCheckedAt = time.Now()
@@ -1188,9 +1202,12 @@ func cmdSync(args []string) {
 		return
 	}
 
+	// Deduplicate by F95URL to prevent checking the same thread twice.
+	urlSeen := make(map[string]bool)
 	var trackable []db.Game
 	for _, g := range allGames {
-		if g.F95URL != "" {
+		if g.F95URL != "" && !urlSeen[g.F95URL] {
+			urlSeen[g.F95URL] = true
 			trackable = append(trackable, g)
 		}
 	}
