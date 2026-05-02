@@ -143,35 +143,35 @@ func TestArtType_Dimensions(t *testing.T) {
 func TestGridFilePath(t *testing.T) {
 	// Vertical grid: 0x81234567 = 2166572391 -> "2166572391p.png".
 	got := GridFilePath("/home/.steam/steam", 123, 0x81234567, ArtVertical)
-	want := "/home/.steam/steam/userdata/123/config/grid/2166572391p.png"
+	want := filepath.Join("/home/.steam/steam", "userdata", "123", "config", "grid", "2166572391p.png")
 	if got != want {
 		t.Errorf("GridFilePath = %q, want %q", got, want)
 	}
 
 	// Horizontal grid (no suffix).
 	got = GridFilePath("/steam", 1, 42, ArtHorizontal)
-	want = "/steam/userdata/1/config/grid/42.png"
+	want = filepath.Join("/steam", "userdata", "1", "config", "grid", "42.png")
 	if got != want {
 		t.Errorf("GridFilePath = %q, want %q", got, want)
 	}
 
 	// Hero grid (_hero suffix).
 	got = GridFilePath("/steam", 999, 12345, ArtHero)
-	want = "/steam/userdata/999/config/grid/12345_hero.png"
+	want = filepath.Join("/steam", "userdata", "999", "config", "grid", "12345_hero.png")
 	if got != want {
 		t.Errorf("GridFilePath = %q, want %q", got, want)
 	}
 
 	// Logo grid (_logo suffix).
 	got = GridFilePath("/steam", 777, 54321, ArtLogo)
-	want = "/steam/userdata/777/config/grid/54321_logo.png"
+	want = filepath.Join("/steam", "userdata", "777", "config", "grid", "54321_logo.png")
 	if got != want {
 		t.Errorf("GridFilePath = %q, want %q", got, want)
 	}
 
 	// Icon grid (_icon suffix).
 	got = GridFilePath("/steam", 111, 99999, ArtIcon)
-	want = "/steam/userdata/111/config/grid/99999_icon.png"
+	want = filepath.Join("/steam", "userdata", "111", "config", "grid", "99999_icon.png")
 	if got != want {
 		t.Errorf("GridFilePath = %q, want %q", got, want)
 	}
