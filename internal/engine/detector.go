@@ -81,6 +81,17 @@ var profiles = []profile{
 
 	// --- RPG Maker variants (all map to RPGM) ---
 
+	// --- RPG Maker ---
+
+	// NW.js runtime markers — definitive for RPG Maker MV/MZ.
+	// icudtl.dat is the single best signal: present in 100% of MV/MZ games,
+	// absent from pure HTML games. Combined with Game.exe (renamed nw.exe)
+	// or nw_*.pak files for high-confidence detection.
+	{
+		engine: RPGM, confidence: 0.96,
+		files: []string{"icudtl.dat", "Game.exe"},
+		name:  "RPG Maker MV/MZ (NW.js: icudtl.dat + Game.exe)",
+	},
 	{
 		engine: RPGM, confidence: 0.95,
 		subdirs: []string{"www"},
