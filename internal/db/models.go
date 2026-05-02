@@ -1,0 +1,80 @@
+package db
+
+import (
+	"encoding/json"
+	"time"
+)
+
+// Game represents a game in the user's local library.
+type Game struct {
+	ID          int64     `json:"id"`
+	Title       string    `json:"title"`
+	Engine      string    `json:"engine"` // Unity, RenPy, RPGMakerMV, RPGMakerMZ, RPGMakerVXAce, RPGMaker, Godot, Unreal, Electron, HTML, Unknown
+	Path        string    `json:"path"`   // absolute directory path (unique)
+	ExePath     string    `json:"exe_path,omitempty"`
+	Version     string    `json:"version,omitempty"`
+	SizeBytes   int64     `json:"size_bytes"`
+	F95URL      string    `json:"f95_url,omitempty"`
+	F95ThreadID int64     `json:"f95_thread_id,omitempty"`
+	Tags        []string  `json:"tags"`   // stored as JSON array string in SQLite
+	Status      string    `json:"status"` // active, completed, abandoned, on_hold, unknown
+	Notes       string    `json:"notes,omitempty"`
+	LatestVersion  string    `json:"latest_version,omitempty"`
+	VersionCheckedAt time.Time `json:"version_checked_at,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// ScrapedMeta holds F95Zone scraped metadata.
+type ScrapedMeta struct {
+	GameID      int64     `json:"game_id"`
+	Developer   string    `json:"developer,omitempty"`
+	Overview    string    `json:"overview,omitempty"`
+	CoverURL    string    `json:"cover_url,omitempty"`
+	LastScraped time.Time `json:"last_scraped"`
+}
+
+// marshalTags serializes a string slice to a JSON string for SQLite storage.
+func marshalTags(tags []string) (string, error) {
+	if len(tags) == 0 {
+		return "[]", nil
+	}
+	b, err := json.Marshal(tags)
+	return string(b), err
+}
+
+// unmarshalTags deserializes a JSON string from SQLite back to a string slice.
+func unmarshalTags(s string) ([]string, error) {
+	if s == "" || s == "null" {
+		return []string{}, nil
+	}
+	var tags []string
+	err := json.Unmarshal([]byte(s), &tags)
+	return tags, err
+}
+
+// timeToRFC3339 formats a time.Time as an RFC3339 string for SQLite storage.
+func timeToRFC3339(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// parseTime parses a time string, trying RFC3339 first, then SQLite's
+// native datetime format as a fallback.
+func parseTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err == nil {
+		return t
+	}
+	// SQLite datetime('now') returns "2006-01-02 15:04:05"
+	t, err = time.Parse("2006-01-02 15:04:05", s)
+	if err == nil {
+		return t
+	}
+	return time.Time{}
+}
