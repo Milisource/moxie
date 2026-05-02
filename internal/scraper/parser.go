@@ -31,9 +31,9 @@ var knownMetaKeys = map[string]bool{
 }
 
 var (
-	versionPattern1 = regexp.MustCompile(`(?i)Version[:\s]+v?(\d+\.\d+(?:\.\d+)?)`)
-	versionPattern2 = regexp.MustCompile(`(?i)Ver\.?\s*(\d+\.\d+(?:\.\d+)?)`)
-	versionPattern3 = regexp.MustCompile(`(?i)v(\d+\.\d+(?:\.\d+)?)`)
+	versionPattern1 = regexp.MustCompile(`(?i)Version[:\s]+v?(\d+\.\d+(?:\.\d+)*)`)
+	versionPattern2 = regexp.MustCompile(`(?i)Ver\.?\s*(\d+\.\d+(?:\.\d+)*)`)
+	versionPattern3 = regexp.MustCompile(`(?i)v(\d+\.\d+(?:\.\d+)*)`)
 
 	developerPattern1 = regexp.MustCompile(`(?i)Developer[:\s]+(.+)`)
 	developerPattern2 = regexp.MustCompile(`(?i)Publisher[:\s]+(.+)`)
@@ -107,19 +107,21 @@ func extractThreadID(url string) int64 {
 }
 
 // extractVersion searches the post body text for version patterns.
-// Patterns are tried in order of specificity; the first match wins.
+// When multiple matches are found, the longest (most specific) wins.
 func extractVersion(text string) string {
 	if text == "" {
 		return ""
 	}
 
+	var best string
 	for _, re := range []*regexp.Regexp{versionPattern1, versionPattern2, versionPattern3} {
-		matches := re.FindStringSubmatch(text)
-		if len(matches) >= 2 {
-			return matches[1]
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			if len(m) >= 2 && len(m[1]) > len(best) {
+				best = m[1]
+			}
 		}
 	}
-	return ""
+	return best
 }
 
 // extractDeveloper searches the post body text for developer/publisher
