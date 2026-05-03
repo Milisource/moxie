@@ -82,10 +82,13 @@ func FindMatches(opts AssociateOptions) ([]MatchResult, error) {
 		}
 		mr.Candidates = candidates
 
-		// Find best match among candidates.
+		// Find best match among candidates (skipping non-game threads).
 		var best *SearchResult
 		var bestScore float64
 		for i := range candidates {
+			if IsNonGameThread(candidates[i].Title) {
+				continue // skip non-game threads
+			}
 			score := ComputeMatchScore(game.Title, candidates[i].Title)
 			if score > bestScore {
 				bestScore = score

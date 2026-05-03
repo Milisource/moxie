@@ -40,6 +40,10 @@ func Play(args []string) {
 	}
 
 	cmd := LaunchCommand(exe)
+	if cmd == nil {
+		fmt.Fprintf(os.Stderr, "Cannot launch %q: no launcher available for this file type on %s.\n", exe, runtime.GOOS)
+		os.Exit(1)
+	}
 	fmt.Fprintf(os.Stderr, "Launching: %s\n", cmd)
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to launch: %v\n", err)
@@ -83,6 +87,7 @@ func ResolveExecutable(g db.Game) string {
 	var exes []string
 	var scripts []string
 	var appImages []string
+	var darwinNative []string
 
 	for _, e := range entries {
 		if e.IsDir() {
@@ -97,6 +102,26 @@ func ResolveExecutable(g db.Game) string {
 			scripts = append(scripts, filepath.Join(g.Path, name))
 		case ext == ".exe":
 			exes = append(exes, filepath.Join(g.Path, name))
+		default:
+			// macOS: detect native Mach-O executables (no recognized extension).
+			if runtime.GOOS == "darwin" {
+				info, err := e.Info()
+				if err == nil && info.Mode().IsRegular() && info.Mode()&0111 != 0 {
+					// Skip shebang scripts — only pick real binaries.
+					f, fErr := os.Open(filepath.Join(g.Path, name))
+					if fErr == nil {
+						var header [2]byte
+						n, _ := f.Read(header[:])
+						f.Close()
+						if n < 2 || header[0] != '#' || header[1] != '!' {
+							darwinNative = append(darwinNative, filepath.Join(g.Path, name))
+						}
+					} else {
+						// Can't read → still try it (might be a binary).
+						darwinNative = append(darwinNative, filepath.Join(g.Path, name))
+					}
+				}
+			}
 		}
 	}
 
@@ -105,6 +130,7 @@ func ResolveExecutable(g db.Game) string {
 		appImages = nil // .AppImage is Linux-only
 		scripts = nil   // .sh/.x86_64/.x86 are Linux-specific
 	}
+	// darwinNative only populated on macOS, keep as-is on other platforms.
 
 	// Prefer native over Wine.
 	if len(appImages) > 0 {
@@ -112,6 +138,9 @@ func ResolveExecutable(g db.Game) string {
 	}
 	if len(scripts) > 0 {
 		return SelectBestExe(scripts)
+	}
+	if len(darwinNative) > 0 {
+		return SelectBestExe(darwinNative)
 	}
 	if len(exes) > 0 {
 		return SelectBestExe(exes)

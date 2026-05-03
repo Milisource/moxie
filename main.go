@@ -4,15 +4,37 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/commands"
+	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/tui"
 	"github.com/mili/moxie/internal/util"
 )
 
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
+		// First-run welcome if no database exists yet
+		dbPath := util.DbPath()
+		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+			fmt.Fprintln(os.Stderr, "👋 Welcome to moxie! It looks like this is your first run.")
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, "   Quick start:")
+			fmt.Fprintln(os.Stderr, "     moxie scan ~/Downloads     Scan a directory for games")
+			fmt.Fprintln(os.Stderr, "     moxie tui                  Open the interactive library browser")
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, "   For F95Zone metadata scraping, log into F95Zone in Firefox first —")
+			fmt.Fprintln(os.Stderr, "   moxie reads your browser cookies automatically.")
+			fmt.Fprintln(os.Stderr)
+		}
 		printUsage()
 		os.Exit(1)
+	}
+
+	if os.Args[1] == "--version" || os.Args[1] == "-version" || os.Args[1] == "version" {
+		fmt.Println("moxie", version)
+		os.Exit(0)
 	}
 
 	switch os.Args[1] {
@@ -121,7 +143,15 @@ Flags for 'sync' and 'check-updates':
 }
 
 func cmdTUI() {
-	if err := tui.Run(util.DbPath()); err != nil {
+	// Try loading cookies for F95Zone access so the TUI can scrape metadata
+	// on URL changes. A nil client is fine — the TUI will gracefully fall back.
+	var sc *scraper.Client
+	cookieStr, err := browser.GetF95Cookies()
+	if err == nil && cookieStr != "" {
+		sc = scraper.NewClient(cookieStr)
+	}
+
+	if err := tui.Run(util.DbPath(), sc); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 		os.Exit(1)
 	}

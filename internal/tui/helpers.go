@@ -239,7 +239,8 @@ func pickLargest(paths []string) string {
 	return best
 }
 
-// launchExe starts a game executable. Uses Wine on Linux for .exe files.
+// launchExe starts a game executable. Uses Wine on Linux/macOS for .exe files,
+// and tries CrossOver on macOS as a fallback.
 func launchExe(exe string) error {
 	ext := strings.ToLower(filepath.Ext(exe))
 	var cmd *exec.Cmd
@@ -249,10 +250,19 @@ func launchExe(exe string) error {
 	case ext == ".sh":
 		cmd = exec.Command("sh", exe)
 	case ext == ".exe":
-		if runtime.GOOS != "windows" {
-			cmd = exec.Command("wine", exe)
-		} else {
+		if runtime.GOOS == "windows" {
 			cmd = exec.Command(exe)
+		} else if winePath, err := exec.LookPath("wine"); err == nil {
+			cmd = exec.Command(winePath, exe)
+		} else if runtime.GOOS == "darwin" {
+			crossoverWine := "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine"
+			if _, err := os.Stat(crossoverWine); err == nil {
+				cmd = exec.Command(crossoverWine, exe)
+			} else {
+				return fmt.Errorf("wine not found and CrossOver not available — cannot launch .exe files on %s", runtime.GOOS)
+			}
+		} else {
+			return fmt.Errorf("wine not found — cannot launch .exe files on %s", runtime.GOOS)
 		}
 	default:
 		cmd = exec.Command(exe)

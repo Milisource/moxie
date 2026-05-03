@@ -1,6 +1,12 @@
 package tui
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	"fmt"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/mili/moxie/internal/db"
+)
 
 // loadGames returns a command that fetches all games from the database.
 func (m model) loadGames() tea.Cmd {
@@ -37,5 +43,29 @@ func (m model) deleteGame(id int64) tea.Cmd {
 			return gameDeletedMsg{err: err}
 		}
 		return gameDeletedMsg{games: games}
+	}
+}
+
+// scrapeMeta returns a command that scrapes the given F95Zone URL for
+// metadata, upserts it into the database, and returns the result.
+func (m model) scrapeMeta(gameID int64, url string) tea.Cmd {
+	return func() tea.Msg {
+		if m.scraperClient == nil {
+			return metaScrapedMsg{err: fmt.Errorf("scraper not available")}
+		}
+		data, err := m.scraperClient.ScrapeThread(url)
+		if err != nil {
+			return metaScrapedMsg{err: fmt.Errorf("scrape failed: %w", err)}
+		}
+		meta := &db.ScrapedMeta{
+			GameID:    gameID,
+			Developer: data.Developer,
+			Overview:  data.Overview,
+			CoverURL:  data.CoverURL,
+		}
+		if err := m.db.UpsertScrapedMeta(meta); err != nil {
+			return metaScrapedMsg{err: fmt.Errorf("save metadata failed: %w", err)}
+		}
+		return metaScrapedMsg{meta: meta}
 	}
 }

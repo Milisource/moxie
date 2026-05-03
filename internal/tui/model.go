@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/scraper"
 )
 
 // ─── View Mode ─────────────────────────────────────────────────────────────
@@ -81,6 +82,11 @@ type errMsg struct {
 	err error
 }
 
+type metaScrapedMsg struct {
+	meta *db.ScrapedMeta
+	err  error
+}
+
 // ─── Model ─────────────────────────────────────────────────────────────────
 
 type model struct {
@@ -113,13 +119,16 @@ type model struct {
 	setUrl   bool
 	urlInput textinput.Model
 
+	// scraper
+	scraperClient *scraper.Client
+
 	// filters
 	engineFilter string // empty = all
 	statusFilter string // empty = all
 }
 
 // initialModel creates the root model with default Bubble Tea components.
-func initialModel(database *db.Database) model {
+func initialModel(database *db.Database, sc *scraper.Client) model {
 	cols := []table.Column{
 		{Title: "ID", Width: 5},
 		{Title: "Title", Width: 48},
@@ -156,10 +165,11 @@ func initialModel(database *db.Database) model {
 	fi.PlaceholderStyle = lipgloss.NewStyle().Foreground(subtle)
 
 	return model{
-		db:          database,
-		table:       t,
-		filterInput: fi,
-		sortBy:      SortID,
+		db:            database,
+		table:         t,
+		filterInput:   fi,
+		sortBy:        SortID,
+		scraperClient: sc,
 	}
 }
 

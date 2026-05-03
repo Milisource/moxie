@@ -6,6 +6,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -14,7 +15,8 @@ import (
 const (
 	// User-Agent must match the browser that generated the cf_clearance cookie.
 	// Since we read cookies from Firefox via kooky, use a Firefox UA.
-	defaultUserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:136.0) Gecko/20100101 Firefox/136.0"
+	// NOTE: platformUserAgent() provides a platform-appropriate Firefox UA;
+	// do not use a constant string here.
 	defaultTimeout   = 10 * time.Second
 	minDelay         = 3 * time.Second      // minimum between requests
 	maxJitter        = 2 * time.Second      // random extra delay
@@ -24,6 +26,19 @@ const (
 	backoffMultiplier = 2                   // multiply delay on rate limit
 	maxBackoff       = 2 * time.Minute      // cap exponential backoff
 )
+
+// platformUserAgent returns a Firefox User-Agent string appropriate for the
+// current OS, so requests blend in regardless of where the binary runs.
+func platformUserAgent() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0"
+	case "darwin":
+		return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:136.0) Gecko/20100101 Firefox/136.0"
+	default:
+		return "Mozilla/5.0 (X11; Linux x86_64; rv:136.0) Gecko/20100101 Firefox/136.0"
+	}
+}
 
 // BlockedError indicates the request was blocked by anti-bot protection.
 type BlockedError struct {
@@ -119,7 +134,7 @@ func (c *Client) do(req *http.Request, baseDelay time.Duration) (*http.Response,
 	c.reqCount++
 	c.mu.Unlock()
 
-	req.Header.Set("User-Agent", defaultUserAgent)
+	req.Header.Set("User-Agent", platformUserAgent())
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 

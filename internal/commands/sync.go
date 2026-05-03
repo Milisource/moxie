@@ -567,7 +567,7 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 		var bestScore float64
 		for j, r := range results {
 			score := scraper.ComputeMatchScore(game.Title, r.Title)
-			isNonGame := IsNonGameThread(r.Title)
+			isNonGame := scraper.IsNonGameThread(r.Title)
 			marker := "  "
 			if !isNonGame && score > bestScore {
 				bestScore = score

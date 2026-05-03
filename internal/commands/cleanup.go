@@ -511,39 +511,4 @@ func ExtractEngineFromTitle(title string) string {
 	return ""
 }
 
-// nonGameThreadPrefixes lists title prefixes that indicate a thread is NOT a
-// game release.  These are request threads, recommendation threads,
-// identification threads, etc.  Matching against them prevents false
-// associations with non-game content.
-var nonGameThreadPrefixes = []string{
-	"seeking",
-	"request",
-	"req",
-	"recommendation",
-	"recommending",
-	"identify",
-	"identifying",
-	"identification",
-	"discussion",
-	"question",
-	"help",
-	"tutorial",
-	"guide",
-	"looking for",
-	"searching for",
-	"translation request",
-	"translation",
-}
 
-// IsNonGameThread returns true when the title begins with a word or phrase
-// that indicates this is a request/help/discussion thread rather than an
-// actual game release.
-func IsNonGameThread(title string) bool {
-	lower := strings.ToLower(strings.TrimSpace(title))
-	for _, prefix := range nonGameThreadPrefixes {
-		if strings.HasPrefix(lower, prefix+" ") || lower == prefix {
-			return true
-		}
-	}
-	return false
-}

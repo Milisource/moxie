@@ -16,7 +16,7 @@ moxie recursively scans your game directories, detects engines (Unity, Ren'Py, R
 - **Version tracking** — `check-updates` and `sync` re-scrape associated threads, compare versions, and report what's new. Supports `--force` to bypass 24h cooldown.
 - **Engine-aware cleanup** — Detects wrong F95Zone associations by comparing scanner-detected engines against F95Zone thread engines. NW.js (RPG Maker MV/MZ), Unity, Ren'Py, and pure HTML are distinguished accurately.
 - **Config management** — Persistent JSON-backed settings for SteamGridDB API keys and other preferences.
-- **Cross-platform** — Single static Go binary (~10 MB), no CGO, no runtime deps. Linux primary target; Windows and macOS supported for scanning and library management.
+- **Cross-platform** — Single static Go binary (~16 MB), no CGO, no runtime deps. Linux, macOS, and Windows pre-built binaries available.
 
 ---
 
@@ -37,15 +37,53 @@ moxie recursively scans your game directories, detects engines (Unity, Ren'Py, R
 
 ---
 
-## Quick Start
+## Install
+
+### macOS / Linux
 
 ```bash
-# Build from source
+curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh | bash
+```
+
+The script downloads the latest pre-built binary for your platform and installs it to `~/.local/bin/`. It will warn you if that directory isn't in your PATH.
+
+**To pin a specific version:**
+```bash
+MOXIE_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh | bash
+```
+
+### Windows
+
+Open **PowerShell** (not Command Prompt) and run:
+
+```powershell
+irm https://raw.githubusercontent.com/mili/moxie/main/scripts/install.ps1 | iex
+```
+
+The script downloads `moxie.exe`, places it in `%LOCALAPPDATA%\moxie\bin\`, and adds it to your PATH. Restart your terminal afterward.
+
+### Build from Source
+
+Requires **Go 1.24+**.
+
+```bash
 go build -ldflags="-s -w" -o moxie .
+sudo mv moxie /usr/local/bin/     # or ~/.local/bin/
+```
 
-# Install to PATH (or use ./scripts/install.sh for ~/.local/bin)
-sudo mv moxie /usr/local/bin/
+### Verify Installation
 
+```bash
+moxie --version
+```
+
+---
+
+## Quick Start
+
+Once installed:
+
+```bash
 # Scan your Games folder
 moxie scan ~/Games
 
@@ -54,8 +92,6 @@ moxie tui
 ```
 
 On first scan you will be prompted before saving. Use `--no-save` for a preview-only scan. Subsequent scans skip duplicates automatically.
-
-> **Note:** If you use `install.sh`, make sure `~/.local/bin` is in your PATH. Add `export PATH="$HOME/.local/bin:$PATH"` to your shell config.
 
 ---
 

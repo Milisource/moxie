@@ -155,6 +155,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case metaScrapedMsg:
+		if msg.err != nil {
+			m.err = fmt.Errorf("⚠ scrape: %v", msg.err)
+		} else if msg.meta != nil {
+			m.scrapedMeta = msg.meta
+			m.err = fmt.Errorf("✅ Metadata refreshed from new URL")
+		}
+		return m, nil
+
 	case errMsg:
 		m.err = msg.err
 		return m, nil
@@ -229,12 +238,18 @@ func (m model) handleUrlInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 				game.F95URL = url
 				if err := m.db.UpdateGame(game); err != nil {
 					m.err = fmt.Errorf("URL update failed: %w", err)
-				} else {
-					m.err = fmt.Errorf("✅ URL updated")
+					m.setUrl = false
+					return m, tea.Batch(m.loadGames(), m.loadMeta(m.selectedID))
 				}
 			}
 		}
 		m.setUrl = false
+		// Trigger scrape of new URL to fetch fresh metadata
+		if m.scraperClient != nil {
+			m.err = fmt.Errorf("✅ URL updated — scraping metadata...")
+			return m, tea.Batch(m.loadGames(), m.scrapeMeta(m.selectedID, url))
+		}
+		m.err = fmt.Errorf("✅ URL updated")
 		return m, tea.Batch(m.loadGames(), m.loadMeta(m.selectedID))
 	}
 	var urlCmd tea.Cmd
