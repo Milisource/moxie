@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
-**Version:** 0.3.1-alpha (May 2026)
-**Status:** Alpha — 0.3.1 (packages refactored: util + commands, engine cleanup, version extraction)
+**Version:** 0.3.2-alpha (May 2026)
+**Status:** Alpha — 0.3.2 (packages refactored: util + commands, engine cleanup, version extraction)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
@@ -45,7 +45,19 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Cleanup command: engine mismatch detection, exe mismatch detection, interactive disassociation
 - [x] Engine compatibility map (RPGM↔HTML via NW.js, WolfRPG↔HTML)
 - [x] `--warnings` flag on `list` command
-- [x] 325+ tests across scanner, engine, scraper, DB, helpers, commands
+- [x] 340+ tests across scanner, engine, scraper, DB, helpers, commands
+- [x] One-liner install scripts for macOS/Linux (curl|bash) and Windows (PowerShell irm|iex)
+- [x] `--version` flag with git describe injection via ldflags
+- [x] First-run welcome message when no database exists
+- [x] Platform-aware Firefox User-Agent (Linux/macOS/Windows)
+- [x] macOS native Mach-O executable detection in `play` command
+- [x] TUI CrossOver wine support on macOS (matches CLI behavior)
+- [x] Cross-compilation: `CGO_ENABLED=0` static builds, `windows/arm64`, `macos/arm64`
+- [x] NBSP handling in `IsNonGameThread` — F95Zone prefix labels use non-breaking spaces
+- [x] TUI URL update triggers live metadata scrape (not just DB reload)
+- [x] `FindMatches` non-game thread filtering (was missing from associate.go)
+- [x] CHANGELOG.md and expanded AGENTS.md with project conventions
+- [x] `make install` and `make clean` targets
 
 ### Upcoming
 
@@ -55,7 +67,6 @@ A local game library manager for adult games. Scans directories, detects engines
 - [ ] Cover image download and local caching
 - [ ] Download manager / file organizer
 - [ ] Directory watcher (auto-scan on file changes)
-- [ ] GitHub Actions release pipeline
 - [ ] Export/import library (JSON backup)
 - [ ] Wails desktop GUI
 
@@ -67,4 +78,4 @@ A local game library manager for adult games. Scans directories, detects engines
 - **No content-based dedup** — same game in multiple paths creates duplicate records
 - **No cover caching** — cover URLs are stored but images are not downloaded
 - **Non-UTF-8 filenames** — Latin1/Shift-JIS display incorrectly in the TUI
-- **No Wine detection** — `play` command assumes `wine` is on PATH for `.exe` files on Linux
+- **No Wine detection** — `play` command tries `wine` on PATH and CrossOver on macOS, but doesn't auto-detect Wine installations or offer to install it
