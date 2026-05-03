@@ -8,8 +8,8 @@ moxie is a local game library manager. It scans directories for installed games,
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
-│                          main.go (CLI)                                     │
-│  Parses flags, opens DB, calls one of 22 command handlers                 │
+│                       main.go (CLI entry point)                             │
+│  Parses flags, calls commands.* handlers                                    │
 └──────┬──────────┬──────────┬──────────┬──────────┬──────────┬──────────────┘
        │          │          │          │          │          │
        ▼          ▼          ▼          ▼          ▼          ▼
@@ -17,7 +17,7 @@ moxie is a local game library manager. It scans directories for installed games,
 │ scanner  │ │ engine   │ │ db       │ │ scraper  │ │ tui      │ │ steam    │
 │ WalkDir  │ │ detect   │ │ SQLite   │ │ HTTP     │ │ Bubble   │ │ shortcuts│
 │ size     │ │ profiles │ │ CRUD     │ │ parse    │ │ Tea      │ │ VDF      │
-│ find exe │ │          │ │ migrate  │ │ search   │ │          │ │ SGDB API │
+│ find exe │ │ NW.js    │ │ migrate  │ │ search   │ │          │ │ SGDB API │
 └────┬─────┘ └────┬─────┘ └──────────┘ └────┬─────┘ └──────────┘ │ artwork  │
      │            │                          │                    └──────────┘
      └─────┬──────┘                          │
@@ -25,12 +25,23 @@ moxie is a local game library manager. It scans directories for installed games,
            ▼                                 ▼
     ┌──────────┐                    ┌──────────────┐
     │ engine   │                    │ browser      │
-    │ Result   │                    │ kooky cookie │
-    └──────────┘                    │ extraction   │
+    │ Result   │                    │ kooky +      │
+    └──────────┘                    │ SQLite       │
+                                     │ extraction   │
                                      └──────────────┘
+
+package main          internal/util/          internal/commands/
+    main.go              config.go              crud.go    (scan, list, info, add, remove)
+                         helpers.go             scrape.go  (scrape, resolve cookie)
+                                                sync.go    (runScrapeAuto, runUpdateCheck)
+                                                cleanup.go (engine mismatch, refresh-versions)
+                                                play.go    (resolveExecutable, launch)
+                                                steam.go   (steam add/remove/list)
+                                                rename.go  (stripThreadPrefix)
+                                                config.go  (config get/set/show)
 ```
 
-`config.json` is stored in the platform-standard config directory (Go's `os.UserConfigDir`) — `~/.config/moxie/` on Linux, `%APPDATA%/moxie/` on Windows, `~/Library/Application Support/moxie/` on macOS. The `internal/config/` package provides typed get/set access to settings like the SteamGridDB API key.
+`config.json` is stored in the platform-standard config directory — `~/.config/moxie/` on Linux. `internal/util/` provides config I/O and shared formatters; `internal/commands/` contains all 28 CLI command handlers in 8 domain-grouped files.
 
 ### Data Flow Through the System
 

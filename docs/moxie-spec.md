@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
-**Version:** 0.2.0-alpha (May 2026)
-**Status:** Alpha — 0.2.0 (engine detection, cleanup, version extraction)
+**Version:** 0.3.0-alpha (May 2026)
+**Status:** Alpha — 0.3.0 (packages refactored: util + commands, engine cleanup, version extraction)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
@@ -19,9 +19,11 @@ A local game library manager for adult games. Scans directories, detects engines
 | **Architecture** | [architecture.md](architecture.md) | Package diagram, data flow, design rationale, future path |
 | **Scanner** | [scanner.md](scanner.md) | Directory walk, engine detection profiles, exclusion list, limitations |
 | **Scraper** | [scraper.md](scraper.md) | HTTP client, rate limiting, HTML parsing, auto-association |
+| **Commands** | (this doc) | 28 CLI handlers in 8 domain files: crud, scrape, sync, cleanup, play, steam, rename, config |
+| **Utilities** | (this doc) | Shared config I/O, formatters, version normalization in `internal/util/` |
 | **TUI** | [tui.md](tui.md) | Bubble Tea model/update/view, keyboard shortcuts, filters |
 | **Database** | [database.md](database.md) | SQLite schema, version tracking, migration strategy |
-| **Browser** | [browser.md](browser.md) | Cross-browser cookie extraction with kooky |
+| **Browser** | [browser.md](browser.md) | Cross-browser cookie extraction with kooky + SQLite fallback |
 | **Steam** | [steam-package-design.md](steam-package-design.md) | Steam shortcut management, Proton config, artwork, SteamGridDB |
 
 ---
