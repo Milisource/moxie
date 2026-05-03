@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -301,14 +302,15 @@ func TestEngineTagVariants_AllEnginesPresent(t *testing.T) {
 	// Every canonical engine name that appears in the codebase should
 	// have at least one tag variant defined.  This test catches new
 	// engines added to the detector but not to the tag variant map.
-	canonical := []string{
-		"RenPy", "Unity", "RPGM", "HTML", "Flash", "Java",
-		"UnrealEngine", "WebGL", "WolfRPG", "ADRIFT", "QSP",
-		"RAGS", "Tads",
-	}
-	for _, eng := range canonical {
-		if len(engineTagVariants[eng]) == 0 {
-			t.Errorf("engineTagVariants missing entry for %q", eng)
+	// Use engine.AllEngines() to derive the list dynamically, skipping
+	// Others because it's a catch-all rather than a specific engine.
+	for _, eng := range engine.AllEngines() {
+		if eng == engine.Others {
+			continue
+		}
+		key := string(eng)
+		if len(engineTagVariants[key]) == 0 {
+			t.Errorf("engineTagVariants missing entry for %q", key)
 		}
 	}
 }
@@ -378,6 +380,16 @@ func TestEngineCompat_ExpectedPairs(t *testing.T) {
 			t.Errorf("expected engineCompat[%q][%q] = true, got false or missing", p.a, p.b)
 		}
 	}
+
+	// WolfRPG→HTML is one-directional: WolfRPG uses HTML internally,
+	// but not all HTML games are WolfRPG.
+	t.Run("WolfRPG→HTML is one-directional", func(t *testing.T) {
+		t.Parallel()
+		htmlCompat := engineCompat["HTML"]
+		if htmlCompat != nil && htmlCompat["WolfRPG"] {
+			t.Error("HTML should NOT be compatible with WolfRPG — it's one-directional")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -399,7 +411,7 @@ func TestFormatTagsBrief(t *testing.T) {
 		{[]string{"a", "b", "c"}, 1, "a (+2 more)"},
 	}
 	for _, tt := range tests {
-		t.Run("", func(t *testing.T) {
+		t.Run(fmt.Sprintf("%v/%d", tt.tags, tt.max), func(t *testing.T) {
 			got := formatTagsBrief(tt.tags, tt.max)
 			if got != tt.want {
 				t.Errorf("formatTagsBrief(%v, %d) = %q, want %q", tt.tags, tt.max, got, tt.want)

@@ -131,7 +131,7 @@ var engineTagVariants = map[string][]string{
 	"ADRIFT":       {"adrift"},
 	"QSP":          {"qsp"},
 	"RAGS":         {"rags"},
-	"Tads":         {"tads", "tads"},
+	"Tads":         {"tads"},
 }
 
 // engineCompat maps engines that are implementation-compatible.

@@ -125,7 +125,7 @@ func stripThreadPrefix(title string) string {
 	prefixWords := map[string]bool{
 		"unity": true, "ren'py": true, "renpy": true, "rpgm": true,
 		"vn": true, "html": true, "flash": true, "java": true,
-		"godot": true, "electron": true, "unreal": true, "others": true,
+		"godot": true, "electron": true, "unreal": true, "others": true, "html5": true,
 		"completed": true, "abandoned": true, "onhold": true,
 		"collection": true, "video": true, "mod": true, "cheat": true,
 		"tool": true, "daz": true, "update": true, "req": true,

@@ -79,7 +79,7 @@ func TestStripThreadPrefix(t *testing.T) {
 		{"Unity 3D Game", "3D Game"},
 		{"Completed Visual Novel", "Visual Novel"},
 		{"Abandoned Old Game", "Old Game"},
-		{"HTML5 Web Game", "HTML5 Web Game"}, // "html5" not in prefixWords map — only "html" is
+		{"HTML5 Web Game", "Web Game"},
 		{"Flash Game", "Game"},
 		{"Java Game", "Game"},
 		{"Godot Game", "Game"},

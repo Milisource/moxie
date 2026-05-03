@@ -197,10 +197,8 @@ func TestApplyThreadData_StripsTitlePrefix(t *testing.T) {
 	applyThreadData(game, data, "https://f95zone.to/threads/my-game.54321/")
 
 	// The title should have the engine/status prefix stripped.
-	if game.Title == "RPGM Completed My Game [v1.0] [Dev]" {
-		t.Errorf("Title was not stripped, got %q", game.Title)
-	}
-	if game.Title == "" {
-		t.Errorf("Title should not be empty after stripping")
+	want := "My Game [v1.0] [Dev]"
+	if game.Title != want {
+		t.Errorf("Title = %q, want %q", game.Title, want)
 	}
 }

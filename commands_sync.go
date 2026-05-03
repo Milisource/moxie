@@ -143,8 +143,8 @@ func runUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 
 // normalizeVersion strips trailing .0 segments and leading v/V prefix for comparison.
 func normalizeVersion(v string) string {
-	v = strings.TrimPrefix(strings.TrimPrefix(v, "v"), "V")
 	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(strings.TrimPrefix(v, "v"), "V")
 	for strings.HasSuffix(v, ".0") {
 		v = strings.TrimSuffix(v, ".0")
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -26,6 +27,10 @@ func TestNormalizeVersion(t *testing.T) {
 		{"1.0.0.0", "1"},
 		{"v1.2.3", "1.2.3"},
 		{"  1.0  ", "1"},
+		{"v1", "1"},
+		{"0.0.0", "0"},
+		{"V1.0.0.0.0", "1"},
+		{"  v1.0  ", "1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -118,7 +123,7 @@ func TestTruncate(t *testing.T) {
 		{"", 0, ""},
 	}
 	for _, tt := range tests {
-		t.Run("", func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/%d", tt.input, tt.max), func(t *testing.T) {
 			got := truncate(tt.input, tt.max)
 			if got != tt.want {
 				t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.max, got, tt.want)
@@ -188,7 +193,7 @@ func TestWrapText(t *testing.T) {
 		{"hello beautiful world", 10, "hello\nbeautiful\nworld"},
 	}
 	for _, tt := range tests {
-		t.Run("", func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/%d", tt.input, tt.width), func(t *testing.T) {
 			got := wrapText(tt.input, tt.width)
 			if got != tt.want {
 				t.Errorf("wrapText(%q, %d) = %q, want %q", tt.input, tt.width, got, tt.want)
