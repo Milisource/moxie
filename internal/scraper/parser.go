@@ -39,6 +39,14 @@ var (
 	developerPattern2 = regexp.MustCompile(`(?i)Publisher[:\s]+(.+)`)
 
 	threadIDPattern = regexp.MustCompile(`/threads/[^/]*\.(\d+)/`)
+
+	// bracketedRe strips XenForo-style bracket tags from titles.
+	// Matches [tag], (tag) and their leading whitespace.
+	bracketedRe = regexp.MustCompile(`\s*[\[\(][^\]\)]*[\]\)]`)
+
+	// versionInBrackets extracts version numbers from bracketed tags
+	// like [v1.31], [ver 2.0], [version 1.5.2].
+	versionInBrackets = regexp.MustCompile(`\[v(?:er(?:sion)?\s+)?v?(\d+\.\d+(?:\.\d+)*)\]`)
 )
 
 // ---------------------------------------------------------------------------
@@ -60,9 +68,13 @@ func parseThreadHTML(html string, threadURL string) (*ThreadData, error) {
 	}
 
 	// --- Title ---
+	var rawTitle string
 	if sel := doc.Find("h1.p-title-value").First(); sel.Length() > 0 {
-		td.Title = strings.TrimSpace(sel.Text())
+		rawTitle = strings.TrimSpace(sel.Text())
 	}
+	// Strip XenForo-style bracketed tags (e.g., [v1.31], [BadColor], (Steam))
+	// that duplicate metadata already captured in version/developer fields.
+	td.Title = stripBracketed(rawTitle)
 
 	// --- Status ---
 	td.Status = extractStatus(td.Tags, td.Title)
@@ -81,6 +93,11 @@ func parseThreadHTML(html string, threadURL string) (*ThreadData, error) {
 	meta := extractMetadata(bodyText)
 
 	td.Version = extractVersionFromMeta(meta, bodyText)
+	// Fallback: if version wasn't found in the post body, try bracketed
+	// tags in the raw thread title (e.g., "Game [v1.31]").
+	if td.Version == "" {
+		td.Version = extractVersionFromBrackets(rawTitle)
+	}
 	td.Developer = extractDeveloperFromMeta(meta, bodyText)
 	td.Overview = bodyText
 	td.DownloadLinks = extractDownloadLinks(doc)
@@ -516,6 +533,24 @@ var statusWords = map[string]string{
 	"discontinued": "abandoned",
 	"cancelled":  "abandoned",
 	"dropped":    "abandoned",
+}
+
+// stripBracketed removes bracketed tags (e.g., [v1.31], [BadColor], (Steam))
+// and their leading whitespace from a string. Uses the same pattern as
+// SanitizeTitle in associate.go.
+func stripBracketed(s string) string {
+	return strings.TrimSpace(bracketedRe.ReplaceAllString(s, ""))
+}
+
+// extractVersionFromBrackets tries to find a version inside bracketed
+// tags in the thread title (e.g., [v1.31], [ver 2.0], [v0.5.2]).
+// Returns the version string without the v/ver prefix, or "" if none found.
+func extractVersionFromBrackets(title string) string {
+	matches := versionInBrackets.FindStringSubmatch(title)
+	if len(matches) >= 2 {
+		return matches[1]
+	}
+	return ""
 }
 
 // extractStatus determines the game status from thread tags and title prefix.

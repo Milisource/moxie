@@ -40,6 +40,14 @@ func NewSGDBClient(apiKey string) *SGDBClient {
 // API methods
 // ---------------------------------------------------------------------------
 
+// sgdbAutocompleteResponse is the wrapper JSON returned by the
+// /search/autocomplete/{term} endpoint.
+type sgdbAutocompleteResponse struct {
+	Success bool             `json:"success"`
+	Data    []SGDBGameResult `json:"data"`
+	Errors  []string         `json:"errors"`
+}
+
 // SearchGame searches SteamGridDB for a game by name.
 // Returns up to 10 results with their SGDB ID and name.
 func (c *SGDBClient) SearchGame(term string) ([]SGDBGameResult, error) {
@@ -47,15 +55,18 @@ func (c *SGDBClient) SearchGame(term string) ([]SGDBGameResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	var results []SGDBGameResult
-	if err := json.Unmarshal(respBody, &results); err != nil {
+	var wrapper sgdbAutocompleteResponse
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
 		return nil, fmt.Errorf("steamgriddb: parse error: %w", err)
 	}
-	// Limit to 10 results.
-	if len(results) > 10 {
-		results = results[:10]
+	if !wrapper.Success {
+		return nil, fmt.Errorf("steamgriddb: %s", strings.Join(wrapper.Errors, "; "))
 	}
-	return results, nil
+	// Limit to 10 results.
+	if len(wrapper.Data) > 10 {
+		wrapper.Data = wrapper.Data[:10]
+	}
+	return wrapper.Data, nil
 }
 
 // GetGridsBySteamAppID fetches available grid images for a real Steam App ID.

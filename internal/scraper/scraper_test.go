@@ -485,8 +485,8 @@ func TestParseThreadHTML(t *testing.T) {
 	}
 
 	// --- Title ---
-	if td.Title != "My Awesome Game [v0.5.2] [Some Studio]" {
-		t.Errorf("Title = %q, want %q", td.Title, "My Awesome Game [v0.5.2] [Some Studio]")
+	if td.Title != "My Awesome Game" {
+		t.Errorf("Title = %q, want %q", td.Title, "My Awesome Game")
 	}
 
 	// --- ThreadID ---
@@ -541,6 +541,70 @@ func TestParseThreadHTML(t *testing.T) {
 	}
 	if td.DownloadLinks[2].Host != "pixeldrain" {
 		t.Errorf("DownloadLink[2].Host = %q, want %q", td.DownloadLinks[2].Host, "pixeldrain")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// stripBracketed
+// ---------------------------------------------------------------------------
+
+func TestStripBracketed(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Goblin Nest [v1.31] [BadColor]", "Goblin Nest"},
+		{"My Awesome Game [v0.5.2] [Some Studio]", "My Awesome Game"},
+		{"Game (Steam)", "Game"},
+		{"No Brackets Here", "No Brackets Here"},
+		{"[Only Brackets]", ""},
+		{"[v1.0] [Tag1] [Tag2]", ""},
+		{"  [Leading] Spaced [Tags]", "Spaced"},
+		{"Plain Title", "Plain Title"},
+		{"", ""},
+		{"  ", ""},
+		{"(parentheses) and [brackets]", "and"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := stripBracketed(tt.input)
+			if got != tt.want {
+				t.Errorf("stripBracketed(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractVersionFromBrackets
+// ---------------------------------------------------------------------------
+
+func TestExtractVersionFromBrackets(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Game [v1.31] [BadColor]", "1.31"},
+		{"Game [ver 2.0] [Studio]", "2.0"},
+		{"Game [version 1.5.2] [Studio]", "1.5.2"},
+		{"Game [v0.5] [Studio]", "0.5"},
+		{"No Version Brackets", ""},
+		{"Game [1.0] without v prefix", ""}, // must have v/ver prefix
+		{"Game [v1.0]", "1.0"},
+		{"[v1.0.0] Game At Start", "1.0.0"},
+		{"Multiple [v1.0] [v2.0]", "1.0"}, // first match wins
+		{"[v 0.5]", ""},                   // space between v and digit not handled
+		{"", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := extractVersionFromBrackets(tt.input)
+			if got != tt.want {
+				t.Errorf("extractVersionFromBrackets(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }
 

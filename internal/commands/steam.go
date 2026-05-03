@@ -551,8 +551,8 @@ func SteamFixArtwork(args []string) {
 		if err := steam.SetAllArtwork(steamRoot, uid, appID, meta.CoverURL); err == nil {
 			artDone = true
 		} else if !errors.Is(err, steam.ErrUnsupportedFormat) {
-			fmt.Fprintf(os.Stderr, "Error setting artwork: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(os.Stderr, "  ⚠ Error setting artwork: %v\n", err)
+			// Continue — artwork is best-effort, the game is still handled.
 		}
 	}
 
