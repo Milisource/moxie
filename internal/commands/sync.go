@@ -90,14 +90,12 @@ func RunUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 			}
 			isNew := latest != "" && knownVer != "" && NormalizeVersion(latest) != NormalizeVersion(knownVer)
 
-			// Signal: check for engine mismatch between scanner and F95Zone tags.
+			// Signal: check for engine mismatch between scanner and F95Zone metadata.
 			var engineWarn string
-			if len(data.Tags) > 0 {
-				detEngine := engine.Detect(g.Path)
-				if !EngineMatchesTags(detEngine, data.Tags) {
-					engineWarn = fmt.Sprintf(" ⚠ engine mismatch (scanner: %s)",
-						detEngine.Engine)
-				}
+			detEngine := engine.Detect(g.Path)
+			if !EngineMatchesThread(detEngine, data.Tags, data.Title) {
+				engineWarn = fmt.Sprintf(" ⚠ engine mismatch (scanner: %s)",
+					detEngine.Engine)
 			}
 
 			g.LatestVersion = latest
@@ -277,18 +275,16 @@ func SyncGame(id int64, cookie string, unsafe bool, force bool) {
 		}
 
 		// Signal: check engine consistency before associating.
-		if len(data.Tags) > 0 {
-			detEngine := engine.Detect(game.Path)
-			if !EngineMatchesTags(detEngine, data.Tags) {
-				fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread tags: %s)\n",
-					detEngine.Engine, FormatTagsBrief(data.Tags, 4))
-				fmt.Fprintf(os.Stderr, "  Associate anyway? [y/N]: ")
-				var answer string
-				fmt.Scanln(&answer)
-				if strings.ToLower(answer) != "y" {
-					fmt.Fprintln(os.Stderr, "  Cancelled.")
-					os.Exit(1)
-				}
+		detEngine := engine.Detect(game.Path)
+		if !EngineMatchesThread(detEngine, data.Tags, best.Title) {
+			fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread: %q, tags: %s)\n",
+				detEngine.Engine, util.Truncate(best.Title, 60), FormatTagsBrief(data.Tags, 4))
+			fmt.Fprintf(os.Stderr, "  Associate anyway? [y/N]: ")
+			var answer string
+			fmt.Scanln(&answer)
+			if strings.ToLower(answer) != "y" {
+				fmt.Fprintln(os.Stderr, "  Cancelled.")
+				os.Exit(1)
 			}
 		}
 
@@ -327,13 +323,11 @@ func SyncGame(id int64, cookie string, unsafe bool, force bool) {
 		os.Exit(1)
 	}
 
-	// Signal: check engine consistency with freshly scraped tags.
-	if len(data.Tags) > 0 {
-		detEngine := engine.Detect(game.Path)
-		if !EngineMatchesTags(detEngine, data.Tags) {
-			fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread tags: %s)\n",
-				detEngine.Engine, FormatTagsBrief(data.Tags, 4))
-		}
+	// Signal: check engine consistency with freshly scraped metadata.
+	detEngine := engine.Detect(game.Path)
+	if !EngineMatchesThread(detEngine, data.Tags, data.Title) {
+		fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread: %q, tags: %s)\n",
+			detEngine.Engine, util.Truncate(data.Title, 60), FormatTagsBrief(data.Tags, 4))
 	}
 
 	latest := data.Version
@@ -402,7 +396,7 @@ func Sync(args []string) {
 
 	// Phase 1: Associate games with F95Zone threads.
 	fmt.Fprintln(os.Stderr, "\n=== Phase 1/2: Associating games with F95Zone threads ===")
-	RunScrapeAuto(database, cookie, *unsafe)
+	RunScrapeAuto(database, cookie, *unsafe, *force)
 
 	// Phase 2: Check for version updates.
 	fmt.Fprintln(os.Stderr, "\n=== Phase 2/2: Checking for version updates ===")
@@ -436,7 +430,9 @@ func Sync(args []string) {
 }
 
 // RunScrapeAuto finds and associates F95Zone threads for unassociated games.
-func RunScrapeAuto(database *db.Database, cookie string, unsafe bool) {
+// When force is false, games that were recently searched without success
+// (within UpdateCheckCooldown) are skipped to avoid redundant API calls.
+func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool) {
 	if cookie == "" {
 		fmt.Fprintf(os.Stderr, "Cookie required for auto-association.\n")
 		fmt.Fprintf(os.Stderr, "Log into f95zone.to in Firefox, or use --cookie/--cookie-file.\n")
@@ -455,14 +451,25 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 	}
 
 	// Filter to unassociated games (no F95Zone URL).
+	// Skip games that were recently searched without success to avoid
+	// redundant API calls.  Use --force to override.
 	var queue []db.Game
+	var cooldownSkipped int
 	for _, g := range allGames {
 		if g.F95URL == "" {
+			if !force && !g.VersionCheckedAt.IsZero() && time.Since(g.VersionCheckedAt) < UpdateCheckCooldown {
+				cooldownSkipped++
+				continue
+			}
 			queue = append(queue, g)
 		}
 	}
 	if len(queue) == 0 {
-		fmt.Println("All games already have F95Zone URLs. Nothing to associate.")
+		if cooldownSkipped > 0 {
+			fmt.Fprintf(os.Stderr, "All unassociated games were searched within the last 24h. Use --force to re-search.\n")
+		} else {
+			fmt.Println("All games already have F95Zone URLs. Nothing to associate.")
+		}
 		return
 	}
 
@@ -494,17 +501,25 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 
 	searchCache := make(map[string][]scraper.SearchResult) // sanitized_title -> search results
 	urlCache := make(map[string]string)                    // sanitized_title -> thread URL
+	processed := make(map[string]bool)                     // sanitized_title -> fully processed (skip duplicates)
 
 	for i, game := range queue {
 		elapsed := time.Since(startTime).Truncate(time.Second)
-		fmt.Fprintf(os.Stderr, "[%d/%d] %s %q",
-			i+1, total, elapsed, game.Title)
 
-		// Search (with caching).
+		// Deduplicate: skip games whose sanitized title was already processed.
 		query := scraper.SanitizeTitle(game.Title)
 		if query == "" {
 			query = game.Title
 		}
+		if processed[query] {
+			fmt.Fprintf(os.Stderr, "[%d/%d] %s %q — skipping (duplicate)\n",
+				i+1, total, elapsed, game.Title)
+			skipped++
+			continue
+		}
+
+		fmt.Fprintf(os.Stderr, "[%d/%d] %s %q",
+			i+1, total, elapsed, game.Title)
 		if query != game.Title {
 			fmt.Fprintf(os.Stderr, "  (search: %q)", query)
 		}
@@ -528,6 +543,7 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 						break
 					}
 					fmt.Fprintf(os.Stderr, "  ✗ Search failed: %v\n\n", err)
+					processed[query] = true
 					skipped++
 					continue
 				}
@@ -537,26 +553,40 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 
 		if len(results) == 0 {
 			fmt.Fprintln(os.Stderr, "  ✗ No search results")
+			processed[query] = true
+			game.VersionCheckedAt = time.Now()
+			_ = database.UpdateGame(&game) // persist search cooldown
 			skipped++
 			continue
 		}
 
-		// Show results with scores.
+		// Show results with scores.  Skip non-game threads (requests,
+		// recommendations, identification threads, etc.) when choosing
+		// the best match, but still display them for context.
 		var best *scraper.SearchResult
 		var bestScore float64
 		for j, r := range results {
 			score := scraper.ComputeMatchScore(game.Title, r.Title)
+			isNonGame := IsNonGameThread(r.Title)
 			marker := "  "
-			if score > bestScore {
+			if !isNonGame && score > bestScore {
 				bestScore = score
 				best = &results[j]
 				marker = "→ "
 			}
-			fmt.Fprintf(os.Stderr, "  %s[%.0f%%] %s\n", marker, score*100, util.Truncate(r.Title, 55))
+			skipLabel := ""
+			if isNonGame {
+				skipLabel = " [non-game]"
+			}
+			fmt.Fprintf(os.Stderr, "  %s[%.0f%%] %s%s\n", marker, score*100,
+				util.Truncate(r.Title, 55), skipLabel)
 		}
 
 		if best == nil || bestScore < 0.3 {
 			fmt.Fprintf(os.Stderr, "  ✗ No good match (best: %.0f%%)\n\n", bestScore*100)
+			processed[query] = true
+			game.VersionCheckedAt = time.Now()
+			_ = database.UpdateGame(&game) // persist search cooldown
 			skipped++
 			continue
 		}
@@ -571,22 +601,21 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 				break
 			}
 			fmt.Fprintf(os.Stderr, "  ✗ Scrape failed: %v\n\n", err)
+			processed[query] = true
 			skipped++
 			continue
 		}
 
 		// Signal: prevent bad associations by checking engine consistency
-		// BEFORE saving.  If the scanner-detected engine conflicts with
-		// the F95Zone thread tags, skip this candidate — it's probably
-		// the wrong thread.
-		if len(data.Tags) > 0 {
-			detEngine := engine.Detect(game.Path)
-			if !EngineMatchesTags(detEngine, data.Tags) {
-				fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread tags: %s) — skipping\n",
-					detEngine.Engine, FormatTagsBrief(data.Tags, 4))
-				skipped++
-				continue
-			}
+		// BEFORE saving.  Checks both the thread title prefix (primary
+		// signal — e.g. "Unity Completed Game Name") and content tags.
+		detEngine := engine.Detect(game.Path)
+		if !EngineMatchesThread(detEngine, data.Tags, best.Title) {
+			fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread: %q, tags: %s) — skipping\n",
+				detEngine.Engine, util.Truncate(best.Title, 60), FormatTagsBrief(data.Tags, 4))
+			processed[query] = true
+			skipped++
+			continue
 		}
 
 		ApplyThreadData(&game, data, best.URL)
@@ -594,6 +623,7 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 
 		if err := database.UpdateGame(&game); err != nil {
 			fmt.Fprintf(os.Stderr, "  ✗ Save failed: %v\n\n", err)
+			processed[query] = true
 			skipped++
 			continue
 		}
@@ -622,6 +652,7 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 		}
 
 		associated++
+		processed[query] = true
 		fmt.Fprintln(os.Stderr)
 	}
 

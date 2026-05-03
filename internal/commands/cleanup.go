@@ -176,6 +176,115 @@ func EngineMatchesTags(detected engine.Result, tags []string) bool {
 	return false
 }
 
+// EngineMatchesThread checks whether the scanner-detected engine is consistent
+// with F95Zone thread metadata.  Unlike EngineMatchesTags (which only checks
+// content tags like "2dcg", "bdsm"), this function ALSO checks the thread
+// title for engine prefix indicators — the primary signal on F95Zone.
+//
+// On F95Zone, search result titles include the engine prefix (e.g.
+// "Unity Completed A Queen Confined"), while content tags are
+// genre/theme tags.  This function checks both sources.
+//
+// Returns true when:
+//   - The detected engine is "Others" or empty (inconclusive)
+//   - No variant mapping exists for the engine (inconclusive)
+//   - The thread title contains a variant of the detected engine
+//   - At least one tag contains a variant of the detected engine
+//
+// Returns false only when a specific engine was detected, the title and tags
+// contain engine metadata, and neither matches the detected engine.
+func EngineMatchesThread(detected engine.Result, tags []string, title string) bool {
+	if detected.Engine == "Others" || detected.Engine == "" {
+		return true // detection inconclusive — don't flag
+	}
+
+	variants := EngineTagVariants[string(detected.Engine)]
+	if len(variants) == 0 {
+		return true // no mapping known for this engine — don't flag
+	}
+
+	// 1. Primary signal: thread title prefix.
+	//    F95Zone search result titles include engine prefix like
+	//    "Unity Completed A Queen Confined" or "RPGM Game Name".
+	titleLower := strings.ToLower(title)
+	for _, variant := range variants {
+		if strings.Contains(titleLower, variant) {
+			return true // engine found in title
+		}
+	}
+
+	// 2. Secondary signal: content tags (genre/theme tags might include
+	//    engine info on some threads).
+	if len(tags) > 0 {
+		for _, tag := range tags {
+			tagLower := strings.ToLower(tag)
+			for _, variant := range variants {
+				if strings.Contains(tagLower, variant) {
+					return true // engine found in tags
+				}
+			}
+		}
+	}
+
+	// No engine info found in either title or tags — can't verify.
+	// Don't flag as mismatch (the metadata just didn't include engine info).
+	if title == "" && len(tags) == 0 {
+		return true
+	}
+
+	// We found tags/title but neither contained the expected engine.
+	// Only flag as false if there's engine metadata present that contradicts.
+	// Extract any engine from title.
+	f95Engine := ""
+	for engine, engVariants := range EngineTagVariants {
+		for _, v := range engVariants {
+			if strings.Contains(titleLower, v) {
+				f95Engine = engine
+				break
+			}
+		}
+		if f95Engine != "" {
+			break
+		}
+	}
+	// Also check tags for any engine indicator.
+	if f95Engine == "" {
+		for _, tag := range tags {
+			tagLower := strings.ToLower(tag)
+			for engine, engVariants := range EngineTagVariants {
+				for _, v := range engVariants {
+					if strings.Contains(tagLower, v) {
+						f95Engine = engine
+						break
+					}
+				}
+				if f95Engine != "" {
+					break
+				}
+			}
+			if f95Engine != "" {
+				break
+			}
+		}
+	}
+
+	if f95Engine == "" {
+		// No engine info in either title or tags — inconclusive.
+		return true
+	}
+
+	// Title/tags indicate engine X, but scanner found engine Y.
+	// True mismatch.  But check compatibility (RPGM↔HTML, etc.).
+	if f95Engine == string(detected.Engine) {
+		return true
+	}
+	if compat, ok := EngineCompat[f95Engine]; ok && compat[string(detected.Engine)] {
+		return true
+	}
+
+	return false
+}
+
 // CheckEngineMismatch returns a description of the mismatch, or "" if no
 // issue is found.  It compares the scanner-detected engine (via
 // engine.Detect) against the F95Zone thread tags stored on the game.
@@ -400,4 +509,41 @@ func ExtractEngineFromTitle(title string) string {
 		}
 	}
 	return ""
+}
+
+// nonGameThreadPrefixes lists title prefixes that indicate a thread is NOT a
+// game release.  These are request threads, recommendation threads,
+// identification threads, etc.  Matching against them prevents false
+// associations with non-game content.
+var nonGameThreadPrefixes = []string{
+	"seeking",
+	"request",
+	"req",
+	"recommendation",
+	"recommending",
+	"identify",
+	"identifying",
+	"identification",
+	"discussion",
+	"question",
+	"help",
+	"tutorial",
+	"guide",
+	"looking for",
+	"searching for",
+	"translation request",
+	"translation",
+}
+
+// IsNonGameThread returns true when the title begins with a word or phrase
+// that indicates this is a request/help/discussion thread rather than an
+// actual game release.
+func IsNonGameThread(title string) bool {
+	lower := strings.ToLower(strings.TrimSpace(title))
+	for _, prefix := range nonGameThreadPrefixes {
+		if strings.HasPrefix(lower, prefix+" ") || lower == prefix {
+			return true
+		}
+	}
+	return false
 }

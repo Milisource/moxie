@@ -292,5 +292,5 @@ func ApplyThreadData(game *db.Game, data *scraper.ThreadData, url string) {
 func ScrapeAutoWrapper(cookie string, unsafe bool) {
 	database := util.OpenDB()
 	defer database.Close()
-	RunScrapeAuto(database, cookie, unsafe)
+	RunScrapeAuto(database, cookie, unsafe, false)
 }

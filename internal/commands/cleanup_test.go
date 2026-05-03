@@ -131,6 +131,161 @@ func TestEngineMatchesTags(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// EngineMatchesThread
+// ---------------------------------------------------------------------------
+
+func TestEngineMatchesThread(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		detected engine.Result
+		tags     []string
+		title    string
+		want     bool
+	}{
+		// === Title prefix matches (primary signal) ===
+		{
+			name:     "Unity detected, search result title has Unity prefix",
+			detected: engine.Result{Engine: engine.Unity},
+			tags:     []string{"2dcg", "bdsm", "big tits", "group sex"},
+			title:    "VN Unity Completed A Queen Confined [Final] [Banana King]",
+			want:     true,
+		},
+		{
+			name:     "RPGM detected, search result title has RPGM prefix",
+			detected: engine.Result{Engine: engine.RPGM},
+			tags:     []string{"2d game", "2dcg", "ahegao", "animated"},
+			title:    "RPGM Completed A Red Flower Shining in the Moonlight v1.03",
+			want:     true,
+		},
+		{
+			name:     "RenPy detected, search result title has Ren'Py prefix",
+			detected: engine.Result{Engine: engine.RenPy},
+			tags:     []string{"adult", "completed"},
+			title:    "Ren'Py Completed My Game [v0.5]",
+			want:     true,
+		},
+		{
+			name:     "Unity detected, title has unity lowercase",
+			detected: engine.Result{Engine: engine.Unity},
+			tags:     []string{"3dcg"},
+			title:    "unity completed some game",
+			want:     true,
+		},
+
+		// === Tag fallback (secondary signal) ===
+		{
+			name:     "RPGM detected, tags have rpg maker but title is ambiguous",
+			detected: engine.Result{Engine: engine.RPGM},
+			tags:     []string{"rpg maker", "completed"},
+			title:    "Some Game Without Prefix",
+			want:     true,
+		},
+
+		// === Inconclusive: Others engine, empty engine, unknown variants ===
+		{
+			name:     "Others engine — always inconclusive",
+			detected: engine.Result{Engine: engine.Others},
+			tags:     []string{"unity"},
+			title:    "Unity Completed Game",
+			want:     true,
+		},
+		{
+			name:     "Empty engine — always inconclusive",
+			detected: engine.Result{Engine: ""},
+			tags:     []string{"unity"},
+			title:    "Unity Completed Game",
+			want:     true,
+		},
+		{
+			name:     "Unknown engine with no variants — inconclusive",
+			detected: engine.Result{Engine: "UnknownEngine"},
+			tags:     []string{"unity"},
+			title:    "Unity Completed Game",
+			want:     true,
+		},
+
+		// === No engine metadata present (inconclusive) ===
+		{
+			name:     "RPGM detected, no engine info in title or tags — inconclusive",
+			detected: engine.Result{Engine: engine.RPGM},
+			tags:     []string{"completed", "on_hold"},
+			title:    "Game Name [v1.0]",
+			want:     true, // no engine in either source — can't verify, don't flag
+		},
+		{
+			name:     "RPGM detected, empty tags and title — inconclusive",
+			detected: engine.Result{Engine: engine.RPGM},
+			tags:     []string{},
+			title:    "",
+			want:     true,
+		},
+
+		// === Real mismatches (contradictory engine info exists) ===
+		{
+			name:     "Unity detected, title says Ren'Py — true mismatch",
+			detected: engine.Result{Engine: engine.Unity},
+			tags:     []string{"ren'py", "completed"},
+			title:    "Ren'Py Completed Some Other Game",
+			want:     false,
+		},
+		{
+			name:     "Unity detected, title says RPGM — true mismatch",
+			detected: engine.Result{Engine: engine.Unity},
+			tags:     []string{"rpgm", "completed"},
+			title:    "RPGM Completed Different Game",
+			want:     false,
+		},
+		{
+			name:     "HTML detected, title says RPGM — compatible via EngineCompat",
+			detected: engine.Result{Engine: engine.HTML},
+			tags:     []string{"rpgm"},
+			title:    "RPGM Completed Game",
+			want:     true, // HTML↔RPGM compatibility
+		},
+		{
+			name:     "RPGM detected, title says HTML — compatible",
+			detected: engine.Result{Engine: engine.RPGM},
+			tags:     []string{"html5"},
+			title:    "HTML Game Name",
+			want:     true, // RPGM↔HTML compatibility
+		},
+
+		// === Edge cases ===
+		{
+			name:     "Unity detected, title has unity in middle of text",
+			detected: engine.Result{Engine: engine.Unity},
+			tags:     []string{"3dcg"},
+			title:    "The unity Engine Game",
+			want:     true,
+		},
+		{
+			name:     "Flash detected, title says Flash Game",
+			detected: engine.Result{Engine: engine.Flash},
+			tags:     []string{"adult"},
+			title:    "Flash Completed My Game",
+			want:     true,
+		},
+		{
+			name:     "Flash detected, tags say HTML, title says HTML — mismatch",
+			detected: engine.Result{Engine: engine.Flash},
+			tags:     []string{"html"},
+			title:    "HTML Game",
+			want:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EngineMatchesThread(tt.detected, tt.tags, tt.title)
+			if got != tt.want {
+				t.Errorf("EngineMatchesThread(%v, %v, %q) = %v, want %v",
+					tt.detected, tt.tags, tt.title, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // FindF95Engine
 // ---------------------------------------------------------------------------
 
@@ -446,6 +601,54 @@ func TestExtractEngineFromTitle(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("ExtractEngineFromTitle(%q) = %q, want %q%s",
 					tt.title, got, tt.want, optionalNote(tt.note))
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IsNonGameThread
+// ---------------------------------------------------------------------------
+
+func TestIsNonGameThread(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		title string
+		want  bool
+	}{
+		// Non-game threads
+		{"Request Some Game Title", true},
+		{"REQ Some Game", true},
+		{"Recommendation for games like XYZ", true},
+		{"Recommending strategy RPGs", true},
+		{"Identify this game", true},
+		{"Identifying a game from screenshot", true},
+		{"Identification help", true},
+		{"Discussion about game mechanics", true},
+		{"Question about modding", true},
+		{"help with installation", true},
+		{"Tutorial how to mod RPG Maker", true},
+		{"Guide to Unity development", true},
+		{"Looking for games like Summertime Saga", true},
+		{"Searching for a specific VN", true},
+		{"Translation Request Some Game", true},
+		{"translation help needed", true},
+
+		// Game release threads (should NOT be filtered)
+		{"Unity Completed My Game [v1.0]", false},
+		{"RPGM Abandoned Game Title", false},
+		{"Ren'Py Completed Visual Novel", false},
+		{"HTML Game Name", false},
+		{"Flash My Game", false},
+		{"Completed Game Without Engine Prefix", false},
+		{"", false},
+		{"AnyPort in a Storm", false}, // "Any" at start but it's part of a game name
+	}
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			got := IsNonGameThread(tt.title)
+			if got != tt.want {
+				t.Errorf("IsNonGameThread(%q) = %v, want %v", tt.title, got, tt.want)
 			}
 		})
 	}
