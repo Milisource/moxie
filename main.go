@@ -11,7 +11,7 @@ import (
 	"github.com/mili/moxie/internal/util"
 )
 
-var version = "dev"
+var version = "0.3.3-alpha"
 
 func main() {
 	if len(os.Args) < 2 {

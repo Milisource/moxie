@@ -7,34 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.2-alpha] - 2026-05-03
+## [0.3.3-alpha] - 2026-05-03
 
 ### Added
 
-- **One-liner install scripts** — `curl|bash` for macOS/Linux, `irm|iex` for Windows PowerShell
-- `--version` flag with version stamping via `-ldflags` from `git describe`
-- First-run welcome message when no database exists (shows scan + TUI hints)
-- Platform-aware Firefox User-Agent: Linux, macOS, and Windows UA strings selected by `runtime.GOOS`
-- macOS native Mach-O executable detection in `play` command (permission bits, no extension required)
-- TUI CrossOver wine support on macOS (matches CLI `LaunchCommand`)
-- `windows/arm64` and `macos/arm64` build targets in Makefile and `build.sh`
-- `make install` and `make clean` targets
-- `release.sh` script (local-only) for tagging, building, and GitHub Release creation
+- **Test suite overhaul** — 223 test functions across 14 test files (up from 161/12), 0%→tested coverage for browser and TUI packages
+- **Browser package tests** — `sanitizeHeaderValue` (9 cases) and `buildCookieHeader` (5 cases) for cookie value sanitization
+- **TUI helper tests** — 15 tests covering `filterAndSort`, `truncate`, `orDash`, `renderTags`, `nextStatus`, `formatSize`, `statusColor`, `engineColor`, and `SortField` string representations
+- **Scanner integration tests** — `TestScanCategoryDirectory` and `TestScanCategoryDirNested` verify category folder (Unity/, RPGM/) skip logic during directory walks
+- **Scanner `ExtractVersion` tests** — 19 cases covering date, dot, dash, and underscore version patterns with priority ordering
+- **Scanner `isCategoryDir` / `isEngineName` tests** — 23+5 cases for engine-name matching and category folder detection
+- **Steam Proton pure logic tests** — 12 tests for `vdfEscape`, `isValidProton`, `getOrCreateMap`, `getCompatToolMapping`, `encodeVDF`, and `writeVDFMap` (all 0%→85-100%)
+- **Scraper HTTP client injectability** — `NewClientWithHTTP(cookie, *http.Client)` enables testing rate-limiting with `httptest.Server`
+- **Scraper `Client.do()` tests** — 6 tests covering rate-limit backoff, context cancellation, cooldown, 403 detection, Cloudflare blocking, and cookie injection
+- **Config path tests** — `DbPath`, `ConfigPath`, `ConfigDir` path verification; `ReadConfig`/`WriteConfig` round-trip via temp files
+- **`RunUpdateCheck` integration tests** — 4 tests for no-games, cooldown skip, and force bypass scenarios
+- **`SyncGameLogic` extraction** — Business logic extracted from `SyncGame` into testable function with `SyncGameResult` struct; 5 integration tests added
 
 ### Fixed
 
-- **REQ/SEEKING threads misidentified as game releases** — F95Zone uses non-breaking spaces (U+00A0) between XenForo prefix labels and thread titles; `IsNonGameThread` now normalizes all Unicode whitespace before matching
-- **`FindMatches` in `associate.go`** now skips non-game thread candidates (was missing the filter)
-- **Nil pointer dereference in `play` command** when Wine is not found on non-Windows systems
-- **TUI URL update** now triggers a live metadata scrape instead of showing stale data from the old URL
+- **7 silent error discards** — `_ = database.UpdateGame()` / `_ = database.UpsertScrapedMeta()` in `sync.go` and `scrape.go` now log errors to stderr
+- **`TestDetectMugenTooFewDirs`** — replaced vacuous `_ = result` no-op with real assertion verifying Mugen threshold behavior
+- **`TestIsLinux`** — removed tautological test (tested Go runtime, not project code)
+- **`TestExtractDeveloper`** — fixed regex `^Developer` anchor preventing mid-sentence false matches; test updated from `"info here"`→`""`
+- **`TestComputeMatchScore_ExactAfterSanitize`** — removed confusing early-return that bypassed assertions
+- **`isNumeric("")`** — changed from `true` to `false` (empty string is not numeric)
+- **`scanner.Scan()` error suppression** — now returns `fmt.Errorf("scan: %w", err)` for root-level walk errors instead of empty slice
+- **`isValidProton("Proton 9.0")`** — added whitespace rejection (Proton version identifiers never contain spaces)
+- **`TestNewClient`** — upgraded from nil-check to behavioral assertions (delay, unsafe client zero-delay)
 
 ### Changed
 
-- **Makefile:** added `CGO_ENABLED=0` for fully static binaries, `-s -w` linker stripping (binary ~16 MB), `VERSION` injection from `git describe`, `.PHONY` declarations
-- `IsNonGameThread` moved from `internal/commands/` to `internal/scraper/` package
-- `scripts/build.sh` aligned with Makefile naming (`darwin` → `macos`), added `arm64` for all platforms
-- **README** restructured with "Install" section at top, one-liner commands per platform
-- Default binary size now ~16 MB stripped (was ~10 MB unstripped)
+- **Test quality:** 4 trivial tests deleted (`TestEngineString`, `TestIsLinux`, `TestTruncateVer`, `TestGridFilePath_AbsolutePaths`)
+- **Coverage improvements:** scanner 76%→90%, scraper 60%→71%, steam 30%→39%, util 45%→52%, browser 0%→18%, tui 0%→14%
+- **`developerPattern1` regex** — added `^` anchor for line-start matching only
+- **Installer scripts rewritten** — `install.sh` (592 lines) and `install.ps1` (287 lines) now feature download progress bars, already-installed version detection, `--version`/`--binary`/`--no-modify-path` flags, release verification via HEAD request, automatic PATH modification (shell config on Unix, user PATH on Windows), GitHub Actions CI support, local binary version detection, directory-vs-file validation, and consistent post-install banners with quick-start tips
+- **GitHub Actions release workflow** — `.github/workflows/release.yml` auto-builds all 6 platform/arch binaries on tag push, stamps version via `-ldflags`, and creates a GitHub Release with `softprops/action-gh-release`
+- **README** — updated install section, build-from-source instructions with version stamping, test count (223), and binary size (~16 MB)
 
-[Unreleased]: https://github.com/Milisource/moxie/compare/v0.3.2-alpha...HEAD
+[0.3.3-alpha]: https://github.com/Milisource/moxie/releases/tag/v0.3.3-alpha
 [0.3.2-alpha]: https://github.com/Milisource/moxie/releases/tag/v0.3.2-alpha

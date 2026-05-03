@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -30,7 +31,14 @@ func Scan(root string) ([]DetectedGame, error) {
 	gameDirs := make(map[string]bool)
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip inaccessible paths
+			// If the root itself is inaccessible, surface the error.
+			if path == root {
+				return err
+			}
+			// Skip individual inaccessible paths (permission errors on
+			// single files/dirs). Do NOT return the error — that would
+			// stop the walk.
+			return nil
 		}
 		if !d.IsDir() {
 			return nil
@@ -66,7 +74,7 @@ func Scan(root string) ([]DetectedGame, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scan: %w", err)
 	}
 
 	// Second pass: run engine detection on each game directory.

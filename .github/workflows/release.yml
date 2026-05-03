@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Set version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build all platforms
+        run: |
+          mkdir -p dist
+          VERSION="${{ steps.version.outputs.version }}"
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+
+          echo "→ Linux amd64"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64   go build -ldflags="$LDFLAGS" -o dist/moxie-linux-amd64     .
+
+          echo "→ Linux arm64"
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64   go build -ldflags="$LDFLAGS" -o dist/moxie-linux-arm64     .
+
+          echo "→ macOS amd64"
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64  go build -ldflags="$LDFLAGS" -o dist/moxie-macos-amd64     .
+
+          echo "→ macOS arm64"
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64  go build -ldflags="$LDFLAGS" -o dist/moxie-macos-arm64     .
+
+          echo "→ Windows amd64"
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o dist/moxie-windows-amd64.exe .
+
+          echo "→ Windows arm64"
+          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="$LDFLAGS" -o dist/moxie-windows-arm64.exe .
+
+      - name: Verify binaries
+        run: |
+          echo "--- Built assets ---"
+          ls -lh dist/
+          echo ""
+          echo "--- Version check ---"
+          file dist/moxie-linux-amd64
+          # Binary should be static
+          ldd dist/moxie-linux-amd64 2>&1 || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "moxie ${{ steps.version.outputs.tag }}"
+          tag_name: ${{ steps.version.outputs.tag }}
+          body: |
+            ## moxie ${{ steps.version.outputs.tag }}
+
+            Release ${{ steps.version.outputs.version }}. See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+
+            ### Install
+
+            **Linux / macOS:**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash
+            ```
+
+            **Windows (PowerShell):**
+            ```powershell
+            irm https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.ps1 | iex
+            ```
+
+            **Pin a specific version:**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash -s -- --version ${{ steps.version.outputs.tag }}
+            ```
+
+            ### Assets
+
+            | Platform | Arch | Binary |
+            |----------|------|--------|
+            | Linux | amd64 | `moxie-linux-amd64` |
+            | Linux | arm64 | `moxie-linux-arm64` |
+            | macOS | amd64 | `moxie-macos-amd64` |
+            | macOS | arm64 | `moxie-macos-arm64` |
+            | Windows | amd64 | `moxie-windows-amd64.exe` |
+            | Windows | arm64 | `moxie-windows-arm64.exe` |
+
+            All binaries are static (`CGO_ENABLED=0`), stripped (`-s -w`), and ~16 MB.
+          files: dist/*
+          generate_release_notes: true

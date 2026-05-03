@@ -45,12 +45,14 @@ moxie recursively scans your game directories, detects engines (Unity, Ren'Py, R
 curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh | bash
 ```
 
-The script downloads the latest pre-built binary for your platform and installs it to `~/.local/bin/`. It will warn you if that directory isn't in your PATH.
+The script downloads the latest pre-built binary for your platform to `~/.local/bin/` and automatically adds it to your shell config (`~/.bashrc`, `~/.zshrc`, or `~/.config/fish/config.fish`). Restart your terminal or run `source ~/.bashrc` for PATH changes to take effect.
 
 **To pin a specific version:**
 ```bash
-MOXIE_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh | bash -s -- --version v0.3.3-alpha
 ```
+
+**Available flags:** `--version <ver>`, `--binary <path>`, `--no-modify-path`, `--help`
 
 ### Windows
 
@@ -60,15 +62,20 @@ Open **PowerShell** (not Command Prompt) and run:
 irm https://raw.githubusercontent.com/mili/moxie/main/scripts/install.ps1 | iex
 ```
 
-The script downloads `moxie.exe`, places it in `%LOCALAPPDATA%\moxie\bin\`, and adds it to your PATH. Restart your terminal afterward.
+The script downloads `moxie.exe` to `%LOCALAPPDATA%\moxie\bin\` and adds it to your user PATH. Restart other terminal windows afterward.
+
+**Available flags:** `-Version <ver>`, `-Binary <path>`, `-NoModifyPath`, `-Help`
 
 ### Build from Source
 
-Requires **Go 1.24+**.
+Requires **Go 1.24+**. No CGO, no runtime dependencies.
 
 ```bash
-go build -ldflags="-s -w" -o moxie .
-sudo mv moxie /usr/local/bin/     # or ~/.local/bin/
+# Static release build with version stamping (~16 MB)
+CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$(git describe --tags --always)" -o moxie .
+
+# Or use the build script (cross-compiles all platforms)
+./scripts/build.sh all
 ```
 
 ### Verify Installation
@@ -269,20 +276,27 @@ The directory and database are created automatically on first run. You can safel
 
 ## Building from Source
 
-**Prerequisites:** Go 1.24 or later. No CGO dependencies.
+**Prerequisites:** Go 1.24 or later. No CGO. Static binary ~16 MB.
 
 ```bash
-# Single binary (~10 MB, static, cross-compilable)
-go build -ldflags="-s -w" -o moxie .
+# Static release build with version stamping
+CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$(git describe --tags --always)" -o moxie .
 
-# Build and install to ~/.local/bin/
-./scripts/install.sh
+# Install to ~/.local/bin/
+mv moxie ~/.local/bin/
 
 # Cross-compile for all platforms (linux/mac/windows)
 ./scripts/build.sh all
 
-# Run tests (170+ across scanner, engine, scraper, DB)
+# Run tests (223 across 14 packages)
 go test ./...
+```
+
+**Using the build script:**
+```bash
+./scripts/build.sh           # Build all 6 targets (amd64/arm64 × linux/macos/windows)
+./scripts/build.sh linux     # Build Linux binaries (amd64 + arm64)
+./scripts/build.sh mac       # Build macOS binaries (amd64 + arm64)
 ```
 
 ---

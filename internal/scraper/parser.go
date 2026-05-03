@@ -35,7 +35,7 @@ var (
 	versionPattern2 = regexp.MustCompile(`(?i)Ver\.?\s*(\d+\.\d+(?:\.\d+)*)`)
 	versionPattern3 = regexp.MustCompile(`(?i)v(\d+\.\d+(?:\.\d+)*)`)
 
-	developerPattern1 = regexp.MustCompile(`(?i)Developer[:\s]+(.+)`)
+	developerPattern1 = regexp.MustCompile(`(?i)^Developer[:\s]+(.+)`)
 	developerPattern2 = regexp.MustCompile(`(?i)Publisher[:\s]+(.+)`)
 
 	threadIDPattern = regexp.MustCompile(`/threads/[^/]*\.(\d+)/`)

@@ -90,13 +90,10 @@ func TestComputeMatchScore_Exact(t *testing.T) {
 
 func TestComputeMatchScore_ExactAfterSanitize(t *testing.T) {
 	t.Parallel()
+	// SanitizeTitle("HH TRAP") = "HH TRAP"
+	// SanitizeTitle("HH TRAP [v1.0] [Studio]") = "HH TRAP"
+	// After sanitize, these are equal, so we expect a high score.
 	score := ComputeMatchScore("HH TRAP", "HH TRAP [v1.0] [Studio]")
-	// SanitizeTitle("HH TRAP") = "HH TRAP"; SanitizeTitle("HH TRAP [v1.0] [Studio]") = "HH TRAP"
-	// So they are equal after sanitize.
-	if score == 1.0 {
-		// Exact after sanitize is acceptable too.
-		return
-	}
 	if score < 0.85 {
 		t.Errorf("sanitize-equal match expected >= 0.85, got %f", score)
 	}

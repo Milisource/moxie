@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
-**Version:** 0.3.2-alpha (May 2026)
-**Status:** Alpha — 0.3.2 (packages refactored: util + commands, engine cleanup, version extraction)
+**Version:** 0.3.3-alpha (May 2026)
+**Status:** Alpha — 0.3.3 (test suite overhaul: 223 tests, 14 test files, 0%→tested browser/tui packages)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
@@ -45,8 +45,22 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Cleanup command: engine mismatch detection, exe mismatch detection, interactive disassociation
 - [x] Engine compatibility map (RPGM↔HTML via NW.js, WolfRPG↔HTML)
 - [x] `--warnings` flag on `list` command
-- [x] 340+ tests across scanner, engine, scraper, DB, helpers, commands
-- [x] One-liner install scripts for macOS/Linux (curl|bash) and Windows (PowerShell irm|iex)
+- [x] 223 tests across 14 test files (scanner, engine, scraper, DB, helpers, commands, browser, tui, steam, util)
+- [x] Browser package tested — cookie value sanitization and header building (100% pure logic coverage)
+- [x] TUI package tested — filter/sort, status/engine colors, formatting helpers (100% pure logic coverage)
+- [x] Steam Proton VDF pure logic tested — vdfEscape, isValidProton, getOrCreateMap, encodeVDF/writeVDFMap (85-100%)
+- [x] Scraper HTTP client injectable via `NewClientWithHTTP` for testing with `httptest.Server`
+- [x] Scraper rate-limiting/bot-detection tested — 6 tests for backoff, context cancel, cooldown, 403, Cloudflare
+- [x] `SyncGameLogic` extracted — business logic separated from CLI I/O, 5 integration tests
+- [x] `RunUpdateCheck` integration tested — no-games, cooldown skip, force bypass (57% coverage)
+- [x] Config read/write tested — path-injected helpers with temp files for round-trip verification
+- [x] Scanner category folder skip logic verified — integration tests for Unity/RPGM category directories
+- [x] `scanner.Scan()` error propagation fixed — root-level walk errors now returned instead of silently suppressed
+- [x] `isNumeric("")` fixed — returns `false` instead of `true` for empty string
+- [x] 7 silent `_ = database.*` error discards replaced with logged stderr warnings
+- [x] `developerPattern1` regex fixed — `^Developer` anchor prevents mid-sentence false matches
+- [x] Installer scripts rewritten — `install.sh` (592 lines) and `install.ps1` (287 lines) with progress bars, version pinning, PATH auto-modification, release verification, and GitHub Actions support
+- [x] GitHub Actions release workflow — auto-builds 6 platform binaries on tag push, creates release with `softprops/action-gh-release`
 - [x] `--version` flag with git describe injection via ldflags
 - [x] First-run welcome message when no database exists
 - [x] Platform-aware Firefox User-Agent (Linux/macOS/Windows)
@@ -78,4 +92,5 @@ A local game library manager for adult games. Scans directories, detects engines
 - **No content-based dedup** — same game in multiple paths creates duplicate records
 - **No cover caching** — cover URLs are stored but images are not downloaded
 - **Non-UTF-8 filenames** — Latin1/Shift-JIS display incorrectly in the TUI
+- **Commands package** — 100+ `os.Exit(1)` calls in CLI wrappers make the I/O layer untestable; future refactor should extract remaining business logic from command functions
 - **No Wine detection** — `play` command tries `wine` on PATH and CrossOver on macOS, but doesn't auto-detect Wine installations or offer to install it

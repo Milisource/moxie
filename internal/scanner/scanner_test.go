@@ -103,6 +103,164 @@ func TestScanEmptyDir(t *testing.T) {
 	}
 }
 
+func TestExtractVersion(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		want string
+	}{
+		// Date versions (highest priority)
+		{"Game-2025-11-14", "2025-11-14"},
+		{"2025-01-01-Release", "2025-01-01"},
+
+		// Dot-separated versions
+		{"Game-v1.0.3", "1.0.3"},
+		{"Game-1.0", "1.0"},
+		{"V2.0.0-Final", "2.0.0"},
+		{"v0.5.2", "0.5.2"},
+		{"B.0.10.7.5.2", "0.10.7.5.2"},
+
+		// Dash-separated versions (converted to dots)
+		{"SummertimeSaga-0-20-16-pc", "0.20.16"},
+		{"Game-v1-0-3", "1.0.3"},
+		{"succumama-1.1.6-pc", "1.1.6"},
+
+		// Underscore-separated versions (converted to dots)
+		{"My_Hentai_Fantasy-0.11-pc", "0.11"},
+
+		// Edge cases
+		{"", ""},
+		{"NoVersionHere", ""},
+		{"Game", ""},
+		{"v", ""},
+		{"just-a-name", ""},
+
+		// Mixed formats - date takes priority
+		{"Game-v1.0-2025-11-14", "2025-11-14"},
+
+		// Version with letter prefix
+		{"Game-0.11-pc", "0.11"},
+		{"Training_The_Demon-0.1.2-pc", "0.1.2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractVersion(tt.name)
+			if got != tt.want {
+				t.Errorf("ExtractVersion(%q) = %q, want %q", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsEngineName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		want bool
+	}{
+		// Canonical engine names
+		{"unity", true},
+		{"renpy", true},
+		{"ren'py", true},
+		{"rpgm", true},
+		{"rpgmaker", true},
+		{"godot", true},
+		{"unreal", true},
+		{"electron", true},
+		{"html", true},
+		{"java", true},
+		{"flash", true},
+		{"mugen", true},
+
+		// Category names
+		{"other", true},
+		{"others", true},
+		{"tools", true},
+		{"jre", true},
+
+		// Non-matches
+		{"game", false},
+		{"completed", false},
+		{"abandoned", false},
+		{"Unity", false}, // case-sensitive (lowercase required)
+		{"RENPY", false},
+		{"", false},
+		{"download", false},
+		{"mods", false},
+		{"saves", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isEngineName(tt.name)
+			if got != tt.want {
+				t.Errorf("isEngineName(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsCategoryDir(t *testing.T) {
+	t.Run("unity dir with game subdirectories", func(t *testing.T) {
+		dir := t.TempDir()
+		categoryDir := filepath.Join(dir, "Unity")
+		os.MkdirAll(categoryDir, 0755)
+		gameSub := filepath.Join(categoryDir, "MyGame")
+		os.MkdirAll(gameSub, 0755)
+		os.WriteFile(filepath.Join(gameSub, "Game.exe"), []byte("fake"), 0644)
+
+		if !isCategoryDir(categoryDir) {
+			t.Error("Unity dir with game subdirs should be detected as category dir")
+		}
+	})
+
+	t.Run("unity dir without game subdirectories", func(t *testing.T) {
+		dir := t.TempDir()
+		categoryDir := filepath.Join(dir, "Unity")
+		os.MkdirAll(categoryDir, 0755)
+		os.MkdirAll(filepath.Join(categoryDir, "readme"), 0755)
+		os.WriteFile(filepath.Join(categoryDir, "readme", "info.txt"), []byte("hello"), 0644)
+
+		if isCategoryDir(categoryDir) {
+			t.Error("Unity dir without game subdirs should NOT be a category dir")
+		}
+	})
+
+	t.Run("non-engine dir with game subdirectories", func(t *testing.T) {
+		dir := t.TempDir()
+		nonEngineDir := filepath.Join(dir, "MyGames")
+		os.MkdirAll(nonEngineDir, 0755)
+		gameSub := filepath.Join(nonEngineDir, "RenPyGame")
+		os.MkdirAll(filepath.Join(gameSub, "renpy"), 0755)
+
+		if isCategoryDir(nonEngineDir) {
+			t.Error("Non-engine-name dir should NOT be a category dir")
+		}
+	})
+
+	t.Run("rpgm dir with renpy game subdirectory", func(t *testing.T) {
+		dir := t.TempDir()
+		categoryDir := filepath.Join(dir, "RPGM")
+		os.MkdirAll(categoryDir, 0755)
+		gameSub := filepath.Join(categoryDir, "SomeGame")
+		os.MkdirAll(filepath.Join(gameSub, "renpy"), 0755)
+		os.MkdirAll(filepath.Join(gameSub, "game"), 0755)
+
+		if !isCategoryDir(categoryDir) {
+			t.Error("RPGM dir with renpy game subdirs should be a category dir")
+		}
+	})
+
+	t.Run("empty engine-named dir", func(t *testing.T) {
+		dir := t.TempDir()
+		emptyDir := filepath.Join(dir, "Godot")
+		os.MkdirAll(emptyDir, 0755)
+
+		if isCategoryDir(emptyDir) {
+			t.Error("Empty engine-named dir should NOT be a category dir")
+		}
+	})
+}
+
 func TestShouldSkip(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -158,6 +316,20 @@ func TestFindGameExe(t *testing.T) {
 	// Small exe shouldn't be found since Game.exe is larger.
 }
 
+func TestScanNonexistentDir(t *testing.T) {
+	_, err := Scan("/nonexistent/path/that/does/not/exist/12345")
+	if err == nil {
+		t.Fatal("expected error for non-existent directory")
+	}
+}
+
+func TestScanSingleNonexistentDir(t *testing.T) {
+	_, err := ScanSingle("/nonexistent/path/12345")
+	if err != nil {
+		t.Fatal("ScanSingle should not error on nonexistent dir — it uses engine.Detect which handles it")
+	}
+}
+
 func TestLooksLikeGameRoot(t *testing.T) {
 	t.Run("with exe", func(t *testing.T) {
 		dir := t.TempDir()
@@ -187,4 +359,102 @@ func TestLooksLikeGameRoot(t *testing.T) {
 			t.Error("should NOT detect as game root")
 		}
 	})
+}
+
+// TestScanCategoryDirectory verifies that Scan skips category folders
+// (named after engines) and correctly identifies game subdirectories within them.
+func TestScanCategoryDirectory(t *testing.T) {
+	root := t.TempDir()
+
+	// Create a "Unity" category folder containing actual game subdirectories.
+	unityCategory := filepath.Join(root, "Unity")
+	os.MkdirAll(unityCategory, 0755)
+
+	// Game 1: A Unity game inside the Unity/ category folder.
+	game1 := filepath.Join(unityCategory, "TestUnityGame")
+	os.MkdirAll(filepath.Join(game1, "TestUnityGame_Data"), 0755)
+	os.WriteFile(filepath.Join(game1, "TestUnityGame.exe"), []byte("fake exe"), 0644)
+	os.WriteFile(filepath.Join(game1, "UnityPlayer.dll"), []byte("fake dll"), 0644)
+
+	// Game 2: A Ren'Py game also inside the Unity/ category folder.
+	game2 := filepath.Join(unityCategory, "RenPyVN")
+	os.MkdirAll(filepath.Join(game2, "renpy"), 0755)
+	os.MkdirAll(filepath.Join(game2, "game"), 0755)
+
+	// Non-game folder inside category (should be ignored by looksLikeGameRoot).
+	nonGame := filepath.Join(unityCategory, "Notes")
+	os.MkdirAll(nonGame, 0755)
+	os.WriteFile(filepath.Join(nonGame, "readme.txt"), []byte("notes"), 0644)
+
+	games, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The Unity/ directory itself should NOT be detected as a game.
+	for _, g := range games {
+		if g.Path == unityCategory {
+			t.Errorf("Unity category folder should NOT be detected as a game, but was: %+v", g)
+		}
+	}
+
+	// Both subdirectories should be detected as games.
+	if len(games) != 2 {
+		t.Fatalf("expected 2 games in category directory, got %d: %v", len(games), games)
+	}
+
+	// Verify engines.
+	foundUnity := false
+	foundRenPy := false
+	for _, g := range games {
+		if g.Title == "TestUnityGame" && g.Engine == engine.Unity {
+			foundUnity = true
+		}
+		if g.Title == "RenPyVN" && g.Engine == engine.RenPy {
+			foundRenPy = true
+		}
+	}
+	if !foundUnity {
+		t.Error("Unity game inside category folder not detected")
+	}
+	if !foundRenPy {
+		t.Error("RenPy game inside category folder not detected")
+	}
+}
+
+// TestScanCategoryDirNested verifies deeply nested category structures.
+func TestScanCategoryDirNested(t *testing.T) {
+	root := t.TempDir()
+
+	// Create top-level game (not in a category).
+	topGame := filepath.Join(root, "StandaloneGame")
+	os.MkdirAll(filepath.Join(topGame, "game"), 0755)
+	os.MkdirAll(filepath.Join(topGame, "renpy"), 0755)
+
+	// Create RPGM/ category with a game inside.
+	rpgmCategory := filepath.Join(root, "RPGM")
+	os.MkdirAll(rpgmCategory, 0755)
+	rpgmGame := filepath.Join(rpgmCategory, "DragonQuest")
+	os.MkdirAll(filepath.Join(rpgmGame, "www"), 0755)
+	os.WriteFile(filepath.Join(rpgmGame, "Game.exe"), []byte("exe"), 0644)
+	os.WriteFile(filepath.Join(rpgmGame, "www", "package.json"), []byte(`{"name":"KADOKAWA/RPGMV"}`), 0644)
+
+	games, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(games) != 2 {
+		t.Fatalf("expected 2 games (1 standalone + 1 in category), got %d", len(games))
+	}
+
+	rpgmCategoryDetected := false
+	for _, g := range games {
+		if g.Path == rpgmCategory {
+			rpgmCategoryDetected = true
+		}
+	}
+	if rpgmCategoryDetected {
+		t.Error("RPGM category folder itself should NOT be detected as a game")
+	}
 }

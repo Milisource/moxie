@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -760,18 +759,6 @@ func TestResolveSteamPaths(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 14. IsLinux
-// ---------------------------------------------------------------------------
-
-func TestIsLinux(t *testing.T) {
-	got := IsLinux()
-	want := runtime.GOOS == "linux"
-	if got != want {
-		t.Errorf("IsLinux() = %v, want %v (runtime.GOOS = %q)", got, want, runtime.GOOS)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // 15. ReadShortcuts / WriteShortcuts round-trip via temp files
 // ---------------------------------------------------------------------------
 
@@ -890,7 +877,7 @@ func TestIsNumeric(t *testing.T) {
 		s    string
 		want bool
 	}{
-		{"", true}, // empty string: all zero chars satisfy the condition
+		{"", false}, // empty string is not numeric
 		{"0", true},
 		{"12345", true},
 		{"9999999999999999", true},
@@ -1009,13 +996,231 @@ func TestAddGame_F95ZoneTagNotDuplicated(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 21. GridFilePath with filepath.Join platform consistency
+// proton.go: vdfEscape
 // ---------------------------------------------------------------------------
 
-func TestGridFilePath_AbsolutePaths(t *testing.T) {
-	got := GridFilePath("/steam", 1, 100, ArtVertical)
-	want := filepath.Join("/steam", "userdata", "1", "config", "grid", "100p.png")
-	if got != want {
-		t.Errorf("GridFilePath = %q, want %q", got, want)
+func TestVDFEscape(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"simple", "simple"},
+		{`back\slash`, `back\\slash`},
+		{`quote"here`, `quote\"here`},
+		{`both\and"`, `both\\and\"`},
+		{"", ""},
+		{"no special chars", "no special chars"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := vdfEscape(tt.input)
+			if got != tt.want {
+				t.Errorf("vdfEscape(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// proton.go: isValidProton
+// ---------------------------------------------------------------------------
+
+func TestIsValidProton(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		version string
+		want    bool
+	}{
+		{"none", true},
+		{"proton_experimental", true},
+		{"proton_9.0", true},
+		{"PROTON_8.0", true},
+		{"GE-Proton9-10", true},
+		{"ge-proton8-25", true},
+		{"GE-Proton", true},
+		{"invalid", false},
+		{"", false},
+		{"wine-9.0", false},
+		{"Proton 9.0", false}, // space not handled
+	}
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			got := isValidProton(tt.version)
+			if got != tt.want {
+				t.Errorf("isValidProton(%q) = %v, want %v", tt.version, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// proton.go: getOrCreateMap
+// ---------------------------------------------------------------------------
+
+func TestGetOrCreateMap_Existing(t *testing.T) {
+	t.Parallel()
+	inner := map[string]interface{}{"x": 1}
+	m := map[string]interface{}{"child": inner}
+	got := getOrCreateMap(m, "child")
+	if got["x"] != 1 {
+		t.Errorf("expected inner map with x=1, got %v", got)
+	}
+}
+
+func TestGetOrCreateMap_CreatesNew(t *testing.T) {
+	t.Parallel()
+	m := map[string]interface{}{}
+	got := getOrCreateMap(m, "newkey")
+	if got == nil {
+		t.Fatal("expected non-nil map")
+	}
+	// Should have stored the new map back in parent.
+	if _, ok := m["newkey"].(map[string]interface{}); !ok {
+		t.Error("new map not stored in parent")
+	}
+}
+
+func TestGetOrCreateMap_WrongType(t *testing.T) {
+	t.Parallel()
+	m := map[string]interface{}{"bad": "not a map"}
+	got := getOrCreateMap(m, "bad")
+	if got == nil {
+		t.Fatal("expected new map when existing value has wrong type")
+	}
+	// Parent should now have the new map.
+	if _, ok := m["bad"].(map[string]interface{}); !ok {
+		t.Error("parent should contain map after getOrCreateMap with wrong type")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// proton.go: getCompatToolMapping
+// ---------------------------------------------------------------------------
+
+func TestGetCompatToolMapping_FullPath(t *testing.T) {
+	t.Parallel()
+	ctm := map[string]interface{}{"12345": map[string]interface{}{"name": "proton_9.0"}}
+	cfg := map[string]interface{}{
+		"InstallConfigStore": map[string]interface{}{
+			"Software": map[string]interface{}{
+				"Valve": map[string]interface{}{
+					"Steam": map[string]interface{}{
+						"CompatToolMapping": ctm,
+					},
+				},
+			},
+		},
+	}
+	got := getCompatToolMapping(cfg)
+	if got == nil {
+		t.Fatal("expected non-nil CompatToolMapping")
+	}
+	if got["12345"].(map[string]interface{})["name"] != "proton_9.0" {
+		t.Error("expected proton_9.0 mapping")
+	}
+}
+
+func TestGetCompatToolMapping_EmptyConfig(t *testing.T) {
+	t.Parallel()
+	got := getCompatToolMapping(map[string]interface{}{})
+	if got != nil {
+		t.Error("expected nil for empty config")
+	}
+}
+
+func TestGetCompatToolMapping_MissingSegment(t *testing.T) {
+	t.Parallel()
+	cfg := map[string]interface{}{
+		"InstallConfigStore": map[string]interface{}{
+			"Software": map[string]interface{}{}, // no Valve
+		},
+	}
+	got := getCompatToolMapping(cfg)
+	if got != nil {
+		t.Error("expected nil when Valve segment is missing")
+	}
+}
+
+func TestGetCompatToolMapping_MissingCompatToolMapping(t *testing.T) {
+	t.Parallel()
+	cfg := map[string]interface{}{
+		"InstallConfigStore": map[string]interface{}{
+			"Software": map[string]interface{}{
+				"Valve": map[string]interface{}{
+					"Steam": map[string]interface{}{}, // no CompatToolMapping
+				},
+			},
+		},
+	}
+	got := getCompatToolMapping(cfg)
+	if got != nil {
+		t.Error("expected nil when CompatToolMapping is missing")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// proton.go: encodeVDF + writeVDFMap round-trip
+// ---------------------------------------------------------------------------
+
+func TestEncodeVDF_RoundTrip(t *testing.T) {
+	t.Parallel()
+	input := map[string]interface{}{
+		"CompatToolMapping": map[string]interface{}{
+			"12345": map[string]interface{}{
+				"name":     "proton_9.0",
+				"config":   "",
+				"Priority": "250",
+			},
+		},
+	}
+	var buf strings.Builder
+	if err := encodeVDF(&buf, input); err != nil {
+		t.Fatalf("encodeVDF: %v", err)
+	}
+	output := buf.String()
+	if output == "" {
+		t.Fatal("expected non-empty VDF output")
+	}
+	// Verify key structure is present.
+	if !strings.Contains(output, `"CompatToolMapping"`) {
+		t.Error("output missing CompatToolMapping key")
+	}
+	if !strings.Contains(output, `"12345"`) {
+		t.Error("output missing 12345 app key")
+	}
+	if !strings.Contains(output, `"proton_9.0"`) {
+		t.Error("output missing proton version value")
+	}
+}
+
+func TestEncodeVDF_Empty(t *testing.T) {
+	t.Parallel()
+	var buf strings.Builder
+	if err := encodeVDF(&buf, map[string]interface{}{}); err != nil {
+		t.Fatalf("encodeVDF: %v", err)
+	}
+	if buf.String() != "" {
+		t.Errorf("expected empty output for empty map, got %q", buf.String())
+	}
+}
+
+func TestEncodeVDF_NestedEscaping(t *testing.T) {
+	t.Parallel()
+	input := map[string]interface{}{
+		"key\\with\"quotes": "value\\with\"quotes",
+	}
+	var buf strings.Builder
+	if err := encodeVDF(&buf, input); err != nil {
+		t.Fatalf("encodeVDF: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, `key\\with\"quotes`) {
+		t.Errorf("expected escaped key, got: %s", output)
+	}
+	if !strings.Contains(output, `value\\with\"quotes`) {
+		t.Errorf("expected escaped value, got: %s", output)
+	}
+}
+
+

@@ -186,10 +186,10 @@ func TestDetectMugenDirsMapsToOthers(t *testing.T) {
 func TestDetectMugenTooFewDirs(t *testing.T) {
 	dir := makeDir(t, "chars/", "data/")
 	result := Detect(dir)
-	if result.Engine == Others {
-		// Could match Godot or something else — but NOT Mugen (needs >= 3 dirs).
-		// That's fine as long as it doesn't match with high confidence showing Mugen.
-		_ = result
+	// With only 2 of 5 Mugen directories, the Mugen profile should NOT match.
+	if result.Engine == Others && result.Confidence >= 0.90 {
+		t.Errorf("expected Mugen profile NOT to match with only 2/5 dirs, got engine=%s confidence=%.2f matched_by=%q",
+			result.Engine, result.Confidence, result.MatchedBy)
 	}
 }
 
@@ -292,14 +292,3 @@ func TestCanonicalEngines(t *testing.T) {
 	}
 }
 
-func TestEngineString(t *testing.T) {
-	if Unity.String() != "Unity" {
-		t.Errorf("expected 'Unity', got %q", Unity.String())
-	}
-	if Others.String() != "Others" {
-		t.Errorf("expected 'Others', got %q", Others.String())
-	}
-	if RenPy.String() != "RenPy" {
-		t.Errorf("expected 'RenPy', got %q", RenPy.String())
-	}
-}

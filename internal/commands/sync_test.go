@@ -1,7 +1,11 @@
 package commands
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/scraper"
@@ -237,4 +241,303 @@ func TestNormalizeVersion(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+func setupTestDB(t testing.TB) *db.Database {
+	t.Helper()
+	f, err := os.CreateTemp("", "test-*.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := f.Name()
+	f.Close()
+	t.Cleanup(func() { os.Remove(path) })
+	database, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return database
+}
+
+// ---------------------------------------------------------------------------
+// SyncGameLogic — business logic extraction tests
+// ---------------------------------------------------------------------------
+
+func TestSyncGameLogic_AlreadyAssociatedWithinCooldown(t *testing.T) {
+	t.Parallel()
+
+	database := setupTestDB(t)
+	defer database.Close()
+
+	game := &db.Game{
+		Title:            "Test Game",
+		Engine:           "Unity",
+		Path:             "/test/game",
+		F95URL:           "https://f95zone.to/threads/test.12345/",
+		VersionCheckedAt: time.Now(),
+	}
+	id, err := database.InsertGame(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := SyncGameLogic(database, game, nil, false, false)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.CooldownSkipped {
+		t.Error("expected CooldownSkipped=true for game within cooldown")
+	}
+	_ = id
+}
+
+func TestSyncGameLogic_NoURLWithNilClient(t *testing.T) {
+	t.Parallel()
+	database := setupTestDB(t)
+	defer database.Close()
+
+	game := &db.Game{
+		Title:  "Unassociated Game",
+		Engine: "Unity",
+		Path:   "/test/game",
+		F95URL: "",
+	}
+	id, err := database.InsertGame(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// With nil client, no URL, and force=false: the search should fail.
+	result, err := SyncGameLogic(database, game, nil, false, false)
+	if err == nil {
+		t.Fatal("expected error when searching with nil client")
+	}
+	if result != nil {
+		t.Error("expected nil result on error")
+	}
+	_ = id
+}
+
+func TestSyncGameLogic_GameWithURL_CooldownSkip(t *testing.T) {
+	t.Parallel()
+	database := setupTestDB(t)
+	defer database.Close()
+
+	game := &db.Game{
+		Title:            "Cooldown Game",
+		Engine:           "Unity",
+		Path:             "/test/cooldown",
+		F95URL:           "https://f95zone.to/threads/test.12345/",
+		VersionCheckedAt: time.Now(),
+	}
+	id, err := database.InsertGame(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := SyncGameLogic(database, game, nil, false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.CooldownSkipped {
+		t.Error("expected CooldownSkipped=true for recently checked game")
+	}
+	if result.Associated {
+		t.Error("already-associated game should not be re-associated")
+	}
+	if !result.CooldownSkipped {
+		t.Error("expected CooldownSkipped=true for recently checked game")
+	}
+	_ = id
+}
+
+// TestSyncGameLogic_ForceRerun_NoCooldown verifies that force=true bypasses
+// the cooldown check so a recently-checked game is processed again.
+func TestSyncGameLogic_ForceRerun_NoCooldown(t *testing.T) {
+	t.Parallel()
+	database := setupTestDB(t)
+	defer database.Close()
+
+	game := &db.Game{
+		Title:            "Force Game",
+		Engine:           "RenPy",
+		Path:             "/test/force",
+		F95URL:           "https://f95zone.to/threads/test.12345/",
+		VersionCheckedAt: time.Now(), // just checked — within cooldown
+	}
+	id, err := database.InsertGame(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// With force=true, cooldown should be bypassed.
+	// The scrape will fail (nil client) but CooldownSkipped must be false.
+	result, err := SyncGameLogic(database, game, nil, true, false)
+	if err == nil {
+		t.Fatal("expected scrape error with nil client")
+	}
+	if result != nil && result.CooldownSkipped {
+		t.Error("force=true should bypass cooldown, but CooldownSkipped was true")
+	}
+	_ = id
+}
+
+// TestSyncGameLogic_AlreadyAssociated_NoReassociation verifies that
+// games with existing F95URL are not re-associated.
+func TestSyncGameLogic_AlreadyAssociated_NoReassociation(t *testing.T) {
+	t.Parallel()
+	database := setupTestDB(t)
+	defer database.Close()
+
+	game := &db.Game{
+		Title:            "Associated Game",
+		Engine:           "Unity",
+		Path:             "/test/associated",
+		F95URL:           "https://f95zone.to/threads/test.12345/",
+		VersionCheckedAt: time.Now().Add(-48 * time.Hour), // checked 2 days ago — outside cooldown
+	}
+	id, err := database.InsertGame(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := SyncGameLogic(database, game, nil, false, false)
+	// Game has URL + outside cooldown → should attempt Phase 2 scrape
+	// Nil client will fail the scrape, which is expected.
+	if err == nil {
+		t.Fatal("expected scrape error with nil client (Phase 2)")
+	}
+	if result != nil && result.Associated {
+		t.Error("game with existing URL should NOT be re-associated in Phase 1")
+	}
+	if result != nil && result.CooldownSkipped {
+		t.Error("game outside cooldown should NOT be skipped")
+	}
+	_ = id
+}
+
+// ---------------------------------------------------------------------------
+// RunUpdateCheck
+// ---------------------------------------------------------------------------
+
+func TestRunUpdateCheck_NoGames(t *testing.T) {
+	t.Parallel()
+	database := setupTestDB(t)
+	defer database.Close()
+
+	updatesFound, results := RunUpdateCheck(database, nil, nil, false)
+	if updatesFound != 0 {
+		t.Errorf("expected 0 updates, got %d", updatesFound)
+	}
+	if results != nil {
+		t.Errorf("expected nil results for no games, got %v", results)
+	}
+}
+
+func TestRunUpdateCheck_NoGamesWithURL(t *testing.T) {
+	t.Parallel()
+	database := setupTestDB(t)
+	defer database.Close()
+
+	// Insert a game without F95URL — should be filtered out.
+	game := &db.Game{
+		Title:  "No URL Game",
+		Engine: "Unity",
+		Path:   "/no-url-game",
+		F95URL: "",
+	}
+	if _, err := database.InsertGame(game); err != nil {
+		t.Fatal(err)
+	}
+
+	games := []db.Game{*game}
+	updatesFound, results := RunUpdateCheck(database, nil, games, false)
+	if updatesFound != 0 {
+		t.Errorf("expected 0 updates (game has no F95URL), got %d", updatesFound)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+func TestRunUpdateCheck_CooldownSkip(t *testing.T) {
+	t.Parallel()
+	database := setupTestDB(t)
+	defer database.Close()
+
+	// Insert a game with F95URL, checked just now.
+	game := &db.Game{
+		Title:            "Cooldown Game",
+		Engine:           "Unity",
+		Path:             "/cooldown-game",
+		F95URL:           "https://f95zone.to/threads/cooldown.12345/",
+		VersionCheckedAt: time.Now(),
+	}
+	id, err := database.InsertGame(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	games := []db.Game{*game}
+	updatesFound, results := RunUpdateCheck(database, nil, games, false)
+	if updatesFound != 0 {
+		t.Errorf("expected 0 updates (within cooldown), got %d", updatesFound)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+	_ = id
+}
+
+func TestRunUpdateCheck_ForceBypassCooldown(t *testing.T) {
+	t.Parallel()
+	database := setupTestDB(t)
+	defer database.Close()
+
+	// Create a test server that returns an error to simulate a scrape failure.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := scraper.NewClientWithHTTP("", server.Client())
+
+	// Insert a game with F95URL, checked just now, force=true.
+	game := &db.Game{
+		Title:            "Force Game",
+		Engine:           "RenPy",
+		Path:             "/force-game",
+		F95URL:           server.URL + "/threads/force.12345/",
+		VersionCheckedAt: time.Now(),
+	}
+	id, err := database.InsertGame(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	games := []db.Game{*game}
+	// With force=true, cooldown is bypassed. Scrape will fail (500 response)
+	// but the game should be processed (not skipped).
+	updatesFound, results := RunUpdateCheck(database, client, games, true)
+	if updatesFound != 0 {
+		t.Errorf("expected 0 updates (scrape fails), got %d", updatesFound)
+	}
+	// With 500 response, scrape fails and result has error.
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result (force bypasses cooldown), got %d", len(results))
+	}
+	if results[0].Error == "" {
+		t.Error("expected error in result when scrape fails")
+	}
+	_ = id
 }

@@ -1,9 +1,13 @@
 package scraper
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -167,7 +171,7 @@ func TestExtractDeveloper(t *testing.T) {
 		{"Developer: Cool Dev Team", "Cool Dev Team"},
 		{"Publisher: BigPublisher", "BigPublisher"},
 		{"Developer/Publisher: DevName", "DevName"}, // Publisher pattern captures "DevName"
-		{"No developer info here", "info here"},     // regex match on "developer info here"
+		{"No developer info here", ""},     // "developer" mid-sentence should NOT match
 		{"", ""},
 		{"Developer:   Lots of   spaces  ", "Lots of   spaces"},
 		{"Developer: Studio\nOther text", "Studio"},
@@ -334,6 +338,8 @@ Version 2.0.0 - big update`
 	}
 }
 
+// extractMetadata only returns key-value metadata pairs, not the description
+// text. The description is extracted separately via extractBodyText/bbWrapper.
 func TestExtractMetadata_OnlyDescription(t *testing.T) {
 	t.Parallel()
 	// No metadata lines in the overview block — only description.
@@ -615,17 +621,35 @@ func TestExtractVersionFromBrackets(t *testing.T) {
 func TestNewClient(t *testing.T) {
 	t.Parallel()
 
-	// Should not panic with empty cookie string.
-	c := NewClient("")
-	if c == nil {
-		t.Fatal("NewClient returned nil")
-	}
+	t.Run("empty cookie", func(t *testing.T) {
+		c := NewClient("")
+		if c == nil {
+			t.Fatal("NewClient returned nil")
+		}
+		if c.Delay() <= 0 {
+			t.Error("NewClient should have positive delay with rate limiting enabled")
+		}
+	})
 
-	// Should not panic with a realistic cookie string.
-	c2 := NewClient("xf_session=abc123; cf_clearance=def456; xf_user=ghi789")
-	if c2 == nil {
-		t.Fatal("NewClient with cookies returned nil")
-	}
+	t.Run("with cookies", func(t *testing.T) {
+		c := NewClient("xf_session=abc123; cf_clearance=def456; xf_user=ghi789")
+		if c == nil {
+			t.Fatal("NewClient with cookies returned nil")
+		}
+		if c.Delay() <= 0 {
+			t.Error("NewClient should have positive delay")
+		}
+	})
+
+	t.Run("unsafe client has zero delay", func(t *testing.T) {
+		c := NewUnsafeClient("test=1")
+		if c == nil {
+			t.Fatal("NewUnsafeClient returned nil")
+		}
+		if c.Delay() != 0 {
+			t.Errorf("NewUnsafeClient should have zero delay, got %v", c.Delay())
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -647,5 +671,168 @@ func TestScrapeThread_InvalidURL(t *testing.T) {
 	_, err := c.ScrapeThread("://invalid")
 	if err == nil {
 		t.Fatal("expected error for invalid URL, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Client.do() rate-limiting tests via httptest server
+// ---------------------------------------------------------------------------
+
+func TestClientDo_RateLimitBackoff(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			w.WriteHeader(http.StatusOK)
+		} else {
+			w.WriteHeader(http.StatusTooManyRequests) // 429
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClientWithHTTP("test=1", srv.Client())
+
+	// First request should succeed.
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	resp, err := client.do(req, 0)
+	if err != nil {
+		t.Fatalf("first request failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// After 429, delay should increase.
+	if client.Delay() <= 0 {
+		t.Error("expected delay to increase after 429 response")
+	}
+}
+
+func TestClientDo_ContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := NewClientWithHTTP("test=1", srv.Client())
+
+	// Fire one request to set lastRequest.
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	resp, err := client.do(req, 0)
+	if err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	resp.Body.Close()
+
+	// Second request with cancelled context — should respect context.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+	req, _ = http.NewRequestWithContext(ctx, "GET", srv.URL, nil)
+	req.Header.Set("User-Agent", "test")
+	_, err = client.do(req, 0)
+	if err == nil {
+		t.Error("expected context cancellation error")
+	}
+}
+
+func TestClientDo_Cooldown(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := NewClientWithHTTP("test=1", srv.Client())
+	// Force reqCount to cooldownInterval so the check
+	// cooldownInterval % cooldownInterval == 0 triggers on first call.
+	client.reqCount = cooldownInterval
+
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	req.Header.Set("User-Agent", "test")
+	start := time.Now()
+	resp, err := client.do(req, 0)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// Cooldown should have added significant delay.
+	if elapsed < 1*time.Second {
+		t.Errorf("expected at least 1s cooldown delay, got %v", elapsed)
+	}
+}
+
+func TestClientDo_ForbiddenDetection(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden) // 403
+	}))
+	defer srv.Close()
+
+	client := NewClientWithHTTP("test=1", srv.Client())
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	req.Header.Set("User-Agent", "test")
+	_, err := client.do(req, 0)
+	if err == nil {
+		t.Fatal("expected error for 403 response")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("expected 403 in error, got: %v", err)
+	}
+}
+
+func TestClientDo_CloudflareBlocked(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable) // 503
+		w.Write([]byte(`<html>Cloudflare</html>`))
+	}))
+	defer srv.Close()
+
+	client := NewClientWithHTTP("test=1", srv.Client())
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	req.Header.Set("User-Agent", "test")
+	_, err := client.do(req, 0)
+	if err == nil {
+		t.Fatal("expected error for Cloudflare-blocked response")
+	}
+	if !strings.Contains(err.Error(), "blocked") {
+		t.Errorf("expected 'blocked' in error, got: %v", err)
+	}
+}
+
+func TestNewClientWithHTTP_PreservesCookieInjection(t *testing.T) {
+	t.Parallel()
+
+	var receivedCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedCookie = r.Header.Get("Cookie")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := NewClientWithHTTP("xf_session=abc123; xf_user=def456", srv.Client())
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	req.Header.Set("User-Agent", "test")
+	resp, err := client.do(req, 0)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if !strings.Contains(receivedCookie, "xf_session=abc123") {
+		t.Errorf("expected cookie xf_session, got: %s", receivedCookie)
+	}
+	if !strings.Contains(receivedCookie, "xf_user=def456") {
+		t.Errorf("expected cookie xf_user, got: %s", receivedCookie)
 	}
 }

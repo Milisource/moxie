@@ -211,7 +211,9 @@ func ScrapeBatch(args []string) {
 				Overview:  td.Overview,
 				CoverURL:  td.CoverURL,
 			}
-			_ = database.UpsertScrapedMeta(meta)
+			if err := database.UpsertScrapedMeta(meta); err != nil {
+				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", game.Title, err)
+			}
 		}
 
 		fmt.Fprintf(os.Stderr, "  ✓ %s", td.Title)

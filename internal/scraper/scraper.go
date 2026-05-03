@@ -72,6 +72,32 @@ func NewUnsafeClient(cookieStr string) *Client {
 	return newClient(cookieStr, true)
 }
 
+// NewClientWithHTTP creates a scraper client with the given cookie string
+// and a custom http.Client. The inner transport is wrapped with cookie
+// injection automatically. Useful for testing with httptest servers.
+func NewClientWithHTTP(cookieStr string, httpClient *http.Client) *Client {
+	delay := minDelay
+	if httpClient.Timeout == 0 {
+		httpClient.Timeout = defaultTimeout
+	}
+	inner := httpClient.Transport
+	if inner == nil {
+		inner = http.DefaultTransport
+	}
+	return &Client{
+		http: &http.Client{
+			Timeout: httpClient.Timeout,
+			Transport: &cookieTransport{
+				inner:       inner,
+				cookieValue: strings.TrimSpace(cookieStr),
+			},
+			CheckRedirect: httpClient.CheckRedirect,
+			Jar:           httpClient.Jar,
+		},
+		delay: delay,
+	}
+}
+
 func newClient(cookieStr string, unsafe bool) *Client {
 	delay := minDelay
 	if unsafe {

@@ -165,6 +165,9 @@ func isSteamRunningWindows() (bool, error) {
 
 // isNumeric returns true when s consists only of digit characters.
 func isNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
 	for _, c := range s {
 		if c < '0' || c > '9' {
 			return false

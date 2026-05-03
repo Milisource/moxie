@@ -299,9 +299,15 @@ func getCompatToolMapping(cfg map[string]interface{}) map[string]interface{} {
 
 // isValidProton checks if the given version string matches a known pattern.
 // Accepts "proton_*", "GE-Proton*", and "none".
+// Rejects version strings containing whitespace — actual Proton identifiers
+// never include spaces (e.g. "Proton 9.0" with a space is not valid).
 func isValidProton(version string) bool {
 	if version == "none" {
 		return true
+	}
+	// Proton identifiers never contain whitespace.
+	if strings.ContainsAny(version, " \t\r\n") {
+		return false
 	}
 	lower := strings.ToLower(version)
 	if strings.HasPrefix(lower, "proton") {
