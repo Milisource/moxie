@@ -72,6 +72,11 @@ type metaLoadedMsg struct {
 	meta *db.ScrapedMeta
 }
 
+type gameDeletedMsg struct {
+	err   error
+	games []db.Game
+}
+
 type errMsg struct {
 	err error
 }

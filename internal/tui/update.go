@@ -145,6 +145,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scrapedMeta = msg.meta
 		return m, nil
 
+	case gameDeletedMsg:
+		if msg.err != nil {
+			m.err = fmt.Errorf("delete failed: %w", msg.err)
+		} else {
+			m.allGames = msg.games
+			m.rebuildFiltered()
+			m.err = nil
+		}
+		return m, nil
+
 	case errMsg:
 		m.err = msg.err
 		return m, nil
@@ -159,13 +169,17 @@ func (m model) handleDeleteConfirm(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "y", "Y":
 		m.err = nil
-		if err := m.db.DeleteGame(m.deleteID); err != nil {
-			m.err = fmt.Errorf("delete failed: %w", err)
-		}
+		// Run delete + reload asynchronously so the UI stays responsive.
+		// The detail view makes a synchronous GetGame() call during
+		// rendering, so we switch back to LibraryView immediately to
+		// avoid looking up the now-deleted game.
+		id := m.deleteID
 		m.confirmDelete = false
+		m.viewMode = LibraryView
+		m.scrapedMeta = nil
 		m.deleteID = 0
 		m.deleteTitle = ""
-		return m, m.loadGames()
+		return m, m.deleteGame(id)
 	case "n", "N", "esc", "enter":
 		m.confirmDelete = false
 		m.deleteID = 0
