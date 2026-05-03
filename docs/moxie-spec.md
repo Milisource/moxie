@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
-**Version:** 0.3.0-alpha (May 2026)
-**Status:** Alpha — 0.3.0 (packages refactored: util + commands, engine cleanup, version extraction)
+**Version:** 0.3.1-alpha (May 2026)
+**Status:** Alpha — 0.3.1 (packages refactored: util + commands, engine cleanup, version extraction)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
