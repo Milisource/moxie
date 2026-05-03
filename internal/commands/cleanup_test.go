@@ -1,4 +1,4 @@
-package main
+package commands
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// engineMatchesTags
+// EngineMatchesTags
 // ---------------------------------------------------------------------------
 
 func TestEngineMatchesTags(t *testing.T) {
@@ -111,7 +111,7 @@ func TestEngineMatchesTags(t *testing.T) {
 			tags:     []string{"java", "adult"},
 			want:     true,
 		},
-		// Unknown engine (not in engineTagVariants) → engineMatchesTags returns true
+		// Unknown engine (not in EngineTagVariants) → EngineMatchesTags returns true
 		{
 			name:     "Unknown engine with tags — no known variants, inconclusive",
 			detected: engine.Result{Engine: "Unknown"},
@@ -121,9 +121,9 @@ func TestEngineMatchesTags(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := engineMatchesTags(tt.detected, tt.tags)
+			got := EngineMatchesTags(tt.detected, tt.tags)
 			if got != tt.want {
-				t.Errorf("engineMatchesTags(%v, %v) = %v, want %v",
+				t.Errorf("EngineMatchesTags(%v, %v) = %v, want %v",
 					tt.detected, tt.tags, got, tt.want)
 			}
 		})
@@ -131,7 +131,7 @@ func TestEngineMatchesTags(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// findF95Engine
+// FindF95Engine
 // ---------------------------------------------------------------------------
 
 func TestFindF95Engine_FromTags(t *testing.T) {
@@ -214,9 +214,9 @@ func TestFindF95Engine_FromTags(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := findF95Engine(tt.game)
+			got := FindF95Engine(tt.game)
 			if got != tt.want {
-				t.Errorf("findF95Engine(%+v) = %q, want %q", tt.game, got, tt.want)
+				t.Errorf("FindF95Engine(%+v) = %q, want %q", tt.game, got, tt.want)
 			}
 		})
 	}
@@ -224,7 +224,7 @@ func TestFindF95Engine_FromTags(t *testing.T) {
 
 func TestFindF95Engine_FromTitle(t *testing.T) {
 	t.Parallel()
-	// findF95Engine falls back to checking the title prefix when tags
+	// FindF95Engine falls back to checking the title prefix when tags
 	// don't contain an engine indicator.  It checks HasPrefix on the
 	// lowercased title against each variant.
 	tests := []struct {
@@ -270,9 +270,9 @@ func TestFindF95Engine_FromTitle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := findF95Engine(tt.game)
+			got := FindF95Engine(tt.game)
 			if got != tt.want {
-				t.Errorf("findF95Engine(%+v) = %q, want %q", tt.game, got, tt.want)
+				t.Errorf("FindF95Engine(%+v) = %q, want %q", tt.game, got, tt.want)
 			}
 		})
 	}
@@ -282,19 +282,19 @@ func TestFindF95Engine_TagsTakePriority(t *testing.T) {
 	t.Parallel()
 	// Tags should be checked before title.  Even if the title has an
 	// engine prefix, tags that don't contain any engine info should
-	// cause findF95Engine to fall through to the title check.
+	// cause FindF95Engine to fall through to the title check.
 	game := db.Game{
 		Tags:  []string{"completed", "adult"},
 		Title: "Unity My Game",
 	}
-	got := findF95Engine(game)
+	got := FindF95Engine(game)
 	if got != "Unity" {
-		t.Errorf("findF95Engine should fall back to title when tags have no engine, got %q", got)
+		t.Errorf("FindF95Engine should fall back to title when tags have no engine, got %q", got)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// engineTagVariants — sanity checks
+// EngineTagVariants — sanity checks
 // ---------------------------------------------------------------------------
 
 func TestEngineTagVariants_AllEnginesPresent(t *testing.T) {
@@ -309,36 +309,36 @@ func TestEngineTagVariants_AllEnginesPresent(t *testing.T) {
 			continue
 		}
 		key := string(eng)
-		if len(engineTagVariants[key]) == 0 {
-			t.Errorf("engineTagVariants missing entry for %q", key)
+		if len(EngineTagVariants[key]) == 0 {
+			t.Errorf("EngineTagVariants missing entry for %q", key)
 		}
 	}
 }
 
 func TestEngineTagVariants_NoEmptyVariants(t *testing.T) {
 	t.Parallel()
-	for eng, variants := range engineTagVariants {
+	for eng, variants := range EngineTagVariants {
 		if len(variants) == 0 {
-			t.Errorf("engineTagVariants[%q] has empty variants list", eng)
+			t.Errorf("EngineTagVariants[%q] has empty variants list", eng)
 		}
 		for _, v := range variants {
 			if v == "" {
-				t.Errorf("engineTagVariants[%q] contains empty variant string", eng)
+				t.Errorf("EngineTagVariants[%q] contains empty variant string", eng)
 			}
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// engineCompat — sanity checks
+// EngineCompat — sanity checks
 // ---------------------------------------------------------------------------
 
 func TestEngineCompat_SelfCompatible(t *testing.T) {
 	t.Parallel()
 	// Every engine in the compat map should be compatible with itself.
-	for eng, compat := range engineCompat {
+	for eng, compat := range EngineCompat {
 		if !compat[eng] {
-			t.Errorf("engineCompat[%q] should be self-compatible but isn't", eng)
+			t.Errorf("EngineCompat[%q] should be self-compatible but isn't", eng)
 		}
 	}
 }
@@ -355,13 +355,13 @@ func TestEngineCompat_SymmetricPairs(t *testing.T) {
 		{"HTML", "WebGL"},
 	}
 	for _, p := range requiredSymmetric {
-		aCompat := engineCompat[p.a]
-		bCompat := engineCompat[p.b]
+		aCompat := EngineCompat[p.a]
+		bCompat := EngineCompat[p.b]
 		if aCompat == nil || !aCompat[p.b] {
-			t.Errorf("expected engineCompat[%q][%q] = true", p.a, p.b)
+			t.Errorf("expected EngineCompat[%q][%q] = true", p.a, p.b)
 		}
 		if bCompat == nil || !bCompat[p.a] {
-			t.Errorf("expected engineCompat[%q][%q] = true (symmetric pair)", p.b, p.a)
+			t.Errorf("expected EngineCompat[%q][%q] = true (symmetric pair)", p.b, p.a)
 		}
 	}
 }
@@ -376,8 +376,8 @@ func TestEngineCompat_ExpectedPairs(t *testing.T) {
 		{"WolfRPG", "HTML"},
 	}
 	for _, p := range expected {
-		if compat, ok := engineCompat[p.a]; !ok || !compat[p.b] {
-			t.Errorf("expected engineCompat[%q][%q] = true, got false or missing", p.a, p.b)
+		if compat, ok := EngineCompat[p.a]; !ok || !compat[p.b] {
+			t.Errorf("expected EngineCompat[%q][%q] = true, got false or missing", p.a, p.b)
 		}
 	}
 
@@ -385,7 +385,7 @@ func TestEngineCompat_ExpectedPairs(t *testing.T) {
 	// but not all HTML games are WolfRPG.
 	t.Run("WolfRPG→HTML is one-directional", func(t *testing.T) {
 		t.Parallel()
-		htmlCompat := engineCompat["HTML"]
+		htmlCompat := EngineCompat["HTML"]
 		if htmlCompat != nil && htmlCompat["WolfRPG"] {
 			t.Error("HTML should NOT be compatible with WolfRPG — it's one-directional")
 		}
@@ -393,7 +393,7 @@ func TestEngineCompat_ExpectedPairs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// formatTagsBrief
+// FormatTagsBrief
 // ---------------------------------------------------------------------------
 
 func TestFormatTagsBrief(t *testing.T) {
@@ -412,12 +412,51 @@ func TestFormatTagsBrief(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%v/%d", tt.tags, tt.max), func(t *testing.T) {
-			got := formatTagsBrief(tt.tags, tt.max)
+			got := FormatTagsBrief(tt.tags, tt.max)
 			if got != tt.want {
-				t.Errorf("formatTagsBrief(%v, %d) = %q, want %q", tt.tags, tt.max, got, tt.want)
+				t.Errorf("FormatTagsBrief(%v, %d) = %q, want %q", tt.tags, tt.max, got, tt.want)
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// ExtractEngineFromTitle
+// ---------------------------------------------------------------------------
+
+func TestExtractEngineFromTitle(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		title string
+		want  string
+		note  string // optional context
+	}{
+		{"RPGM Completed Game Name", "RPGM", ""},
+		{"Ren'Py Abandoned My Game [v0.5]", "RenPy", ""},
+		{"Unity Game Title", "Unity", ""},
+		{"Completed Visual Novel", "", "no engine prefix — first word is 'completed'"},
+		{"Wolf RPG Something", "", "first word is 'Wolf', variants are 'wolf rpg'/'wolfrpg' — no exact match"},
+		{"HTML5 Web Game", "HTML", "first word 'html5' matches HTML variant"},
+		{"Flash Game Title", "Flash", ""},
+		{"", "", "empty title"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			got := ExtractEngineFromTitle(tt.title)
+			if got != tt.want {
+				t.Errorf("ExtractEngineFromTitle(%q) = %q, want %q%s",
+					tt.title, got, tt.want, optionalNote(tt.note))
+			}
+		})
+	}
+}
+
+// optionalNote returns a colon-prefixed note if s is non-empty.
+func optionalNote(s string) string {
+	if s == "" {
+		return ""
+	}
+	return " // " + s
 }
 
 // ---------------------------------------------------------------------------

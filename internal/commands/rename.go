@@ -1,4 +1,4 @@
-package main
+package commands
 
 import (
 	"flag"
@@ -10,14 +10,16 @@ import (
 
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/scraper"
+	"github.com/mili/moxie/internal/util"
 )
 
-func cmdRename(args []string) {
+// Rename renames game directories using clean titles.
+func Rename(args []string) {
 	fs := flag.NewFlagSet("rename", flag.ExitOnError)
 	dryRun := fs.Bool("dry-run", false, "Preview renames without making changes")
 	fs.Parse(args)
 
-	database := openDB()
+	database := util.OpenDB()
 	defer database.Close()
 
 	games, err := database.ListGames("", "")
@@ -35,7 +37,7 @@ func cmdRename(args []string) {
 
 	var plans []renamePlan
 	for _, g := range games {
-		newName := cleanGameTitle(g)
+		newName := CleanGameTitle(g)
 		if newName == "" || newName == filepath.Base(g.Path) {
 			continue // no change needed
 		}
@@ -104,23 +106,25 @@ func cmdRename(args []string) {
 	fmt.Fprintf(os.Stderr, "\nRenamed %d directories.\n", renamed)
 }
 
-// cleanGameTitle produces a clean directory name for a game.
+// CleanGameTitle produces a clean directory name for a game.
 // Prefers the scraped title (stripped of engine/status prefixes), falls back
 // to sanitizing the directory name.
-func cleanGameTitle(g db.Game) string {
+func CleanGameTitle(g db.Game) string {
 	title := g.Title
 
 	// If we have a scraped F95Zone title, strip engine/status prefix tags.
 	if g.F95URL != "" {
-		title = stripThreadPrefix(title)
+		title = StripThreadPrefix(title)
 	}
 
 	// Filesystem-safe: replace forbidden chars, limit length.
-	title = filesystemSafe(title)
+	title = FilesystemSafe(title)
 	return title
 }
 
-func stripThreadPrefix(title string) string {
+// StripThreadPrefix removes known engine/status/category prefix words
+// from an F95Zone thread title.
+func StripThreadPrefix(title string) string {
 	// Known engine/status/category prefix words.
 	prefixWords := map[string]bool{
 		"unity": true, "ren'py": true, "renpy": true, "rpgm": true,
@@ -144,8 +148,8 @@ func stripThreadPrefix(title string) string {
 	return result
 }
 
-// filesystemSafe replaces characters that are illegal in directory names.
-func filesystemSafe(name string) string {
+// FilesystemSafe replaces characters that are illegal in directory names.
+func FilesystemSafe(name string) string {
 	// Strip or replace problematic characters.
 	replacer := strings.NewReplacer(
 		"/", "-", "\\", "-", ":", "-", "*", "", "?", "",
@@ -154,8 +158,8 @@ func filesystemSafe(name string) string {
 	name = replacer.Replace(name)
 
 	// Collapse multiple spaces/hyphens.
-	name = multiSpaceRE.ReplaceAllString(name, " ")
-	name = multiDashRE.ReplaceAllString(name, "-")
+	name = util.MultiSpaceRE.ReplaceAllString(name, " ")
+	name = util.MultiDashRE.ReplaceAllString(name, "-")
 
 	// Remove version tags we don't need in the directory name.
 	name = scraper.SanitizeTitle(name)

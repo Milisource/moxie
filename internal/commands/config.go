@@ -1,16 +1,15 @@
-package main
+package commands
 
 import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/mili/moxie/internal/util"
 )
 
-// ---------------------------------------------------------------------------
-// config command
-// ---------------------------------------------------------------------------
-
-func cmdConfig(args []string) {
+// Config handles the config command and its subcommands.
+func Config(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "Usage: moxie config <set|get|show> [key] [value]\n")
 		fmt.Fprintf(os.Stderr, "       moxie config set steamgriddb-key <key>\n")
@@ -20,18 +19,19 @@ func cmdConfig(args []string) {
 	}
 	switch args[0] {
 	case "set":
-		cmdConfigSet(args[1:])
+		ConfigSet(args[1:])
 	case "get":
-		cmdConfigGet(args[1:])
+		ConfigGet(args[1:])
 	case "show":
-		cmdConfigShow()
+		ConfigShow()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown config subcommand: %s\n", args[0])
 		os.Exit(1)
 	}
 }
 
-func cmdConfigSet(args []string) {
+// ConfigSet sets a configuration value.
+func ConfigSet(args []string) {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: moxie config set <key> <value>\n")
 		os.Exit(1)
@@ -39,25 +39,26 @@ func cmdConfigSet(args []string) {
 	key := args[0]
 	value := strings.Join(args[1:], " ")
 
-	cfg, err := readConfig()
+	cfg, err := util.ReadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading config: %v\n", err)
 		os.Exit(1)
 	}
 	cfg[key] = value
-	if err := writeConfig(cfg); err != nil {
+	if err := util.WriteConfig(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("Set %s = %s\n", key, value)
 }
 
-func cmdConfigGet(args []string) {
+// ConfigGet gets a configuration value.
+func ConfigGet(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "Usage: moxie config get <key>\n")
 		os.Exit(1)
 	}
-	cfg, err := readConfig()
+	cfg, err := util.ReadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading config: %v\n", err)
 		os.Exit(1)
@@ -70,8 +71,9 @@ func cmdConfigGet(args []string) {
 	fmt.Println(value)
 }
 
-func cmdConfigShow() {
-	cfg, err := readConfig()
+// ConfigShow shows all configuration values.
+func ConfigShow() {
+	cfg, err := util.ReadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading config: %v\n", err)
 		os.Exit(1)

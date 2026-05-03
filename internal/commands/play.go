@@ -1,4 +1,4 @@
-package main
+package commands
 
 import (
 	"flag"
@@ -10,13 +10,11 @@ import (
 	"strings"
 
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/util"
 )
 
-// ---------------------------------------------------------------------------
-// play command — launch games
-// ---------------------------------------------------------------------------
-
-func cmdPlay(args []string) {
+// Play launches a game.
+func Play(args []string) {
 	fs := flag.NewFlagSet("play", flag.ExitOnError)
 	fs.Parse(args)
 
@@ -24,9 +22,9 @@ func cmdPlay(args []string) {
 		fmt.Fprintf(os.Stderr, "Usage: moxie play <id>\n")
 		os.Exit(1)
 	}
-	id := mustParseInt(fs.Arg(0))
+	id := util.MustParseInt(fs.Arg(0))
 
-	database := openDB()
+	database := util.OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -35,13 +33,13 @@ func cmdPlay(args []string) {
 		os.Exit(1)
 	}
 
-	exe := resolveExecutable(*game)
+	exe := ResolveExecutable(*game)
 	if exe == "" {
 		fmt.Fprintf(os.Stderr, "No executable found for %q.\nPath: %s\n", game.Title, game.Path)
 		os.Exit(1)
 	}
 
-	cmd := launchCommand(exe)
+	cmd := LaunchCommand(exe)
 	fmt.Fprintf(os.Stderr, "Launching: %s\n", cmd)
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to launch: %v\n", err)
@@ -51,8 +49,8 @@ func cmdPlay(args []string) {
 	go cmd.Wait()
 }
 
-// resolveExecutable finds the best executable to launch for a game.
-func resolveExecutable(g db.Game) string {
+// ResolveExecutable finds the best executable to launch for a game.
+func ResolveExecutable(g db.Game) string {
 	// If ExePath is set and exists, use it.
 	if g.ExePath != "" {
 		if _, err := os.Stat(g.ExePath); err == nil {
@@ -110,19 +108,19 @@ func resolveExecutable(g db.Game) string {
 
 	// Prefer native over Wine.
 	if len(appImages) > 0 {
-		return selectBestExe(appImages)
+		return SelectBestExe(appImages)
 	}
 	if len(scripts) > 0 {
-		return selectBestExe(scripts)
+		return SelectBestExe(scripts)
 	}
 	if len(exes) > 0 {
-		return selectBestExe(exes)
+		return SelectBestExe(exes)
 	}
 	return ""
 }
 
-// selectBestExe picks the most likely main executable from a list.
-func selectBestExe(paths []string) string {
+// SelectBestExe picks the most likely main executable from a list.
+func SelectBestExe(paths []string) string {
 	if len(paths) == 1 {
 		return paths[0]
 	}
@@ -148,8 +146,8 @@ func selectBestExe(paths []string) string {
 	return best
 }
 
-// launchCommand builds an exec.Cmd for the given executable.
-func launchCommand(exe string) *exec.Cmd {
+// LaunchCommand builds an exec.Cmd for the given executable.
+func LaunchCommand(exe string) *exec.Cmd {
 	ext := strings.ToLower(filepath.Ext(exe))
 	switch {
 	case ext == ".appimage":

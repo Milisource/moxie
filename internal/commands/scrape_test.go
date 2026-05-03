@@ -1,4 +1,4 @@
-package main
+package commands
 
 import (
 	"os"
@@ -7,24 +7,24 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// resolveCookie
+// ResolveCookie
 // ---------------------------------------------------------------------------
 
 func TestResolveCookie_Explicit(t *testing.T) {
 	t.Parallel()
 	// Explicit cookie string should be returned directly.
-	got := resolveCookie("my-cookie-value", "")
+	got := ResolveCookie("my-cookie-value", "")
 	if got != "my-cookie-value" {
-		t.Errorf("resolveCookie(%q, \"\") = %q, want %q", "my-cookie-value", got, "my-cookie-value")
+		t.Errorf("ResolveCookie(%q, \"\") = %q, want %q", "my-cookie-value", got, "my-cookie-value")
 	}
 }
 
 func TestResolveCookie_ExplicitTakesPriority(t *testing.T) {
 	t.Parallel()
 	// When both explicit and file are provided, explicit should win.
-	got := resolveCookie("explicit-value", "some-file.txt")
+	got := ResolveCookie("explicit-value", "some-file.txt")
 	if got != "explicit-value" {
-		t.Errorf("resolveCookie should prefer explicit, got %q", got)
+		t.Errorf("ResolveCookie should prefer explicit, got %q", got)
 	}
 }
 
@@ -36,17 +36,17 @@ func TestResolveCookie_File(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := resolveCookie("", cookieFile)
+	got := ResolveCookie("", cookieFile)
 	if got != "file-cookie-value" {
-		t.Errorf("resolveCookie(\"\", %q) = %q, want %q", cookieFile, got, "file-cookie-value")
+		t.Errorf("ResolveCookie(\"\", %q) = %q, want %q", cookieFile, got, "file-cookie-value")
 	}
 }
 
 func TestResolveCookie_FileNotFound(t *testing.T) {
 	t.Parallel()
-	got := resolveCookie("", "/nonexistent/cookie.txt")
+	got := ResolveCookie("", "/nonexistent/cookie.txt")
 	if got != "" {
-		t.Errorf("resolveCookie with missing file should return empty, got %q", got)
+		t.Errorf("ResolveCookie with missing file should return empty, got %q", got)
 	}
 }
 
@@ -58,14 +58,14 @@ func TestResolveCookie_EmptyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := resolveCookie("", cookieFile)
+	got := ResolveCookie("", cookieFile)
 	if got != "" {
-		t.Errorf("resolveCookie with empty file should return empty, got %q", got)
+		t.Errorf("ResolveCookie with empty file should return empty, got %q", got)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// stripThreadPrefix
+// StripThreadPrefix
 // ---------------------------------------------------------------------------
 
 func TestStripThreadPrefix(t *testing.T) {
@@ -88,9 +88,9 @@ func TestStripThreadPrefix(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := stripThreadPrefix(tt.input)
+			got := StripThreadPrefix(tt.input)
 			if got != tt.want {
-				t.Errorf("stripThreadPrefix(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("StripThreadPrefix(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -99,17 +99,17 @@ func TestStripThreadPrefix(t *testing.T) {
 func TestStripThreadPrefix_MultiplePrefixes(t *testing.T) {
 	t.Parallel()
 	// Multiple consecutive prefix words should all be stripped.
-	got := stripThreadPrefix("RPGM Completed My Game")
+	got := StripThreadPrefix("RPGM Completed My Game")
 	if got != "My Game" {
-		t.Errorf("stripThreadPrefix(RPGM Completed My Game) = %q, want %q", got, "My Game")
+		t.Errorf("StripThreadPrefix(RPGM Completed My Game) = %q, want %q", got, "My Game")
 	}
 }
 
 func TestStripThreadPrefix_NoClearTitle(t *testing.T) {
 	t.Parallel()
 	// If stripping removes everything, the original should be returned.
-	got := stripThreadPrefix("Unity")
+	got := StripThreadPrefix("Unity")
 	if got != "Unity" {
-		t.Errorf("stripThreadPrefix('Unity') = %q, want %q", got, "Unity")
+		t.Errorf("StripThreadPrefix('Unity') = %q, want %q", got, "Unity")
 	}
 }

@@ -1,4 +1,4 @@
-package main
+package commands
 
 import (
 	"testing"
@@ -8,13 +8,13 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// applyThreadData — version field preservation
+// ApplyThreadData — version field preservation
 // ---------------------------------------------------------------------------
 
 func TestApplyThreadData_VersionPreservation(t *testing.T) {
 	t.Parallel()
 
-	// applyThreadData must set LatestVersion from thread data, but NEVER
+	// ApplyThreadData must set LatestVersion from thread data, but NEVER
 	// overwrite the locally-scanned Version field.
 
 	t.Run("sets LatestVersion when Version is empty", func(t *testing.T) {
@@ -24,12 +24,12 @@ func TestApplyThreadData_VersionPreservation(t *testing.T) {
 			LatestVersion: "",
 		}
 		data := &scraper.ThreadData{
-			Title:   "RPGM My Game [v1.0] [Dev]",
-			Version: "1.0",
+			Title:    "RPGM My Game [v1.0] [Dev]",
+			Version:  "1.0",
 			ThreadID: 12345,
 		}
 
-		applyThreadData(game, data, "https://f95zone.to/threads/my-game.12345/")
+		ApplyThreadData(game, data, "https://f95zone.to/threads/my-game.12345/")
 
 		if game.LatestVersion != "1.0" {
 			t.Errorf("LatestVersion = %q, want %q", game.LatestVersion, "1.0")
@@ -46,12 +46,12 @@ func TestApplyThreadData_VersionPreservation(t *testing.T) {
 			LatestVersion: "",
 		}
 		data := &scraper.ThreadData{
-			Title:   "RPGM My Game [v1.0] [Dev]",
-			Version: "1.0",
+			Title:    "RPGM My Game [v1.0] [Dev]",
+			Version:  "1.0",
 			ThreadID: 12345,
 		}
 
-		applyThreadData(game, data, "https://f95zone.to/threads/my-game.12345/")
+		ApplyThreadData(game, data, "https://f95zone.to/threads/my-game.12345/")
 
 		if game.LatestVersion != "1.0" {
 			t.Errorf("LatestVersion = %q, want %q", game.LatestVersion, "1.0")
@@ -73,7 +73,7 @@ func TestApplyThreadData_VersionPreservation(t *testing.T) {
 			ThreadID: 12345,
 		}
 
-		applyThreadData(game, data, "https://f95zone.to/threads/my-game.12345/")
+		ApplyThreadData(game, data, "https://f95zone.to/threads/my-game.12345/")
 
 		if game.LatestVersion != "1.0" {
 			t.Errorf("LatestVersion should be unchanged, got %q", game.LatestVersion)
@@ -85,14 +85,14 @@ func TestApplyThreadData_VersionPreservation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// applyThreadData — engine detection from title prefix
+// ApplyThreadData — engine detection from title prefix
 // ---------------------------------------------------------------------------
 
 func TestApplyThreadData_SetsEngineFromF95Prefix(t *testing.T) {
 	t.Parallel()
 
 	// When the F95Zone thread title starts with a known engine prefix
-	// and the game's engine is empty/Unknown/Others, applyThreadData
+	// and the game's engine is empty/Unknown/Others, ApplyThreadData
 	// should set the engine from the prefix.
 
 	t.Run("sets engine from RPGM prefix when engine is empty", func(t *testing.T) {
@@ -100,7 +100,7 @@ func TestApplyThreadData_SetsEngineFromF95Prefix(t *testing.T) {
 		data := &scraper.ThreadData{
 			Title: "RPGM Local Name [v1.0] [Dev]",
 		}
-		applyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
+		ApplyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
 
 		if game.Engine != "RPGM" {
 			t.Errorf("Engine = %q, want %q", game.Engine, "RPGM")
@@ -112,7 +112,7 @@ func TestApplyThreadData_SetsEngineFromF95Prefix(t *testing.T) {
 		data := &scraper.ThreadData{
 			Title: "Unity Local Name [v1.0] [Dev]",
 		}
-		applyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
+		ApplyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
 
 		if game.Engine != "Unity" {
 			t.Errorf("Engine = %q, want %q", game.Engine, "Unity")
@@ -124,7 +124,7 @@ func TestApplyThreadData_SetsEngineFromF95Prefix(t *testing.T) {
 		data := &scraper.ThreadData{
 			Title: "Ren'Py Local Name [v1.0] [Dev]",
 		}
-		applyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
+		ApplyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
 
 		if game.Engine != "RenPy" {
 			t.Errorf("Engine = %q, want %q", game.Engine, "RenPy")
@@ -136,7 +136,7 @@ func TestApplyThreadData_SetsEngineFromF95Prefix(t *testing.T) {
 		data := &scraper.ThreadData{
 			Title: "RPGM Local Name [v1.0] [Dev]",
 		}
-		applyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
+		ApplyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
 
 		if game.Engine != "Unity" {
 			t.Errorf("Engine should remain Unity, got %q", game.Engine)
@@ -145,7 +145,7 @@ func TestApplyThreadData_SetsEngineFromF95Prefix(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// applyThreadData — URL, ThreadID, Tags, Status
+// ApplyThreadData — URL, ThreadID, Tags, Status
 // ---------------------------------------------------------------------------
 
 func TestApplyThreadData_URLAndThreadID(t *testing.T) {
@@ -158,7 +158,7 @@ func TestApplyThreadData_URLAndThreadID(t *testing.T) {
 	}
 	url := "https://f95zone.to/threads/game-title.54321/"
 
-	applyThreadData(game, data, url)
+	ApplyThreadData(game, data, url)
 
 	if game.F95URL != url {
 		t.Errorf("F95URL = %q, want %q", game.F95URL, url)
@@ -177,7 +177,7 @@ func TestApplyThreadData_TagsAndStatus(t *testing.T) {
 		Tags:   []string{"adult", "rpg", "parody"},
 		Status: "completed",
 	}
-	applyThreadData(game, data, "https://f95zone.to/threads/game.54321/")
+	ApplyThreadData(game, data, "https://f95zone.to/threads/game.54321/")
 
 	if len(game.Tags) != 3 || game.Tags[0] != "adult" {
 		t.Errorf("Tags = %v, want [adult rpg parody]", game.Tags)
@@ -194,11 +194,47 @@ func TestApplyThreadData_StripsTitlePrefix(t *testing.T) {
 	data := &scraper.ThreadData{
 		Title: "RPGM Completed My Game [v1.0] [Dev]",
 	}
-	applyThreadData(game, data, "https://f95zone.to/threads/my-game.54321/")
+	ApplyThreadData(game, data, "https://f95zone.to/threads/my-game.54321/")
 
 	// The title should have the engine/status prefix stripped.
 	want := "My Game [v1.0] [Dev]"
 	if game.Title != want {
 		t.Errorf("Title = %q, want %q", game.Title, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NormalizeVersion
+// ---------------------------------------------------------------------------
+
+func TestNormalizeVersion(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"v1.0", "1"},
+		{"V1.0.0", "1"},
+		{"1.0.3", "1.0.3"},
+		{"0.13.4", "0.13.4"},
+		{"1.0", "1"},
+		{"", ""},
+		{"v0.5", "0.5"},
+		{"V2.0", "2"},
+		{"1.0.0.0", "1"},
+		{"v1.2.3", "1.2.3"},
+		{"  1.0  ", "1"},
+		{"v1", "1"},
+		{"0.0.0", "0"},
+		{"V1.0.0.0.0", "1"},
+		{"  v1.0  ", "1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := NormalizeVersion(tt.input)
+			if got != tt.want {
+				t.Errorf("NormalizeVersion(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }

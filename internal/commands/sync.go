@@ -1,4 +1,4 @@
-package main
+package commands
 
 import (
 	"encoding/json"
@@ -12,14 +12,11 @@ import (
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/scraper"
+	"github.com/mili/moxie/internal/util"
 )
 
-// ---------------------------------------------------------------------------
-// check-updates command
-// ---------------------------------------------------------------------------
-
-// checkUpdateResult holds the outcome of checking one game for updates.
-type checkUpdateResult struct {
+// UpdateResult holds the outcome of checking one game for updates.
+type UpdateResult struct {
 	Game    db.Game `json:"game"`
 	Current string  `json:"current"`
 	Latest  string  `json:"latest"`
@@ -27,12 +24,12 @@ type checkUpdateResult struct {
 	Error   string  `json:"error,omitempty"`
 }
 
-const updateCheckCooldown = 24 * time.Hour
+const UpdateCheckCooldown = 24 * time.Hour
 
-// runUpdateCheck scrapes each game's F95Zone thread, compares versions, and
+// RunUpdateCheck scrapes each game's F95Zone thread, compares versions, and
 // updates the database. It returns the count of games with new versions and
 // a result for each game processed.
-func runUpdateCheck(database *db.Database, client *scraper.Client, games []db.Game, force bool) (int, []checkUpdateResult) {
+func RunUpdateCheck(database *db.Database, client *scraper.Client, games []db.Game, force bool) (int, []UpdateResult) {
 	// Skip games checked within the last 24 hours (unless --force).
 	cooldownSkipped := 0
 	var filtered []db.Game
@@ -40,7 +37,7 @@ func runUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 		if g.F95URL == "" {
 			continue
 		}
-		if !force && !g.VersionCheckedAt.IsZero() && time.Since(g.VersionCheckedAt) < updateCheckCooldown {
+		if !force && !g.VersionCheckedAt.IsZero() && time.Since(g.VersionCheckedAt) < UpdateCheckCooldown {
 			cooldownSkipped++
 			continue
 		}
@@ -62,7 +59,7 @@ func runUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 		return 0, nil
 	}
 
-	var results []checkUpdateResult
+	var results []UpdateResult
 	updatesFound := 0
 
 	// Worker pool for concurrent scraping.
@@ -82,7 +79,7 @@ func runUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 			if err != nil {
 				mu.Lock()
 				fmt.Fprintf(os.Stderr, "  %q ✗ %v\n", g.Title, err)
-				results = append(results, checkUpdateResult{Game: g, Error: err.Error()})
+				results = append(results, UpdateResult{Game: g, Error: err.Error()})
 				mu.Unlock()
 				return
 			}
@@ -91,13 +88,13 @@ func runUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 			if knownVer == "" {
 				knownVer = g.LatestVersion
 			}
-			isNew := latest != "" && knownVer != "" && normalizeVersion(latest) != normalizeVersion(knownVer)
+			isNew := latest != "" && knownVer != "" && NormalizeVersion(latest) != NormalizeVersion(knownVer)
 
 			// Signal: check for engine mismatch between scanner and F95Zone tags.
 			var engineWarn string
 			if len(data.Tags) > 0 {
 				detEngine := engine.Detect(g.Path)
-				if !engineMatchesTags(detEngine, data.Tags) {
+				if !EngineMatchesTags(detEngine, data.Tags) {
 					engineWarn = fmt.Sprintf(" ⚠ engine mismatch (scanner: %s)",
 						detEngine.Engine)
 				}
@@ -132,7 +129,7 @@ func runUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 			} else {
 				fmt.Fprintf(os.Stderr, "  %q ? no version detected%s\n", g.Title, engineWarn)
 			}
-			results = append(results, checkUpdateResult{Game: g, Current: knownVer, Latest: latest, IsNew: isNew})
+			results = append(results, UpdateResult{Game: g, Current: knownVer, Latest: latest, IsNew: isNew})
 			mu.Unlock()
 		}(g)
 	}
@@ -141,8 +138,8 @@ func runUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 	return updatesFound, results
 }
 
-// normalizeVersion strips trailing .0 segments and leading v/V prefix for comparison.
-func normalizeVersion(v string) string {
+// NormalizeVersion strips trailing .0 segments and leading v/V prefix for comparison.
+func NormalizeVersion(v string) string {
 	v = strings.TrimSpace(v)
 	v = strings.TrimPrefix(strings.TrimPrefix(v, "v"), "V")
 	for strings.HasSuffix(v, ".0") {
@@ -151,7 +148,8 @@ func normalizeVersion(v string) string {
 	return v
 }
 
-func cmdCheckUpdates(args []string) {
+// CheckUpdates checks all games for version updates from F95Zone.
+func CheckUpdates(args []string) {
 	fs := flag.NewFlagSet("check-updates", flag.ExitOnError)
 	cookieStr := fs.String("cookie", "", "Cookie header")
 	cookieFile := fs.String("cookie-file", "", "Cookie file")
@@ -160,13 +158,13 @@ func cmdCheckUpdates(args []string) {
 	force := fs.Bool("force", false, "Force re-check even if checked within 24h")
 	fs.Parse(args)
 
-	cookie := resolveCookie(*cookieStr, *cookieFile)
+	cookie := ResolveCookie(*cookieStr, *cookieFile)
 	if cookie == "" {
 		fmt.Fprintf(os.Stderr, "Cookie required. Log into f95zone.to in Firefox.\n")
 		os.Exit(1)
 	}
 
-	database := openDB()
+	database := util.OpenDB()
 	defer database.Close()
 
 	allGames, err := database.ListGames("", "")
@@ -193,7 +191,7 @@ func cmdCheckUpdates(args []string) {
 		client = scraper.NewClient(cookie)
 	}
 
-	updatesFound, results := runUpdateCheck(database, client, trackable, *force)
+	updatesFound, results := RunUpdateCheck(database, client, trackable, *force)
 
 	if *jsonOut {
 		enc := json.NewEncoder(os.Stdout)
@@ -210,14 +208,10 @@ func cmdCheckUpdates(args []string) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// sync command — full library sync (associate + check updates)
-// ---------------------------------------------------------------------------
-
-// cmdSyncGame syncs a single game: associate it with F95Zone (if needed)
+// SyncGame syncs a single game: associate it with F95Zone (if needed)
 // and check for version updates.
-func cmdSyncGame(id int64, cookie string, unsafe bool, force bool) {
-	database := openDB()
+func SyncGame(id int64, cookie string, unsafe bool, force bool) {
+	database := util.OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -244,7 +238,7 @@ func cmdSyncGame(id int64, cookie string, unsafe bool, force bool) {
 		}
 		results, err := client.SearchF95Zone(query)
 		if err != nil {
-			if isBlocked(err) {
+			if util.IsBlocked(err) {
 				fmt.Fprintf(os.Stderr, "  ⚠ BLOCKED: %v\n", err)
 				os.Exit(1)
 			}
@@ -285,9 +279,9 @@ func cmdSyncGame(id int64, cookie string, unsafe bool, force bool) {
 		// Signal: check engine consistency before associating.
 		if len(data.Tags) > 0 {
 			detEngine := engine.Detect(game.Path)
-			if !engineMatchesTags(detEngine, data.Tags) {
+			if !EngineMatchesTags(detEngine, data.Tags) {
 				fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread tags: %s)\n",
-					detEngine.Engine, formatTagsBrief(data.Tags, 4))
+					detEngine.Engine, FormatTagsBrief(data.Tags, 4))
 				fmt.Fprintf(os.Stderr, "  Associate anyway? [y/N]: ")
 				var answer string
 				fmt.Scanln(&answer)
@@ -298,7 +292,7 @@ func cmdSyncGame(id int64, cookie string, unsafe bool, force bool) {
 			}
 		}
 
-		applyThreadData(game, data, best.URL)
+		ApplyThreadData(game, data, best.URL)
 		game.VersionCheckedAt = time.Now() // prevent double-scrape in Phase 2
 		if err := database.UpdateGame(game); err != nil {
 			fmt.Fprintf(os.Stderr, "  ✗ Save failed: %v\n", err)
@@ -322,7 +316,7 @@ func cmdSyncGame(id int64, cookie string, unsafe bool, force bool) {
 	}
 
 	// Phase 2: Check for updates (skip if recently checked, unless --force).
-	if !force && !game.VersionCheckedAt.IsZero() && time.Since(game.VersionCheckedAt) < updateCheckCooldown {
+	if !force && !game.VersionCheckedAt.IsZero() && time.Since(game.VersionCheckedAt) < UpdateCheckCooldown {
 		fmt.Fprintf(os.Stderr, "  ✓ Skipped (checked within 24h; use --force to override)\n")
 		return
 	}
@@ -336,9 +330,9 @@ func cmdSyncGame(id int64, cookie string, unsafe bool, force bool) {
 	// Signal: check engine consistency with freshly scraped tags.
 	if len(data.Tags) > 0 {
 		detEngine := engine.Detect(game.Path)
-		if !engineMatchesTags(detEngine, data.Tags) {
+		if !EngineMatchesTags(detEngine, data.Tags) {
 			fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread tags: %s)\n",
-				detEngine.Engine, formatTagsBrief(data.Tags, 4))
+				detEngine.Engine, FormatTagsBrief(data.Tags, 4))
 		}
 	}
 
@@ -380,7 +374,9 @@ func cmdSyncGame(id int64, cookie string, unsafe bool, force bool) {
 	}
 }
 
-func cmdSync(args []string) {
+// Sync performs a full library sync: associate games with F95Zone threads
+// and check for version updates.
+func Sync(args []string) {
 	fs := flag.NewFlagSet("sync", flag.ExitOnError)
 	cookieStr := fs.String("cookie", "", "Cookie header")
 	cookieFile := fs.String("cookie-file", "", "Cookie file")
@@ -388,7 +384,7 @@ func cmdSync(args []string) {
 	force := fs.Bool("force", false, "Force re-check even if checked within 24h")
 	fs.Parse(args)
 
-	cookie := resolveCookie(*cookieStr, *cookieFile)
+	cookie := ResolveCookie(*cookieStr, *cookieFile)
 	if cookie == "" {
 		fmt.Fprintf(os.Stderr, "Cookie required. Log into f95zone.to in Firefox.\n")
 		os.Exit(1)
@@ -396,17 +392,17 @@ func cmdSync(args []string) {
 
 	// Single-game sync: moxie sync <game-id>
 	if fs.NArg() >= 1 {
-		id := mustParseInt(fs.Arg(0))
-		cmdSyncGame(id, cookie, *unsafe, *force)
+		id := util.MustParseInt(fs.Arg(0))
+		SyncGame(id, cookie, *unsafe, *force)
 		return
 	}
 
-	database := openDB()
+	database := util.OpenDB()
 	defer database.Close()
 
 	// Phase 1: Associate games with F95Zone threads.
 	fmt.Fprintln(os.Stderr, "\n=== Phase 1/2: Associating games with F95Zone threads ===")
-	runScrapeAuto(database, cookie, *unsafe)
+	RunScrapeAuto(database, cookie, *unsafe)
 
 	// Phase 2: Check for version updates.
 	fmt.Fprintln(os.Stderr, "\n=== Phase 2/2: Checking for version updates ===")
@@ -435,12 +431,12 @@ func cmdSync(args []string) {
 		client = scraper.NewClient(cookie)
 	}
 
-	updatesFound, _ := runUpdateCheck(database, client, trackable, *force)
+	updatesFound, _ := RunUpdateCheck(database, client, trackable, *force)
 	fmt.Fprintf(os.Stderr, "\n=== %d updates available ===\n", updatesFound)
 }
 
-// runScrapeAuto finds and associates F95Zone threads for unassociated games.
-func runScrapeAuto(database *db.Database, cookie string, unsafe bool) {
+// RunScrapeAuto finds and associates F95Zone threads for unassociated games.
+func RunScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 	if cookie == "" {
 		fmt.Fprintf(os.Stderr, "Cookie required for auto-association.\n")
 		fmt.Fprintf(os.Stderr, "Log into f95zone.to in Firefox, or use --cookie/--cookie-file.\n")
@@ -490,9 +486,9 @@ func runScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 	estDuration := time.Duration(estSeconds) * time.Second
 	fmt.Fprintf(os.Stderr, "\n=== Auto-Associating %d games ===\n", total)
 	if unsafe {
-		fmt.Fprintf(os.Stderr, "Estimated time: ~%s (unsafe mode — no rate limiting).\n", formatDuration(estDuration))
+		fmt.Fprintf(os.Stderr, "Estimated time: ~%s (unsafe mode — no rate limiting).\n", util.FormatDuration(estDuration))
 	} else {
-		fmt.Fprintf(os.Stderr, "Estimated time: ~%s at current rate limits.\n", formatDuration(estDuration))
+		fmt.Fprintf(os.Stderr, "Estimated time: ~%s at current rate limits.\n", util.FormatDuration(estDuration))
 	}
 	fmt.Fprintf(os.Stderr, "This is a background task — let it run. It'll pause occasionally to avoid rate limits.\n\n")
 
@@ -525,7 +521,7 @@ func runScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 				var err error
 				results, err = client.SearchF95Zone(query)
 				if err != nil {
-					if isBlocked(err) {
+					if util.IsBlocked(err) {
 						fmt.Fprintf(os.Stderr, "  ⚠ BLOCKED: stopping auto-association\n    %v\n", err)
 						fmt.Fprintf(os.Stderr, "  Try refreshing your F95Zone session in Firefox and running again.\n")
 						interrupted = true
@@ -556,7 +552,7 @@ func runScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 				best = &results[j]
 				marker = "→ "
 			}
-			fmt.Fprintf(os.Stderr, "  %s[%.0f%%] %s\n", marker, score*100, truncate(r.Title, 55))
+			fmt.Fprintf(os.Stderr, "  %s[%.0f%%] %s\n", marker, score*100, util.Truncate(r.Title, 55))
 		}
 
 		if best == nil || bestScore < 0.3 {
@@ -569,7 +565,7 @@ func runScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 		fmt.Fprintf(os.Stderr, "  ⬇ Scraping %s...\n", best.URL)
 		data, err := client.ScrapeThread(best.URL)
 		if err != nil {
-			if isBlocked(err) {
+			if util.IsBlocked(err) {
 				fmt.Fprintf(os.Stderr, "  ⚠ BLOCKED: stopping auto-association\n    %v\n", err)
 				fmt.Fprintf(os.Stderr, "  Try refreshing your F95Zone session in Firefox.\n")
 				break
@@ -585,15 +581,15 @@ func runScrapeAuto(database *db.Database, cookie string, unsafe bool) {
 		// the wrong thread.
 		if len(data.Tags) > 0 {
 			detEngine := engine.Detect(game.Path)
-			if !engineMatchesTags(detEngine, data.Tags) {
+			if !EngineMatchesTags(detEngine, data.Tags) {
 				fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread tags: %s) — skipping\n",
-					detEngine.Engine, formatTagsBrief(data.Tags, 4))
+					detEngine.Engine, FormatTagsBrief(data.Tags, 4))
 				skipped++
 				continue
 			}
 		}
 
-		applyThreadData(&game, data, best.URL)
+		ApplyThreadData(&game, data, best.URL)
 		game.VersionCheckedAt = time.Now()
 
 		if err := database.UpdateGame(&game); err != nil {

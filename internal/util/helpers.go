@@ -1,4 +1,4 @@
-package main
+package util
 
 import (
 	"fmt"
@@ -7,13 +7,14 @@ import (
 	"time"
 )
 
-// Pre-compiled regexps used by filesystemSafe.
+// Pre-compiled regexps used by FilesystemSafe.
 var (
-	multiSpaceRE = regexp.MustCompile(`\s{2,}`)
-	multiDashRE  = regexp.MustCompile(`-{2,}`)
+	MultiSpaceRE = regexp.MustCompile(`\s{2,}`)
+	MultiDashRE  = regexp.MustCompile(`-{2,}`)
 )
 
-func formatSize(bytes int64) string {
+// FormatSize returns a human-readable size string (e.g. "1.5 KB").
+func FormatSize(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {
 		return fmt.Sprintf("%d B", bytes)
@@ -26,8 +27,8 @@ func formatSize(bytes int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-// formatDuration returns a human-readable duration string.
-func formatDuration(d time.Duration) string {
+// FormatDuration returns a human-readable duration string.
+func FormatDuration(d time.Duration) string {
 	if d < time.Minute {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	}
@@ -44,8 +45,8 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh%dm", h, m)
 }
 
-// isBlocked returns true if the error indicates we've been blocked/rate-limited.
-func isBlocked(err error) bool {
+// IsBlocked returns true if the error indicates we've been blocked/rate-limited.
+func IsBlocked(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -55,7 +56,8 @@ func isBlocked(err error) bool {
 		strings.Contains(msg, "Cloudflare challenge")
 }
 
-func truncate(s string, maxLen int) string {
+// Truncate truncates a string to maxLen, appending "..." if shortened.
+func Truncate(s string, maxLen int) string {
 	// Strip newlines and truncate.
 	s = strings.ReplaceAll(s, "\n", " ")
 	if len(s) <= maxLen {
@@ -67,14 +69,16 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-func truncateVer(v string) string {
+// TruncateVer returns a display string for a version value.
+func TruncateVer(v string) string {
 	if v == "" {
 		return "(none)"
 	}
 	return v
 }
 
-func wrapText(s string, width int) string {
+// WrapText wraps text to a given width.
+func WrapText(s string, width int) string {
 	var result strings.Builder
 	words := strings.Fields(s)
 	lineLen := 0

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/mili/moxie/internal/commands"
 	"github.com/mili/moxie/internal/tui"
+	"github.com/mili/moxie/internal/util"
 )
 
 func main() {
@@ -15,41 +17,41 @@ func main() {
 
 	switch os.Args[1] {
 	case "scan":
-		cmdScan(os.Args[2:])
+		commands.Scan(os.Args[2:])
 	case "tui":
 		cmdTUI()
 	case "add":
-		cmdAdd(os.Args[2:])
+		commands.Add(os.Args[2:])
 	case "info":
-		cmdInfo(os.Args[2:])
+		commands.Info(os.Args[2:])
 	case "scrape":
-		cmdScrape(os.Args[2:])
+		commands.Scrape(os.Args[2:])
 	case "scrape-batch":
-		cmdScrapeBatch(os.Args[2:])
+		commands.ScrapeBatch(os.Args[2:])
 	case "set-path":
-		cmdSetPath(os.Args[2:])
+		commands.SetPath(os.Args[2:])
 	case "set-exe":
-		cmdSetExe(os.Args[2:])
+		commands.SetExe(os.Args[2:])
 	case "list":
-		cmdList(os.Args[2:])
+		commands.List(os.Args[2:])
 	case "remove":
-		cmdRemove(os.Args[2:])
+		commands.Remove(os.Args[2:])
 	case "rename":
-		cmdRename(os.Args[2:])
+		commands.Rename(os.Args[2:])
 	case "check-updates", "updates":
-		cmdCheckUpdates(os.Args[2:])
+		commands.CheckUpdates(os.Args[2:])
 	case "sync":
-		cmdSync(os.Args[2:])
+		commands.Sync(os.Args[2:])
 	case "play":
-		cmdPlay(os.Args[2:])
+		commands.Play(os.Args[2:])
 	case "steam":
-		cmdSteam(os.Args[2:])
+		commands.Steam(os.Args[2:])
 	case "config":
-		cmdConfig(os.Args[2:])
+		commands.Config(os.Args[2:])
 	case "cleanup":
-		cmdCleanup(os.Args[2:])
+		commands.Cleanup(os.Args[2:])
 	case "refresh-versions":
-		cmdRefreshVersions(os.Args[2:])
+		commands.RefreshVersions(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -119,7 +121,7 @@ Flags for 'sync' and 'check-updates':
 }
 
 func cmdTUI() {
-	if err := tui.Run(dbPath()); err != nil {
+	if err := tui.Run(util.DbPath()); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 		os.Exit(1)
 	}

@@ -1,4 +1,4 @@
-package main
+package commands
 
 import (
 	"errors"
@@ -11,26 +11,28 @@ import (
 	"strings"
 
 	"github.com/mili/moxie/internal/steam"
+	"github.com/mili/moxie/internal/util"
 )
 
-func cmdSteam(args []string) {
+// Steam handles all steam subcommands.
+func Steam(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "Usage: moxie steam <add|remove|list|proton-list|proton-set|fix-artwork>\n")
 		os.Exit(1)
 	}
 	switch args[0] {
 	case "add":
-		cmdSteamAdd(args[1:])
+		SteamAdd(args[1:])
 	case "remove":
-		cmdSteamRemove(args[1:])
+		SteamRemove(args[1:])
 	case "list":
-		cmdSteamList(args[1:])
+		SteamList(args[1:])
 	case "proton-list":
-		cmdSteamProtonList(args[1:])
+		SteamProtonList(args[1:])
 	case "proton-set":
-		cmdSteamProtonSet(args[1:])
+		SteamProtonSet(args[1:])
 	case "fix-artwork":
-		cmdSteamFixArtwork(args[1:])
+		SteamFixArtwork(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown steam subcommand: %s\n", args[0])
 		os.Exit(1)
@@ -48,7 +50,8 @@ func pickSteamUser(steamRoot string) (uint32, error) {
 	return users[0], nil
 }
 
-func cmdSteamAdd(args []string) {
+// SteamAdd adds a game to the Steam library.
+func SteamAdd(args []string) {
 	fs := flag.NewFlagSet("steam-add", flag.ExitOnError)
 	allUsers := fs.Bool("all-users", false, "Add to all Steam user accounts")
 	noArtwork := fs.Bool("no-artwork", false, "Skip downloading cover artwork")
@@ -62,7 +65,7 @@ func cmdSteamAdd(args []string) {
 		fmt.Fprintf(os.Stderr, "Usage: moxie steam add <game-id>\n")
 		os.Exit(1)
 	}
-	id := mustParseInt(fs.Arg(0))
+	id := util.MustParseInt(fs.Arg(0))
 
 	// 1. Sanity checks for Steam.
 	steamRoot, err := steam.FindSteamRoot()
@@ -98,7 +101,7 @@ func cmdSteamAdd(args []string) {
 	}
 
 	// 2. Load game and scraped metadata from DB.
-	database := openDB()
+	database := util.OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -110,7 +113,7 @@ func cmdSteamAdd(args []string) {
 	meta, _ := database.GetScrapedMeta(id)
 
 	// 3. Resolve executable.
-	exe := resolveExecutable(*game)
+	exe := ResolveExecutable(*game)
 	if exe == "" {
 		fmt.Fprintf(os.Stderr, "No executable found for %q. Scan or set one first.\n", game.Title)
 		os.Exit(1)
@@ -121,7 +124,6 @@ func cmdSteamAdd(args []string) {
 	if *displayName != "" {
 		name = *displayName
 	}
-
 
 	// 5. Find Steam users.
 	var userIDs []uint32
@@ -196,9 +198,9 @@ func cmdSteamAdd(args []string) {
 			artDone := false
 
 			// Priority 1: SteamGridDB by name (always try if API key is configured).
-			sgdbAPIKey := resolveSGDBKey(*sgdbKey)
+			sgdbAPIKey := ResolveSGDBKey(*sgdbKey)
 			if sgdbAPIKey != "" {
-				artDone = trySGDBArtworkByName(sgdbAPIKey, steamRoot, uid, entry.AppID, name)
+				artDone = TrySGDBArtworkByName(sgdbAPIKey, steamRoot, uid, entry.AppID, name)
 			}
 
 			// Priority 2: F95Zone cover image (fallback).
@@ -239,7 +241,8 @@ func cmdSteamAdd(args []string) {
 	fmt.Fprintln(os.Stderr, "\n⚠  Restart Steam to see the game in your library.")
 }
 
-func cmdSteamRemove(args []string) {
+// SteamRemove removes a game from the Steam library.
+func SteamRemove(args []string) {
 	fs := flag.NewFlagSet("steam-remove", flag.ExitOnError)
 	userFlag := fs.Uint("user", 0, "Steam user ID (default: first user)")
 	nameFlag := fs.String("name", "", "Override display name (must match the name used when adding)")
@@ -249,9 +252,9 @@ func cmdSteamRemove(args []string) {
 		fmt.Fprintf(os.Stderr, "Usage: moxie steam remove <game-id>\n")
 		os.Exit(1)
 	}
-	id := mustParseInt(fs.Arg(0))
+	id := util.MustParseInt(fs.Arg(0))
 
-	database := openDB()
+	database := util.OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -260,7 +263,7 @@ func cmdSteamRemove(args []string) {
 		os.Exit(1)
 	}
 
-	exe := resolveExecutable(*game)
+	exe := ResolveExecutable(*game)
 	if exe == "" {
 		fmt.Fprintf(os.Stderr, "No executable found for %q.\n", game.Title)
 		os.Exit(1)
@@ -311,7 +314,8 @@ func cmdSteamRemove(args []string) {
 	fmt.Printf("Removed '%s' from Steam library\n", game.Title)
 }
 
-func cmdSteamList(args []string) {
+// SteamList lists games added to the Steam library.
+func SteamList(args []string) {
 	fs := flag.NewFlagSet("steam-list", flag.ExitOnError)
 	userFlag := fs.Uint("user", 0, "Steam user ID (default: first user)")
 	fs.Parse(args)
@@ -365,7 +369,7 @@ func cmdSteamList(args []string) {
 	fmt.Printf("%-30s %-12s %-12s %s\n", "Title", "AppID", "Engine", "Proton")
 	fmt.Println(strings.Repeat("-", 70))
 	for _, s := range f95Entries {
-		title := truncate(s.AppName, 28)
+		title := util.Truncate(s.AppName, 28)
 		appIDHex := fmt.Sprintf("0x%08X", s.AppID)
 
 		// Extract engine tag (first tag after "F95Zone").
@@ -387,7 +391,8 @@ func cmdSteamList(args []string) {
 	fmt.Printf("\n%d F95Zone games in Steam library.\n", len(f95Entries))
 }
 
-func cmdSteamProtonList(args []string) {
+// SteamProtonList lists available Proton versions.
+func SteamProtonList(args []string) {
 	steamRoot, err := steam.FindSteamRoot()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Steam not found: %v\n", err)
@@ -410,7 +415,8 @@ func cmdSteamProtonList(args []string) {
 	}
 }
 
-func cmdSteamProtonSet(args []string) {
+// SteamProtonSet sets the Proton version for a Steam game.
+func SteamProtonSet(args []string) {
 	fs := flag.NewFlagSet("steam-proton-set", flag.ExitOnError)
 	versionFlag := fs.String("version", "", "Proton version (required)")
 	userFlag := fs.Uint("user", 0, "Steam user ID (default: first user)")
@@ -425,9 +431,9 @@ func cmdSteamProtonSet(args []string) {
 		fmt.Fprintf(os.Stderr, "Usage: moxie steam proton-set <game-id> --version <proton>\n")
 		os.Exit(1)
 	}
-	id := mustParseInt(fs.Arg(0))
+	id := util.MustParseInt(fs.Arg(0))
 
-	database := openDB()
+	database := util.OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -436,7 +442,7 @@ func cmdSteamProtonSet(args []string) {
 		os.Exit(1)
 	}
 
-	exe := resolveExecutable(*game)
+	exe := ResolveExecutable(*game)
 	if exe == "" {
 		fmt.Fprintf(os.Stderr, "No executable found for %q.\n", game.Title)
 		os.Exit(1)
@@ -479,7 +485,8 @@ func cmdSteamProtonSet(args []string) {
 	fmt.Printf("Set Proton for '%s' to %s\n", game.Title, *versionFlag)
 }
 
-func cmdSteamFixArtwork(args []string) {
+// SteamFixArtwork re-downloads Steam artwork for a game.
+func SteamFixArtwork(args []string) {
 	fs := flag.NewFlagSet("steam-fix-artwork", flag.ExitOnError)
 	userFlag := fs.Uint("user", 0, "Steam user ID (default: first user)")
 	nameFlag := fs.String("name", "", "Override display name (must match the name used when adding)")
@@ -490,9 +497,9 @@ func cmdSteamFixArtwork(args []string) {
 		fmt.Fprintf(os.Stderr, "Usage: moxie steam fix-artwork <game-id>\n")
 		os.Exit(1)
 	}
-	id := mustParseInt(fs.Arg(0))
+	id := util.MustParseInt(fs.Arg(0))
 
-	database := openDB()
+	database := util.OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -506,7 +513,7 @@ func cmdSteamFixArtwork(args []string) {
 	if *nameFlag != "" {
 		name = *nameFlag
 	}
-	exe := resolveExecutable(*game)
+	exe := ResolveExecutable(*game)
 	if exe == "" {
 		fmt.Fprintf(os.Stderr, "No executable found for %q.\n", game.Title)
 		os.Exit(1)
@@ -532,11 +539,11 @@ func cmdSteamFixArtwork(args []string) {
 
 	artDone := false
 
-	apiKey := resolveSGDBKey(*sgdbKey)
+	apiKey := ResolveSGDBKey(*sgdbKey)
 
 	// Priority 1: SteamGridDB by name (if API key is configured).
 	if apiKey != "" {
-		artDone = trySGDBArtworkByName(apiKey, steamRoot, uid, appID, name)
+		artDone = TrySGDBArtworkByName(apiKey, steamRoot, uid, appID, name)
 	}
 
 	// Priority 2: F95Zone cover URL (fallback, if available and valid).
@@ -557,7 +564,8 @@ func cmdSteamFixArtwork(args []string) {
 	}
 }
 
-func resolveSGDBKey(flagKey string) string {
+// ResolveSGDBKey returns a SteamGridDB API key from the most available source.
+func ResolveSGDBKey(flagKey string) string {
 	if flagKey != "" {
 		return flagKey
 	}
@@ -565,20 +573,21 @@ func resolveSGDBKey(flagKey string) string {
 		return key
 	}
 	// Check JSON config (new format).
-	if cfg, err := readConfig(); err == nil {
+	if cfg, err := util.ReadConfig(); err == nil {
 		if key, ok := cfg["steamgriddb-key"]; ok && key != "" {
 			return key
 		}
 	}
 	// Fall back to legacy flat file.
-	if data, err := os.ReadFile(filepath.Join(configDir(), "steamgriddb-key")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(util.ConfigDir(), "steamgriddb-key")); err == nil {
 		return strings.TrimSpace(string(data))
 	}
 	return ""
 }
 
+// ExtractSteamAppID extracts a Steam App ID from a store URL.
 // Example: "https://store.steampowered.com/app/12345/GameName/" → (12345, true)
-func extractSteamAppID(storeURL string) (int, bool) {
+func ExtractSteamAppID(storeURL string) (int, bool) {
 	re := regexp.MustCompile(`/app/(\d+)/`)
 	matches := re.FindStringSubmatch(storeURL)
 	if len(matches) < 2 {
@@ -588,7 +597,8 @@ func extractSteamAppID(storeURL string) (int, bool) {
 	return id, err == nil
 }
 
-func downloadSGDBArtwork(sgdb *steam.SGDBClient, steamRoot string, uid, appID uint32, realSteamAppID int) bool {
+// DownloadSGDBArtwork downloads SteamGridDB artwork for a real Steam App ID.
+func DownloadSGDBArtwork(sgdb *steam.SGDBClient, steamRoot string, uid, appID uint32, realSteamAppID int) bool {
 	// Vertical grid (600×900).
 	grids, err := sgdb.GetGridsBySteamAppID(realSteamAppID, "600x900")
 	if err != nil {
@@ -621,16 +631,18 @@ func downloadSGDBArtwork(sgdb *steam.SGDBClient, steamRoot string, uid, appID ui
 	return true
 }
 
-func sanitizeTitleForSGDB(title string) string {
+// SanitizeTitleForSGDB cleans a game title for SteamGridDB search.
+func SanitizeTitleForSGDB(title string) string {
 	s := regexp.MustCompile(`\s*\[?v?\d+\.\d+(?:\.\d+)?\]?\s*`).ReplaceAllString(title, " ")
 	s = strings.TrimSpace(s)
 	return s
 }
 
-func trySGDBArtworkByName(apiKey, steamRoot string, uid, appID uint32, gameName string) bool {
-	fmt.Fprintf(os.Stderr, "  Searching SteamGridDB for %q...\n", sanitizeTitleForSGDB(gameName))
+// TrySGDBArtworkByName searches SteamGridDB by game name and downloads artwork.
+func TrySGDBArtworkByName(apiKey, steamRoot string, uid, appID uint32, gameName string) bool {
+	fmt.Fprintf(os.Stderr, "  Searching SteamGridDB for %q...\n", SanitizeTitleForSGDB(gameName))
 	sgdb := steam.NewSGDBClient(apiKey)
-	results, err := sgdb.SearchGame(sanitizeTitleForSGDB(gameName))
+	results, err := sgdb.SearchGame(SanitizeTitleForSGDB(gameName))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  ⚠ SGDB search: %v\n", err)
 		return false
@@ -675,4 +687,3 @@ func trySGDBArtworkByName(apiKey, steamRoot string, uid, appID uint32, gameName 
 
 	return true
 }
-

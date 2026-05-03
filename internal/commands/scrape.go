@@ -1,4 +1,4 @@
-package main
+package commands
 
 import (
 	"flag"
@@ -10,13 +10,11 @@ import (
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/scraper"
+	"github.com/mili/moxie/internal/util"
 )
 
-// ---------------------------------------------------------------------------
-// scrape command
-// ---------------------------------------------------------------------------
-
-func cmdScrape(args []string) {
+// Scrape scrapes F95Zone metadata for a single game.
+func Scrape(args []string) {
 	fs := flag.NewFlagSet("scrape", flag.ExitOnError)
 	cookieStr := fs.String("cookie", "", "Cookie header from browser")
 	cookieFile := fs.String("cookie-file", "", "File containing cookie header")
@@ -26,10 +24,10 @@ func cmdScrape(args []string) {
 	fs.Parse(args)
 
 	// Get cookie string — try Firefox auto-detect first.
-	cookie := resolveCookie(*cookieStr, *cookieFile)
+	cookie := ResolveCookie(*cookieStr, *cookieFile)
 
 	if *autoMode {
-		cmdScrapeAutoWrapper(cookie, *unsafe)
+		ScrapeAutoWrapper(cookie, *unsafe)
 		return
 	}
 
@@ -38,14 +36,14 @@ func cmdScrape(args []string) {
 		fmt.Fprintf(os.Stderr, "       moxie scrape --auto\n")
 		os.Exit(1)
 	}
-	id := mustParseInt(fs.Arg(0))
+	id := util.MustParseInt(fs.Arg(0))
 
 	if cookie == "" {
 		fmt.Fprintf(os.Stderr, "Cookie required. Use --cookie, --cookie-file, or log into f95zone.to in Firefox.\n")
 		os.Exit(1)
 	}
 
-	database := openDB()
+	database := util.OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -68,7 +66,7 @@ func cmdScrape(args []string) {
 	client := scraper.NewClient(cookie)
 	data, err := client.ScrapeThread(url)
 	if err != nil {
-		if isBlocked(err) {
+		if util.IsBlocked(err) {
 			fmt.Fprintf(os.Stderr, "\n⚠ BLOCKED: %v\n", err)
 			fmt.Fprintf(os.Stderr, "Try refreshing your F95Zone session in Firefox and running again.\n")
 			os.Exit(1)
@@ -78,7 +76,7 @@ func cmdScrape(args []string) {
 	}
 
 	// Update game with scraped data.
-	applyThreadData(game, data, url)
+	ApplyThreadData(game, data, url)
 
 	if err := database.UpdateGame(game); err != nil {
 		fmt.Fprintf(os.Stderr, "Error updating game: %v\n", err)
@@ -117,10 +115,10 @@ func cmdScrape(args []string) {
 	}
 }
 
-// cmdScrapeBatch scrapes F95Zone metadata for multiple games from a file.
+// ScrapeBatch scrapes F95Zone metadata for multiple games from a file.
 // File format: one entry per line — "<id> <url>"
 // Lines starting with # and blank lines are ignored.
-func cmdScrapeBatch(args []string) {
+func ScrapeBatch(args []string) {
 	fs := flag.NewFlagSet("scrape-batch", flag.ExitOnError)
 	cookieStr := fs.String("cookie", "", "Cookie header from browser")
 	cookieFile := fs.String("cookie-file", "", "File containing cookie header")
@@ -132,7 +130,7 @@ func cmdScrapeBatch(args []string) {
 		os.Exit(1)
 	}
 
-	cookie := resolveCookie(*cookieStr, *cookieFile)
+	cookie := ResolveCookie(*cookieStr, *cookieFile)
 	if cookie == "" {
 		fmt.Fprintf(os.Stderr, "Cookie required. Log into f95zone.to in Firefox.\n")
 		os.Exit(1)
@@ -172,7 +170,7 @@ func cmdScrapeBatch(args []string) {
 		os.Exit(1)
 	}
 
-	database := openDB()
+	database := util.OpenDB()
 	defer database.Close()
 
 	client := scraper.NewClient(cookie)
@@ -190,7 +188,7 @@ func cmdScrapeBatch(args []string) {
 
 		td, err := client.ScrapeThread(e.url)
 		if err != nil {
-			if isBlocked(err) {
+			if util.IsBlocked(err) {
 				fmt.Fprintf(os.Stderr, "\n⚠ BLOCKED: %v\nStopping batch.\n", err)
 				os.Exit(1)
 			}
@@ -199,7 +197,7 @@ func cmdScrapeBatch(args []string) {
 			continue
 		}
 
-		applyThreadData(game, td, e.url)
+		ApplyThreadData(game, td, e.url)
 		if err := database.UpdateGame(game); err != nil {
 			fmt.Fprintf(os.Stderr, "  ✗ Save error: %v\n", err)
 			failed++
@@ -227,9 +225,9 @@ func cmdScrapeBatch(args []string) {
 	fmt.Fprintf(os.Stderr, "\nDone: %d scraped, %d failed.\n", ok, failed)
 }
 
-// resolveCookie returns a cookie string from the most available source:
+// ResolveCookie returns a cookie string from the most available source:
 // 1. Explicit --cookie flag, 2. --cookie-file, 3. Firefox auto-detect.
-func resolveCookie(explicit, file string) string {
+func ResolveCookie(explicit, file string) string {
 	if explicit != "" {
 		return explicit
 	}
@@ -257,19 +255,19 @@ func resolveCookie(explicit, file string) string {
 	return cookie
 }
 
-// applyThreadData copies scraped ThreadData fields onto a Game.
+// ApplyThreadData copies scraped ThreadData fields onto a Game.
 // Non-empty fields in data overwrite the corresponding game fields.
-func applyThreadData(game *db.Game, data *scraper.ThreadData, url string) {
+func ApplyThreadData(game *db.Game, data *scraper.ThreadData, url string) {
 	if data.Title != "" {
 		// Extract engine from F95Zone thread prefix before stripping.
 		// Useful when scanner can't determine the engine (e.g., RPG Maker
 		// MV/MZ games with HTML/JS files get detected as "HTML").
-		if f95Eng := extractEngineFromTitle(data.Title); f95Eng != "" {
+		if f95Eng := ExtractEngineFromTitle(data.Title); f95Eng != "" {
 			if game.Engine == "" || game.Engine == "Unknown" || game.Engine == "Others" {
 				game.Engine = f95Eng
 			}
 		}
-		game.Title = stripThreadPrefix(data.Title)
+		game.Title = StripThreadPrefix(data.Title)
 	}
 	if data.Version != "" {
 		// LatestVersion tracks the F95Zone version.
@@ -289,10 +287,10 @@ func applyThreadData(game *db.Game, data *scraper.ThreadData, url string) {
 	}
 }
 
-// cmdScrapeAutoWrapper opens the database and runs auto-association.
-// This wrapper exists so cmdScrape can call it without already having a DB handle.
-func cmdScrapeAutoWrapper(cookie string, unsafe bool) {
-	database := openDB()
+// ScrapeAutoWrapper opens the database and runs auto-association.
+// This wrapper exists so Scrape can call it without already having a DB handle.
+func ScrapeAutoWrapper(cookie string, unsafe bool) {
+	database := util.OpenDB()
 	defer database.Close()
-	runScrapeAuto(database, cookie, unsafe)
+	RunScrapeAuto(database, cookie, unsafe)
 }

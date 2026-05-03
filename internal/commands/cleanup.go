@@ -1,4 +1,4 @@
-package main
+package commands
 
 import (
 	"flag"
@@ -10,20 +10,47 @@ import (
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/scanner"
+	"github.com/mili/moxie/internal/util"
 )
 
-// ---------------------------------------------------------------------------
-// cleanup command — detect and fix wrong F95Zone thread associations
-// ---------------------------------------------------------------------------
+// EngineTagVariants maps canonical engine names to substrings that commonly
+// appear in F95Zone thread tags.  A match is found when any variant appears
+// within any tag (case-insensitive).
+var EngineTagVariants = map[string][]string{
+	"RenPy":        {"ren'py", "renpy"},
+	"Unity":        {"unity"},
+	"RPGM":         {"rpg maker", "rpgm", "rmmv", "rmmz"},
+	"HTML":         {"html", "html5"},
+	"Flash":        {"flash"},
+	"Java":         {"java"},
+	"UnrealEngine": {"unreal", "unreal engine"},
+	"WebGL":        {"webgl"},
+	"WolfRPG":      {"wolf rpg", "wolfrpg"},
+	"ADRIFT":       {"adrift"},
+	"QSP":          {"qsp"},
+	"RAGS":         {"rags"},
+	"Tads":         {"tads"},
+}
 
-func cmdCleanup(args []string) {
+// EngineCompat maps engines that are implementation-compatible.
+// For example, RPG Maker MV/MZ uses NW.js (HTML/JS) as its runtime,
+// so scanner-detected "HTML" is compatible with F95Zone-prefixed "RPGM".
+var EngineCompat = map[string]map[string]bool{
+	"RPGM":    {"HTML": true, "RPGM": true},
+	"HTML":    {"RPGM": true, "HTML": true, "WebGL": true},
+	"WebGL":   {"HTML": true, "WebGL": true},
+	"WolfRPG": {"HTML": true, "WolfRPG": true},
+}
+
+// Cleanup detects and fixes wrong F95Zone thread associations.
+func Cleanup(args []string) {
 	fs := flag.NewFlagSet("cleanup", flag.ExitOnError)
 	dryRun := fs.Bool("dry-run", false, "Preview issues without making changes")
 	assumeYes := fs.Bool("assume-yes", false, "Auto-disassociate flagged games without prompting")
 	yes := fs.Bool("y", false, "Auto-disassociate flagged games (shorthand for --assume-yes)")
 	fs.Parse(args)
 
-	database := openDB()
+	database := util.OpenDB()
 	defer database.Close()
 
 	games, err := database.ListGames("", "")
@@ -53,12 +80,12 @@ func cmdCleanup(args []string) {
 		var issues []string
 
 		// Signal 1: Engine mismatch.
-		if s := checkEngineMismatch(g); s != "" {
+		if s := CheckEngineMismatch(g); s != "" {
 			issues = append(issues, s)
 		}
 
 		// Signal 2: Executable name mismatch.
-		if s := checkExeMismatch(g); s != "" {
+		if s := CheckExeMismatch(g); s != "" {
 			issues = append(issues, s)
 		}
 
@@ -89,7 +116,7 @@ func cmdCleanup(args []string) {
 		}
 
 		if autoDisassociate {
-			disassociateGame(database, &g)
+			DisassociateGame(database, &g)
 			disassociated++
 			continue
 		}
@@ -99,7 +126,7 @@ func cmdCleanup(args []string) {
 		var answer string
 		fmt.Scanln(&answer)
 		if strings.ToLower(answer) == "y" {
-			disassociateGame(database, &g)
+			DisassociateGame(database, &g)
 			disassociated++
 		}
 	}
@@ -115,36 +142,7 @@ func cmdCleanup(args []string) {
 	}
 }
 
-// engineTagVariants maps canonical engine names to substrings that commonly
-// appear in F95Zone thread tags.  A match is found when any variant appears
-// within any tag (case-insensitive).
-var engineTagVariants = map[string][]string{
-	"RenPy":        {"ren'py", "renpy"},
-	"Unity":        {"unity"},
-	"RPGM":         {"rpg maker", "rpgm", "rmmv", "rmmz"},
-	"HTML":         {"html", "html5"},
-	"Flash":        {"flash"},
-	"Java":         {"java"},
-	"UnrealEngine": {"unreal", "unreal engine"},
-	"WebGL":        {"webgl"},
-	"WolfRPG":      {"wolf rpg", "wolfrpg"},
-	"ADRIFT":       {"adrift"},
-	"QSP":          {"qsp"},
-	"RAGS":         {"rags"},
-	"Tads":         {"tads"},
-}
-
-// engineCompat maps engines that are implementation-compatible.
-// For example, RPG Maker MV/MZ uses NW.js (HTML/JS) as its runtime,
-// so scanner-detected "HTML" is compatible with F95Zone-prefixed "RPGM".
-var engineCompat = map[string]map[string]bool{
-	"RPGM":    {"HTML": true, "RPGM": true},
-	"HTML":    {"RPGM": true, "HTML": true, "WebGL": true},
-	"WebGL":   {"HTML": true, "WebGL": true},
-	"WolfRPG": {"HTML": true, "WolfRPG": true},
-}
-
-// engineMatchesTags checks whether the scanner-detected engine is consistent
+// EngineMatchesTags checks whether the scanner-detected engine is consistent
 // with the F95Zone thread tags.  Returns true when:
 //   - There are no tags to compare (inconclusive)
 //   - The detected engine is "Others" or empty (inconclusive)
@@ -153,7 +151,7 @@ var engineCompat = map[string]map[string]bool{
 //
 // Returns false only when there is a clear engine mismatch (specific engine
 // was detected, tags exist, and no variant matches any tag).
-func engineMatchesTags(detected engine.Result, tags []string) bool {
+func EngineMatchesTags(detected engine.Result, tags []string) bool {
 	if len(tags) == 0 {
 		return true // no metadata to compare against
 	}
@@ -161,7 +159,7 @@ func engineMatchesTags(detected engine.Result, tags []string) bool {
 		return true // detection inconclusive — don't flag
 	}
 
-	variants := engineTagVariants[string(detected.Engine)]
+	variants := EngineTagVariants[string(detected.Engine)]
 	if len(variants) == 0 {
 		return true // no mapping known for this engine — don't flag
 	}
@@ -178,10 +176,10 @@ func engineMatchesTags(detected engine.Result, tags []string) bool {
 	return false
 }
 
-// checkEngineMismatch returns a description of the mismatch, or "" if no
+// CheckEngineMismatch returns a description of the mismatch, or "" if no
 // issue is found.  It compares the scanner-detected engine (via
 // engine.Detect) against the F95Zone thread tags stored on the game.
-func checkEngineMismatch(g db.Game) string {
+func CheckEngineMismatch(g db.Game) string {
 	if len(g.Tags) == 0 {
 		return "" // no F95Zone metadata to compare against
 	}
@@ -191,7 +189,7 @@ func checkEngineMismatch(g db.Game) string {
 		return "" // can't determine local engine
 	}
 
-	f95Engine := findF95Engine(g)
+	f95Engine := FindF95Engine(g)
 	if f95Engine == "" {
 		return fmt.Sprintf("engine unverified — no engine info in F95Zone tags/title (scanner found: %s)", detected.Engine)
 	}
@@ -202,7 +200,7 @@ func checkEngineMismatch(g db.Game) string {
 
 	// Check compatibility: RPGM games use HTML runtime (NW.js),
 	// WolfRPG uses HTML, WebGL is compatible with HTML, etc.
-	if compat, ok := engineCompat[f95Engine]; ok && compat[string(detected.Engine)] {
+	if compat, ok := EngineCompat[f95Engine]; ok && compat[string(detected.Engine)] {
 		return "" // compatible engines — not a mismatch
 	}
 
@@ -210,14 +208,14 @@ func checkEngineMismatch(g db.Game) string {
 		detected.Engine, f95Engine)
 }
 
-// findF95Engine looks through F95Zone thread tags, the game title,
+// FindF95Engine looks through F95Zone thread tags, the game title,
 // and the parent directory for an engine indicator.  Returns the
 // engine name implied by the data, or "" if no engine is found.
-func findF95Engine(g db.Game) string {
+func FindF95Engine(g db.Game) string {
 	// 1. Check tags (most reliable — explicitly tagged by thread author).
 	for _, tag := range g.Tags {
 		tagLower := strings.ToLower(tag)
-		for engine, variants := range engineTagVariants {
+		for engine, variants := range EngineTagVariants {
 			for _, variant := range variants {
 				if strings.Contains(tagLower, variant) {
 					return engine
@@ -227,7 +225,7 @@ func findF95Engine(g db.Game) string {
 	}
 	// 2. Fall back to title prefix (RPGM, Unity, RenPy, etc. in thread title).
 	titleLower := strings.ToLower(g.Title)
-	for engine, variants := range engineTagVariants {
+	for engine, variants := range EngineTagVariants {
 		for _, variant := range variants {
 			if strings.HasPrefix(titleLower, variant+" ") || strings.HasPrefix(titleLower, variant+"\t") {
 				return engine
@@ -236,7 +234,7 @@ func findF95Engine(g db.Game) string {
 	}
 	// 3. Check parent directory name — users often organize by engine.
 	parent := strings.ToLower(filepath.Base(filepath.Dir(g.Path)))
-	for engine, variants := range engineTagVariants {
+	for engine, variants := range EngineTagVariants {
 		for _, variant := range variants {
 			if strings.Contains(parent, variant) {
 				return engine
@@ -246,10 +244,10 @@ func findF95Engine(g db.Game) string {
 	return ""
 }
 
-// checkExeMismatch returns a description when no executable in the game
+// CheckExeMismatch returns a description when no executable in the game
 // directory shares a word (case-insensitive) with the game title, or ""
 // if at least one executable matches.
-func checkExeMismatch(g db.Game) string {
+func CheckExeMismatch(g db.Game) string {
 	entries, err := os.ReadDir(g.Path)
 	if err != nil {
 		return "" // directory inaccessible — skip
@@ -323,9 +321,9 @@ func checkExeMismatch(g db.Game) string {
 	return fmt.Sprintf("unmatched executable (found: %s)", strings.Join(meaningfulExes, ", "))
 }
 
-// disassociateGame clears the F95Zone URL and thread ID from a game and
+// DisassociateGame clears the F95Zone URL and thread ID from a game and
 // saves the change to the database.
-func disassociateGame(database *db.Database, g *db.Game) {
+func DisassociateGame(database *db.Database, g *db.Game) {
 	g.F95URL = ""
 	g.F95ThreadID = 0
 	if err := database.UpdateGame(g); err != nil {
@@ -335,9 +333,9 @@ func disassociateGame(database *db.Database, g *db.Game) {
 	}
 }
 
-// formatTagsBrief returns a comma-separated tag string, limited to max tags
+// FormatTagsBrief returns a comma-separated tag string, limited to max tags
 // to keep output readable.
-func formatTagsBrief(tags []string, max int) string {
+func FormatTagsBrief(tags []string, max int) string {
 	if len(tags) == 0 {
 		return ""
 	}
@@ -347,12 +345,9 @@ func formatTagsBrief(tags []string, max int) string {
 	return strings.Join(tags[:max], ", ") + fmt.Sprintf(" (+%d more)", len(tags)-max)
 }
 
-// ---------------------------------------------------------------------------
-// refresh-versions command
-// ---------------------------------------------------------------------------
-
-func cmdRefreshVersions(args []string) {
-	database := openDB()
+// RefreshVersions re-extracts versions from directory names.
+func RefreshVersions(args []string) {
+	database := util.OpenDB()
 	defer database.Close()
 
 	games, err := database.ListGames("", "")
@@ -378,7 +373,7 @@ func cmdRefreshVersions(args []string) {
 		}
 		updated++
 		fmt.Fprintf(os.Stderr, "  %-50s %s → %s\n",
-			truncate(g.Title, 48), truncateVer(oldVer), dirVer)
+			util.Truncate(g.Title, 48), util.TruncateVer(oldVer), dirVer)
 	}
 
 	if updated == 0 {
@@ -388,16 +383,16 @@ func cmdRefreshVersions(args []string) {
 	}
 }
 
-// extractEngineFromTitle pulls the engine prefix from a raw F95Zone
+// ExtractEngineFromTitle pulls the engine prefix from a raw F95Zone
 // thread title (e.g. "RPGM Completed Game Name" → "RPGM").
-func extractEngineFromTitle(title string) string {
+func ExtractEngineFromTitle(title string) string {
 	words := strings.Fields(title)
 	if len(words) == 0 {
 		return ""
 	}
 	// Check if the first word is a known engine prefix.
 	first := strings.ToLower(strings.TrimRight(words[0], "•"))
-	for engine, variants := range engineTagVariants {
+	for engine, variants := range EngineTagVariants {
 		for _, variant := range variants {
 			if first == variant {
 				return engine

@@ -1,4 +1,4 @@
-package main
+package util
 
 import (
 	"encoding/json"
@@ -11,8 +11,8 @@ import (
 	"github.com/mili/moxie/internal/db"
 )
 
-// configDir returns the platform-standard configuration directory for moxie.
-func configDir() string {
+// ConfigDir returns the platform-standard configuration directory for moxie.
+func ConfigDir() string {
 	switch runtime.GOOS {
 	case "windows":
 		return filepath.Join(os.Getenv("APPDATA"), "moxie")
@@ -25,24 +25,24 @@ func configDir() string {
 	}
 }
 
-// dbPath returns the path to the games database.
-func dbPath() string {
-	dir := configDir()
+// DbPath returns the path to the games database.
+func DbPath() string {
+	dir := ConfigDir()
 	os.MkdirAll(dir, 0755)
 	return filepath.Join(dir, "games.db")
 }
 
-// configPath returns the path to the JSON config file.
-func configPath() string {
-	dir := configDir()
+// ConfigPath returns the path to the JSON config file.
+func ConfigPath() string {
+	dir := ConfigDir()
 	os.MkdirAll(dir, 0755)
 	return filepath.Join(dir, "config.json")
 }
 
-// readConfig reads the JSON config file. Returns an empty map if the file
+// ReadConfig reads the JSON config file. Returns an empty map if the file
 // does not exist.
-func readConfig() (map[string]string, error) {
-	path := configPath()
+func ReadConfig() (map[string]string, error) {
+	path := ConfigPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -60,10 +60,10 @@ func readConfig() (map[string]string, error) {
 	return cfg, nil
 }
 
-// writeConfig serializes the config map as JSON and writes it to the config
+// WriteConfig serializes the config map as JSON and writes it to the config
 // file atomically.
-func writeConfig(cfg map[string]string) error {
-	path := configPath()
+func WriteConfig(cfg map[string]string) error {
+	path := ConfigPath()
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
@@ -86,8 +86,9 @@ func writeConfig(cfg map[string]string) error {
 	return os.Rename(tmpName, path)
 }
 
-func openDB() *db.Database {
-	path := dbPath()
+// OpenDB opens the SQLite database and exits on error.
+func OpenDB() *db.Database {
+	path := DbPath()
 	database, err := db.Open(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
@@ -96,7 +97,8 @@ func openDB() *db.Database {
 	return database
 }
 
-func mustParseInt(s string) int64 {
+// MustParseInt parses a string as int64, printing an error and exiting on failure.
+func MustParseInt(s string) int64 {
 	n, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Invalid ID: %s\n", s)
