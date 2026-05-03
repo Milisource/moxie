@@ -13,7 +13,8 @@ moxie recursively scans your game directories, detects engines (Unity, Ren'Py, R
 - **Auto-association** — Title-matching engine scores unassociated games against F95Zone search results (exact → contains → word overlap) and accepts the best match automatically.
 - **Steam integration** — Add non-Steam games to your Steam library with deterministic AppIDs, grid artwork (F95Zone cover or SteamGridDB), Proton version configuration, and safe VDF read/write with automatic backups.
 - **Bubble Tea TUI** — Full interactive terminal UI with list/detail views, engine/status filters, sortable columns, real-time search, and engine-colored rows.
-- **Version tracking** — `check-updates` and `sync` re-scrape associated threads, compare versions, and report what's new.
+- **Version tracking** — `check-updates` and `sync` re-scrape associated threads, compare versions, and report what's new. Supports `--force` to bypass 24h cooldown.
+- **Engine-aware cleanup** — Detects wrong F95Zone associations by comparing scanner-detected engines against F95Zone thread engines. NW.js (RPG Maker MV/MZ), Unity, Ren'Py, and pure HTML are distinguished accurately.
 - **Config management** — Persistent JSON-backed settings for SteamGridDB API keys and other preferences.
 - **Cross-platform** — Single static Go binary (~10 MB), no CGO, no runtime deps. Linux primary target; Windows and macOS supported for scanning and library management.
 
@@ -68,9 +69,13 @@ On first scan you will be prompted before saving. Use `--no-save` for a preview-
 | `add <path> [flags]` | Manually add a game directory. Engine auto-detection runs if not specified. |
 | `remove <id>` | Remove a game from the library. Does **not** delete files on disk. |
 | `rename [flags]` | Rename game directories using clean, filesystem-safe names. Use `--dry-run` to preview before applying. |
-| `list [flags]` | List all games in the library. Supports `--engine`, `--status`, `--json`. |
+| `list [flags]` | List all games in the library. Supports `--engine`, `--status`, `--json`. `--warnings` adds an engine/exe mismatch column. |
 | `info <id>` | Show detailed game information — path, size, dates, engine, and scraped metadata. |
 | `play <id>` | Launch a game by its library ID. On Linux, prefers native binaries over Wine. |
+| `set-path <id> <path>` | Update a game's directory path in the database. |
+| `set-exe <id> <exe>` | Manually set the executable path for a game. |
+| `refresh-versions` | Re-extract version strings from game directory names. No network calls — instant. |
+| `cleanup [flags]` | Scan all associated games for wrong F95Zone matches (engine/exe mismatch). `--dry-run` to preview, `--assume-yes` to auto-fix. |
 
 ### F95Zone Integration
 
@@ -78,8 +83,9 @@ On first scan you will be prompted before saving. Use `--no-save` for a preview-
 |---|---|
 | `scrape <id> [flags]` | Scrape an F95Zone thread for metadata. Firefox cookies auto-detected; use `--cookie-file` for explicit import. |
 | `scrape --auto` | Batch-associate all unassociated games via F95Zone title search. Scores candidate threads and auto-accepts the best match. |
-| `sync [id] [flags]` | Full library sync: associate unassociated games, then check all for updates. Pass a game ID to sync a single title. `--json` for machine output. |
-| `check-updates [flags]` | Re-scrape all associated games and report which have newer versions available on F95Zone. |
+| `scrape-batch <file>` | Batch-scrape from a file listing `<id> <url>` pairs (one per line, `#` comments supported). |
+| `sync [id] [flags]` | Full library sync: associate unassociated games, then check all for updates. Pass a game ID to sync a single title. `--force` bypasses 24h cooldown, `--unsafe` skips rate limiting. |
+| `check-updates [flags]` | Re-scrape all associated games and report which have newer versions available on F95Zone. `--force` to re-check within 24h window. |
 
 ### Steam Integration
 
@@ -140,9 +146,20 @@ moxie steam add 42 --all-users
 ### "I want to check for game updates"
 
 ```bash
-moxie check-updates                # check all associated games for new versions
-moxie sync --json > updates.json   # full sync, JSON output for scripting
-moxie sync 15                      # check a single game by ID
+moxie check-updates                  # check all associated games for new versions
+moxie check-updates --force          # re-check even if checked within 24h
+moxie sync --json > updates.json     # full sync, JSON output for scripting
+moxie sync 15                        # check a single game by ID
+moxie sync 15 --force                # single game, bypass cooldown
+```
+
+### "I want to verify my F95Zone associations are correct"
+
+```bash
+moxie cleanup --dry-run              # preview all flagged issues
+moxie cleanup                        # interactive review of each mismatch
+moxie cleanup --assume-yes           # auto-disassociate all flagged games
+moxie list --warnings                # quick scan for engine/exe issues
 ```
 
 ### "I want to configure SteamGridDB artwork"

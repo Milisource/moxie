@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
-**Version:** 0.1.0-alpha (May 2026)
-**Status:** Alpha — 0.1.0 (Steam integration, 22 CLI commands, 200+ tests)
+**Version:** 0.2.0-alpha (May 2026)
+**Status:** Alpha — 0.2.0 (engine detection, cleanup, version extraction)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
@@ -30,24 +30,20 @@ A local game library manager for adult games. Scans directories, detects engines
 
 ### Completed (MVP)
 
-- [x] 22 CLI entry points: `scan`, `list`, `info`, `add`, `scrape`, `scrape --auto`, `remove`, `rename`, `check-updates`, `sync`, `sync <id>`, `play`, `tui`, `steam add`, `steam remove`, `steam list`, `steam proton-list`, `steam proton-set`, `steam fix-artwork`, `config set`, `config get`, `config show`
+- [x] 28 CLI entry points: all previous + `cleanup`, `refresh-versions`, `scrape-batch`, `set-path`, `set-exe`
 - [x] Recursive directory scanning with smart `SkipDir` on game roots
-- [x] Engine detection for 14 canonical engines + 3 community → Others
-- [x] SQLite database with WAL mode, foreign keys, CHECK constraints
-- [x] Cookie-based F95Zone scraping (Firefox auto-detect, explicit fallback)
-- [x] Auto-association via F95Zone search with title scoring
+- [x] Engine detection for 14 canonical engines + NW.js (RPG Maker MV/MZ) detection
+- [x] SQLite database with WAL mode, foreign keys, CHECK constraints, LatestVersion tracking
+- [x] Cookie-based F95Zone scraping (Firefox auto-detect, explicit, SQLite fallback)
+- [x] Auto-association via F95Zone search with title scoring + engine mismatch prevention
 - [x] Bubble Tea TUI with list/detail views, engine/status filters, engine colors
-- [x] Version tracking (`latest_version`, `version_checked_at`)
-- [x] Cross-compilation script (linux/mac/windows), install script
-- [x] 170+ tests across scanner, engine, scraper, DB
-- [x] Rate limiting with exponential backoff and block detection
-- [x] Steam library integration: shortcuts.vdf read/write, grid artwork download, Proton configuration
-- [x] SteamGridDB API client for premium artwork sourcing
-- [x] Deterministic non-Steam AppID generation (CRC32-based)
-- [x] Scraper optimizations: stale-skip, search deduplication, concurrent worker pool
-- [x] Scraped store link extraction (Steam, Itch.io, dl.site from F95Zone threads)
-- [x] Improved title matching with sequel detection (prevents "Corruption of Champions" matching "Corruption of Champions II")
-- [x] Configuration management (moxie config set/get/show, JSON-backed)
+- [x] Version tracking with `LatestVersion` fallback for unknown local versions
+- [x] Version normalization (trailing .0 stripping, v-prefix handling)
+- [x] `--force` flag for bypassing 24h update-check cooldown
+- [x] Cleanup command: engine mismatch detection, exe mismatch detection, interactive disassociation
+- [x] Engine compatibility map (RPGM↔HTML via NW.js, WolfRPG↔HTML)
+- [x] `--warnings` flag on `list` command
+- [x] 325+ tests across scanner, engine, scraper, DB, helpers, commands
 
 ### Upcoming
 
