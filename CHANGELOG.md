@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5-alpha] - 2026-05-04
+
+### Added
+
+- **Store links persistence** — `StoreLinks` (JSON map) and `SteamAppID` columns on `games` table. Store links (Steam, itch.io, DL-Site) are now extracted from F95Zone threads, persisted to the database, and used for precise SteamGridDB artwork lookup (F95-1z8)
+- **SGDB icon/logo support** — 4 new SGDB client methods (`GetIconsBySteamAppID`, `GetIconsBySGDBGameID`, `GetLogosBySteamAppID`, `GetLogosBySGDBGameID`). `TrySGDBArtworkByName` and `DownloadSGDBArtwork` now download all 5 artwork types: vertical grid, horizontal grid, hero, icon, and logo (F95-8ai)
+- **ICO-to-PNG via SGDB thumb fallback** — `BestGridImage` returns the `thumb` field (a PNG) when the best match is an `.ico` file, avoiding format conversion dependencies (F95-8ai)
+- **Self-update command** — `moxie update` fetches the latest release from GitHub, compares versions, downloads the correct platform binary, and atomically replaces itself with rollback support (F95-update)
+- **Welcome screen overhaul** — first-run message now includes SteamGridDB setup, `steam add`/`fix-artwork`/`list`, `check-updates`/`sync`, and the `update` command
+- **TUI help overlay** — CLI quick-start commands (scan, scrape, steam add, fix-artwork) added to the `?` help screen
+- **31 new tests** across `db`, `scraper`, `commands`, and `steam` packages — marshal/unmarshal store links, DB round-trip, parser store link matching, ApplyThreadData wiring, BestGridImage thumb fallback
+
+### Fixed
+
+- **SGDB parse error** — all v2 endpoints return `{success, data, errors}` wrapper objects, not bare arrays. Added `sgdbImageResponse` wrapper type for grids, heroes, icons, and logos (F95-8ai)
+- **SGDB icon mime filter** — icons use `image/vnd.microsoft.icon` (`.ico`), not PNG. Removed `?mimes=image/png` from icon endpoints (F95-8ai)
+- **Parser store link false positives** — DL-Site help articles (`/hc/`, `/help/`, `/home/`), Steam curator pages (`/curator/`), and bare itch.io publisher pages no longer matched as store links. Replaced domain substring matching with function-based matchers (F95-1z8)
+- **Store links not saved during sync update check** — Phase 2 (update check) now saves `StoreLinks` and `SteamAppID` from scraped thread data, not just Phase 1 (association) (F95-1z8)
+
+### Changed
+
+- **Artwork priority chain** — `SteamAdd` and `SteamFixArtwork` now try `DownloadSGDBArtwork` by real Steam App ID first, then `TrySGDBArtworkByName`, then F95Zone cover fallback
+- **`TrySGDBArtworkByName` signature** — now accepts `*steam.SGDBClient` instead of raw `apiKey` string, avoiding redundant client creation
+- **F95Zone fallback consistency** — `SteamAdd` now sets `artDone = true` on success and handles `ErrUnsupportedFormat` silently, matching `SteamFixArtwork` behavior
+- **Pre-compiled regexes** — `ExtractSteamAppID` and parser's Steam store matcher now use package-level `regexp.MustCompile` instead of compiling on every call
+- **Steam AppID regex** — trailing slash made optional (`(?:/|$)`), matching bare `/app/12345` URLs
+- **SGDB key hints unified** — all user-facing messages use `"Tip: Set a SteamGridDB API key for higher-quality artwork!"` with no "premium" terminology. Clearer one-line hint shown upfront in Steam commands; full setup instructions only when artwork fails entirely
+- **Onboarding documentation** — README quick start expanded to 4-step workflow, welcome screen restructured with section groups, usage footer includes SGDB tip
+
 ## [0.3.4-alpha] - 2026-05-03
 
 ### Fixed
@@ -99,5 +128,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **GitHub Actions release workflow** — `.github/workflows/release.yml` auto-builds all 6 platform/arch binaries on tag push, stamps version via `-ldflags`, and creates a GitHub Release with `softprops/action-gh-release`
 - **README** — updated install section, build-from-source instructions with version stamping, test count (223), and binary size (~16 MB)
 
-[0.3.3-alpha]: https://github.com/Milisource/moxie/releases/tag/v0.3.3-alpha
+[Unreleased]: https://github.com/Milisource/moxie/compare/v0.3.5-alpha...HEAD
+[0.3.5-alpha]: https://github.com/Milisource/moxie/compare/v0.3.4-alpha...v0.3.5-alpha
+[0.3.4-alpha]: https://github.com/Milisource/moxie/compare/v0.3.3-alpha...v0.3.4-alpha
+[0.3.3-alpha]: https://github.com/Milisource/moxie/compare/v0.3.1-alpha...v0.3.3-alpha
 [0.3.2-alpha]: https://github.com/Milisource/moxie/releases/tag/v0.3.2-alpha
