@@ -36,6 +36,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "   To check for updates:")
 			fmt.Fprintln(os.Stderr, "     moxie check-updates   Check all games for new versions on F95Zone")
 			fmt.Fprintln(os.Stderr, "     moxie sync            Full sync: associate + check updates")
+			fmt.Fprintln(os.Stderr, "     moxie update           Check for and install moxie updates")
 			fmt.Fprintln(os.Stderr)
 			fmt.Fprintln(os.Stderr, "   For F95Zone scraping, log into F95Zone in Firefox first —")
 			fmt.Fprintln(os.Stderr, "   moxie reads your browser cookies automatically.")
@@ -83,6 +84,8 @@ func main() {
 		commands.Steam(os.Args[2:])
 	case "config":
 		commands.Config(os.Args[2:])
+	case "update":
+		commands.Update(version)
 	case "cleanup":
 		commands.Cleanup(os.Args[2:])
 	case "refresh-versions":
@@ -117,6 +120,7 @@ Usage:
   moxie steam fix-artwork <id>         Re-download Steam artwork for a game
   moxie config <set|get|show>          Manage configuration settings
   moxie cleanup [flags]                Detect and fix wrong F95Zone thread associations
+  moxie update                           Check for and install moxie updates
   moxie refresh-versions [flags]       Re-extract versions from directory names
 
 Flags for 'scan':
