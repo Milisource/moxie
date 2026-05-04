@@ -6,23 +6,23 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-
-	"github.com/mili/moxie/internal/db"
 )
 
 // MatchResult is a potential thread match for a game.
 type MatchResult struct {
-	Game       db.Game        `json:"game"`
-	Candidates []SearchResult `json:"candidates"`
-	BestMatch  *SearchResult  `json:"best_match,omitempty"`
+	ScrapeInput ScrapeInput    `json:"scrape_input"`
+	Candidates  []SearchResult `json:"candidates"`
+	BestMatch   *SearchResult  `json:"best_match,omitempty"`
 }
 
 // AssociateOptions controls auto-association behavior.
 type AssociateOptions struct {
 	Client *Client
 
-	// AllGames is the full game library from the DB.
-	AllGames []db.Game
+	// AllGames is the list of ScrapeInputs to search for.
+	// The caller is responsible for pre-filtering (e.g. games that already
+	// have an F95URL should not be passed here).
+	AllGames []ScrapeInput
 
 	// URLMap is an optional JSON file path mapping game paths to thread URLs.
 	// Format: {"path/to/game": "https://f95zone.to/threads/slug.12345/"}
@@ -32,9 +32,10 @@ type AssociateOptions struct {
 	Interactive bool
 }
 
-// FindMatches searches F95Zone for each game that doesn't have an F95Zone URL.
-// It returns matches sorted by confidence (best match first).
-// Games that already have an F95Zone URL set are skipped.
+// FindMatches searches F95Zone for each provided ScrapeInput and returns
+// potential thread matches sorted by confidence (best match first).
+// The caller is responsible for pre-filtering inputs (e.g. games that already
+// have an F95URL should be filtered out before calling this function).
 func FindMatches(opts AssociateOptions) ([]MatchResult, error) {
 	// Load URL map if provided.
 	urlMap := make(map[string]string)
@@ -50,22 +51,14 @@ func FindMatches(opts AssociateOptions) ([]MatchResult, error) {
 		urlMap = rawMap
 	}
 
-	// Filter games that don't have F95URL set.
-	var unmatched []db.Game
-	for _, g := range opts.AllGames {
-		if g.F95URL == "" {
-			unmatched = append(unmatched, g)
-		}
-	}
-
 	var results []MatchResult
-	for _, game := range unmatched {
-		mr := MatchResult{Game: game}
+	for _, input := range opts.AllGames {
+		mr := MatchResult{ScrapeInput: input}
 
 		// Check URL map first (no HTTP call needed).
-		if url, ok := urlMap[game.Path]; ok {
+		if url, ok := urlMap[input.Path]; ok {
 			mr.Candidates = []SearchResult{{
-				Title: game.Title,
+				Title: input.Title,
 				URL:   url,
 			}}
 			mr.BestMatch = &mr.Candidates[0]
@@ -74,7 +67,7 @@ func FindMatches(opts AssociateOptions) ([]MatchResult, error) {
 		}
 
 		// Search F95Zone.
-		sanitized := SanitizeTitle(game.Title)
+		sanitized := SanitizeTitle(input.Title)
 		candidates, err := opts.Client.SearchF95Zone(sanitized)
 		if err != nil {
 			// If search fails, still add the result with no candidates.
@@ -89,7 +82,7 @@ func FindMatches(opts AssociateOptions) ([]MatchResult, error) {
 			if IsNonGameThread(candidates[i].Title) {
 				continue // skip non-game threads
 			}
-			score := ComputeMatchScore(game.Title, candidates[i].Title)
+			score := ComputeMatchScore(input.Title, candidates[i].Title)
 			if score > bestScore {
 				bestScore = score
 				best = &candidates[i]
@@ -105,10 +98,10 @@ func FindMatches(opts AssociateOptions) ([]MatchResult, error) {
 		scoreI := 0.0
 		scoreJ := 0.0
 		if results[i].BestMatch != nil {
-			scoreI = ComputeMatchScore(results[i].Game.Title, results[i].BestMatch.Title)
+			scoreI = ComputeMatchScore(results[i].ScrapeInput.Title, results[i].BestMatch.Title)
 		}
 		if results[j].BestMatch != nil {
-			scoreJ = ComputeMatchScore(results[j].Game.Title, results[j].BestMatch.Title)
+			scoreJ = ComputeMatchScore(results[j].ScrapeInput.Title, results[j].BestMatch.Title)
 		}
 		return scoreI > scoreJ
 	})
@@ -182,7 +175,7 @@ var (
 // search result title matches a game title.
 func ComputeMatchScore(gameTitle, resultTitle string) float64 {
 	a := strings.ToLower(SanitizeTitle(gameTitle))
-	b := strings.ToLower(resultTitle)
+	b := strings.ToLower(SanitizeTitle(resultTitle))
 	if a == "" || b == "" {
 		return 0.0
 	}

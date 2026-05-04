@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mili/moxie/internal/log"
 )
 
 // ---------------------------------------------------------------------------
@@ -19,20 +21,26 @@ import (
 
 // SGDBClient is a rate-limited HTTP client for the SteamGridDB v2 REST API.
 type SGDBClient struct {
-	apiKey   string
-	http     *http.Client
-	mu       sync.Mutex
-	lastReq  time.Time
-	minDelay time.Duration // 1050ms minimum between requests
+	apiKey            string
+	http              *http.Client
+	mu                sync.Mutex
+	lastReq           time.Time
+	minDelay          time.Duration // 1050ms minimum between API requests
+	lastImageDownload time.Time
+	cdnMinDelay       time.Duration // 200ms minimum between image downloads
 }
+
+// CDNMinDelay is the minimum delay between SteamGridDB CDN image downloads.
+const CDNMinDelay = 200 * time.Millisecond
 
 // NewSGDBClient creates a SteamGridDB API client with the given API key.
 // The free tier allows 1 req/s and 200 req/day.
 func NewSGDBClient(apiKey string) *SGDBClient {
 	return &SGDBClient{
-		apiKey:   apiKey,
-		http:     &http.Client{Timeout: 30 * time.Second},
-		minDelay: 1050 * time.Millisecond,
+		apiKey:      apiKey,
+		http:        &http.Client{Timeout: 30 * time.Second},
+		minDelay:    1050 * time.Millisecond,
+		cdnMinDelay: CDNMinDelay,
 	}
 }
 
@@ -141,12 +149,29 @@ func (c *SGDBClient) GetHeroesBySGDBGameID(gameID int) ([]SGDBImageResult, error
 // DownloadImage downloads an image from url and saves it to destPath.
 // Creates parent directories if needed.
 func (c *SGDBClient) DownloadImage(imgURL, destPath string) error {
+	if !isValidDownloadURL(imgURL) {
+		return ErrInvalidURL
+	}
+
+	// CDN rate limit: ensure minimum delay between image downloads.
+	c.mu.Lock()
+	elapsed := time.Since(c.lastImageDownload)
+	if elapsed < c.cdnMinDelay {
+		c.mu.Unlock()
+		time.Sleep(c.cdnMinDelay - elapsed)
+		c.mu.Lock()
+	}
+	c.lastImageDownload = time.Now()
+	c.mu.Unlock()
+
 	resp, err := c.http.Get(imgURL)
 	if err != nil {
+		log.Error("steamgriddb download failed", "url", imgURL, "error", err)
 		return fmt.Errorf("steamgriddb: download failed: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		log.Error("steamgriddb download HTTP error", "url", imgURL, "status", resp.StatusCode)
 		return fmt.Errorf("steamgriddb: download returned HTTP %d", resp.StatusCode)
 	}
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
@@ -156,9 +181,21 @@ func (c *SGDBClient) DownloadImage(imgURL, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("steamgriddb: cannot create file: %w", err)
 	}
-	defer f.Close()
+
 	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		os.Remove(destPath)
 		return fmt.Errorf("steamgriddb: write failed: %w", err)
+	}
+	// fsync before close to prevent empty/corrupt file on crash.
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(destPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(destPath)
+		return err
 	}
 	return nil
 }
@@ -216,7 +253,17 @@ func (c *SGDBClient) doGet(path string) ([]byte, error) {
 		return nil, fmt.Errorf("steamgriddb: read error: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("steamgriddb: HTTP %d: %s", resp.StatusCode, string(body))
+		log.Error("steamgriddb API error",
+			"path", path,
+			"status", resp.StatusCode,
+			"body", string(body),
+		)
+		// Truncate body in error message to avoid leaking sensitive response data.
+		bodyStr := string(body)
+		if len(bodyStr) > 200 {
+			bodyStr = bodyStr[:200] + "..."
+		}
+		return nil, fmt.Errorf("steamgriddb: HTTP %d: %s", resp.StatusCode, bodyStr)
 	}
 	return body, nil
 }

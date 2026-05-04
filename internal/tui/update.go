@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,6 +13,9 @@ import (
 // ─── Update ────────────────────────────────────────────────────────────────
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Clear transient notice from the previous frame.
+	m.notice = ""
+
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
@@ -107,7 +111,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedID = id
 					m.viewMode = DetailView
 					m.err = nil
-					return m, m.loadMeta(id)
+					m.detailGame = nil // clear stale cache so loading indicator shows
+					return m, tea.Batch(m.loadDetailGame(id), m.loadMeta(id))
 				}
 			}
 			return m, nil
@@ -124,8 +129,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.filterInput.SetValue(m.filterText + key)
 					m.filterInput.CursorEnd()
 					m.filterText = m.filterInput.Value()
-					m.rebuildFiltered()
-					return m, textinput.Blink
+					m.filterDirty = true
+					return m, tea.Batch(textinput.Blink, m.debouncedFilterTick())
 				}
 			}
 		}
@@ -145,6 +150,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scrapedMeta = msg.meta
 		return m, nil
 
+	case detailGameLoadedMsg:
+		m.detailGame = msg.game
+		return m, nil
+
 	case gameDeletedMsg:
 		if msg.err != nil {
 			m.err = fmt.Errorf("delete failed: %w", msg.err)
@@ -160,12 +169,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("⚠ scrape: %v", msg.err)
 		} else if msg.meta != nil {
 			m.scrapedMeta = msg.meta
-			m.err = fmt.Errorf("✅ Metadata refreshed from new URL")
+			m.notice = "Metadata refreshed from new URL"
 		}
 		return m, nil
 
 	case errMsg:
 		m.err = msg.err
+		return m, nil
+
+	case filterTickMsg:
+		if m.filterDirty {
+			m.filterDirty = false
+			m.rebuildFiltered()
+		}
 		return m, nil
 	}
 
@@ -185,6 +201,7 @@ func (m model) handleDeleteConfirm(key string) (tea.Model, tea.Cmd) {
 		id := m.deleteID
 		m.confirmDelete = false
 		m.viewMode = LibraryView
+		m.detailGame = nil
 		m.scrapedMeta = nil
 		m.deleteID = 0
 		m.deleteTitle = ""
@@ -217,7 +234,7 @@ func (m model) handleEditKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.editing = false
-		return m, tea.Batch(m.loadGames(), m.loadMeta(m.selectedID))
+		return m, tea.Batch(m.loadGames(), m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
 	}
 	var editCmd tea.Cmd
 	m.editInput, editCmd = m.editInput.Update(msg)
@@ -239,18 +256,18 @@ func (m model) handleUrlInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 				if err := m.db.UpdateGame(game); err != nil {
 					m.err = fmt.Errorf("URL update failed: %w", err)
 					m.setUrl = false
-					return m, tea.Batch(m.loadGames(), m.loadMeta(m.selectedID))
+					return m, tea.Batch(m.loadGames(), m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
 				}
 			}
+			m.setUrl = false
+			// Trigger scrape of new URL to fetch fresh metadata
+			if m.scraperClient != nil {
+				m.notice = "URL updated — scraping metadata..."
+				return m, tea.Batch(m.loadGames(), m.loadDetailGame(m.selectedID), m.scrapeMeta(m.selectedID, url))
+			}
+			m.notice = "URL updated"
+			return m, tea.Batch(m.loadGames(), m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
 		}
-		m.setUrl = false
-		// Trigger scrape of new URL to fetch fresh metadata
-		if m.scraperClient != nil {
-			m.err = fmt.Errorf("✅ URL updated — scraping metadata...")
-			return m, tea.Batch(m.loadGames(), m.scrapeMeta(m.selectedID, url))
-		}
-		m.err = fmt.Errorf("✅ URL updated")
-		return m, tea.Batch(m.loadGames(), m.loadMeta(m.selectedID))
 	}
 	var urlCmd tea.Cmd
 	m.urlInput, urlCmd = m.urlInput.Update(msg)
@@ -261,6 +278,7 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc", "left", "backspace":
 		m.viewMode = LibraryView
+		m.detailGame = nil
 		m.scrapedMeta = nil
 		m.err = nil
 		return m, nil
@@ -290,7 +308,7 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = nil
 		}
-		return m, tea.Batch(m.loadGames(), m.loadMeta(m.selectedID))
+		return m, tea.Batch(m.loadGames(), m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
 	case "d":
 		m.deleteID = m.selectedID
 		m.confirmDelete = true
@@ -307,7 +325,7 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		if err != nil || game == nil {
 			return m, nil
 		}
-		m.err = fmt.Errorf("📁 %s", game.Path)
+		m.notice = game.Path
 		return m, nil
 	case "u":
 		game, err := m.db.GetGame(m.selectedID)
@@ -337,7 +355,7 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		if err := launchExe(exe); err != nil {
 			m.err = fmt.Errorf("✗ Failed to launch: %v", err)
 		} else {
-			m.err = fmt.Errorf("📁 Launching: %s", filepath.Base(exe))
+			m.notice = fmt.Sprintf("Launching: %s", filepath.Base(exe))
 		}
 		return m, nil
 	}
@@ -360,10 +378,18 @@ func (m model) handleFilterInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd
 	}
 	var filterCmd tea.Cmd
 	m.filterInput, filterCmd = m.filterInput.Update(msg)
-	// Real-time filtering on each keystroke.
+	// Debounced filtering: defer rebuild so rapid keystrokes batch.
 	m.filterText = m.filterInput.Value()
-	m.rebuildFiltered()
-	return m, filterCmd
+	m.filterDirty = true
+	return m, tea.Batch(filterCmd, m.debouncedFilterTick())
+}
+
+// debouncedFilterTick returns a command that triggers a deferred rebuild
+// after 150 ms, allowing rapid keystrokes to settle.
+func (m model) debouncedFilterTick() tea.Cmd {
+	return tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
+		return filterTickMsg{}
+	})
 }
 
 // ─── Cycle helpers ─────────────────────────────────────────────────────────

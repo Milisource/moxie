@@ -19,7 +19,7 @@ func Rename(args []string) {
 	dryRun := fs.Bool("dry-run", false, "Preview renames without making changes")
 	fs.Parse(args)
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	games, err := database.ListGames("", "")

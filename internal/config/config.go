@@ -1,14 +1,10 @@
-package util
+package config
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
-
-	"github.com/mili/moxie/internal/db"
 )
 
 // ConfigDir returns the platform-standard configuration directory for moxie.
@@ -83,26 +79,11 @@ func WriteConfig(cfg map[string]string) error {
 	}
 	tmp.Close()
 
-	return os.Rename(tmpName, path)
-}
-
-// OpenDB opens the SQLite database and exits on error.
-func OpenDB() *db.Database {
-	path := DbPath()
-	database, err := db.Open(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
-		os.Exit(1)
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
 	}
-	return database
-}
 
-// MustParseInt parses a string as int64, printing an error and exiting on failure.
-func MustParseInt(s string) int64 {
-	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid ID: %s\n", s)
-		os.Exit(1)
-	}
-	return n
+	// Restrict config file permissions (may contain API keys).
+	os.Chmod(path, 0600)
+	return nil
 }

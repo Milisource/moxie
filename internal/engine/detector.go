@@ -244,6 +244,16 @@ func Detect(dir string) Result {
 		}
 	}
 
+	extSet := make(map[string]bool)
+	for _, e := range entries {
+		if !e.IsDir() {
+			ext := strings.ToLower(filepath.Ext(e.Name()))
+			if ext != "" {
+				extSet[ext] = true
+			}
+		}
+	}
+
 	// Check special Unity _Data folder pattern first (requires file name matching).
 	if result := detectUnityDataFolder(dir, entries); result.Engine != Others {
 		return result
@@ -251,7 +261,7 @@ func Detect(dir string) Result {
 
 	// Check engine profiles in priority order.
 	for _, p := range profiles {
-		if !matchesProfile(p, entrySet, dirSet, dir) {
+		if !matchesProfile(p, entrySet, dirSet, extSet, dir) {
 			continue
 		}
 
@@ -297,7 +307,7 @@ func Detect(dir string) Result {
 }
 
 // matchesProfile checks if a directory's contents match a detection profile.
-func matchesProfile(p profile, files, dirs map[string]bool, dir string) bool {
+func matchesProfile(p profile, files, dirs, exts map[string]bool, dir string) bool {
 	if len(p.files) > 0 && !anyMatches(p.files, files) {
 		return false
 	}
@@ -305,7 +315,7 @@ func matchesProfile(p profile, files, dirs map[string]bool, dir string) bool {
 		return false
 	}
 	if len(p.extensions) > 0 {
-		if !hasMatchingExtension(dir, p.extensions) {
+		if !anyMatches(p.extensions, exts) {
 			found := false
 			for _, sd := range p.subdirs {
 				if hasMatchingExtension(filepath.Join(dir, sd), p.extensions) {

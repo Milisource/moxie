@@ -81,7 +81,7 @@ func Scan(args []string) {
 		return
 	}
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	saved := 0
@@ -132,7 +132,7 @@ func List(args []string) {
 	warnings := fs.Bool("warnings", false, "Show warnings column with detected issues (engine/exe mismatches)")
 	fs.Parse(args)
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	games, err := database.ListGames(*engineFilter, *statusFilter)
@@ -208,7 +208,7 @@ func Info(args []string) {
 	}
 	id := util.MustParseInt(args[0])
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -292,7 +292,7 @@ func Add(args []string) {
 		}
 	}
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	game := &db.Game{
@@ -326,7 +326,7 @@ func SetExe(args []string) {
 		os.Exit(1)
 	}
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -357,7 +357,7 @@ func SetPath(args []string) {
 		os.Exit(1)
 	}
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -383,7 +383,7 @@ func Remove(args []string) {
 	}
 	id := util.MustParseInt(args[0])
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)

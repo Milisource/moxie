@@ -23,7 +23,7 @@ import (
 // Checks kooky's standard paths first, then falls back to non-standard
 // locations like ~/.config/mozilla/firefox (used by some distros).
 func GetF95Cookies() (string, error) {
-	cookies, _ := kooky.ReadCookies(
+	cookies, kookyErr := kooky.ReadCookies(
 		context.Background(),
 		kooky.Valid,
 		kooky.Domain("f95zone.to"),
@@ -47,8 +47,12 @@ func GetF95Cookies() (string, error) {
 		return cookie, nil
 	}
 
-	return "", fmt.Errorf("no f95zone.to cookies found in any browser\n" +
-		"Make sure you're logged into f95zone.to in Firefox or Chrome")
+	msg := "no f95zone.to cookies found in any browser"
+	if kookyErr != nil {
+		msg += fmt.Sprintf(" (kooky read: %v)", kookyErr)
+	}
+	msg += "\nMake sure you're logged into f95zone.to in Firefox or Chrome"
+	return "", fmt.Errorf("%s", msg)
 }
 
 // GetF95CookiesFromSQLite reads f95zone.to cookies directly from a Firefox

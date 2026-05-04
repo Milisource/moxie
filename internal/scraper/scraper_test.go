@@ -696,14 +696,10 @@ func TestClientDo_RateLimitBackoff(t *testing.T) {
 
 	// First request should succeed.
 	req, _ := http.NewRequest("GET", srv.URL, nil)
-	resp, err := client.do(req, 0)
+	_, err := client.do(req, 0)
 	if err != nil {
 		t.Fatalf("first request failed: %v", err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected 200 OK, got %d", resp.StatusCode)
-	}
-	resp.Body.Close()
 
 	// After 429, delay should increase.
 	if client.Delay() <= 0 {
@@ -723,11 +719,10 @@ func TestClientDo_ContextCancellation(t *testing.T) {
 
 	// Fire one request to set lastRequest.
 	req, _ := http.NewRequest("GET", srv.URL, nil)
-	resp, err := client.do(req, 0)
+	_, err := client.do(req, 0)
 	if err != nil {
 		t.Fatalf("first request: %v", err)
 	}
-	resp.Body.Close()
 
 	// Second request with cancelled context — should respect context.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -756,12 +751,11 @@ func TestClientDo_Cooldown(t *testing.T) {
 	req, _ := http.NewRequest("GET", srv.URL, nil)
 	req.Header.Set("User-Agent", "test")
 	start := time.Now()
-	resp, err := client.do(req, 0)
+	_, err := client.do(req, 0)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
 
 	// Cooldown should have added significant delay.
 	if elapsed < 1*time.Second {
@@ -823,11 +817,10 @@ func TestNewClientWithHTTP_PreservesCookieInjection(t *testing.T) {
 	client := NewClientWithHTTP("xf_session=abc123; xf_user=def456", srv.Client())
 	req, _ := http.NewRequest("GET", srv.URL, nil)
 	req.Header.Set("User-Agent", "test")
-	resp, err := client.do(req, 0)
+	_, err := client.do(req, 0)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
 
 	if !strings.Contains(receivedCookie, "xf_session=abc123") {
 		t.Errorf("expected cookie xf_session, got: %s", receivedCookie)

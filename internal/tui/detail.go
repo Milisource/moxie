@@ -9,11 +9,25 @@ import (
 
 // ── Detail View ────────────────────────────────────────────────────────────
 
+// loadingView shows a spinner while the game data is being fetched asynchronously.
+func (m model) loadingView() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("◂  Back to Library  "))
+	b.WriteString("\n")
+	b.WriteString(separatorStyle.Render(strings.Repeat("━", max(0, m.width-4))))
+	b.WriteString("\n\n")
+	b.WriteString(valueStyle.Render("  Loading…"))
+	b.WriteString("\n")
+	return appStyle.Render(b.String())
+}
+
 func (m model) detailView() string {
-	game, err := m.db.GetGame(m.selectedID)
-	if err != nil || game == nil {
-		return m.libraryView()
+	// Show a loading indicator while the game is being fetched asynchronously.
+	if m.detailGame == nil {
+		return m.loadingView()
 	}
+
+	game := m.detailGame
 
 	var b strings.Builder
 	w := m.width

@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/mili/moxie/internal/engine"
 )
@@ -23,12 +25,18 @@ type DetectedGame struct {
 
 // Scan recursively scans a directory and returns detected games.
 // It skips known non-game paths and engine crash handlers.
+// Sizes are accumulated in a single walk — no separate dirSize pass.
 func Scan(root string) ([]DetectedGame, error) {
 	root = filepath.Clean(root)
-	var games []DetectedGame
 
-	// First pass: collect all potential game directories.
-	gameDirs := make(map[string]bool)
+	// Single walk: detect game directories and accumulate file sizes
+	// simultaneously by tracking which game dir we're currently inside.
+	type trackedGame struct {
+		size int64
+	}
+	gameDirs := make(map[string]*trackedGame)
+	var currentGameDir string
+
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// If the root itself is inaccessible, surface the error.
@@ -40,6 +48,20 @@ func Scan(root string) ([]DetectedGame, error) {
 			// stop the walk.
 			return nil
 		}
+
+		// Check if we're inside a known game directory. WalkDir is
+		// depth-first, so once we enter a game dir we stay inside it
+		// until all its descendants are visited.
+		if currentGameDir != "" && strings.HasPrefix(path, currentGameDir+string(filepath.Separator)) {
+			if !d.IsDir() {
+				if info, infoErr := d.Info(); infoErr == nil {
+					gameDirs[currentGameDir].size += info.Size()
+				}
+			}
+			return nil
+		}
+		currentGameDir = "" // we've left the current game dir
+
 		if !d.IsDir() {
 			return nil
 		}
@@ -54,9 +76,14 @@ func Scan(root string) ([]DetectedGame, error) {
 			return filepath.SkipDir
 		}
 		// Don't recurse into subdirectories of already-detected game dirs.
+		// Use separator-aware comparison to avoid path-prefix collisions
+		// (e.g., /games/foo must not match /games/foobar/SomeGame).
+		// This guard is only needed when currentGameDir is empty (we're
+		// between game dirs) — inside a game dir the check above catches
+		// all descendants first.
 		parent := filepath.Dir(path)
 		for dir := range gameDirs {
-			if strings.HasPrefix(parent, dir) && parent != dir {
+			if strings.HasPrefix(parent, dir+string(filepath.Separator)) && parent != dir {
 				return filepath.SkipDir
 			}
 		}
@@ -68,8 +95,9 @@ func Scan(root string) ([]DetectedGame, error) {
 			if isCategoryDir(path) {
 				return nil
 			}
-			gameDirs[path] = true
-			return filepath.SkipDir // don't recurse into game dirs
+			gameDirs[path] = &trackedGame{}
+			currentGameDir = path // descend to accumulate sizes
+			return nil
 		}
 		return nil
 	})
@@ -77,11 +105,36 @@ func Scan(root string) ([]DetectedGame, error) {
 		return nil, fmt.Errorf("scan: %w", err)
 	}
 
-	// Second pass: run engine detection on each game directory.
-	for dir := range gameDirs {
-		g := analyzeDir(dir, root)
-		games = append(games, g)
+	// Second pass: run engine detection on each game directory in parallel
+	// (sizes are already computed from the single walk).
+	var games []DetectedGame
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, runtime.NumCPU())
+	for dir, tg := range gameDirs {
+		wg.Add(1)
+		go func(d string, size int64) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			result := engine.Detect(d)
+			g := DetectedGame{
+				Title:     filepath.Base(d),
+				Path:      d,
+				Engine:    result.Engine,
+				Version:   ExtractVersion(filepath.Base(d)),
+				SizeBytes: size,
+			}
+			if exe := findGameExe(d); exe != "" {
+				g.ExePath = exe
+			}
+			mu.Lock()
+			games = append(games, g)
+			mu.Unlock()
+		}(dir, tg.size)
 	}
+	wg.Wait()
 
 	return games, nil
 }

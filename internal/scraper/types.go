@@ -1,5 +1,13 @@
 package scraper
 
+// ScrapeInput is the input to a scrape/association operation.
+// It carries the minimum info needed to look up a game on F95Zone:
+// its directory name (Title) and filesystem path (Path).
+type ScrapeInput struct {
+	Title string `json:"title"`
+	Path  string `json:"path"`
+}
+
 // ThreadData contains metadata extracted from a XenForo thread page.
 type ThreadData struct {
 	Title         string         `json:"title"`

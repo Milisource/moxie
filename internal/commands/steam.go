@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/steam"
 	"github.com/mili/moxie/internal/util"
 )
@@ -101,7 +102,7 @@ func SteamAdd(args []string) {
 	}
 
 	// 2. Load game and scraped metadata from DB.
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -254,7 +255,7 @@ func SteamRemove(args []string) {
 	}
 	id := util.MustParseInt(fs.Arg(0))
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -433,7 +434,7 @@ func SteamProtonSet(args []string) {
 	}
 	id := util.MustParseInt(fs.Arg(0))
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -499,7 +500,7 @@ func SteamFixArtwork(args []string) {
 	}
 	id := util.MustParseInt(fs.Arg(0))
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -573,13 +574,13 @@ func ResolveSGDBKey(flagKey string) string {
 		return key
 	}
 	// Check JSON config (new format).
-	if cfg, err := util.ReadConfig(); err == nil {
+	if cfg, err := config.ReadConfig(); err == nil {
 		if key, ok := cfg["steamgriddb-key"]; ok && key != "" {
 			return key
 		}
 	}
 	// Fall back to legacy flat file.
-	if data, err := os.ReadFile(filepath.Join(util.ConfigDir(), "steamgriddb-key")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(config.ConfigDir(), "steamgriddb-key")); err == nil {
 		return strings.TrimSpace(string(data))
 	}
 	return ""

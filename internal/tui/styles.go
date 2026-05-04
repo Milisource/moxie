@@ -102,6 +102,34 @@ func statusColor(s string) lipgloss.Color {
 	}
 }
 
+// engineStyles caches pre-built lipgloss styles for all known engines,
+// avoiding NewStyle allocations on every table row render.
+var engineStyles = map[string]lipgloss.Style{
+	"Unity":        lipgloss.NewStyle().Foreground(engineColor("Unity")),
+	"RenPy":        lipgloss.NewStyle().Foreground(engineColor("RenPy")),
+	"RPGM":         lipgloss.NewStyle().Foreground(engineColor("RPGM")),
+	"UnrealEngine": lipgloss.NewStyle().Foreground(engineColor("UnrealEngine")),
+	"HTML":         lipgloss.NewStyle().Foreground(engineColor("HTML")),
+	"Flash":        lipgloss.NewStyle().Foreground(engineColor("Flash")),
+	"Java":         lipgloss.NewStyle().Foreground(engineColor("Java")),
+	"ADRIFT":       lipgloss.NewStyle().Foreground(engineColor("ADRIFT")),
+	"QSP":          lipgloss.NewStyle().Foreground(engineColor("QSP")),
+	"RAGS":         lipgloss.NewStyle().Foreground(engineColor("RAGS")),
+	"Tads":         lipgloss.NewStyle().Foreground(engineColor("Tads")),
+	"WebGL":        lipgloss.NewStyle().Foreground(engineColor("WebGL")),
+	"WolfRPG":      lipgloss.NewStyle().Foreground(engineColor("WolfRPG")),
+	"Others":       lipgloss.NewStyle().Foreground(engineColor("Others")),
+}
+
+// engineStyle returns a cached style for the given engine name, falling back
+// to a dynamically created style for unknown engines.
+func engineStyle(engine string) lipgloss.Style {
+	if s, ok := engineStyles[engine]; ok {
+		return s
+	}
+	return lipgloss.NewStyle().Foreground(engineColor(engine))
+}
+
 // engineColor returns a distinct lipgloss color for the given game engine.
 func engineColor(e string) lipgloss.Color {
 	switch e {

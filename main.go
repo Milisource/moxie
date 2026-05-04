@@ -6,17 +6,17 @@ import (
 
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/commands"
+	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/tui"
-	"github.com/mili/moxie/internal/util"
 )
 
-var version = "0.3.3-alpha"
+var version = "0.3.4-alpha"
 
 func main() {
 	if len(os.Args) < 2 {
 		// First-run welcome if no database exists yet
-		dbPath := util.DbPath()
+		dbPath := config.DbPath()
 		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 			fmt.Fprintln(os.Stderr, "👋 Welcome to moxie! It looks like this is your first run.")
 			fmt.Fprintln(os.Stderr)
@@ -151,7 +151,7 @@ func cmdTUI() {
 		sc = scraper.NewClient(cookieStr)
 	}
 
-	if err := tui.Run(util.DbPath(), sc); err != nil {
+	if err := tui.Run(config.DbPath(), sc); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 		os.Exit(1)
 	}

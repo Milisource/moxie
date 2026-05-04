@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	vdf "github.com/wakeful-cloud/vdf"
 )
@@ -48,14 +47,18 @@ func ReadShortcuts(path string) ([]ShortcutEntry, error) {
 // WriteShortcuts serializes the shortcuts slice back to binary VDF format and
 // writes it to the given path.
 //
-// SAFETY: Creates a backup of the original file before writing as
-// "<path>.backup-<timestamp>". The backup is retained indefinitely.
-//
-// Caller MUST ensure Steam is not running before calling this.
+// SAFETY: Creates a backup of the original file as "<path>.backup" before
+// writing. This function refuses to write if Steam is currently running.
 func WriteShortcuts(path string, shortcuts []ShortcutEntry) error {
-	// Backup existing file if it exists.
+	// Guard: prevent Steam from overwriting moxie's changes on shutdown.
+	if running, _ := IsSteamRunning(); running {
+		return ErrSteamRunning
+	}
+
+	// Backup existing file before overwriting.
+	// Uses a fixed name so only one backup is kept; avoids unbounded accumulation.
 	if _, err := os.Stat(path); err == nil {
-		backup := path + ".backup-" + time.Now().UTC().Format("20060102T150405Z")
+		backup := path + ".backup"
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("steam: cannot backup shortcuts.vdf: %w", err)
@@ -84,6 +87,12 @@ func WriteShortcuts(path string, shortcuts []ShortcutEntry) error {
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return fmt.Errorf("steam: cannot write temp file: %w", err)
+	}
+	// fsync before rename to prevent empty/corrupt file on crash.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
 	}
 	tmp.Close()
 

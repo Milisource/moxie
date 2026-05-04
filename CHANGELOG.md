@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4-alpha] - 2026-05-03
+
+### Fixed
+
+- **Version comparison inconsistency** — `SyncGameLogic` now uses `NormalizeVersion()` for version comparison, matching `RunUpdateCheck` behavior (F95-9ll)
+- **Phase 1 cooldown prevents Phase 2** — `VersionCheckedAt` no longer set during association, allowing immediate version checks for newly associated games (F95-5ah)
+- **TUI blocks on DB I/O** — `detailView()` now loads game data asynchronously via `tea.Cmd`, showing a loading indicator instead of blocking the render loop (F95-dx7)
+- **Path-prefix collision in scanner** — `strings.HasPrefix` now uses separator-aware comparison, preventing `/games/foobar` from being falsely skipped when `/games/foo` is a game (F95-g29)
+- **`ErrSteamRunning` never enforced** — `WriteShortcuts`, `SetProtonVersion`, and `RemoveProtonVersion` now all guard against Steam running (F95-o5w)
+- **Missing `fsync()` before file rename** — all 5 Steam write paths now call `Sync()` before close/rename, preventing corrupt files on system crash (F95-4it)
+- **Partial-write error recovery** — `resizeAndSave`, `downloadAndResize`, and `DownloadImage` now remove destination files on encode/copy failure (F95-9jg)
+- **Steam backup accumulation** — backup filenames changed from timestamped to fixed rotation (one backup per file) (F95-5sy)
+- **`ComputeMatchScore` degraded by unsanitized titles** — `resultTitle` now sanitized via `SanitizeTitle`, restoring proper 1.0 scores for exact matches with bracketed tags (F95-h5r)
+- **Silent kooky error discard** — `GetF95Cookies` now surfaces kooky read errors in the diagnostic message (F95-oy8)
+
+### Security
+
+- **SSRF via scraped artwork URLs** — `isValidDownloadURL()` validates HTTPS-only, blocks private/loopback/link-local IPs and known cloud metadata endpoints before any HTTP download (F95-3g2)
+- **Database and config file permissions** — `games.db` and `config.json` now created with `0600` permissions (F95-5yp)
+- **Response body truncation in errors** — SteamGridDB error messages no longer include full response body (truncated to 200 chars) (F95-tsq)
+
+### Performance
+
+- **Single-pass scanner** — `Scan()` now accumulates directory sizes during the initial walk instead of re-walking each game directory, eliminating O(N×F) redundant filesystem calls (F95-2ju)
+- **Parallel engine detection** — scanner second pass uses bounded worker pool (`runtime.NumCPU()` goroutines) for per-game detection (F95-v2z)
+- **Scraper double body read eliminated** — `do()` returns body string directly; callers use it instead of re-reading (F95-bbz)
+- **Engine detection caches extensions** — `extSet` computed once from initial `ReadDir`, avoiding up to 9 redundant reads per directory (F95-zt2)
+- **DOM selection cached** — `article.message-content .bbWrapper` selector computed once per page, passed to 3 extractors (F95-3yz)
+- **TUI filter debounce** — 150ms `tea.Tick` debounce prevents full sort+rebuild on every keystroke (F95-9ue)
+- **Lipgloss style cache** — 14 pre-built engine styles eliminate per-cell `NewStyle()` allocations (F95-bhu)
+
+### Changed
+
+- **Engine-aware scoring** — both `SyncGameLogic` and `RunScrapeAuto` now boost candidates whose titles contain engine keywords matching the detected game engine (+0.15). This prefers release threads (e.g., `RPGM Completed Demons Roots`) over request threads (`[Translation Request] Demons Roots`)
+- **Async TUI detail loading** — `detailGame` cached in model, loaded via `loadDetailGame` async command, refreshed after edits
+- **TUI info/error separation** — `notice` field added to model; informational messages no longer abuse the `error` type
+- **Context cancellation support** — `ScrapeThreadWithContext` and `SearchF95ZoneWithContext` added (existing methods use `context.Background()` for backward compatibility)
+- **SGDB CDN rate limiting** — `DownloadImage` has independent 200ms rate limiter (separate from API's 1050ms limit)
+- **SteamGridDB error handling** — `ErrInvalidURL` added; `doGet` logs structured errors via `internal/log`
+- **Database `busy_timeout`** — `PRAGMA busy_timeout = 5000` prevents `SQLITE_BUSY` under concurrent access
+
+### Architecture
+
+- **`internal/config/` package** — config I/O (`ConfigDir`, `DbPath`, `ReadConfig`, `WriteConfig`) extracted from `internal/util`, eliminating `util→db` dependency
+- **`internal/log/` package** — structured logging wrapper around `log/slog` with `Debug`/`Info`/`Warn`/`Error` levels
+- **Scraper decoupled from database** — `FindMatches` now accepts `ScrapeInput` instead of `db.Game`; `associate.go` no longer imports `internal/db`
+- **Engine matching deduplicated** — `findEngineInText` helper replaces 4 inline `EngineTagVariants` iteration loops (~30 lines net reduction)
+
+### Tests
+
+- **Scanner path-prefix collision test** — `TestScanPathPrefixCollision` verifies sibling-dir prefix bug is fixed
+- **TUI state transition tests** — `TestCycleSort`, `TestCycleEngineFilter`, `TestCycleStatusFilter`
+- **Steam `BestGridImage` tests** — 6 cases covering empty, single, highest-score, data:URI, SVG skip
+
 ## [0.3.3-alpha] - 2026-05-03
 
 ### Added

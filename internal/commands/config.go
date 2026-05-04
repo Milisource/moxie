@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mili/moxie/internal/util"
+	"github.com/mili/moxie/internal/config"
 )
 
 // Config handles the config command and its subcommands.
@@ -39,13 +39,13 @@ func ConfigSet(args []string) {
 	key := args[0]
 	value := strings.Join(args[1:], " ")
 
-	cfg, err := util.ReadConfig()
+	cfg, err := config.ReadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading config: %v\n", err)
 		os.Exit(1)
 	}
 	cfg[key] = value
-	if err := util.WriteConfig(cfg); err != nil {
+	if err := config.WriteConfig(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 		os.Exit(1)
 	}
@@ -58,7 +58,7 @@ func ConfigGet(args []string) {
 		fmt.Fprintf(os.Stderr, "Usage: moxie config get <key>\n")
 		os.Exit(1)
 	}
-	cfg, err := util.ReadConfig()
+	cfg, err := config.ReadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading config: %v\n", err)
 		os.Exit(1)
@@ -73,7 +73,7 @@ func ConfigGet(args []string) {
 
 // ConfigShow shows all configuration values.
 func ConfigShow() {
-	cfg, err := util.ReadConfig()
+	cfg, err := config.ReadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading config: %v\n", err)
 		os.Exit(1)

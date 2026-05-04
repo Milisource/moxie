@@ -43,7 +43,7 @@ func Scrape(args []string) {
 		os.Exit(1)
 	}
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -170,7 +170,7 @@ func ScrapeBatch(args []string) {
 		os.Exit(1)
 	}
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	client := scraper.NewClient(cookie)
@@ -292,7 +292,7 @@ func ApplyThreadData(game *db.Game, data *scraper.ThreadData, url string) {
 // ScrapeAutoWrapper opens the database and runs auto-association.
 // This wrapper exists so Scrape can call it without already having a DB handle.
 func ScrapeAutoWrapper(cookie string, unsafe bool) {
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 	RunScrapeAuto(database, cookie, unsafe, false)
 }

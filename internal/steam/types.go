@@ -19,6 +19,7 @@ var (
 	ErrNotImplemented = errors.New("steam: feature not yet implemented")
 	ErrInvalidProton   = errors.New("steam: unknown Proton version")
 	ErrUnsupportedFormat = errors.New("steam: unsupported image format")
+	ErrInvalidURL        = errors.New("steam: invalid or unsafe download URL")
 )
 
 // IsLinux returns true when the current platform is Linux.

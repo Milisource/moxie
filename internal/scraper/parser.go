@@ -61,10 +61,16 @@ func parseThreadHTML(html string, threadURL string) (*ThreadData, error) {
 		return nil, fmt.Errorf("scraper: failed to parse HTML: %w", err)
 	}
 
+	// --- First-post body selection (cached for multiple extractors) ---
+	contentSel := doc.Find("article.message-content .bbWrapper").First()
+	if contentSel.Length() == 0 {
+		contentSel = doc.Find(".bbWrapper").First()
+	}
+
 	td := &ThreadData{
 		ThreadID: extractThreadID(threadURL),
 		Tags:     extractTags(doc),
-		CoverURL: extractCoverImage(doc),
+		CoverURL: extractCoverImage(contentSel),
 	}
 
 	// --- Title ---
@@ -79,13 +85,8 @@ func parseThreadHTML(html string, threadURL string) (*ThreadData, error) {
 	// --- Status ---
 	td.Status = extractStatus(td.Tags, td.Title)
 
-	// --- First-post body ---
-	bodySel := doc.Find("article.message-content .bbWrapper").First()
-	if bodySel.Length() == 0 {
-		// fallback: try a broader selector
-		bodySel = doc.Find(".bbWrapper").First()
-	}
-	bodyText := strings.TrimSpace(bodySel.Text())
+	// --- First-post body text ---
+	bodyText := strings.TrimSpace(contentSel.Text())
 
 	// Extract structured metadata from the header block (between Overview
 	// and the next section).  Fall back to full-text regex when the
@@ -100,8 +101,8 @@ func parseThreadHTML(html string, threadURL string) (*ThreadData, error) {
 	}
 	td.Developer = extractDeveloperFromMeta(meta, bodyText)
 	td.Overview = bodyText
-	td.DownloadLinks = extractDownloadLinks(doc)
-	td.StoreLinks = extractStoreLinks(doc)
+	td.DownloadLinks = extractDownloadLinks(contentSel)
+	td.StoreLinks = extractStoreLinks(contentSel)
 
 	return td, nil
 }
@@ -285,12 +286,8 @@ func extractTags(doc *goquery.Document) []string {
 // content area. It prefers images with class "bbImage", then falls back to
 // any <img> with a non-empty src in the bbWrapper.  data: URIs and SVGs are
 // skipped — we need real downloadable images for cover art.
-func extractCoverImage(doc *goquery.Document) string {
-	// Scope to the first-post content area, then its bbWrapper.
-	content := doc.Find("article.message-content .bbWrapper").First()
-	if content.Length() == 0 {
-		content = doc.Find(".bbWrapper").First()
-	}
+func extractCoverImage(content *goquery.Selection) string {
+	// content is already the scoped bbWrapper selection from parseThreadHTML.
 	if content.Length() == 0 {
 		return ""
 	}
@@ -340,11 +337,7 @@ func isValidCoverURL(src string) bool {
 }
 
 // extractDownloadLinks finds all download links in the first post's content.
-func extractDownloadLinks(doc *goquery.Document) []DownloadLink {
-	content := doc.Find("article.message-content .bbWrapper").First()
-	if content.Length() == 0 {
-		content = doc.Find(".bbWrapper").First()
-	}
+func extractDownloadLinks(content *goquery.Selection) []DownloadLink {
 	if content.Length() == 0 {
 		return nil
 	}
@@ -383,14 +376,9 @@ var storeLinkDomains = []struct {
 
 // extractStoreLinks scans the first post body for links to known game stores.
 // Returns a map of store key → URL (e.g., "steam" → "https://store.steampowered.com/app/12345/").
-func extractStoreLinks(doc *goquery.Document) map[string]string {
+func extractStoreLinks(content *goquery.Selection) map[string]string {
 	links := make(map[string]string)
 
-	// Scope to the first post's content area.
-	content := doc.Find("article.message-content .bbWrapper").First()
-	if content.Length() == 0 {
-		content = doc.Find(".bbWrapper").First()
-	}
 	if content.Length() == 0 {
 		return links
 	}

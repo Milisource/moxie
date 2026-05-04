@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/andygrunwald/vdf"
 )
@@ -24,6 +23,11 @@ import (
 func SetProtonVersion(steamRoot string, appID uint32, protonVersion string) error {
 	if !IsLinux() {
 		return ErrNotLinux
+	}
+
+	// Guard: prevent Steam from overwriting moxie's changes on shutdown.
+	if running, _ := IsSteamRunning(); running {
+		return ErrSteamRunning
 	}
 
 	// Validate the proton version against known patterns.
@@ -99,6 +103,11 @@ func GetProtonVersion(steamRoot string, appID uint32) (string, error) {
 func RemoveProtonVersion(steamRoot string, appID uint32) error {
 	if !IsLinux() {
 		return ErrNotLinux
+	}
+
+	// Guard: prevent Steam from overwriting moxie's changes on shutdown.
+	if running, _ := IsSteamRunning(); running {
+		return ErrSteamRunning
 	}
 
 	configPath := filepath.Join(steamRoot, "config", "config.vdf")
@@ -184,9 +193,10 @@ func readConfigVDF(path string) (map[string]interface{}, error) {
 // writeConfigVDF serializes and writes a text VDF config file using a
 // backup-then-atomic-write pattern to prevent corruption.
 func writeConfigVDF(path string, cfg map[string]interface{}) error {
-	// Backup existing file.
+	// Backup existing file before overwriting.
+	// Uses a fixed name so only one backup is kept; avoids unbounded accumulation.
 	if existing, err := os.ReadFile(path); err == nil {
-		backup := path + ".backup-" + time.Now().UTC().Format("20060102T150405Z")
+		backup := path + ".backup"
 		if err := os.WriteFile(backup, existing, 0644); err != nil {
 			return fmt.Errorf("steam: cannot backup config.vdf: %w", err)
 		}
@@ -204,6 +214,12 @@ func writeConfigVDF(path string, cfg map[string]interface{}) error {
 	if err := encodeVDF(tmp, cfg); err != nil {
 		tmp.Close()
 		return fmt.Errorf("steam: cannot encode config.vdf: %w", err)
+	}
+	// fsync before rename to prevent empty/corrupt file on crash.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
 	}
 	tmp.Close()
 

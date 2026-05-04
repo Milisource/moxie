@@ -87,6 +87,12 @@ type metaScrapedMsg struct {
 	err  error
 }
 
+type detailGameLoadedMsg struct {
+	game *db.Game
+}
+
+type filterTickMsg struct{}
+
 // ─── Model ─────────────────────────────────────────────────────────────────
 
 type model struct {
@@ -103,12 +109,15 @@ type model struct {
 	showHelp     bool
 	width        int
 	height       int
-	err          error
+	err           error
+	notice        string
+	filterDirty   bool
 	confirmDelete bool
 	deleteID     int64
 	deleteTitle  string
 
 	// detail view
+	detailGame  *db.Game
 	scrapedMeta *db.ScrapedMeta
 
 	// edit (title rename)

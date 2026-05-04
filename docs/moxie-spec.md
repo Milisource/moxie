@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
-**Version:** 0.3.3-alpha (May 2026)
-**Status:** Alpha — 0.3.3 (test suite overhaul: 223 tests, 14 test files, 0%→tested browser/tui packages)
+**Version:** 0.3.4-alpha (May 2026)
+**Status:** Alpha — 0.3.4 (comprehensive review + fix pass: 30 issues resolved, engine-aware scoring, security hardening, async TUI, single-pass scanner, new config/log packages)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
@@ -20,7 +20,9 @@ A local game library manager for adult games. Scans directories, detects engines
 | **Scanner** | [scanner.md](scanner.md) | Directory walk, engine detection profiles, exclusion list, limitations |
 | **Scraper** | [scraper.md](scraper.md) | HTTP client, rate limiting, HTML parsing, auto-association |
 | **Commands** | (this doc) | 28 CLI handlers in 8 domain files: crud, scrape, sync, cleanup, play, steam, rename, config |
-| **Utilities** | (this doc) | Shared config I/O, formatters, version normalization in `internal/util/` |
+| **Config** | (this doc) | Config I/O (`ConfigDir`, `DbPath`, `ReadConfig`, `WriteConfig`) in `internal/config/` |
+| **Utilities** | (this doc) | Formatters, version normalization, helpers in `internal/util/` |
+| **Logging** | (this doc) | Structured logging wrapper around `log/slog` in `internal/log/` |
 | **TUI** | [tui.md](tui.md) | Bubble Tea model/update/view, keyboard shortcuts, filters |
 | **Database** | [database.md](database.md) | SQLite schema, version tracking, migration strategy |
 | **Browser** | [browser.md](browser.md) | Cross-browser cookie extraction with kooky + SQLite fallback |
@@ -61,6 +63,25 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] `developerPattern1` regex fixed — `^Developer` anchor prevents mid-sentence false matches
 - [x] Installer scripts rewritten — `install.sh` (592 lines) and `install.ps1` (287 lines) with progress bars, version pinning, PATH auto-modification, release verification, and GitHub Actions support
 - [x] GitHub Actions release workflow — auto-builds 6 platform binaries on tag push, creates release with `softprops/action-gh-release`
+- [x] Engine-aware scoring for auto-association — thread candidates with matching engine keywords get +0.15 score boost
+- [x] Single-pass scanner with inline size accumulation — eliminates O(N×F) redundant filesystem calls
+- [x] Parallel engine detection — bounded worker pool (`runtime.NumCPU()`) for per-game detection in scanner second pass
+- [x] Async TUI detail loading — `detailGame` cached in model, loaded asynchronously to prevent render-loop blocking
+- [x] TUI filter debounce — 150ms throttle on search filter rebuilds
+- [x] Security: SSRF protection via `isValidDownloadURL()` — HTTPS-only, blocks private/loopback IPs and metadata endpoints
+- [x] Security: `games.db` and `config.json` permissions set to `0600`
+- [x] Data integrity: `fsync()` before rename on all Steam file writes
+- [x] Data integrity: `ErrSteamRunning` enforced in all Steam mutation functions
+- [x] Data integrity: Partial-write cleanup — destination files removed on encode/copy failure
+- [x] `busy_timeout = 5000` on SQLite connections for concurrent access safety
+- [x] Context cancellation support — `ScrapeThreadWithContext` / `SearchF95ZoneWithContext`
+- [x] `internal/config/` package extracted from `internal/util/` — eliminates `util→db` dependency
+- [x] `internal/log/` package — `log/slog` wrapper with Debug/Info/Warn/Error levels
+- [x] Scraper decoupled from database — `ScrapeInput` replaces `db.Game` in `FindMatches`
+- [x] Engine matching deduplicated — `findEngineInText` helper replaces 4 inline loops
+- [x] Lipgloss style cache — 14 pre-built engine styles eliminate per-cell allocations
+- [x] Steam backup rotation — fixed-name backups replace unbounded timestamped accumulation
+- [x] Browser cookie error surfaced — kooky read errors included in diagnostic messages
 - [x] `--version` flag with git describe injection via ldflags
 - [x] First-run welcome message when no database exists
 - [x] Platform-aware Firefox User-Agent (Linux/macOS/Windows)

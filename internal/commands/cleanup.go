@@ -42,6 +42,20 @@ var EngineCompat = map[string]map[string]bool{
 	"WolfRPG": {"HTML": true, "WolfRPG": true},
 }
 
+// findEngineInText searches text for engine variant keywords and returns
+// the first matching engine name, or "" if none found.
+func findEngineInText(text string) string {
+	lower := strings.ToLower(text)
+	for engine, variants := range EngineTagVariants {
+		for _, variant := range variants {
+			if strings.Contains(lower, variant) {
+				return engine
+			}
+		}
+	}
+	return ""
+}
+
 // Cleanup detects and fixes wrong F95Zone thread associations.
 func Cleanup(args []string) {
 	fs := flag.NewFlagSet("cleanup", flag.ExitOnError)
@@ -50,7 +64,7 @@ func Cleanup(args []string) {
 	yes := fs.Bool("y", false, "Auto-disassociate flagged games (shorthand for --assume-yes)")
 	fs.Parse(args)
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	games, err := database.ListGames("", "")
@@ -235,34 +249,11 @@ func EngineMatchesThread(detected engine.Result, tags []string, title string) bo
 	// We found tags/title but neither contained the expected engine.
 	// Only flag as false if there's engine metadata present that contradicts.
 	// Extract any engine from title.
-	f95Engine := ""
-	for engine, engVariants := range EngineTagVariants {
-		for _, v := range engVariants {
-			if strings.Contains(titleLower, v) {
-				f95Engine = engine
-				break
-			}
-		}
-		if f95Engine != "" {
-			break
-		}
-	}
+	f95Engine := findEngineInText(titleLower)
 	// Also check tags for any engine indicator.
 	if f95Engine == "" {
 		for _, tag := range tags {
-			tagLower := strings.ToLower(tag)
-			for engine, engVariants := range EngineTagVariants {
-				for _, v := range engVariants {
-					if strings.Contains(tagLower, v) {
-						f95Engine = engine
-						break
-					}
-				}
-				if f95Engine != "" {
-					break
-				}
-			}
-			if f95Engine != "" {
+			if f95Engine = findEngineInText(tag); f95Engine != "" {
 				break
 			}
 		}
@@ -323,13 +314,8 @@ func CheckEngineMismatch(g db.Game) string {
 func FindF95Engine(g db.Game) string {
 	// 1. Check tags (most reliable — explicitly tagged by thread author).
 	for _, tag := range g.Tags {
-		tagLower := strings.ToLower(tag)
-		for engine, variants := range EngineTagVariants {
-			for _, variant := range variants {
-				if strings.Contains(tagLower, variant) {
-					return engine
-				}
-			}
+		if engine := findEngineInText(tag); engine != "" {
+			return engine
 		}
 	}
 	// 2. Fall back to title prefix (RPGM, Unity, RenPy, etc. in thread title).
@@ -343,12 +329,8 @@ func FindF95Engine(g db.Game) string {
 	}
 	// 3. Check parent directory name — users often organize by engine.
 	parent := strings.ToLower(filepath.Base(filepath.Dir(g.Path)))
-	for engine, variants := range EngineTagVariants {
-		for _, variant := range variants {
-			if strings.Contains(parent, variant) {
-				return engine
-			}
-		}
+	if engine := findEngineInText(parent); engine != "" {
+		return engine
 	}
 	return ""
 }
@@ -456,7 +438,7 @@ func FormatTagsBrief(tags []string, max int) string {
 
 // RefreshVersions re-extracts versions from directory names.
 func RefreshVersions(args []string) {
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	games, err := database.ListGames("", "")

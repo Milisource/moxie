@@ -1223,4 +1223,105 @@ func TestEncodeVDF_NestedEscaping(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// 21. BestGridImage
+// ---------------------------------------------------------------------------
+
+func TestBestGridImage_Empty(t *testing.T) {
+	t.Parallel()
+
+	// nil slice
+	url, ok := BestGridImage(nil)
+	if ok {
+		t.Error("expected false for nil results, got true")
+	}
+	if url != "" {
+		t.Errorf("expected empty URL, got %q", url)
+	}
+
+	// empty slice
+	url, ok = BestGridImage([]SGDBImageResult{})
+	if ok {
+		t.Error("expected false for empty results, got true")
+	}
+	if url != "" {
+		t.Errorf("expected empty URL, got %q", url)
+	}
+}
+
+func TestBestGridImage_Single(t *testing.T) {
+	t.Parallel()
+	results := []SGDBImageResult{
+		{URL: "https://example.com/image.png", Score: 10},
+	}
+	url, ok := BestGridImage(results)
+	if !ok {
+		t.Error("expected true for single image")
+	}
+	if url != "https://example.com/image.png" {
+		t.Errorf("got URL %q, want %q", url, "https://example.com/image.png")
+	}
+}
+
+func TestBestGridImage_HighestScore(t *testing.T) {
+	t.Parallel()
+	results := []SGDBImageResult{
+		{URL: "https://example.com/low.png", Score: 1},
+		{URL: "https://example.com/high.png", Score: 100},
+		{URL: "https://example.com/medium.png", Score: 50},
+	}
+	url, ok := BestGridImage(results)
+	if !ok {
+		t.Error("expected true for multiple images")
+	}
+	if url != "https://example.com/high.png" {
+		t.Errorf("got URL %q, want %q", url, "https://example.com/high.png")
+	}
+}
+
+func TestBestGridImage_SkipsDataURI(t *testing.T) {
+	t.Parallel()
+	results := []SGDBImageResult{
+		{URL: "data:image/png;base64,abc123", Score: 100},
+		{URL: "https://example.com/good.png", Score: 50},
+	}
+	url, ok := BestGridImage(results)
+	if !ok {
+		t.Error("expected true when a valid URL exists alongside a data: URI")
+	}
+	if url != "https://example.com/good.png" {
+		t.Errorf("got URL %q, want %q", url, "https://example.com/good.png")
+	}
+}
+
+func TestBestGridImage_SkipsSVG(t *testing.T) {
+	t.Parallel()
+	results := []SGDBImageResult{
+		{URL: "https://example.com/image.svg", Score: 200},
+		{URL: "https://example.com/valid.png", Score: 10},
+	}
+	url, ok := BestGridImage(results)
+	if !ok {
+		t.Error("expected true when a valid PNG exists alongside an SVG")
+	}
+	if url != "https://example.com/valid.png" {
+		t.Errorf("got URL %q, want %q", url, "https://example.com/valid.png")
+	}
+}
+
+func TestBestGridImage_AllSkipped(t *testing.T) {
+	t.Parallel()
+	results := []SGDBImageResult{
+		{URL: "data:image/png;base64,abc", Score: 100},
+		{URL: "https://example.com/bad.svg", Score: 50},
+	}
+	url, ok := BestGridImage(results)
+	if ok {
+		t.Error("expected false when all results are skipped")
+	}
+	if url != "" {
+		t.Errorf("expected empty URL, got %q", url)
+	}
+}
+
 

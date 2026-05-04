@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/mili/moxie/internal/db"
 )
@@ -106,7 +105,7 @@ func (m *model) updateTableRows() {
 		if ver == "" {
 			ver = "-"
 		}
-		engineStyled := lipgloss.NewStyle().Foreground(engineColor(g.Engine)).Render(g.Engine)
+		engineStyled := engineStyle(g.Engine).Render(g.Engine)
 		title := truncate(g.Title, 72)
 		if g.LatestVersion != "" && g.LatestVersion != g.Version {
 			indicator := updateAvailableStyle.Render(" 🔄")

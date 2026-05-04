@@ -11,6 +11,7 @@ import (
 
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/engine"
+	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/util"
 )
@@ -44,6 +45,12 @@ func RunUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 		filtered = append(filtered, g)
 	}
 	games = filtered
+
+	log.Info("update check started",
+		"total", len(games),
+		"cooldown_skipped", cooldownSkipped,
+		"force", force,
+	)
 
 	if cooldownSkipped > 0 {
 		fmt.Fprintf(os.Stderr, "  (skipped %d games checked within the last 24h; use --force to override)\n",
@@ -135,6 +142,11 @@ func RunUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 	}
 	wg.Wait()
 
+	log.Info("update check complete",
+		"updates", updatesFound,
+		"total", len(games)+cooldownSkipped,
+	)
+
 	return updatesFound, results
 }
 
@@ -164,7 +176,7 @@ func CheckUpdates(args []string) {
 		os.Exit(1)
 	}
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	allGames, err := database.ListGames("", "")
@@ -256,11 +268,33 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 			return nil, fmt.Errorf("no F95Zone results found for %q", game.Title)
 		}
 
+		// Pre-detect engine so we can boost candidates whose titles
+		// contain matching engine keywords (e.g., "RPGM Completed
+		// Demons Roots" over "[Translation Request] Demons Roots").
+		detEngine := engine.Detect(game.Path)
+		engVariants, hasEngVariants := EngineTagVariants[string(detEngine.Engine)]
+
 		// Pick best match.
 		var best *scraper.SearchResult
 		var bestScore float64
 		for i, r := range searchResults {
 			score := scraper.ComputeMatchScore(game.Title, r.Title)
+			// Boost candidates whose title contains engine keywords
+			// matching the detected engine (e.g. RPGM, Unity, Flash).
+			// +0.15 is enough to push a 0.85 engine-tagged release
+			// thread above a 1.00 bare-title request thread.
+			if hasEngVariants {
+				titleLower := strings.ToLower(r.Title)
+				for _, variant := range engVariants {
+					if strings.Contains(titleLower, variant) {
+						score += 0.15
+						if score > 1.0 {
+							score = 1.0
+						}
+						break
+					}
+				}
+			}
 			marker := "  "
 			if score > bestScore {
 				bestScore = score
@@ -287,8 +321,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 		}
 		result.ThreadData = data
 
-		// Signal: check engine consistency before associating.
-		detEngine := engine.Detect(game.Path)
+		// Check engine consistency before associating.
 		if !EngineMatchesThread(detEngine, data.Tags, best.Title) {
 			result.EngineMismatch = true
 			if interactive {
@@ -305,7 +338,6 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 		}
 
 		ApplyThreadData(game, data, best.URL)
-		game.VersionCheckedAt = time.Now()
 		if err := database.UpdateGame(game); err != nil {
 			return nil, fmt.Errorf("save failed: %w", err)
 		}
@@ -384,7 +416,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 			}
 		}
 
-		if latest != "" && knownVer != "" && latest != knownVer {
+		if latest != "" && knownVer != "" && NormalizeVersion(latest) != NormalizeVersion(knownVer) {
 			result.VersionUpdated = true
 		}
 	}
@@ -395,7 +427,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 // SyncGame syncs a single game: associate it with F95Zone (if needed)
 // and check for version updates.
 func SyncGame(id int64, cookie string, unsafe bool, force bool) {
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)
@@ -505,7 +537,7 @@ func Sync(args []string) {
 		return
 	}
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	// Phase 1: Associate games with F95Zone threads.
@@ -599,6 +631,11 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 	interrupted := false
 	startTime := time.Now()
 
+	log.Info("auto-association started",
+		"total", total,
+		"unsafe", unsafe,
+	)
+
 	// Estimate: each game = 1 search + maybe 1 thread read
 	estSeconds := total * 8
 	if unsafe {
@@ -626,11 +663,14 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 			query = game.Title
 		}
 		if processed[query] {
+			log.Debug("skipping duplicate", "title", game.Title, "index", i+1, "total", total)
 			fmt.Fprintf(os.Stderr, "[%d/%d] %s %q — skipping (duplicate)\n",
 				i+1, total, elapsed, game.Title)
 			skipped++
 			continue
 		}
+
+		log.Debug("processing game for association", "title", game.Title, "index", i+1, "total", total)
 
 		fmt.Fprintf(os.Stderr, "[%d/%d] %s %q",
 			i+1, total, elapsed, game.Title)
@@ -651,6 +691,7 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 				results, err = client.SearchF95Zone(query)
 				if err != nil {
 					if util.IsBlocked(err) {
+						log.Error("blocked during auto-association", "error", err)
 						fmt.Fprintf(os.Stderr, "  ⚠ BLOCKED: stopping auto-association\n    %v\n", err)
 						fmt.Fprintf(os.Stderr, "  Try refreshing your F95Zone session in Firefox and running again.\n")
 						interrupted = true
@@ -676,6 +717,11 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 			continue
 		}
 
+		// Pre-detect engine for score boosting (prefer engine-tagged
+		// release threads over bare-title request threads).
+		detEngine := engine.Detect(game.Path)
+		engVariants, hasEngVariants := EngineTagVariants[string(detEngine.Engine)]
+
 		// Show results with scores.  Skip non-game threads (requests,
 		// recommendations, identification threads, etc.) when choosing
 		// the best match, but still display them for context.
@@ -683,6 +729,19 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 		var bestScore float64
 		for j, r := range results {
 			score := scraper.ComputeMatchScore(game.Title, r.Title)
+			// Boost engine-matching candidates (see SyncGameLogic for rationale).
+			if hasEngVariants {
+				titleLower := strings.ToLower(r.Title)
+				for _, variant := range engVariants {
+					if strings.Contains(titleLower, variant) {
+						score += 0.15
+						if score > 1.0 {
+							score = 1.0
+						}
+						break
+					}
+				}
+			}
 			isNonGame := scraper.IsNonGameThread(r.Title)
 			marker := "  "
 			if !isNonGame && score > bestScore {
@@ -724,10 +783,8 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 			continue
 		}
 
-		// Signal: prevent bad associations by checking engine consistency
-		// BEFORE saving.  Checks both the thread title prefix (primary
-		// signal — e.g. "Unity Completed Game Name") and content tags.
-		detEngine := engine.Detect(game.Path)
+		// Check engine consistency BEFORE saving. Uses the pre-detected
+		// engine from score boosting (see above).
 		if !EngineMatchesThread(detEngine, data.Tags, best.Title) {
 			fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread: %q, tags: %s) — skipping\n",
 				detEngine.Engine, util.Truncate(best.Title, 60), FormatTagsBrief(data.Tags, 4))
@@ -749,6 +806,10 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 		// Cache the successful association so future runs return instantly.
 		urlCache[query] = best.URL
 
+		log.Info("game associated",
+			"title", game.Title,
+			"version", data.Version,
+		)
 		fmt.Fprintf(os.Stderr, "  ✓ Saved (%s)", game.Title)
 		if data.Version != "" {
 			fmt.Fprintf(os.Stderr, " v%s", data.Version)
@@ -776,10 +837,19 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 		fmt.Fprintln(os.Stderr)
 	}
 
-	if interrupted {
-		fmt.Fprintf(os.Stderr, "=== INTERRUPTED (blocked by F95Zone) ===\n")
-	}
 	elapsed := time.Since(startTime).Truncate(time.Second)
+
+	if interrupted {
+		log.Warn("auto-association interrupted by block", "associated", associated, "skipped", skipped)
+		fmt.Fprintf(os.Stderr, "=== INTERRUPTED (blocked by F95Zone) ===\n")
+	} else {
+		log.Info("auto-association complete",
+			"associated", associated,
+			"skipped", skipped,
+			"total", total,
+			"elapsed", elapsed.String(),
+		)
+	}
 	fmt.Fprintf(os.Stderr, "=== Done: %d associated, %d skipped, %d/%d total in %s ===\n",
 		associated, skipped, associated+skipped, total, elapsed)
 }

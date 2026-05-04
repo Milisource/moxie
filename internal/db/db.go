@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"os"
 	"strings"
 	"time"
 
@@ -27,12 +28,23 @@ func Open(path string) (*Database, error) {
 		return nil, err
 	}
 
+	// Restrict database file permissions (sensitive data: game paths,
+	// F95Zone metadata).
+	os.Chmod(path, 0600)
+
 	// Enable WAL mode and foreign keys.
 	if _, err := conn.Exec("PRAGMA journal_mode = WAL"); err != nil {
 		conn.Close()
 		return nil, err
 	}
 	if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	// Set a busy timeout so lock contention waits instead of immediately
+	// failing with SQLITE_BUSY. 5000 ms is generous for single-user CLI use.
+	if _, err := conn.Exec("PRAGMA busy_timeout = 5000"); err != nil {
 		conn.Close()
 		return nil, err
 	}

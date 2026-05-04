@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/mili/moxie/internal/db"
 )
 
 // ---------------------------------------------------------------------------
@@ -26,11 +24,10 @@ func TestFindMatches_WithURLMap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	games := []db.Game{
-		{Title: "HH TRAP", Path: "/path/to/HH TRAP", F95URL: ""},
-		{Title: "Summer's Gone", Path: "/path/to/Summer's Gone", F95URL: ""},
-		// This game already has a URL and should be skipped.
-		{Title: "Already Matched", Path: "/path/matched", F95URL: "https://f95zone.to/threads/matched.11111/"},
+	// Only pass games that don't have an F95URL (pre-filtered by caller).
+	games := []ScrapeInput{
+		{Title: "HH TRAP", Path: "/path/to/HH TRAP"},
+		{Title: "Summer's Gone", Path: "/path/to/Summer's Gone"},
 	}
 
 	results, err := FindMatches(AssociateOptions{
@@ -50,7 +47,7 @@ func TestFindMatches_WithURLMap(t *testing.T) {
 	foundHH := false
 	foundSummer := false
 	for _, r := range results {
-		switch r.Game.Title {
+		switch r.ScrapeInput.Title {
 		case "HH TRAP":
 			foundHH = true
 			if r.BestMatch == nil {
@@ -68,7 +65,7 @@ func TestFindMatches_WithURLMap(t *testing.T) {
 					r.BestMatch.URL, "https://f95zone.to/threads/summers-gone.67890/")
 			}
 		default:
-			t.Errorf("unexpected result for game %q", r.Game.Title)
+			t.Errorf("unexpected result for game %q", r.ScrapeInput.Title)
 		}
 	}
 	if !foundHH {
@@ -79,10 +76,10 @@ func TestFindMatches_WithURLMap(t *testing.T) {
 	}
 }
 
-func TestFindMatches_FiltersGamesWithURL(t *testing.T) {
+func TestFindMatches_WithPreFilteredInput(t *testing.T) {
 	t.Parallel()
 
-	// Use a URL map so no HTTP calls are made for the unmatched game.
+	// Use a URL map so no HTTP calls are made.
 	tmpDir := t.TempDir()
 	urlMapPath := filepath.Join(tmpDir, "url_map.json")
 	urlMapContent := `{"/path/unmatched": "https://f95zone.to/threads/unmatched.99999/"}`
@@ -90,9 +87,9 @@ func TestFindMatches_FiltersGamesWithURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	games := []db.Game{
-		{Title: "Has URL", Path: "/path/existing", F95URL: "https://f95zone.to/threads/existing.111/"},
-		{Title: "No URL", Path: "/path/unmatched", F95URL: ""},
+	// Caller has pre-filtered: only the game without a URL is passed.
+	games := []ScrapeInput{
+		{Title: "No URL", Path: "/path/unmatched"},
 	}
 
 	results, err := FindMatches(AssociateOptions{
@@ -105,10 +102,10 @@ func TestFindMatches_FiltersGamesWithURL(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Fatalf("expected 1 result (only the unmatched game), got %d", len(results))
+		t.Fatalf("expected 1 result, got %d", len(results))
 	}
-	if results[0].Game.Title != "No URL" {
-		t.Errorf("expected game 'No URL', got %q", results[0].Game.Title)
+	if results[0].ScrapeInput.Title != "No URL" {
+		t.Errorf("expected game 'No URL', got %q", results[0].ScrapeInput.Title)
 	}
 }
 
@@ -117,7 +114,7 @@ func TestFindMatches_EmptyGames(t *testing.T) {
 
 	results, err := FindMatches(AssociateOptions{
 		Client:   NewClient(""),
-		AllGames: []db.Game{},
+		AllGames: []ScrapeInput{},
 	})
 	if err != nil {
 		t.Fatalf("FindMatches returned error: %v", err)
@@ -130,20 +127,17 @@ func TestFindMatches_EmptyGames(t *testing.T) {
 func TestFindMatches_AllHaveURLs(t *testing.T) {
 	t.Parallel()
 
-	games := []db.Game{
-		{Title: "Game A", Path: "/a", F95URL: "https://f95zone.to/threads/a.1/"},
-		{Title: "Game B", Path: "/b", F95URL: "https://f95zone.to/threads/b.2/"},
-	}
-
+	// The caller pre-filters games that already have F95URLs,
+	// so no input is passed to FindMatches.
 	results, err := FindMatches(AssociateOptions{
 		Client:   NewClient(""),
-		AllGames: games,
+		AllGames: []ScrapeInput{},
 	})
 	if err != nil {
 		t.Fatalf("FindMatches returned error: %v", err)
 	}
 	if len(results) != 0 {
-		t.Fatalf("expected 0 results (all have URLs), got %d", len(results))
+		t.Fatalf("expected 0 results, got %d", len(results))
 	}
 }
 
@@ -155,7 +149,7 @@ func TestFindMatches_BadURLMap(t *testing.T) {
 
 	_, err := FindMatches(AssociateOptions{
 		Client:   NewClient(""),
-		AllGames: []db.Game{{Title: "Game", Path: "/game"}},
+		AllGames: []ScrapeInput{{Title: "Game", Path: "/game"}},
 		URLMap:   badPath,
 	})
 	if err == nil {
@@ -174,7 +168,7 @@ func TestFindMatches_InvalidURLMapJSON(t *testing.T) {
 
 	_, err := FindMatches(AssociateOptions{
 		Client:   NewClient(""),
-		AllGames: []db.Game{{Title: "Game", Path: "/game"}},
+		AllGames: []ScrapeInput{{Title: "Game", Path: "/game"}},
 		URLMap:   badPath,
 	})
 	if err == nil {
@@ -196,7 +190,7 @@ func TestFindMatches_NilClient(t *testing.T) {
 
 	results, err := FindMatches(AssociateOptions{
 		Client:   nil,
-		AllGames: []db.Game{{Title: "Game", Path: "/path/game", F95URL: ""}},
+		AllGames: []ScrapeInput{{Title: "Game", Path: "/path/game"}},
 		URLMap:   urlMapPath,
 	})
 	if err != nil {

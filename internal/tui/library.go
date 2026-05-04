@@ -111,19 +111,17 @@ func (m model) libraryView() string {
 
 // ── Shared rendering helpers ───────────────────────────────────────────────
 
-// renderMessage writes an error or notice line to b.
+// renderMessage writes a notice and/or error line to b.
+// Notices (informational, e.g. path display or URL confirmation) are shown
+// in yellow via noticeStyle. Errors are shown in bold red via errorStyle.
 func (m model) renderMessage(b *strings.Builder) {
-	if m.err == nil {
-		return
+	if m.notice != "" {
+		b.WriteString("\n")
+		b.WriteString(noticeStyle.Render(m.notice))
 	}
-	msg := m.err.Error()
-	b.WriteString("\n")
-	if strings.HasPrefix(msg, "📁") || strings.HasPrefix(msg, "✅") {
-		// Notices: path display, play hint, URL confirmation, etc.
-		msg = strings.TrimPrefix(msg, "📁 ")
-		msg = strings.TrimPrefix(msg, "✅ ")
-		b.WriteString(noticeStyle.Render(msg))
-	} else {
+	if m.err != nil {
+		msg := m.err.Error()
+		b.WriteString("\n")
 		b.WriteString(errorStyle.Render(fmt.Sprintf("  ✗ %s  ", msg)))
 	}
 }

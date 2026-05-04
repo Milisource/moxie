@@ -458,3 +458,53 @@ func TestScanCategoryDirNested(t *testing.T) {
 		t.Error("RPGM category folder itself should NOT be detected as a game")
 	}
 }
+
+// TestScanPathPrefixCollision verifies that a directory whose name is a prefix
+// of another directory does not cause false positives in the subdirectory-skip
+// guard. E.g., /root/foo (a game) must not cause /root/foobar/SomeGame to be
+// incorrectly skipped because strings.HasPrefix("/root/foobar", "/root/foo")
+// was true without a path-separator check.
+func TestScanPathPrefixCollision(t *testing.T) {
+	root := t.TempDir()
+
+	// "foo" is a detected game directory (has an exe).
+	foo := filepath.Join(root, "foo")
+	os.MkdirAll(foo, 0755)
+	os.WriteFile(filepath.Join(foo, "foo.exe"), []byte("exe"), 0644)
+
+	// "foobar" is a non-game parent directory containing a real game.
+	foobar := filepath.Join(root, "foobar")
+	os.MkdirAll(foobar, 0755)
+	someGame := filepath.Join(foobar, "SomeGame")
+	os.MkdirAll(filepath.Join(someGame, "SomeGame_Data"), 0755)
+	os.WriteFile(filepath.Join(someGame, "SomeGame.exe"), []byte("exe"), 0644)
+	os.WriteFile(filepath.Join(someGame, "UnityPlayer.dll"), []byte("dll"), 0644)
+
+	games, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both games should be detected. If the prefix-collision bug is present,
+	// "SomeGame" inside "foobar" is falsely skipped and we only get 1 game.
+	if len(games) != 2 {
+		t.Fatalf("expected 2 games (foo + foobar/SomeGame), got %d: %v", len(games), games)
+	}
+
+	foundFoo := false
+	foundSomeGame := false
+	for _, g := range games {
+		switch g.Path {
+		case foo:
+			foundFoo = true
+		case someGame:
+			foundSomeGame = true
+		}
+	}
+	if !foundFoo {
+		t.Error("game 'foo' not found")
+	}
+	if !foundSomeGame {
+		t.Error("game 'foobar/SomeGame' not found — path-prefix collision bug may still be present")
+	}
+}

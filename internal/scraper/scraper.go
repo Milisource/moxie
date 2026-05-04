@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mili/moxie/internal/log"
 )
 
 const (
@@ -124,17 +127,24 @@ func (c *Client) Delay() time.Duration {
 
 // do sends an HTTP request with rate limiting, bot detection, and
 // exponential backoff on rate-limit responses.
+// It reads the response body once and returns it directly, avoiding
+// a second read in the caller.
 // baseDelay is the minimum delay between requests (use searchMinDelay for search).
-func (c *Client) do(req *http.Request, baseDelay time.Duration) (*http.Response, error) {
+func (c *Client) do(req *http.Request, baseDelay time.Duration) (bodyStr string, err error) {
 	c.mu.Lock()
 
 	// Periodic cooldown — pause longer every N requests to look human.
 	if c.reqCount > 0 && c.reqCount%cooldownInterval == 0 {
+		log.Debug("cooldown pause",
+			"duration", cooldownDuration,
+			"req_count", c.reqCount,
+			"url", req.URL.Redacted(),
+		)
 		c.mu.Unlock()
 		select {
 		case <-time.After(cooldownDuration):
 		case <-req.Context().Done():
-			return nil, req.Context().Err()
+			return "", req.Context().Err()
 		}
 		c.mu.Lock()
 	}
@@ -151,7 +161,7 @@ func (c *Client) do(req *http.Request, baseDelay time.Duration) (*http.Response,
 		select {
 		case <-time.After(wait):
 		case <-req.Context().Done():
-			return nil, req.Context().Err()
+			return "", req.Context().Err()
 		}
 		c.mu.Lock()
 	}
@@ -166,28 +176,40 @@ func (c *Client) do(req *http.Request, baseDelay time.Duration) (*http.Response,
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("scraper: request failed: %w", err)
+		return "", fmt.Errorf("scraper: request failed: %w", err)
 	}
 
-	// Check for blocking signals.
-	if err := c.checkBlocked(resp); err != nil {
-		resp.Body.Close()
-		return nil, err
+	// Check for blocking signals and read the body.
+	bodyStr, err = c.checkBlocked(resp)
+	resp.Body.Close()
+	if err != nil {
+		// Log blocked events and apply 429 backoff.
+		var blockedErr *BlockedError
+		if errors.As(err, &blockedErr) {
+			log.Warn("request blocked",
+				"status", blockedErr.StatusCode,
+				"reason", blockedErr.Reason,
+				"url", req.URL.Redacted(),
+			)
+			if blockedErr.StatusCode == 429 {
+				c.mu.Lock()
+				c.delay = time.Duration(float64(c.delay) * backoffMultiplier)
+				if c.delay > maxBackoff {
+					c.delay = maxBackoff
+				}
+				log.Warn("rate limited, backing off",
+					"new_delay", c.delay,
+					"url", req.URL.Redacted(),
+				)
+				c.mu.Unlock()
+			}
+		}
+		return "", err
 	}
 
-	// Adapt delay on rate-limiting responses.
-	if resp.StatusCode == 429 {
-		c.mu.Lock()
-		c.delay = time.Duration(float64(c.delay) * backoffMultiplier)
-		if c.delay > maxBackoff {
-			c.delay = maxBackoff
-		}
-		c.mu.Unlock()
-		resp.Body.Close()
-		return nil, &BlockedError{
-			Reason:     "rate limited (HTTP 429)",
-			StatusCode: resp.StatusCode,
-		}
+	// Check for non-OK status codes (429/403/503 already caught above).
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("scraper: unexpected status %d %s", resp.StatusCode, resp.Status)
 	}
 
 	// Gradually reduce delay on success.
@@ -198,77 +220,71 @@ func (c *Client) do(req *http.Request, baseDelay time.Duration) (*http.Response,
 	}
 	c.mu.Unlock()
 
-	return resp, nil
+	return bodyStr, nil
 }
 
 // checkBlocked inspects the response for Cloudflare or anti-bot signals.
-// It reads the full response body and replaces it with a fresh reader so
-// callers can still consume the body afterward.
-func (c *Client) checkBlocked(resp *http.Response) error {
+// It reads the full response body once and returns it so callers can use
+// the body directly without a second read.
+func (c *Client) checkBlocked(resp *http.Response) (bodyStr string, err error) {
 	switch resp.StatusCode {
 	case 429:
-		return &BlockedError{Reason: "rate limited", StatusCode: 429}
+		return "", &BlockedError{Reason: "rate limited", StatusCode: 429}
 	case 403:
-		return &BlockedError{
+		return "", &BlockedError{
 			Reason:     "access denied (HTTP 403) — possible IP block or missing cookies",
 			StatusCode: 403,
 		}
 	case 503:
-		return &BlockedError{
+		return "", &BlockedError{
 			Reason:     "service unavailable (HTTP 503) — possible Cloudflare challenge",
 			StatusCode: 503,
 		}
 	}
 
-	// Read the full body, check for Cloudflare markers, then put it back.
+	// Read the full body and check for Cloudflare markers.
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		return fmt.Errorf("scraper: failed to read response body: %w", err)
+		return "", fmt.Errorf("scraper: failed to read response body: %w", err)
 	}
 
-	bodyStr := string(body)
+	bodyStr = string(body)
 	if strings.Contains(bodyStr, "cf-browser-verification") ||
 		strings.Contains(bodyStr, "cf-challenge-running") ||
 		strings.Contains(bodyStr, "_cf_chl_opt") {
-		return &BlockedError{
+		return "", &BlockedError{
 			Reason:     "Cloudflare challenge page detected — refresh your browser session and re-import cookies",
 			StatusCode: resp.StatusCode,
 		}
 	}
 
-	// Replace body with a fresh reader so callers can consume it.
-	resp.Body = io.NopCloser(strings.NewReader(bodyStr))
-	return nil
+	return bodyStr, nil
 }
 
 // ScrapeThread fetches and parses a XenForo thread page.
 func (c *Client) ScrapeThread(threadURL string) (*ThreadData, error) {
+	return c.ScrapeThreadWithContext(context.Background(), threadURL)
+}
+
+// ScrapeThreadWithContext fetches and parses a XenForo thread page,
+// respecting the given context for cancellation and deadlines.
+func (c *Client) ScrapeThreadWithContext(ctx context.Context, threadURL string) (*ThreadData, error) {
 	if threadURL == "" {
 		return nil, fmt.Errorf("scraper: threadURL is empty")
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, threadURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, threadURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("scraper: failed to create request: %w", err)
 	}
 
-	resp, err := c.do(req, minDelay)
+	body, err := c.do(req, minDelay)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("scraper: unexpected status %d %s", resp.StatusCode, resp.Status)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("scraper: failed to read response body: %w", err)
-	}
-
-	td, err := parseThreadHTML(string(body), threadURL)
+	td, err := parseThreadHTML(body, threadURL)
 	if err != nil {
 		return nil, fmt.Errorf("scraper: failed to parse thread HTML: %w", err)
 	}

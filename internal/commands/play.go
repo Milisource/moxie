@@ -24,7 +24,7 @@ func Play(args []string) {
 	}
 	id := util.MustParseInt(fs.Arg(0))
 
-	database := util.OpenDB()
+	database := OpenDB()
 	defer database.Close()
 
 	game, err := database.GetGame(id)

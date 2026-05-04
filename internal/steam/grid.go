@@ -5,7 +5,9 @@ import (
 	"image"
 	_ "image/jpeg" // register JPEG decoder for HTTP downloads
 	"image/png"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,43 @@ import (
 
 // httpClient is the shared HTTP client for all Steam grid artwork downloads.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+// blockedDownloadHosts are hosts that should never be contacted for downloads.
+var blockedDownloadHosts = []string{
+	"169.254.169.254",         // AWS metadata
+	"metadata.google.internal", // GCP metadata
+	"100.100.100.200",         // Alibaba Cloud metadata
+}
+
+// isValidDownloadURL validates that a URL is safe to download from.
+// Only HTTPS URLs are allowed; private, loopback, link-local IPs
+// and known cloud metadata endpoints are blocked.
+func isValidDownloadURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "https" {
+		return false
+	}
+	if u.Host == "" {
+		return false
+	}
+	// Block private/internal IPs.
+	hostname := u.Hostname()
+	if ip := net.ParseIP(hostname); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+			return false
+		}
+	}
+	// Block known metadata endpoints.
+	for _, h := range blockedDownloadHosts {
+		if hostname == h {
+			return false
+		}
+	}
+	return true
+}
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -76,6 +115,11 @@ func SetAllArtwork(steamRoot string, userID3, appID uint32, coverURL string) err
 		return ErrUnsupportedFormat
 	}
 
+	// Validate URL to prevent SSRF.
+	if !isValidDownloadURL(coverURL) {
+		return ErrInvalidURL
+	}
+
 	// 1. Download the image once.
 	resp, err := httpClient.Get(coverURL)
 	if err != nil {
@@ -129,10 +173,21 @@ func resizeAndSave(steamRoot string, userID3, appID uint32, src image.Image, art
 	if err != nil {
 		return fmt.Errorf("steam: cannot create file %s: %w", destPath, err)
 	}
-	defer f.Close()
 
 	if err := png.Encode(f, dst); err != nil {
+		f.Close()
+		os.Remove(destPath)
 		return fmt.Errorf("steam: png encode failed: %w", err)
+	}
+	// fsync before close to prevent empty/corrupt file on crash.
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(destPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(destPath)
+		return err
 	}
 
 	return nil
@@ -144,6 +199,11 @@ func downloadAndResize(steamRoot string, userID3, appID uint32, url string, artT
 	// Skip non-HTTP URLs (data: URIs, SVGs) — we can't decode these.
 	if strings.HasPrefix(url, "data:") || strings.Contains(url, "/svg") {
 		return ErrUnsupportedFormat
+	}
+
+	// Validate URL to prevent SSRF.
+	if !isValidDownloadURL(url) {
+		return ErrInvalidURL
 	}
 
 	// 1. Download the image.
@@ -180,10 +240,21 @@ func downloadAndResize(steamRoot string, userID3, appID uint32, url string, artT
 	if err != nil {
 		return fmt.Errorf("steam: cannot create file %s: %w", destPath, err)
 	}
-	defer f.Close()
 
 	if err := png.Encode(f, dst); err != nil {
+		f.Close()
+		os.Remove(destPath)
 		return fmt.Errorf("steam: png encode failed: %w", err)
+	}
+	// fsync before close to prevent empty/corrupt file on crash.
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(destPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(destPath)
+		return err
 	}
 
 	return nil

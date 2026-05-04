@@ -2,7 +2,9 @@ package util
 
 import (
 	"fmt"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -75,6 +77,16 @@ func TruncateVer(v string) string {
 		return "(none)"
 	}
 	return v
+}
+
+// MustParseInt parses a string as int64, printing an error and exiting on failure.
+func MustParseInt(s string) int64 {
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid ID: %s\n", s)
+		os.Exit(1)
+	}
+	return n
 }
 
 // WrapText wraps text to a given width.

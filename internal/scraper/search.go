@@ -3,7 +3,6 @@ package scraper
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,6 +20,13 @@ type SearchResult struct {
 // SearchF95Zone searches F95Zone for game threads matching the query.
 // Returns up to 5 results sorted by relevance.
 func (c *Client) SearchF95Zone(query string) ([]SearchResult, error) {
+	return c.SearchF95ZoneWithContext(context.Background(), query)
+}
+
+// SearchF95ZoneWithContext searches F95Zone for game threads matching the query,
+// respecting the given context for cancellation and deadlines.
+// Returns up to 5 results sorted by relevance.
+func (c *Client) SearchF95ZoneWithContext(ctx context.Context, query string) ([]SearchResult, error) {
 	if query == "" {
 		return nil, fmt.Errorf("scraper: search query is empty")
 	}
@@ -28,27 +34,17 @@ func (c *Client) SearchF95Zone(query string) ([]SearchResult, error) {
 	searchURL := fmt.Sprintf("https://f95zone.to/search/search?keywords=%s&c%%5Btitle_only%%5D=1",
 		url.QueryEscape(query))
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, searchURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("scraper: failed to create search request: %w", err)
 	}
 
-	resp, err := c.do(req, searchMinDelay)
+	body, err := c.do(req, searchMinDelay)
 	if err != nil {
 		return nil, fmt.Errorf("scraper: search request failed: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("scraper: search returned status %d %s", resp.StatusCode, resp.Status)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("scraper: failed to read search response: %w", err)
-	}
-
-	return parseSearchResults(string(body)), nil
+	return parseSearchResults(body), nil
 }
 
 // parseSearchResults parses the XenForo 2.x search results HTML.

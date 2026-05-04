@@ -19,6 +19,19 @@ func (m model) loadGames() tea.Cmd {
 	}
 }
 
+// loadDetailGame returns a command that fetches a single game by ID for
+// the detail view. This runs asynchronously so View() never blocks on
+// SQLite I/O.
+func (m model) loadDetailGame(id int64) tea.Cmd {
+	return func() tea.Msg {
+		game, err := m.db.GetGame(id)
+		if err != nil {
+			return errMsg{err}
+		}
+		return detailGameLoadedMsg{game}
+	}
+}
+
 // loadMeta returns a command that fetches scraped metadata for a game.
 func (m model) loadMeta(id int64) tea.Cmd {
 	return func() tea.Msg {

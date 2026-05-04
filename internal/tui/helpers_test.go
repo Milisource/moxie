@@ -3,6 +3,7 @@ package tui
 import (
 	"testing"
 
+	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mili/moxie/internal/db"
 )
@@ -400,5 +401,126 @@ func TestSortField_Indicator(t *testing.T) {
 				t.Errorf("SortField(%d).Indicator() = %q, want %q", tt.field, got, tt.want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cycleSort
+// ---------------------------------------------------------------------------
+
+func TestCycleSort(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		start SortField
+		want  SortField
+	}{
+		{SortID, SortTitle},
+		{SortTitle, SortEngine},
+		{SortEngine, SortVersion},
+		{SortVersion, SortID},
+	}
+	for _, tt := range tests {
+		t.Run("", func(t *testing.T) {
+			m := &model{sortBy: tt.start, table: table.New(table.WithColumns(nil))}
+			m.cycleSort()
+			if m.sortBy != tt.want {
+				t.Errorf("cycleSort(%v) = %v, want %v", tt.start, m.sortBy, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cycleEngineFilter
+// ---------------------------------------------------------------------------
+
+func TestCycleEngineFilter(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		start string
+		want  string
+	}{
+		{"", "Unity"},
+		{"Unity", "RenPy"},
+		{"RenPy", "RPGM"},
+		{"RPGM", "UnrealEngine"},
+		{"UnrealEngine", "HTML"},
+		{"HTML", "Java"},
+		{"Java", "Flash"},
+		{"Flash", "Others"},
+		{"Others", "ADRIFT"},
+		{"ADRIFT", "QSP"},
+		{"QSP", "RAGS"},
+		{"RAGS", "Tads"},
+		{"Tads", "WebGL"},
+		{"WebGL", "WolfRPG"},
+		{"WolfRPG", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.start, func(t *testing.T) {
+			m := &model{
+				engineFilter: tt.start,
+				table:        table.New(table.WithColumns(nil)),
+			}
+			m.cycleEngineFilter()
+			if m.engineFilter != tt.want {
+				t.Errorf("cycleEngineFilter(%q) = %q, want %q", tt.start, m.engineFilter, tt.want)
+			}
+		})
+	}
+}
+
+func TestCycleEngineFilter_Unknown(t *testing.T) {
+	t.Parallel()
+	m := &model{
+		engineFilter: "nonexistent",
+		table:        table.New(table.WithColumns(nil)),
+	}
+	m.cycleEngineFilter()
+	if m.engineFilter != "" {
+		t.Errorf("expected reset to empty string, got %q", m.engineFilter)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cycleStatusFilter
+// ---------------------------------------------------------------------------
+
+func TestCycleStatusFilter(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		start string
+		want  string
+	}{
+		{"", "active"},
+		{"active", "completed"},
+		{"completed", "abandoned"},
+		{"abandoned", "on_hold"},
+		{"on_hold", "unknown"},
+		{"unknown", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.start, func(t *testing.T) {
+			m := &model{
+				statusFilter: tt.start,
+				table:        table.New(table.WithColumns(nil)),
+			}
+			m.cycleStatusFilter()
+			if m.statusFilter != tt.want {
+				t.Errorf("cycleStatusFilter(%q) = %q, want %q", tt.start, m.statusFilter, tt.want)
+			}
+		})
+	}
+}
+
+func TestCycleStatusFilter_Unknown(t *testing.T) {
+	t.Parallel()
+	m := &model{
+		statusFilter: "nonexistent",
+		table:        table.New(table.WithColumns(nil)),
+	}
+	m.cycleStatusFilter()
+	if m.statusFilter != "" {
+		t.Errorf("expected reset to empty string, got %q", m.statusFilter)
 	}
 }
