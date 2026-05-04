@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
-**Version:** 0.3.41-alpha (May 2026)
-**Status:** Alpha — 0.3.41 (comprehensive review + fix pass: 30 issues resolved, engine-aware scoring, security hardening, async TUI, single-pass scanner, new config/log packages || CI/CD hotfix)
+**Version:** 0.3.5-alpha (May 2026)
+**Status:** Alpha — 0.3.5 (SGDB parse fix, icon/logo support, store links persistence, Steam AppID artwork pipeline, self-update command)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
