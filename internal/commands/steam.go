@@ -58,7 +58,7 @@ func SteamAdd(args []string) {
 	noArtwork := fs.Bool("no-artwork", false, "Skip downloading cover artwork")
 	protonVer := fs.String("proton", "proton_experimental", "Proton version (Linux only; use 'none' to skip)")
 	displayName := fs.String("name", "", "Override display name in Steam")
-	sgdbKey := fs.String("steamgriddb-key", "", "SteamGridDB API key for premium artwork")
+	sgdbKey := fs.String("steamgriddb-key", "", "SteamGridDB API key")
 	tagsFlag := fs.String("tags", "", "Additional comma-separated tags")
 	fs.Parse(args)
 
@@ -198,21 +198,26 @@ func SteamAdd(args []string) {
 		if !*noArtwork {
 			artDone := false
 
-			// Priority 1: SteamGridDB by name (always try if API key is configured).
 			sgdbAPIKey := ResolveSGDBKey(*sgdbKey)
 			if sgdbAPIKey != "" {
-				artDone = TrySGDBArtworkByName(sgdbAPIKey, steamRoot, uid, entry.AppID, name)
+				sgdbClient := steam.NewSGDBClient(sgdbAPIKey)
+				// Priority 1: SteamGridDB by real Steam App ID (precise artwork).
+				if game.SteamAppID > 0 {
+					artDone = DownloadSGDBArtwork(sgdbClient, steamRoot, uid, entry.AppID, int(game.SteamAppID))
+				}
+				// Priority 2: SteamGridDB by name (fuzzy search).
+				if !artDone {
+					artDone = TrySGDBArtworkByName(sgdbClient, steamRoot, uid, entry.AppID, name)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, sgdbNoKeyLine)
 			}
-
-			// Priority 2: F95Zone cover image (fallback).
+			// Priority 3: F95Zone cover image (fallback).
 			if !artDone && meta != nil && meta.CoverURL != "" {
-				fmt.Fprintf(os.Stderr, "  Downloading cover art from F95Zone...\n")
-				if err := steam.SetAllArtwork(steamRoot, uid, entry.AppID, meta.CoverURL); err != nil {
-					if errors.Is(err, steam.ErrUnsupportedFormat) {
-						fmt.Fprintf(os.Stderr, "  ⚠ Artwork: unsupported format (SVG) — skipping\n")
-					} else {
-						fmt.Fprintf(os.Stderr, "  ⚠ Artwork: %v\n", err)
-					}
+				if err := steam.SetAllArtwork(steamRoot, uid, entry.AppID, meta.CoverURL); err == nil {
+					artDone = true
+				} else if !errors.Is(err, steam.ErrUnsupportedFormat) {
+					fmt.Fprintf(os.Stderr, "  ⚠ Artwork: %v\n", err)
 				}
 			}
 		}
@@ -491,7 +496,7 @@ func SteamFixArtwork(args []string) {
 	fs := flag.NewFlagSet("steam-fix-artwork", flag.ExitOnError)
 	userFlag := fs.Uint("user", 0, "Steam user ID (default: first user)")
 	nameFlag := fs.String("name", "", "Override display name (must match the name used when adding)")
-	sgdbKey := fs.String("steamgriddb-key", "", "SteamGridDB API key for premium artwork")
+	sgdbKey := fs.String("steamgriddb-key", "", "SteamGridDB API key")
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
@@ -542,12 +547,20 @@ func SteamFixArtwork(args []string) {
 
 	apiKey := ResolveSGDBKey(*sgdbKey)
 
-	// Priority 1: SteamGridDB by name (if API key is configured).
 	if apiKey != "" {
-		artDone = TrySGDBArtworkByName(apiKey, steamRoot, uid, appID, name)
+		sgdbClient := steam.NewSGDBClient(apiKey)
+		// Priority 1: SteamGridDB by real Steam App ID.
+		if game.SteamAppID > 0 {
+			artDone = DownloadSGDBArtwork(sgdbClient, steamRoot, uid, appID, int(game.SteamAppID))
+		}
+		// Priority 2: SteamGridDB by name.
+		if !artDone {
+			artDone = TrySGDBArtworkByName(sgdbClient, steamRoot, uid, appID, name)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, sgdbNoKeyLine)
 	}
-
-	// Priority 2: F95Zone cover URL (fallback, if available and valid).
+	// Priority 3: F95Zone cover URL (fallback, if available and valid).
 	if !artDone && meta != nil && meta.CoverURL != "" {
 		if err := steam.SetAllArtwork(steamRoot, uid, appID, meta.CoverURL); err == nil {
 			artDone = true
@@ -561,7 +574,7 @@ func SteamFixArtwork(args []string) {
 		fmt.Printf("Artwork updated for '%s'\n", game.Title)
 	} else {
 		fmt.Fprintf(os.Stderr, "No artwork found for this game.\n")
-		fmt.Fprintf(os.Stderr, "Try setting a SteamGridDB API key: moxie config set steamgriddb-key <key>\n")
+		fmt.Fprintf(os.Stderr, sgdbKeyHint)
 	}
 }
 
@@ -586,11 +599,18 @@ func ResolveSGDBKey(flagKey string) string {
 	return ""
 }
 
+var steamAppIDRe = regexp.MustCompile(`/app/(\d+)(?:/|$)`)
+
+const sgdbNoKeyLine = "  \U0001F4A1 No SteamGridDB API key configured. Set one for higher-quality artwork.\n"
+
+const sgdbKeyHint = "  \U0001F4A1 Tip: Set a SteamGridDB API key for higher-quality artwork!\n" +
+	"         moxie config set steamgriddb-key <key>\n" +
+	"         (get one free at https://www.steamgriddb.com/profile/preferences)\n"
+
 // ExtractSteamAppID extracts a Steam App ID from a store URL.
 // Example: "https://store.steampowered.com/app/12345/GameName/" → (12345, true)
 func ExtractSteamAppID(storeURL string) (int, bool) {
-	re := regexp.MustCompile(`/app/(\d+)/`)
-	matches := re.FindStringSubmatch(storeURL)
+	matches := steamAppIDRe.FindStringSubmatch(storeURL)
 	if len(matches) < 2 {
 		return 0, false
 	}
@@ -620,6 +640,7 @@ func DownloadSGDBArtwork(sgdb *steam.SGDBClient, steamRoot string, uid, appID ui
 	if url, ok := steam.BestGridImage(gridsH); ok {
 		dest := steam.GridFilePath(steamRoot, uid, appID, steam.ArtHorizontal)
 		_ = sgdb.DownloadImage(url, dest)
+		fmt.Fprintf(os.Stderr, "  ✓ Horizontal grid\n")
 	}
 
 	// Hero (1920×620).
@@ -627,6 +648,21 @@ func DownloadSGDBArtwork(sgdb *steam.SGDBClient, steamRoot string, uid, appID ui
 	if url, ok := steam.BestGridImage(heroes); ok {
 		dest := steam.GridFilePath(steamRoot, uid, appID, steam.ArtHero)
 		_ = sgdb.DownloadImage(url, dest)
+		fmt.Fprintf(os.Stderr, "  ✓ Hero banner\n")
+	}
+
+	// Icon (best-effort).
+	icons, _ := sgdb.GetIconsBySteamAppID(realSteamAppID)
+	if urlI, ok := steam.BestGridImage(icons); ok {
+		_ = sgdb.DownloadImage(urlI, steam.GridFilePath(steamRoot, uid, appID, steam.ArtIcon))
+		fmt.Fprintf(os.Stderr, "  ✓ Icon\n")
+	}
+
+	// Logo (best-effort).
+	logos, _ := sgdb.GetLogosBySteamAppID(realSteamAppID)
+	if urlL, ok := steam.BestGridImage(logos); ok {
+		_ = sgdb.DownloadImage(urlL, steam.GridFilePath(steamRoot, uid, appID, steam.ArtLogo))
+		fmt.Fprintf(os.Stderr, "  ✓ Logo\n")
 	}
 
 	return true
@@ -640,9 +676,8 @@ func SanitizeTitleForSGDB(title string) string {
 }
 
 // TrySGDBArtworkByName searches SteamGridDB by game name and downloads artwork.
-func TrySGDBArtworkByName(apiKey, steamRoot string, uid, appID uint32, gameName string) bool {
+func TrySGDBArtworkByName(sgdb *steam.SGDBClient, steamRoot string, uid, appID uint32, gameName string) bool {
 	fmt.Fprintf(os.Stderr, "  Searching SteamGridDB for %q...\n", SanitizeTitleForSGDB(gameName))
-	sgdb := steam.NewSGDBClient(apiKey)
 	results, err := sgdb.SearchGame(SanitizeTitleForSGDB(gameName))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  ⚠ SGDB search: %v\n", err)
@@ -674,7 +709,7 @@ func TrySGDBArtworkByName(apiKey, steamRoot string, uid, appID uint32, gameName 
 	}
 	fmt.Fprintf(os.Stderr, "  ✓ Vertical grid\n")
 
-	// Best-effort horizontal + hero.
+	// Best-effort horizontal + hero + icon + logo.
 	if gridsH, _ := sgdb.GetGridsBySGDBGameID(gameID, "460x215"); len(gridsH) > 0 {
 		if urlH, ok := steam.BestGridImage(gridsH); ok {
 			sgdb.DownloadImage(urlH, steam.GridFilePath(steamRoot, uid, appID, steam.ArtHorizontal))
@@ -683,6 +718,19 @@ func TrySGDBArtworkByName(apiKey, steamRoot string, uid, appID uint32, gameName 
 	if heroes, _ := sgdb.GetHeroesBySGDBGameID(gameID); len(heroes) > 0 {
 		if urlH, ok := steam.BestGridImage(heroes); ok {
 			sgdb.DownloadImage(urlH, steam.GridFilePath(steamRoot, uid, appID, steam.ArtHero))
+			fmt.Fprintf(os.Stderr, "  ✓ Hero banner\n")
+		}
+	}
+	if icons, _ := sgdb.GetIconsBySGDBGameID(gameID); len(icons) > 0 {
+		if urlI, ok := steam.BestGridImage(icons); ok {
+			sgdb.DownloadImage(urlI, steam.GridFilePath(steamRoot, uid, appID, steam.ArtIcon))
+			fmt.Fprintf(os.Stderr, "  ✓ Icon\n")
+		}
+	}
+	if logos, _ := sgdb.GetLogosBySGDBGameID(gameID); len(logos) > 0 {
+		if urlL, ok := steam.BestGridImage(logos); ok {
+			sgdb.DownloadImage(urlL, steam.GridFilePath(steamRoot, uid, appID, steam.ArtLogo))
+			fmt.Fprintf(os.Stderr, "  ✓ Logo\n")
 		}
 	}
 

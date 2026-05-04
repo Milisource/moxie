@@ -56,6 +56,13 @@ type sgdbAutocompleteResponse struct {
 	Errors  []string         `json:"errors"`
 }
 
+// sgdbImageResponse is the wrapper JSON returned by grid/hero/icon/logo endpoints.
+type sgdbImageResponse struct {
+	Success bool              `json:"success"`
+	Data    []SGDBImageResult `json:"data"`
+	Errors  []string          `json:"errors"`
+}
+
 // SearchGame searches SteamGridDB for a game by name.
 // Returns up to 10 results with their SGDB ID and name.
 func (c *SGDBClient) SearchGame(term string) ([]SGDBGameResult, error) {
@@ -90,11 +97,14 @@ func (c *SGDBClient) GetGridsBySteamAppID(steamAppID int, dimensions string) ([]
 	if err != nil {
 		return nil, err
 	}
-	var results []SGDBImageResult
-	if err := json.Unmarshal(respBody, &results); err != nil {
+	var wrapper sgdbImageResponse
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
 		return nil, fmt.Errorf("steamgriddb: parse error: %w", err)
 	}
-	return results, nil
+	if !wrapper.Success {
+		return nil, fmt.Errorf("steamgriddb: %s", strings.Join(wrapper.Errors, "; "))
+	}
+	return wrapper.Data, nil
 }
 
 // GetHeroesBySteamAppID fetches hero/banner images for a real Steam App ID.
@@ -103,11 +113,14 @@ func (c *SGDBClient) GetHeroesBySteamAppID(steamAppID int) ([]SGDBImageResult, e
 	if err != nil {
 		return nil, err
 	}
-	var results []SGDBImageResult
-	if err := json.Unmarshal(respBody, &results); err != nil {
+	var wrapper sgdbImageResponse
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
 		return nil, fmt.Errorf("steamgriddb: parse error: %w", err)
 	}
-	return results, nil
+	if !wrapper.Success {
+		return nil, fmt.Errorf("steamgriddb: %s", strings.Join(wrapper.Errors, "; "))
+	}
+	return wrapper.Data, nil
 }
 
 // GetGridsBySGDBGameID fetches grid images for a SteamGridDB game ID
@@ -122,11 +135,14 @@ func (c *SGDBClient) GetGridsBySGDBGameID(gameID int, dimensions string) ([]SGDB
 	if err != nil {
 		return nil, err
 	}
-	var results []SGDBImageResult
-	if err := json.Unmarshal(respBody, &results); err != nil {
+	var wrapper sgdbImageResponse
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
 		return nil, fmt.Errorf("steamgriddb: parse error: %w", err)
 	}
-	return results, nil
+	if !wrapper.Success {
+		return nil, fmt.Errorf("steamgriddb: %s", strings.Join(wrapper.Errors, "; "))
+	}
+	return wrapper.Data, nil
 }
 
 // GetHeroesBySGDBGameID fetches hero/banner images for a SteamGridDB game ID.
@@ -135,11 +151,78 @@ func (c *SGDBClient) GetHeroesBySGDBGameID(gameID int) ([]SGDBImageResult, error
 	if err != nil {
 		return nil, err
 	}
-	var results []SGDBImageResult
-	if err := json.Unmarshal(respBody, &results); err != nil {
+	var wrapper sgdbImageResponse
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
 		return nil, fmt.Errorf("steamgriddb: parse error: %w", err)
 	}
-	return results, nil
+	if !wrapper.Success {
+		return nil, fmt.Errorf("steamgriddb: %s", strings.Join(wrapper.Errors, "; "))
+	}
+	return wrapper.Data, nil
+}
+
+// GetIconsBySteamAppID fetches icon images for a real Steam App ID.
+func (c *SGDBClient) GetIconsBySteamAppID(steamAppID int) ([]SGDBImageResult, error) {
+	respBody, err := c.doGet(fmt.Sprintf("/icons/steam/%d", steamAppID))
+	if err != nil {
+		return nil, err
+	}
+	var wrapper sgdbImageResponse
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
+		return nil, fmt.Errorf("steamgriddb: parse error: %w", err)
+	}
+	if !wrapper.Success {
+		return nil, fmt.Errorf("steamgriddb: %s", strings.Join(wrapper.Errors, "; "))
+	}
+	return wrapper.Data, nil
+}
+
+// GetIconsBySGDBGameID fetches icon images for a SteamGridDB game ID.
+func (c *SGDBClient) GetIconsBySGDBGameID(gameID int) ([]SGDBImageResult, error) {
+	respBody, err := c.doGet(fmt.Sprintf("/icons/game/%d", gameID))
+	if err != nil {
+		return nil, err
+	}
+	var wrapper sgdbImageResponse
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
+		return nil, fmt.Errorf("steamgriddb: parse error: %w", err)
+	}
+	if !wrapper.Success {
+		return nil, fmt.Errorf("steamgriddb: %s", strings.Join(wrapper.Errors, "; "))
+	}
+	return wrapper.Data, nil
+}
+
+// GetLogosBySteamAppID fetches logo images for a real Steam App ID.
+func (c *SGDBClient) GetLogosBySteamAppID(steamAppID int) ([]SGDBImageResult, error) {
+	respBody, err := c.doGet(fmt.Sprintf("/logos/steam/%d?mimes=image/png", steamAppID))
+	if err != nil {
+		return nil, err
+	}
+	var wrapper sgdbImageResponse
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
+		return nil, fmt.Errorf("steamgriddb: parse error: %w", err)
+	}
+	if !wrapper.Success {
+		return nil, fmt.Errorf("steamgriddb: %s", strings.Join(wrapper.Errors, "; "))
+	}
+	return wrapper.Data, nil
+}
+
+// GetLogosBySGDBGameID fetches logo images for a SteamGridDB game ID.
+func (c *SGDBClient) GetLogosBySGDBGameID(gameID int) ([]SGDBImageResult, error) {
+	respBody, err := c.doGet(fmt.Sprintf("/logos/game/%d?mimes=image/png", gameID))
+	if err != nil {
+		return nil, err
+	}
+	var wrapper sgdbImageResponse
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
+		return nil, fmt.Errorf("steamgriddb: parse error: %w", err)
+	}
+	if !wrapper.Success {
+		return nil, fmt.Errorf("steamgriddb: %s", strings.Join(wrapper.Errors, "; "))
+	}
+	return wrapper.Data, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +303,11 @@ func BestGridImage(results []SGDBImageResult) (string, bool) {
 	}
 	if best == nil {
 		return "", false
+	}
+	// ICO files can't be displayed by Steam directly; use the thumb (PNG)
+	// that SGDB provides alongside ICO-formatted icons.
+	if strings.Contains(best.URL, ".ico") && best.Thumb != "" {
+		return best.Thumb, true
 	}
 	return best.URL, true
 }

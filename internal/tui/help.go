@@ -44,6 +44,13 @@ func (m model) helpView() string {
 		"    q           Quit (library view only)",
 		"    Ctrl+C      Force quit (anywhere)",
 		"",
+		"  ── CLI Quick Start (outside TUI) ────────",
+		"    moxie scan ~/Downloads     Scan for games",
+		"    moxie scrape --auto        Scrape F95Zone metadata",
+		"    moxie steam add <id>       Add a game to Steam",
+		"    moxie steam fix-artwork <id>  Download Steam artwork",
+		"    moxie check-updates        Check for game updates",
+		"",
 		"  Press any key to close help  ",
 	}
 	content := strings.Join(lines, "\n")

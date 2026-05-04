@@ -3,7 +3,6 @@
 .dolt/
 *.db
 .beads-credential-key
-.beads
 moxie
 workflow.log
 workflow2.log

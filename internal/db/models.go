@@ -7,22 +7,24 @@ import (
 
 // Game represents a game in the user's local library.
 type Game struct {
-	ID          int64     `json:"id"`
-	Title       string    `json:"title"`
-	Engine      string    `json:"engine"` // Unity, RenPy, RPGMakerMV, RPGMakerMZ, RPGMakerVXAce, RPGMaker, Godot, Unreal, Electron, HTML, Unknown
-	Path        string    `json:"path"`   // absolute directory path (unique)
-	ExePath     string    `json:"exe_path,omitempty"`
-	Version     string    `json:"version,omitempty"`
-	SizeBytes   int64     `json:"size_bytes"`
-	F95URL      string    `json:"f95_url,omitempty"`
-	F95ThreadID int64     `json:"f95_thread_id,omitempty"`
-	Tags        []string  `json:"tags"`   // stored as JSON array string in SQLite
-	Status      string    `json:"status"` // active, completed, abandoned, on_hold, unknown
-	Notes       string    `json:"notes,omitempty"`
-	LatestVersion  string    `json:"latest_version,omitempty"`
-	VersionCheckedAt time.Time `json:"version_checked_at,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          int64             `json:"id"`
+	Title       string            `json:"title"`
+	Engine      string            `json:"engine"` // Unity, RenPy, RPGMakerMV, RPGMakerMZ, RPGMakerVXAce, RPGMaker, Godot, Unreal, Electron, HTML, Unknown
+	Path        string            `json:"path"`   // absolute directory path (unique)
+	ExePath     string            `json:"exe_path,omitempty"`
+	Version     string            `json:"version,omitempty"`
+	SizeBytes   int64             `json:"size_bytes"`
+	F95URL      string            `json:"f95_url,omitempty"`
+	F95ThreadID int64             `json:"f95_thread_id,omitempty"`
+	Tags        []string          `json:"tags"`   // stored as JSON array string in SQLite
+	Status      string            `json:"status"` // active, completed, abandoned, on_hold, unknown
+	Notes       string            `json:"notes,omitempty"`
+	StoreLinks  map[string]string `json:"store_links,omitempty"` // stored as JSON in SQLite
+	SteamAppID  int64             `json:"steam_app_id,omitempty"`
+	LatestVersion  string         `json:"latest_version,omitempty"`
+	VersionCheckedAt time.Time    `json:"version_checked_at,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
 // ScrapedMeta holds F95Zone scraped metadata.
@@ -51,6 +53,25 @@ func unmarshalTags(s string) ([]string, error) {
 	var tags []string
 	err := json.Unmarshal([]byte(s), &tags)
 	return tags, err
+}
+
+// marshalStoreLinks serializes a map to a JSON string for SQLite storage.
+func marshalStoreLinks(links map[string]string) (string, error) {
+	if len(links) == 0 {
+		return "{}", nil
+	}
+	b, err := json.Marshal(links)
+	return string(b), err
+}
+
+// unmarshalStoreLinks deserializes a JSON string from SQLite back to a map.
+func unmarshalStoreLinks(s string) (map[string]string, error) {
+	if s == "" || s == "null" {
+		return map[string]string{}, nil
+	}
+	var links map[string]string
+	err := json.Unmarshal([]byte(s), &links)
+	return links, err
 }
 
 // timeToRFC3339 formats a time.Time as an RFC3339 string for SQLite storage.

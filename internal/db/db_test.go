@@ -674,6 +674,150 @@ func TestGameCountAndTotalSize(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// StoreLinks / SteamAppID round-trips
+// ---------------------------------------------------------------------------
+
+func TestInsertGetGame_WithStoreLinks(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	g := &Game{
+		Title:      "Store Links Test",
+		Engine:     "RenPy",
+		Path:       "/store-links-test",
+		StoreLinks: map[string]string{"steam": "https://store.steampowered.com/app/12345/"},
+		SteamAppID: 12345,
+	}
+
+	id, err := db.InsertGame(g)
+	if err != nil {
+		t.Fatalf("InsertGame failed: %v", err)
+	}
+
+	got, err := db.GetGame(id)
+	if err != nil {
+		t.Fatalf("GetGame failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetGame returned nil")
+	}
+
+	if len(got.StoreLinks) != 1 {
+		t.Fatalf("expected 1 store link, got %d", len(got.StoreLinks))
+	}
+	if got.StoreLinks["steam"] != "https://store.steampowered.com/app/12345/" {
+		t.Errorf(`StoreLinks["steam"] = %q, want %q`,
+			got.StoreLinks["steam"], "https://store.steampowered.com/app/12345/")
+	}
+	if got.SteamAppID != 12345 {
+		t.Errorf("SteamAppID = %d, want 12345", got.SteamAppID)
+	}
+}
+
+func TestInsertGetGame_MultipleStoreLinks(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	links := map[string]string{
+		"steam":  "https://store.steampowered.com/app/67890/",
+		"itch":   "https://developer.itch.io/game-name",
+		"dlsite": "https://www.dlsite.com/work/abc123/",
+	}
+
+	g := &Game{
+		Title:      "Multi Store Test",
+		Engine:     "Unity",
+		Path:       "/multi-store-test",
+		StoreLinks: links,
+		SteamAppID: 67890,
+	}
+
+	id, err := db.InsertGame(g)
+	if err != nil {
+		t.Fatalf("InsertGame failed: %v", err)
+	}
+
+	got, err := db.GetGame(id)
+	if err != nil {
+		t.Fatalf("GetGame failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetGame returned nil")
+	}
+
+	if len(got.StoreLinks) != len(links) {
+		t.Fatalf("expected %d store links, got %d", len(links), len(got.StoreLinks))
+	}
+	for k, v := range links {
+		if got.StoreLinks[k] != v {
+			t.Errorf("StoreLinks[%q] = %q, want %q", k, got.StoreLinks[k], v)
+		}
+	}
+	if got.SteamAppID != 67890 {
+		t.Errorf("SteamAppID = %d, want 67890", got.SteamAppID)
+	}
+}
+
+func TestUpdateGame_StoreLinks(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	g := &Game{
+		Title:  "Update Store Links",
+		Engine: "RenPy",
+		Path:   "/update-store-links",
+	}
+	id, err := db.InsertGame(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Update with store links.
+	g.StoreLinks = map[string]string{"steam": "https://store.steampowered.com/app/99999/"}
+	g.SteamAppID = 99999
+	if err := db.UpdateGame(g); err != nil {
+		t.Fatalf("UpdateGame failed: %v", err)
+	}
+
+	got, err := db.GetGame(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("GetGame returned nil after update")
+	}
+
+	if len(got.StoreLinks) != 1 {
+		t.Fatalf("expected 1 store link after update, got %d", len(got.StoreLinks))
+	}
+	if got.StoreLinks["steam"] != "https://store.steampowered.com/app/99999/" {
+		t.Errorf(`StoreLinks["steam"] = %q, want %q`,
+			got.StoreLinks["steam"], "https://store.steampowered.com/app/99999/")
+	}
+	if got.SteamAppID != 99999 {
+		t.Errorf("SteamAppID = %d, want 99999", got.SteamAppID)
+	}
+
+	// Clear store links via update.
+	g.StoreLinks = map[string]string{}
+	g.SteamAppID = 0
+	if err := db.UpdateGame(g); err != nil {
+		t.Fatalf("UpdateGame (clear) failed: %v", err)
+	}
+
+	got, err = db.GetGame(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.StoreLinks) != 0 {
+		t.Errorf("expected empty StoreLinks after clearing, got %d entries", len(got.StoreLinks))
+	}
+	if got.SteamAppID != 0 {
+		t.Errorf("expected SteamAppID = 0 after clearing, got %d", got.SteamAppID)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Null / optional field round-trips
 // ---------------------------------------------------------------------------
 
@@ -713,6 +857,12 @@ func TestOptionalFieldsNull(t *testing.T) {
 	}
 	if got.Status != "unknown" {
 		t.Errorf("Status = %q, want 'unknown'", got.Status)
+	}
+	if len(got.StoreLinks) != 0 {
+		t.Errorf("StoreLinks = %v, want empty map", got.StoreLinks)
+	}
+	if got.SteamAppID != 0 {
+		t.Errorf("SteamAppID = %d, want 0", got.SteamAppID)
 	}
 }
 

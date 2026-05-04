@@ -152,6 +152,7 @@ type SGDBGameResult struct {
 // SGDBImageResult is an artwork result from SteamGridDB.
 type SGDBImageResult struct {
 	URL   string `json:"url"`
+	Thumb string `json:"thumb"`
 	Width int    `json:"width"`
 	Score int    `json:"score"`
 }

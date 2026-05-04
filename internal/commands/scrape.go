@@ -287,6 +287,14 @@ func ApplyThreadData(game *db.Game, data *scraper.ThreadData, url string) {
 	if data.Status != "" {
 		game.Status = data.Status
 	}
+	if len(data.StoreLinks) > 0 {
+		game.StoreLinks = data.StoreLinks
+	}
+	if steamURL, hasSteam := data.StoreLinks["steam"]; hasSteam {
+		if appID, ok := ExtractSteamAppID(steamURL); ok {
+			game.SteamAppID = int64(appID)
+		}
+	}
 }
 
 // ScrapeAutoWrapper opens the database and runs auto-association.

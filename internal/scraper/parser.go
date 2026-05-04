@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"fmt"
+	urlpkg "net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -47,6 +48,8 @@ var (
 	// versionInBrackets extracts version numbers from bracketed tags
 	// like [v1.31], [ver 2.0], [version 1.5.2].
 	versionInBrackets = regexp.MustCompile(`\[v(?:er(?:sion)?\s+)?v?(\d+\.\d+(?:\.\d+)*)\]`)
+
+	steamStoreRe = regexp.MustCompile(`store\.steampowered\.com/app/\d+`)
 )
 
 // ---------------------------------------------------------------------------
@@ -364,14 +367,42 @@ func extractDownloadLinks(content *goquery.Selection) []DownloadLink {
 	return links
 }
 
-// storeLinkDomains maps store key names to domain substrings to match in URLs.
-var storeLinkDomains = []struct {
-	key    string
-	domain string
+// storeLinkMatchers maps store key names to match functions that validate
+// whether a URL is a genuine game page (not a curator, help article, etc.).
+var storeLinkMatchers = []struct {
+	key   string
+	match func(url string) bool
 }{
-	{"steam", "store.steampowered.com"},
-	{"itch", "itch.io"},
-	{"dlsite", "dlsite.com"},
+	{"steam", func(url string) bool {
+		return steamStoreRe.MatchString(url)
+	}},
+	{"itch", func(url string) bool {
+		lower := strings.ToLower(url)
+		if !strings.Contains(lower, "itch.io") {
+			return false
+		}
+		u, err := urlpkg.Parse(url)
+		if err != nil {
+			return false
+		}
+		return len(strings.Trim(u.Path, "/")) > 0
+	}},
+	{"dlsite", func(url string) bool {
+		lower := strings.ToLower(url)
+		if !strings.Contains(lower, "dlsite.com") {
+			return false
+		}
+		if strings.Contains(lower, "/hc/") {
+			return false
+		}
+		if strings.Contains(lower, "/home/") {
+			return false
+		}
+		if strings.Contains(lower, "/help/") {
+			return false
+		}
+		return true
+	}},
 }
 
 // extractStoreLinks scans the first post body for links to known game stores.
@@ -388,13 +419,11 @@ func extractStoreLinks(content *goquery.Selection) map[string]string {
 		if !ok || href == "" {
 			return
 		}
-		lowerURL := strings.ToLower(href)
 
-		for _, sd := range storeLinkDomains {
-			if strings.Contains(lowerURL, sd.domain) {
-				// Only keep the first link found for each store.
-				if _, exists := links[sd.key]; !exists {
-					links[sd.key] = href
+		for _, sm := range storeLinkMatchers {
+			if sm.match(href) {
+				if _, exists := links[sm.key]; !exists {
+					links[sm.key] = href
 				}
 				return
 			}

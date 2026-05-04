@@ -108,6 +108,8 @@ func migrate(conn *sql.DB) error {
 	// SQLite has no IF NOT EXISTS for ALTER TABLE, so ignore errors.
 	conn.Exec("ALTER TABLE games ADD COLUMN latest_version TEXT")
 	conn.Exec("ALTER TABLE games ADD COLUMN version_checked_at TEXT")
+	conn.Exec("ALTER TABLE games ADD COLUMN store_links TEXT DEFAULT '{}'")
+	conn.Exec("ALTER TABLE games ADD COLUMN steam_app_id INTEGER")
 
 	return nil
 }
@@ -118,8 +120,8 @@ func migrate(conn *sql.DB) error {
 
 func scanGame(s scanner) (*Game, error) {
 	var g Game
-	var exePath, version, f95URL, createdAtStr, updatedAtStr, latestVer, verCheckedAt sql.NullString
-	var f95ThreadID sql.NullInt64
+	var exePath, version, f95URL, createdAtStr, updatedAtStr, latestVer, verCheckedAt, storeLinksStr sql.NullString
+	var f95ThreadID, steamAppID sql.NullInt64
 	var tagsStr string
 
 	err := s.Scan(
@@ -127,6 +129,7 @@ func scanGame(s scanner) (*Game, error) {
 		&exePath, &version, &g.SizeBytes,
 		&f95URL, &f95ThreadID, &tagsStr,
 		&g.Status, &latestVer, &verCheckedAt, &g.Notes,
+		&storeLinksStr, &steamAppID,
 		&createdAtStr, &updatedAtStr,
 	)
 	if err != nil {
@@ -147,6 +150,12 @@ func scanGame(s scanner) (*Game, error) {
 	}
 
 	g.Tags, _ = unmarshalTags(tagsStr)
+	if storeLinksStr.Valid {
+		g.StoreLinks, _ = unmarshalStoreLinks(storeLinksStr.String)
+	}
+	if steamAppID.Valid {
+		g.SteamAppID = steamAppID.Int64
+	}
 
 	if createdAtStr.Valid {
 		g.CreatedAt = parseTime(createdAtStr.String)
@@ -244,15 +253,21 @@ func (db *Database) InsertGame(g *Game) (int64, error) {
 		return 0, err
 	}
 
+	storeLinksStr, err := marshalStoreLinks(g.StoreLinks)
+	if err != nil {
+		return 0, err
+	}
+
 	res, err := db.conn.Exec(`
 		INSERT INTO games (title, engine, path, exe_path, version, size_bytes,
 		                   f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		                   created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                   store_links, steam_app_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		g.Title, g.Engine, g.Path,
 		nullableString(g.ExePath), nullableString(g.Version), g.SizeBytes,
 		nullableString(g.F95URL), nullableInt64(g.F95ThreadID), tagsStr,
 		g.Status, nullableString(g.LatestVersion), nullableTime(g.VersionCheckedAt), g.Notes,
+		storeLinksStr, nullableInt64(g.SteamAppID),
 		now, now,
 	)
 	if err != nil {
@@ -269,7 +284,7 @@ func (db *Database) GetGame(id int64) (*Game, error) {
 	row := db.conn.QueryRow(`
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       created_at, updated_at
+		       store_links, steam_app_id, created_at, updated_at
 		FROM games WHERE id = ?`, id)
 
 	g, err := scanGame(row)
@@ -288,7 +303,7 @@ func (db *Database) GetGameByPath(path string) (*Game, error) {
 	row := db.conn.QueryRow(`
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       created_at, updated_at
+		       store_links, steam_app_id, created_at, updated_at
 		FROM games WHERE path = ?`, path)
 
 	g, err := scanGame(row)
@@ -307,7 +322,7 @@ func (db *Database) ListGames(engine, status string) ([]Game, error) {
 	query := `
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       created_at, updated_at
+		       store_links, steam_app_id, created_at, updated_at
 		FROM games`
 
 	var conditions []string
@@ -350,7 +365,7 @@ func (db *Database) SearchGames(query string) ([]Game, error) {
 	rows, err := db.conn.Query(`
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       created_at, updated_at
+		       store_links, steam_app_id, created_at, updated_at
 		FROM games
 		WHERE title LIKE '%' || ? || '%' COLLATE NOCASE
 		ORDER BY title COLLATE NOCASE`, query)
@@ -387,16 +402,23 @@ func (db *Database) UpdateGame(g *Game) error {
 		return err
 	}
 
+	storeLinksStr, err := marshalStoreLinks(g.StoreLinks)
+	if err != nil {
+		return err
+	}
+
 	_, err = db.conn.Exec(`
 		UPDATE games
 		SET title=?, engine=?, path=?, exe_path=?, version=?, size_bytes=?,
 		    f95_url=?, f95_thread_id=?, tags=?, status=?, notes=?,
+		    store_links=?, steam_app_id=?,
 		    latest_version=?, version_checked_at=?, updated_at=?
 		WHERE id=?`,
 		g.Title, g.Engine, g.Path,
 		nullableString(g.ExePath), nullableString(g.Version), g.SizeBytes,
 		nullableString(g.F95URL), nullableInt64(g.F95ThreadID), tagsStr,
 		g.Status, g.Notes,
+		storeLinksStr, nullableInt64(g.SteamAppID),
 		nullableString(g.LatestVersion), nullableTime(g.VersionCheckedAt),
 		now, g.ID,
 	)

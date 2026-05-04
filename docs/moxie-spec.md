@@ -96,8 +96,8 @@ A local game library manager for adult games. Scans directories, detects engines
 
 ### Upcoming
 
-- [ ] DB migration: store_links column for persistent Steam/Itch.io links
-- [ ] SGDB artwork activation (currently pending DB StoreLinks migration)
+- [x] DB migration: store_links + steam_app_id columns for persistent Steam/Itch.io links
+- [x] SGDB artwork activation by real Steam App ID (DownloadSGDBArtwork priority 1)
 - [ ] FTS5 full-text search
 - [ ] Cover image download and local caching
 - [ ] Download manager / file organizer

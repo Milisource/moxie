@@ -829,3 +829,236 @@ func TestNewClientWithHTTP_PreservesCookieInjection(t *testing.T) {
 		t.Errorf("expected cookie xf_user, got: %s", receivedCookie)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// extractStoreLinks (tested through parseThreadHTML)
+// ---------------------------------------------------------------------------
+
+// storeLinkHTML is a minimal XenForo HTML template that wraps store links
+// inside a bbWrapper so parseThreadHTML can find them.
+const storeLinkHTML = `<!DOCTYPE html>
+<html><body>
+<div class="p-body">
+  <div class="p-title">
+    <h1 class="p-title-value">Store Link Test</h1>
+  </div>
+  <div class="messageList">
+    <article class="message message--post">
+      <div class="message-content">
+        <div class="bbWrapper">
+          <h2>Overview</h2>
+          <p>Version: 1.0</p>
+          <p>Developer: TestDev</p>
+          <ul>
+            %s
+          </ul>
+          <h3>Download</h3>
+          <ul>
+            <li><a href="https://mega.nz/file/abc">MEGA</a></li>
+          </ul>
+        </div>
+      </div>
+    </article>
+  </div>
+</div>
+</body></html>`
+
+func TestExtractStoreLinks_SteamAppURL(t *testing.T) {
+	t.Parallel()
+
+	links := `<li><a href="https://store.steampowered.com/app/12345/GameName/">Steam</a></li>`
+	html := fmt.Sprintf(storeLinkHTML, links)
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/test.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML failed: %v", err)
+	}
+
+	v, ok := td.StoreLinks["steam"]
+	if !ok {
+		t.Fatal("expected steam store link, got none")
+	}
+	if v != "https://store.steampowered.com/app/12345/GameName/" {
+		t.Errorf("steam link = %q, want %q", v, "https://store.steampowered.com/app/12345/GameName/")
+	}
+}
+
+func TestExtractStoreLinks_SteamCuratorURL(t *testing.T) {
+	t.Parallel()
+
+	// Curator URLs should NOT match — they don't have /app/\d+.
+	links := `<li><a href="https://store.steampowered.com/curator/12345-Some-Curator/">Curator</a></li>`
+	html := fmt.Sprintf(storeLinkHTML, links)
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/test.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML failed: %v", err)
+	}
+
+	if _, ok := td.StoreLinks["steam"]; ok {
+		t.Error("steam curator URL should NOT match as a store link")
+	}
+}
+
+func TestExtractStoreLinks_ItchIOWithPath(t *testing.T) {
+	t.Parallel()
+
+	// itch.io URL with a game path should match.
+	links := `<li><a href="https://some-creator.itch.io/game-name">Itch</a></li>`
+	html := fmt.Sprintf(storeLinkHTML, links)
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/test.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML failed: %v", err)
+	}
+
+	v, ok := td.StoreLinks["itch"]
+	if !ok {
+		t.Fatal("expected itch store link, got none")
+	}
+	if v != "https://some-creator.itch.io/game-name" {
+		t.Errorf("itch link = %q, want %q", v, "https://some-creator.itch.io/game-name")
+	}
+}
+
+func TestExtractStoreLinks_ItchIOBarePublisher(t *testing.T) {
+	t.Parallel()
+
+	// Bare publisher page (no path) should NOT match.
+	links := `<li><a href="https://some-creator.itch.io/">Itch</a></li>`
+	html := fmt.Sprintf(storeLinkHTML, links)
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/test.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML failed: %v", err)
+	}
+
+	if _, ok := td.StoreLinks["itch"]; ok {
+		t.Error("bare itch.io publisher page should NOT match as a store link")
+	}
+}
+
+func TestExtractStoreLinks_ItchIOBarePublisherNoTrailingSlash(t *testing.T) {
+	t.Parallel()
+
+	// Bare publisher page without trailing slash should NOT match.
+	links := `<li><a href="https://some-creator.itch.io">Itch</a></li>`
+	html := fmt.Sprintf(storeLinkHTML, links)
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/test.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML failed: %v", err)
+	}
+
+	if _, ok := td.StoreLinks["itch"]; ok {
+		t.Error("bare itch.io publisher page (no trailing slash) should NOT match")
+	}
+}
+
+func TestExtractStoreLinks_DLSiteGamePage(t *testing.T) {
+	t.Parallel()
+
+	// DL-Site game/work page should match.
+	links := `<li><a href="https://www.dlsite.com/maniax/work/=/product_id/abc123.html">DLsite</a></li>`
+	html := fmt.Sprintf(storeLinkHTML, links)
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/test.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML failed: %v", err)
+	}
+
+	v, ok := td.StoreLinks["dlsite"]
+	if !ok {
+		t.Fatal("expected dlsite store link, got none")
+	}
+	if v != "https://www.dlsite.com/maniax/work/=/product_id/abc123.html" {
+		t.Errorf("dlsite link = %q, want %q", v, "https://www.dlsite.com/maniax/work/=/product_id/abc123.html")
+	}
+}
+
+func TestExtractStoreLinks_DLSiteHelpArticle(t *testing.T) {
+	t.Parallel()
+
+	// DL-Site help center article (/hc/) should NOT match.
+	links := `<li><a href="https://www.dlsite.com/maniax/hc/faq/123/">Help</a></li>`
+	html := fmt.Sprintf(storeLinkHTML, links)
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/test.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML failed: %v", err)
+	}
+
+	if _, ok := td.StoreLinks["dlsite"]; ok {
+		t.Error("DLsite help article should NOT match as a store link")
+	}
+}
+
+func TestExtractStoreLinks_DLSiteHomePage(t *testing.T) {
+	t.Parallel()
+
+	// DL-Site home page should NOT match.
+	links := `<li><a href="https://www.dlsite.com/home/">DLsite Home</a></li>`
+	html := fmt.Sprintf(storeLinkHTML, links)
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/test.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML failed: %v", err)
+	}
+
+	if _, ok := td.StoreLinks["dlsite"]; ok {
+		t.Error("DLsite home page should NOT match as a store link")
+	}
+}
+
+func TestExtractStoreLinks_MultipleStores(t *testing.T) {
+	t.Parallel()
+
+	links := `<li><a href="https://store.steampowered.com/app/555/">Steam</a></li>
+<li><a href="https://dev.itch.io/my-game">Itch</a></li>`
+	html := fmt.Sprintf(storeLinkHTML, links)
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/test.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML failed: %v", err)
+	}
+
+	if len(td.StoreLinks) != 2 {
+		t.Fatalf("expected 2 store links, got %d: %v", len(td.StoreLinks), td.StoreLinks)
+	}
+
+	if v, ok := td.StoreLinks["steam"]; !ok || v != "https://store.steampowered.com/app/555/" {
+		t.Errorf("steam: got %q, want %q", v, "https://store.steampowered.com/app/555/")
+	}
+	if v, ok := td.StoreLinks["itch"]; !ok || v != "https://dev.itch.io/my-game" {
+		t.Errorf("itch: got %q, want %q", v, "https://dev.itch.io/my-game")
+	}
+}
+
+func TestExtractStoreLinks_NoStoreLinks(t *testing.T) {
+	t.Parallel()
+
+	// No store links at all — only download links.
+	links := `<!-- no store links here -->`
+	html := fmt.Sprintf(storeLinkHTML, links)
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/test.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML failed: %v", err)
+	}
+
+	if len(td.StoreLinks) != 0 {
+		t.Errorf("expected 0 store links, got %d: %v", len(td.StoreLinks), td.StoreLinks)
+	}
+}
+
+func TestExtractStoreLinks_FirstMatchWins(t *testing.T) {
+	t.Parallel()
+
+	// When there are duplicate store links, the first one wins.
+	links := `<li><a href="https://store.steampowered.com/app/111/">Steam First</a></li>
+<li><a href="https://store.steampowered.com/app/222/">Steam Second</a></li>`
+	html := fmt.Sprintf(storeLinkHTML, links)
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/test.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML failed: %v", err)
+	}
+
+	v, ok := td.StoreLinks["steam"]
+	if !ok {
+		t.Fatal("expected steam store link")
+	}
+	// First link should be preserved.
+	if v != "https://store.steampowered.com/app/111/" {
+		t.Errorf("steam link = %q, want first link %q", v, "https://store.steampowered.com/app/111/")
+	}
+}

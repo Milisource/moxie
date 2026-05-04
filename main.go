@@ -21,10 +21,23 @@ func main() {
 			fmt.Fprintln(os.Stderr, "👋 Welcome to moxie! It looks like this is your first run.")
 			fmt.Fprintln(os.Stderr)
 			fmt.Fprintln(os.Stderr, "   Quick start:")
-			fmt.Fprintln(os.Stderr, "     moxie scan ~/Downloads     Scan a directory for games")
-			fmt.Fprintln(os.Stderr, "     moxie tui                  Open the interactive library browser")
+			fmt.Fprintln(os.Stderr, "     moxie scan ~/Downloads       Scan a directory for games")
+			fmt.Fprintln(os.Stderr, "     moxie scrape --auto          Auto-associate F95Zone threads")
+			fmt.Fprintln(os.Stderr, "     moxie tui                    Interactive library browser")
 			fmt.Fprintln(os.Stderr)
-			fmt.Fprintln(os.Stderr, "   For F95Zone metadata scraping, log into F95Zone in Firefox first —")
+			fmt.Fprintln(os.Stderr, "   Steam integration (optional):")
+			fmt.Fprintln(os.Stderr, "     moxie config set steamgriddb-key <key>   Set API key (get one free at")
+			fmt.Fprintln(os.Stderr, "                                                https://www.steamgriddb.com/profile/preferences)")
+			fmt.Fprintln(os.Stderr, "     moxie steam fix-artwork <id>             Download higher-quality artwork")
+			fmt.Fprintln(os.Stderr, "     moxie steam add <id>                     Add a game to Steam library")
+			fmt.Fprintln(os.Stderr, "     moxie steam fix-artwork <id>             Re-download Steam artwork")
+			fmt.Fprintln(os.Stderr, "     moxie steam list                         List games added to Steam")
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, "   To check for updates:")
+			fmt.Fprintln(os.Stderr, "     moxie check-updates   Check all games for new versions on F95Zone")
+			fmt.Fprintln(os.Stderr, "     moxie sync            Full sync: associate + check updates")
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, "   For F95Zone scraping, log into F95Zone in Firefox first —")
 			fmt.Fprintln(os.Stderr, "   moxie reads your browser cookies automatically.")
 			fmt.Fprintln(os.Stderr)
 		}
@@ -138,6 +151,11 @@ Flags for 'sync' and 'check-updates':
   --cookie-file <path>  Read cookie from file
   --unsafe           ⚠ Skip rate limiting (risks IP ban)
   --force            Force re-check even if checked within 24h
+
+Tip: Set a SteamGridDB API key for higher-quality artwork!
+     Get one free at https://www.steamgriddb.com/profile/preferences
+     moxie config set steamgriddb-key <key>
+     moxie steam fix-artwork <id>
 
 `)
 }

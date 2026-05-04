@@ -88,14 +88,44 @@ moxie --version
 
 ## Quick Start
 
-Once installed:
+Once installed, the typical workflow is:
 
 ```bash
-# Scan your Games folder
-moxie scan ~/Games
+# 1. Scan your games folder
+moxie scan ~/Downloads
 
-# Launch the interactive TUI
+# 2. Auto-associate F95Zone threads for metadata
+moxie scrape --auto
+
+# 3. (Optional) Set up SteamGridDB for higher-quality artwork
+#    Get a free API key at https://www.steamgriddb.com/profile/preferences
+moxie config set steamgriddb-key <key>
+
+# 4. Browse your library
 moxie tui
+```
+
+### Adding games to Steam
+
+```bash
+# Add a game to Steam with artwork and Proton
+moxie steam add 42
+
+# Re-download artwork later (uses SteamGridDB if key is set)
+moxie steam fix-artwork 42
+
+# List games added to Steam
+moxie steam list
+```
+
+### Keeping games updated
+
+```bash
+# Check all games for new versions on F95Zone
+moxie check-updates
+
+# Full sync: associate new games + check for updates
+moxie sync
 ```
 
 On first scan you will be prompted before saving. Use `--no-save` for a preview-only scan. Subsequent scans skip duplicates automatically.
@@ -139,7 +169,7 @@ On first scan you will be prompted before saving. Use `--no-save` for a preview-
 | `steam list [flags]` | List all non-Steam games previously added by moxie (tagged with "F95Zone"). |
 | `steam proton-list` | Scan Steam's `compatibilitytools.d/` and `steamapps/common/` for installed Proton versions. |
 | `steam proton-set <id> --version <proton>` | Set or change the Proton version for a game already in your Steam library. |
-| `steam fix-artwork <id> [flags]` | Re-download and refresh artwork for a game in the Steam library. Supports `--steamgriddb-key` for premium GridDB assets. |
+| `steam fix-artwork <id> [flags]` | Re-download and refresh artwork for a game in the Steam library. Uses SteamGridDB for higher-quality artwork when key is set. |
 
 **Steam safety guarantees:**
 - Checks that Steam is closed before modifying `shortcuts.vdf`
@@ -259,6 +289,8 @@ The interactive terminal UI (`moxie tui`) is built with Bubble Tea and provides 
 | `u` | Detail | Set / edit F95Zone thread URL |
 | `p` | Detail | Launch game (play hint) |
 
+Press `?` in the TUI for CLI quick-start commands (scan, scrape, steam add, fix-artwork, check-updates).
+
 ---
 
 ## Data Location
@@ -304,7 +336,7 @@ go test ./...
 ## FAQ
 
 **Q: How do I get artwork to appear in Steam?**
-A: `moxie steam fix-artwork <id>` downloads cover art from F95Zone. For premium artwork via SteamGridDB:
+A: `moxie steam fix-artwork <id>` downloads cover art from F95Zone. For higher-quality artwork via SteamGridDB:
 ```bash
 moxie config set steamgriddb-key YOUR_KEY
 moxie steam fix-artwork <id>

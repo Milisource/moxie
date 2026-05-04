@@ -1309,6 +1309,36 @@ func TestBestGridImage_SkipsSVG(t *testing.T) {
 	}
 }
 
+func TestBestGridImage_UsesThumbForICO(t *testing.T) {
+	t.Parallel()
+	results := []SGDBImageResult{
+		{URL: "https://cdn.example.com/icon.ico", Thumb: "https://cdn.example.com/icon.png", Score: 100},
+	}
+	url, ok := BestGridImage(results)
+	if !ok {
+		t.Error("expected true when an ICO has a thumb available")
+	}
+	if url != "https://cdn.example.com/icon.png" {
+		t.Errorf("got URL %q, want %q", url, "https://cdn.example.com/icon.png")
+	}
+}
+
+func TestBestGridImage_ThumbReturnedForICO(t *testing.T) {
+	t.Parallel()
+	results := []SGDBImageResult{
+		{URL: "https://cdn.example.com/icon.ico", Thumb: "https://cdn.example.com/thumb.png", Score: 100},
+		{URL: "https://cdn.example.com/real.png", Score: 200},
+	}
+	url, ok := BestGridImage(results)
+	if !ok {
+		t.Error("expected true when a valid PNG exists alongside an ICO")
+	}
+	// PNG should be selected over ICO when it has a higher score.
+	if url != "https://cdn.example.com/real.png" {
+		t.Errorf("got URL %q, want %q", url, "https://cdn.example.com/real.png")
+	}
+}
+
 func TestBestGridImage_AllSkipped(t *testing.T) {
 	t.Parallel()
 	results := []SGDBImageResult{

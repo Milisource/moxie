@@ -36,6 +36,8 @@ games (
     notes       TEXT DEFAULT '',
     latest_version   TEXT,               -- most recent version seen on F95Zone
     version_checked_at TEXT,             -- last check-updates timestamp
+    store_links TEXT DEFAULT '{}',       -- store URLs as JSON map: {"steam":"https://...","itch":"https://..."}
+    steam_app_id INTEGER,                -- Steam App ID extracted from store_links["steam"]
     created_at  TEXT DEFAULT (datetime('now')),
     updated_at  TEXT DEFAULT (datetime('now'))
 )
@@ -72,6 +74,8 @@ Migrations use `ALTER TABLE ADD COLUMN` statements that are safe to run repeated
 // SQLite ignores errors on ALTER TABLE for columns that already exist
 conn.Exec("ALTER TABLE games ADD COLUMN latest_version TEXT")
 conn.Exec("ALTER TABLE games ADD COLUMN version_checked_at TEXT")
+conn.Exec("ALTER TABLE games ADD COLUMN store_links TEXT DEFAULT '{}'")
+conn.Exec("ALTER TABLE games ADD COLUMN steam_app_id INTEGER")
 ```
 
 This pattern allows adding new columns without versioned schema tracking. The `PRAGMA user_version` is set but not actively used for migration gating — the add-column approach is idempotent and simpler for a single-user hobby project.

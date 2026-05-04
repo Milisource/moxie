@@ -93,7 +93,7 @@ print_banner() {
     cat <<EOF
 ${GREEN}
    ╔══════════════════════════════════════════════════╗
-   ║                   moxie v${version}                    ║
+   ║                moxie v${version}                 ║
    ║           Game Library Manager for TUI           ║
    ╚══════════════════════════════════════════════════╝
 ${RESET}
