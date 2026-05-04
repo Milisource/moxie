@@ -394,6 +394,17 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 
 		game.LatestVersion = latest
 		game.VersionCheckedAt = time.Now()
+
+		// Update StoreLinks and SteamAppID from scraped thread data.
+		if len(data.StoreLinks) > 0 {
+			game.StoreLinks = data.StoreLinks
+		}
+		if steamURL, hasSteam := data.StoreLinks["steam"]; hasSteam {
+			if appID, ok := ExtractSteamAppID(steamURL); ok {
+				game.SteamAppID = int64(appID)
+			}
+		}
+
 		if err := database.UpdateGame(game); err != nil {
 			if interactive {
 				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save version data for %q: %v\n", game.Title, err)
