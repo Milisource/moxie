@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Scanner version extraction from files** — `ExtractVersionFromDir` reads `Game.ini` `Title=` field (RPG Maker), `package.json` `"version"` field (HTML/NW.js), and `game/options.rpy` `config.version` (Ren'Py) when directory name has no version (F95-kq8)
+- **Parent directory name fallback** — scanner now checks parent directory name for version when game dir has none, catching nested game structures like `Game v1.0/Game Windows/Game.exe` (F95-kq8)
+- **Executable filename version extraction** — scanner checks exe names for embedded versions like `[Full]EmberDoors_v0.1.7_Linux.x86_64` → `0.1.7` (F95-kq8)
+- **Compact YYYYMMDD date pattern** — `Data20260403` detected as valid date version with month/day validation (F95-kq8)
+- **Single/double-digit version pattern** — `v5`, `v01`, `v0` now detected from directory names (F95-kq8)
+- **Trailing build letter support** — `v0.7.7i` captured as `"0.7.7i"` instead of missed (F95-kq8)
+- **Expanded bracketed-title version extraction** — per F95Zone title format rules: supports `[YYYY-MM-DD]`, bare `[X.Y]`, `[Final]`, `[Ch. 2 v3.0]`, and `[v1.0 Alpha]` patterns (F95-kq8)
+
+### Fixed
+
+- **TUI 🔄 update indicator on empty versions** — required `Version != ""` guard prevents false update markers on every game with scraped metadata but no local version (F95-kq8)
+- **Scan now updates existing games** — `moxie scan` updates version/engine/size/exe on re-scan instead of skipping, so improved detection takes effect immediately (F95-kq8)
+- **`RefreshVersions` file-content fallback** — now calls `ExtractVersionFromDir` matching full scanner logic, not just directory name (F95-kq8)
+- **Stale `? no version detected` output** — suppressed in `RunUpdateCheck()` and `SyncGame()` since no user action is needed (F95-kq8)
+
+### Changed
+
+- **`\b` replaced with `[^a-zA-Z0-9]` boundaries** — Go's regex `\b` treats `_` as word character, breaking underscore-delimited versions like `FullEmberDoors_v0.1.7_Linux` (F95-kq8)
+- **Display-layer version fallback** — TUI and CLI show `LatestVersion` when `Version` is empty (no DB backfill), preserving `LatestVersion != Version` update detection (F95-kq8)
+- **`shouldSkip` optimized** — exact-match map for `config`/`saved`/`logs`/`crashes`, substring slice for prefix patterns (F95-kq8)
+- **Walk path optimized** — single `os.ReadDir` reused across game marker and category checks instead of double-read (F95-kq8)
+- **Regex compilation hoisted** — `verIniRE`, `pkgVerRE`, `rpyVerRE` compiled once at package init instead of per-call (F95-kq8)
+
 ## [0.3.5-alpha] - 2026-05-04
 
 ### Added
