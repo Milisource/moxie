@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
-**Version:** 0.3.5-alpha (May 2026)
-**Status:** Alpha — 0.3.5 (SGDB parse fix, icon/logo support, store links persistence, Steam AppID artwork pipeline, self-update command)
+**Version:** 0.3.51-alpha (May 2026)
+**Status:** Alpha — 0.3.51 (SGDB parse fix, icon/logo support, store links persistence, Steam AppID artwork pipeline, self-update command)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---

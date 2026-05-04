@@ -11,7 +11,7 @@ import (
 	"github.com/mili/moxie/internal/tui"
 )
 
-var version = "0.3.5-alpha"
+var version = "0.3.51-alpha"
 
 func main() {
 	if len(os.Args) < 2 {
