@@ -229,16 +229,7 @@ func selectBestLinkByPlatform(links []db.DownloadLink, targetPlatform downloader
 			continue
 		}
 
-		score := 0
-		linkPlatform := downloader.Platform(link.Platform)
-
-		if linkPlatform == targetPlatform {
-			score = 100
-		} else if linkPlatform == downloader.PlatformAll {
-			score = 50
-		} else if linkPlatform == downloader.PlatformUnknown {
-			score = 25
-		}
+		score := downloader.PlatformPriority(downloader.Platform(link.Platform), targetPlatform)
 
 		host := strings.ToLower(link.Host)
 		switch host {

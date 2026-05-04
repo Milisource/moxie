@@ -1,5 +1,3 @@
-// Package downloader provides HTTP download functionality with resume support
-// and progress reporting for game files.
 package downloader
 
 import (
@@ -7,7 +5,6 @@ import (
 	"strings"
 )
 
-// Platform represents a target operating system.
 type Platform string
 
 const (
@@ -20,31 +17,57 @@ const (
 
 // DetectPlatform attempts to determine the target platform from a download link's name/URL.
 func DetectPlatform(name, url string) Platform {
-	// Combine name and URL for detection
 	text := strings.ToLower(name + " " + url)
 
-	// Linux indicators
-	linuxTerms := []string{"linux", "ubuntu", "debian", "fedora", "arch", ".appimage", ".sh", "tar.gz", "tgz"}
+	// Linux indicators (check first to avoid "darwin" matching windows via "win")
+	linuxTerms := []string{"linux", "ubuntu", "debian", "fedora", "arch", "manjaro", "opensuse"}
 	for _, term := range linuxTerms {
 		if strings.Contains(text, term) {
 			return PlatformLinux
 		}
 	}
 
+	// Binary/shell formats that are platform-specific
+	if strings.Contains(text, ".appimage") {
+		return PlatformLinux
+	}
+	if strings.Contains(text, ".sh") && !strings.Contains(text, ".sh.") && !strings.Contains(text, ".sh?") {
+		return PlatformLinux
+	}
+	if strings.Contains(text, "tar.gz") || strings.Contains(text, ".tgz") {
+		return PlatformLinux
+	}
+
 	// Windows indicators
-	windowsTerms := []string{"windows", "win", ".exe", ".msi", ".zip", "setup", "installer"}
+	windowsTerms := []string{"windows", ".exe", ".msi", "setup", "installer"}
 	for _, term := range windowsTerms {
 		if strings.Contains(text, term) {
 			return PlatformWindows
 		}
 	}
+	// "win" standalone (not part of "windows", "linux", etc.)
+	words := strings.Fields(text)
+	for _, w := range words {
+		w = strings.Trim(w, " .-")
+		if w == "win" {
+			return PlatformWindows
+		}
+	}
 
 	// MacOS indicators
-	macTerms := []string{"macos", "mac", "osx", ".dmg", ".pkg", "darwin"}
+	macTerms := []string{"macos", ".dmg", ".pkg", "osx"}
 	for _, term := range macTerms {
 		if strings.Contains(text, term) {
 			return PlatformMacOS
 		}
+	}
+	if strings.Contains(text, "mac ") || strings.Contains(text, "-mac") || strings.Contains(text, "_mac") {
+		return PlatformMacOS
+	}
+
+	// Check "darwin" but after "win" detection to avoid false positives
+	if strings.Contains(text, "darwin") {
+		return PlatformMacOS
 	}
 
 	// Web/HTML is cross-platform
@@ -69,28 +92,46 @@ func CurrentPlatform() Platform {
 	}
 }
 
-// PlatformMatches returns true if the download platform matches or is compatible with the current platform.
+// PlatformMatches returns true if the download platform could reasonably run
+// on the current platform (with emulation/compatibility layers).
 func PlatformMatches(downloadPlatform, current Platform) bool {
 	if downloadPlatform == PlatformAll || current == PlatformAll {
 		return true
 	}
 	if downloadPlatform == PlatformUnknown {
-		return true // Unknown is compatible with all
+		return true
 	}
-	return downloadPlatform == current
+	if downloadPlatform == current {
+		return true
+	}
+	// Windows binaries run on Linux via Wine/Proton
+	if current == PlatformLinux && downloadPlatform == PlatformWindows {
+		return true
+	}
+	return false
 }
 
 // PlatformPriority returns a priority score for platform matching.
-// Higher is better. Used for sorting download links by platform preference.
+// Higher is better. Accounts for compatibility layers like Wine/Proton.
+//
+// Priority chain for each platform:
+//
+//	Linux:  native (100) > Windows via Wine (70) > cross-platform (50) > unknown (25) > Mac (0)
+//	Windows: native (100) > cross-platform (50) > unknown (25) > Linux/Mac (0)
+//	Mac:     native (100) > cross-platform (50) > unknown (25) > Linux/Windows (0)
 func PlatformPriority(downloadPlatform, current Platform) int {
 	if downloadPlatform == current {
-		return 100 // Native platform is best
+		return 100
 	}
 	if downloadPlatform == PlatformAll {
-		return 50 // Cross-platform is second best
+		return 50
 	}
 	if downloadPlatform == PlatformUnknown {
-		return 25 // Unknown might work
+		return 25
 	}
-	return 0 // Different platform, lowest priority
+	// Windows binaries run on Linux via Wine/Proton — next best thing
+	if current == PlatformLinux && downloadPlatform == PlatformWindows {
+		return 70
+	}
+	return 0
 }

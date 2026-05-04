@@ -234,15 +234,7 @@ func selectBestLinkByPlatform(links []db.DownloadLink, targetPlatform downloader
 		if isOnlineOnlyLink(link.Name, link.URL) {
 			continue
 		}
-		score := 0
-		lp := downloader.Platform(link.Platform)
-		if lp == targetPlatform {
-			score = 100
-		} else if lp == downloader.PlatformAll {
-			score = 50
-		} else if lp == downloader.PlatformUnknown {
-			score = 25
-		}
+		score := downloader.PlatformPriority(downloader.Platform(link.Platform), targetPlatform)
 		switch link.Host {
 		case "vikingfile", "buzzheavier", "pixeldrain", "mega", "gofile":
 			score += 15

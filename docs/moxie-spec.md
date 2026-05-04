@@ -19,8 +19,8 @@ A local game library manager for adult games. Scans directories, detects engines
 | **Architecture** | [architecture.md](architecture.md) | Package diagram, data flow, design rationale, future path |
 | **Scanner** | [scanner.md](scanner.md) | Directory walk, engine detection profiles, exclusion list, limitations |
 | **Scraper** | [scraper.md](scraper.md) | HTTP client, rate limiting, HTML parsing, auto-association |
-| **Downloader** | [downloader.md](downloader.md) | HTTP downloads with resume, progress tracking, SSRF protection |
-| **Archive** | [archive.md](archive.md) | Archive extraction (.zip, .7z, .rar, .tar.gz), platform detection |
+| **Downloader** | [downloader.md](downloader.md) | HTTP downloads with resume, host-specific resolvers, progress tracking, SSRF protection, platform priority (Wine/Proton chain), dead link validation |
+| **Archive** | [archive.md](archive.md) | Archive extraction (.zip, .7z, .rar, .tar.gz), zip-slip protection, system tool fallback |
 | **Commands** | (this doc) | 30+ CLI handlers: crud, scrape, sync, cleanup, play, steam, rename, config, download |
 | **Config** | (this doc) | Config I/O (`ConfigDir`, `DbPath`, `ReadConfig`, `WriteConfig`) in `internal/config/` |
 | **Utilities** | (this doc) | Formatters, version normalization, helpers in `internal/util/` |
