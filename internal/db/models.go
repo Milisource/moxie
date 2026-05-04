@@ -36,6 +36,63 @@ type ScrapedMeta struct {
 	LastScraped time.Time `json:"last_scraped"`
 }
 
+// DownloadStatus represents the state of a download job.
+type DownloadStatus string
+
+const (
+	DownloadStatusPending     DownloadStatus = "pending"
+	DownloadStatusDownloading DownloadStatus = "downloading"
+	DownloadStatusPaused      DownloadStatus = "paused"
+	DownloadStatusCompleted   DownloadStatus = "completed"
+	DownloadStatusFailed      DownloadStatus = "failed"
+	DownloadStatusCancelled   DownloadStatus = "cancelled"
+	DownloadStatusExtracting  DownloadStatus = "extracting"
+)
+
+// Download represents a game download job in the database.
+type Download struct {
+	ID               int64          `json:"id"`
+	GameID           int64          `json:"game_id"`
+	URL              string         `json:"url"`
+	Host             string         `json:"host"`
+	Filename         string         `json:"filename"`
+	DestPath         string         `json:"dest_path"`
+	Status           DownloadStatus `json:"status"`
+	BytesDownloaded  int64          `json:"bytes_downloaded"`
+	TotalBytes       int64          `json:"total_bytes"`
+	SpeedBytesPerSec float64        `json:"speed_bytes_per_sec"`
+	PercentComplete  float64        `json:"percent_complete"`
+	Error            string         `json:"error,omitempty"`
+	StartedAt        time.Time      `json:"started_at,omitempty"`
+	CompletedAt      time.Time      `json:"completed_at,omitempty"`
+	CreatedAt        time.Time      `json:"created_at"`
+}
+
+// Platform represents the target operating system for a download.
+type Platform string
+
+const (
+	PlatformLinux   Platform = "linux"
+	PlatformWindows Platform = "windows"
+	PlatformMacOS   Platform = "macos"
+	PlatformAll     Platform = "all"     // Cross-platform (e.g., web/HTML)
+	PlatformUnknown Platform = "unknown" // Could not determine
+)
+
+// DownloadLink represents a scraped download link stored in the database.
+type DownloadLink struct {
+	ID          int64     `json:"id"`
+	GameID      int64     `json:"game_id"`
+	URL         string    `json:"url"`
+	Host        string    `json:"host"`
+	Name        string    `json:"name"`
+	Platform    Platform  `json:"platform"`
+	IsDead      bool      `json:"is_dead"`
+	DeadReason  string    `json:"dead_reason,omitempty"`
+	LastChecked time.Time `json:"last_checked,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 // marshalTags serializes a string slice to a JSON string for SQLite storage.
 func marshalTags(tags []string) (string, error) {
 	if len(tags) == 0 {

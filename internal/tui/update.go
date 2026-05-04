@@ -2,71 +2,61 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/mili/moxie/internal/db"
 )
 
-// ─── Update ────────────────────────────────────────────────────────────────
-
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Clear transient notice from the previous frame.
 	m.notice = ""
 
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
-	// ── Window resize ────────────────────────────────────────────
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.reflowTable()
 		return m, nil
 
-	// ── Key events ───────────────────────────────────────────────
 	case tea.KeyMsg:
 		key := msg.String()
 
-		// Global force-quit works everywhere, always.
 		if key == "ctrl+c" {
 			return m, tea.Quit
 		}
 
-		// ── Help overlay: any key dismisses ─────────────────
 		if m.showHelp {
 			m.showHelp = false
 			return m, nil
 		}
 
-		// ── Delete confirmation overlay ─────────────────────
 		if m.confirmDelete {
 			return m.handleDeleteConfirm(key)
 		}
 
-		// ── URL input overlay ───────────────────────────────
 		if m.setUrl {
 			return m.handleUrlInput(msg, key)
 		}
 
-		// ── Title edit overlay ──────────────────────────────
 		if m.editing {
 			return m.handleEditKey(msg, key)
 		}
 
-		// ── Detail view key handlers ────────────────────────
 		if m.viewMode == DetailView {
 			return m.handleDetailKey(key)
 		}
 
-		// ── Filter input focused ────────────────────────────
 		if m.filterInput.Focused() {
 			return m.handleFilterInput(msg, key)
 		}
 
-		// ── Library view key handlers ───────────────────────
 		switch key {
 		case "q":
 			return m, tea.Quit
@@ -111,7 +101,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedID = id
 					m.viewMode = DetailView
 					m.err = nil
-					m.detailGame = nil // clear stale cache so loading indicator shows
+					m.detailGame = nil
 					return m, tea.Batch(m.loadDetailGame(id), m.loadMeta(id))
 				}
 			}
@@ -120,8 +110,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = true
 			return m, nil
 		default:
-			// Type-to-search: any printable character activates the filter
-			// and starts typing immediately (no / required).
 			if len(key) == 1 {
 				r := key[0]
 				if r >= 32 && r <= 126 {
@@ -135,11 +123,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Unhandled library-view keys → pass to table for navigation.
 		m.table, cmd = m.table.Update(msg)
 		return m, cmd
 
-	// ── Async messages ─────────────────────────────────────────
 	case gamesLoadedMsg:
 		m.allGames = msg.games
 		m.rebuildFiltered()
@@ -166,7 +152,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case metaScrapedMsg:
 		if msg.err != nil {
-			m.err = fmt.Errorf("⚠ scrape: %v", msg.err)
+			m.err = fmt.Errorf("scrape: %v", msg.err)
 		} else if msg.meta != nil {
 			m.scrapedMeta = msg.meta
 			m.notice = "Metadata refreshed from new URL"
@@ -183,6 +169,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuildFiltered()
 		}
 		return m, nil
+
+	// ── Download messages ─────────────────────────────────────────
+	case downloadStartedMsg:
+		if msg.err != nil {
+			m.err = fmt.Errorf("download failed: %v", msg.err)
+			return m, nil
+		}
+		m.notice = fmt.Sprintf("Download started for game %d", msg.gameID)
+		return m, m.pollDownloads()
+
+	case downloadProgressMsg:
+		if !m.hasActiveDownloads() {
+			for id, ad := range m.activeDownloads {
+				ad.mu.Lock()
+				if ad.status == db.DownloadStatusCompleted || ad.status == db.DownloadStatusFailed {
+					// Keep completed downloads visible for a few seconds
+					delete(m.activeDownloads, id)
+				}
+				ad.mu.Unlock()
+			}
+		}
+		if m.hasActiveDownloads() {
+			return m, m.pollDownloads()
+		}
+		return m, nil
 	}
 
 	return m, cmd
@@ -194,10 +205,6 @@ func (m model) handleDeleteConfirm(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "y", "Y":
 		m.err = nil
-		// Run delete + reload asynchronously so the UI stays responsive.
-		// The detail view makes a synchronous GetGame() call during
-		// rendering, so we switch back to LibraryView immediately to
-		// avoid looking up the now-deleted game.
 		id := m.deleteID
 		m.confirmDelete = false
 		m.viewMode = LibraryView
@@ -260,7 +267,6 @@ func (m model) handleUrlInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.setUrl = false
-			// Trigger scrape of new URL to fetch fresh metadata
 			if m.scraperClient != nil {
 				m.notice = "URL updated — scraping metadata..."
 				return m, tea.Batch(m.loadGames(), m.loadDetailGame(m.selectedID), m.scrapeMeta(m.selectedID, url))
@@ -349,17 +355,53 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		}
 		exe := findPlayableExe(game.Path, game.ExePath)
 		if exe == "" {
-			m.err = fmt.Errorf("✗ No executable found in %s", game.Path)
+			m.err = fmt.Errorf("No executable found in %s", game.Path)
 			return m, nil
 		}
 		if err := launchExe(exe); err != nil {
-			m.err = fmt.Errorf("✗ Failed to launch: %v", err)
+			m.err = fmt.Errorf("Failed to launch: %v", err)
 		} else {
 			m.notice = fmt.Sprintf("Launching: %s", filepath.Base(exe))
 		}
 		return m, nil
+	case "g":
+		// Start download for this game
+		return m.handleDownloadKey()
 	}
 	return m, nil
+}
+
+func (m model) handleDownloadKey() (tea.Model, tea.Cmd) {
+	game, err := m.db.GetGame(m.selectedID)
+	if err != nil || game == nil {
+		return m, nil
+	}
+
+	// Check if already downloading
+	if ad, ok := m.activeDownloads[m.selectedID]; ok {
+		ad.mu.Lock()
+		status := ad.status
+		ad.mu.Unlock()
+		if status == db.DownloadStatusDownloading || status == db.DownloadStatusPending {
+			m.err = fmt.Errorf("Download already in progress")
+			return m, nil
+		}
+	}
+
+	destDir := filepath.Join(filepath.Dir(game.Path), "downloads")
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		m.err = fmt.Errorf("Cannot create download directory: %v", err)
+		return m, nil
+	}
+
+	url, host, resolveErr := m.resolveDownloadLink(game)
+	if resolveErr != nil {
+		m.err = fmt.Errorf("Cannot find download link: %v", resolveErr)
+		return m, nil
+	}
+
+	m.notice = fmt.Sprintf("Downloading from %s...", host)
+	return m, m.startDownloadCmd(m.selectedID, url, host, destDir)
 }
 
 func (m model) handleFilterInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
@@ -378,14 +420,11 @@ func (m model) handleFilterInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd
 	}
 	var filterCmd tea.Cmd
 	m.filterInput, filterCmd = m.filterInput.Update(msg)
-	// Debounced filtering: defer rebuild so rapid keystrokes batch.
 	m.filterText = m.filterInput.Value()
 	m.filterDirty = true
 	return m, tea.Batch(filterCmd, m.debouncedFilterTick())
 }
 
-// debouncedFilterTick returns a command that triggers a deferred rebuild
-// after 150 ms, allowing rapid keystrokes to settle.
 func (m model) debouncedFilterTick() tea.Cmd {
 	return tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
 		return filterTickMsg{}

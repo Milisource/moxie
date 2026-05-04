@@ -38,6 +38,7 @@ func (m model) helpView() string {
 		"    o           Show game folder path",
 		"    u           Set / edit F95Zone URL (detail view)",
 		"    p           Play game hint (detail view)",
+		"    g           Download game (detail view)",
 		"",
 		"  ── General ────────────────────────────────",
 		"    ?           Toggle this help screen",

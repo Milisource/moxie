@@ -46,8 +46,18 @@ var (
 	bracketedRe = regexp.MustCompile(`\s*[\[\(][^\]\)]*[\]\)]`)
 
 	// versionInBrackets extracts version numbers from bracketed tags
-	// like [v1.31], [ver 2.0], [version 1.5.2].
-	versionInBrackets = regexp.MustCompile(`\[v(?:er(?:sion)?\s+)?v?(\d+\.\d+(?:\.\d+)*)\]`)
+	// like [v1.31], [ver 2.0], [version 1.5.2], [Ch. 2 v3.0], [v1.0 Alpha].
+	// Matches v/ver/version anywhere inside a bracket, with optional
+	// trailing letter for build identifiers.
+	versionInBrackets = regexp.MustCompile(`\[[^\]]*v(?:er(?:sion)?\s+)?v?(\d+\.\d+(?:\.\d+)*(?:[a-zA-Z])?)[^\]]*\]`)
+	// dateInBrackets matches date-based versions like [2018-07-18]
+	// (per F95Zone title format rules when no version exists).
+	dateInBrackets = regexp.MustCompile(`\[(\d{4}-\d{2}-\d{2})\]`)
+	// bareVerInBrackets matches bare versions like [1.0] without v prefix.
+	// Safe from false positives on [Ch. 1.5] because \] must be immediate.
+	bareVerInBrackets = regexp.MustCompile(`\[(\d+\.\d+(?:\.\d+)*)\]`)
+	// finalInBrackets matches [Final] — complete game sentinel with no version.
+	finalInBrackets = regexp.MustCompile(`(?i)\[final\]`)
 
 	steamStoreRe = regexp.MustCompile(`store\.steampowered\.com/app/\d+`)
 )
@@ -339,7 +349,24 @@ func isValidCoverURL(src string) bool {
 	return true
 }
 
+// isOnlineOnlyLink returns true if the link text or URL indicates a
+// browser-playable version rather than a downloadable file. These should
+// not be included in download link lists.
+func isOnlineOnlyLink(text, url string) bool {
+	lower := strings.ToLower(text + " " + url)
+	// "Online" category links point to web/browser versions, not downloads
+	if strings.Contains(lower, "online") {
+		return true
+	}
+	// Skip known non-download platforms
+	if strings.Contains(lower, "gamejolt") {
+		return true
+	}
+	return false
+}
+
 // extractDownloadLinks finds all download links in the first post's content.
+// It skips store links, online-only links, and links to unrecognised hosts.
 func extractDownloadLinks(content *goquery.Selection) []DownloadLink {
 	if content.Length() == 0 {
 		return nil
@@ -352,10 +379,12 @@ func extractDownloadLinks(content *goquery.Selection) []DownloadLink {
 			return
 		}
 		text := strings.TrimSpace(a.Text())
+		// Skip online-only / browser-playable links
+		if isOnlineOnlyLink(text, href) {
+			return
+		}
 		host := identifyHost(href, text)
 		if host == "other" {
-			// Only include "other" links if they have obvious host keywords.
-			// Otherwise skip generic links.
 			return
 		}
 		links = append(links, DownloadLink{
@@ -560,12 +589,31 @@ func stripBracketed(s string) string {
 }
 
 // extractVersionFromBrackets tries to find a version inside bracketed
-// tags in the thread title (e.g., [v1.31], [ver 2.0], [v0.5.2]).
-// Returns the version string without the v/ver prefix, or "" if none found.
+// tags in the thread title.  Tries patterns in priority order:
+//
+//  1. [v1.31], [ver 2.0], [version 1.5.2], [Ch. 2 v3.0], [v1.0 Alpha]
+//  2. [2018-07-18] — date-based (per F95Zone title format rules)
+//  3. [1.0] — bare version without v prefix
+//  4. [Final] — complete game sentinel
+//
+// Returns the version string (without v/ver prefix), or "" if none found.
 func extractVersionFromBrackets(title string) string {
-	matches := versionInBrackets.FindStringSubmatch(title)
-	if len(matches) >= 2 {
-		return matches[1]
+	// 1. Explicit v/ver/version prefix or embedded in bracket text.
+	if m := versionInBrackets.FindStringSubmatch(title); len(m) > 1 {
+		return m[1]
+	}
+	// 2. Date in brackets: [2018-07-18].
+	if m := dateInBrackets.FindStringSubmatch(title); len(m) > 1 {
+		return m[1]
+	}
+	// 3. Bare version in brackets: [1.0].  Safe from [Ch. 1.5] false
+	// positives because \] must immediately follow the last digit.
+	if m := bareVerInBrackets.FindStringSubmatch(title); len(m) > 1 {
+		return m[1]
+	}
+	// 4. [Final] — complete game, no version number.
+	if finalInBrackets.MatchString(title) {
+		return "Final"
 	}
 	return ""
 }

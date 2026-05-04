@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/mili/moxie/internal/db"
 )
 
 // ── Library View ───────────────────────────────────────────────────────────
@@ -51,13 +53,29 @@ func (m model) libraryView() string {
 		filterIndicator = filterActiveStyle.Render(fmt.Sprintf("%q", m.filterText))
 	}
 
+	// Count active downloads
+	dlCount := 0
+	for _, ad := range m.activeDownloads {
+		ad.mu.Lock()
+		if ad.status == db.DownloadStatusDownloading || ad.status == db.DownloadStatusPending {
+			dlCount++
+		}
+		ad.mu.Unlock()
+	}
+
+	downloadInfo := ""
+	if dlCount > 0 {
+		downloadInfo = fmt.Sprintf("  │  %s ", greenStyle.Render(fmt.Sprintf("↓ %d downloading", dlCount)))
+	}
+
 	stat := statusBarStyle.Render(fmt.Sprintf(
-		"  %s  │  Engine: %s  │  Status: %s  │  Sort: %s  │  Filter: %s  ",
+		"  %s  │  Engine: %s  │  Status: %s  │  Sort: %s  │  Filter: %s%s ",
 		matchInfo,
 		engineInfo,
 		statusInfo,
 		m.sortBy.Indicator(),
 		filterIndicator,
+		downloadInfo,
 	))
 	b.WriteString(stat)
 	b.WriteString("\n")

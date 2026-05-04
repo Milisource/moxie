@@ -141,6 +141,31 @@ func TestExtractVersion(t *testing.T) {
 		// Version with letter prefix
 		{"Game-0.11-pc", "0.11"},
 		{"Training_The_Demon-0.1.2-pc", "0.1.2"},
+
+		// Versions delimited by underscores (fix: \b doesn't work with _)
+		{"FullEmberDoors_v0.1.7_Linux", "0.1.7"},
+		{"Vice_Empire_Tycoon_V1.6.1_Trial_Build", "1.6.1"},
+		{"Society_v1.28", "1.28"},
+		{"Game_V1.0.0_HotFix", "1.0.0"},
+		{"Zaras_School_Life_v0.6.6_Free", "0.6.6"},
+
+		// Versions with trailing build letter (fix: [a-zA-Z]? at end)
+		{"Course_of_Temptation_v0.7.7i", "0.7.7i"},
+
+		// Underscore before version + extension after (fix: old regex matched 0.2 not 1.0.2)
+		{"CoC_1.0.2.swf", "1.0.2"},
+
+		// Single/double-digit versions with v prefix (fix: new singleVerRE)
+		{"Island SAGA v5", "5"},
+		{"ToBeSIgma_v0", "0"},
+
+		// Version inside category dir prefix with underscores
+		{"The Fapocalypse v0.5.13", "0.5.13"},
+		{"The SUP v0.9.75", "0.9.75"},
+		{"Sultry Secrets 2.1", "2.1"},
+
+		// False-positive guard: no v prefix, just trailing digits
+		{"Boneka_Ascension_WINv01", ""}, // N+v both letters, no delimiter
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

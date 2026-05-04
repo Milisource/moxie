@@ -111,6 +111,20 @@ func (m *model) updateTableRows() {
 			indicator := updateAvailableStyle.Render(" 🔄")
 			title += indicator
 		}
+		// Show download indicator
+		if ad, ok := m.activeDownloads[g.ID]; ok {
+			ad.mu.Lock()
+			status := ad.status
+			ad.mu.Unlock()
+			switch status {
+			case db.DownloadStatusDownloading:
+				title += greenStyle.Render(" ↓")
+			case db.DownloadStatusFailed:
+				title += redStyle.Render(" ✗")
+			case db.DownloadStatusCompleted:
+				title += greenStyle.Render(" ✓")
+			}
+		}
 		rows = append(rows, table.Row{
 			fmt.Sprintf("%d", g.ID),
 			title,

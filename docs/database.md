@@ -50,9 +50,42 @@ scraped_meta (
     cover_url    TEXT,
     last_scraped TEXT DEFAULT (datetime('now'))
 )
+
+-- Download jobs (track active/completed/failed downloads)
+downloads (
+    id INTEGER PRIMARY KEY,
+    game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    host TEXT,
+    filename TEXT,
+    dest_path TEXT,
+    status TEXT DEFAULT 'pending',  -- pending, downloading, paused, completed, failed, cancelled, extracting
+    bytes_downloaded INTEGER DEFAULT 0,
+    total_bytes INTEGER DEFAULT 0,
+    speed_bytes_per_sec REAL DEFAULT 0,
+    percent_complete REAL DEFAULT 0,
+    error TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+)
+
+-- Download links scraped from F95Zone threads
+download_links (
+    id INTEGER PRIMARY KEY,
+    game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    host TEXT,
+    name TEXT,
+    platform TEXT DEFAULT 'unknown',  -- linux, windows, macos, all, unknown
+    is_dead INTEGER DEFAULT 0,
+    dead_reason TEXT,
+    last_checked TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+)
 ```
 
-Indexes: `idx_games_engine`, `idx_games_title` (NOCASE), `idx_games_path`.
+Indexes: `idx_games_engine`, `idx_games_title` (NOCASE), `idx_games_path`, `idx_downloads_game_id`, `idx_downloads_status`, `idx_download_links_game_id`, `idx_download_links_platform`, `idx_download_links_is_dead`.
 
 ### Version Tracking
 
@@ -68,7 +101,7 @@ This means `latest_version` is the "last known F95Zone version," distinct from `
 
 ### Migration Strategy
 
-Migrations use `ALTER TABLE ADD COLUMN` statements that are safe to run repeatedly:
+Migrations use `ALTER TABLE ADD COLUMN` statements and `CREATE TABLE IF NOT EXISTS` that are safe to run repeatedly:
 
 ```go
 // SQLite ignores errors on ALTER TABLE for columns that already exist
@@ -76,9 +109,15 @@ conn.Exec("ALTER TABLE games ADD COLUMN latest_version TEXT")
 conn.Exec("ALTER TABLE games ADD COLUMN version_checked_at TEXT")
 conn.Exec("ALTER TABLE games ADD COLUMN store_links TEXT DEFAULT '{}'")
 conn.Exec("ALTER TABLE games ADD COLUMN steam_app_id INTEGER")
+
+// New tables use IF NOT EXISTS
+conn.Exec(`
+    CREATE TABLE IF NOT EXISTS downloads (...);
+    CREATE TABLE IF NOT EXISTS download_links (...);
+`)
 ```
 
-This pattern allows adding new columns without versioned schema tracking. The `PRAGMA user_version` is set but not actively used for migration gating — the add-column approach is idempotent and simpler for a single-user hobby project.
+This pattern allows adding new schema without versioned migration tracking. The `PRAGMA user_version` is set but not actively used for migration gating — the approach is idempotent and simpler for a single-user hobby project.
 
 ## Why
 

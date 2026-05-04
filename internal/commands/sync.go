@@ -133,8 +133,6 @@ func RunUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 			} else if latest != "" {
 				// F95Zone has a version but we don't know the local version.
 				fmt.Fprintf(os.Stderr, "  %q ? %s (local version unknown)%s\n", g.Title, latest, engineWarn)
-			} else {
-				fmt.Fprintf(os.Stderr, "  %q ? no version detected%s\n", g.Title, engineWarn)
 			}
 			results = append(results, UpdateResult{Game: g, Current: knownVer, Latest: latest, IsNew: isNew})
 			mu.Unlock()
@@ -512,8 +510,6 @@ func SyncGame(id int64, cookie string, unsafe bool, force bool) {
 		fmt.Fprintf(os.Stderr, "  ✓ Up to date: %s\n", result.NewVersion)
 	} else if result.NewVersion != "" {
 		fmt.Fprintf(os.Stderr, "  ? F95Zone has %s (local version unknown)\n", result.NewVersion)
-	} else {
-		fmt.Fprintf(os.Stderr, "  ? No version detected\n")
 	}
 
 	// Also print scraped metadata if available.

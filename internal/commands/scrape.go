@@ -96,6 +96,28 @@ func Scrape(args []string) {
 		}
 	}
 
+		// Save download links with platform detection.
+	if len(data.DownloadLinks) > 0 {
+		// Clear existing links for this game to avoid duplicates.
+		database.DeleteDownloadLinksByGameID(id)
+
+		fmt.Printf("Download links: %d found\n", len(data.DownloadLinks))
+		for _, dl := range data.DownloadLinks {
+			linkPlatform := DetectPlatformFromLink(dl.Name, dl.URL)
+			link := &db.DownloadLink{
+				GameID:   id,
+				URL:      dl.URL,
+				Host:     dl.Host,
+				Name:     dl.Name,
+				Platform: db.Platform(linkPlatform),
+			}
+			if _, err := database.CreateDownloadLink(link); err != nil {
+				fmt.Fprintf(os.Stderr, "  Warning: Failed to save link: %v\n", err)
+			}
+			fmt.Printf("  [%s] [%s] %s\n", linkPlatform, dl.Host, dl.Name)
+		}
+	}
+
 	fmt.Printf("Scraped: %s", data.Title)
 	if data.Version != "" {
 		fmt.Printf(" [v%s]", data.Version)
@@ -106,12 +128,6 @@ func Scrape(args []string) {
 	}
 	if len(data.Tags) > 0 {
 		fmt.Printf("Tags: %s\n", strings.Join(data.Tags, ", "))
-	}
-	if len(data.DownloadLinks) > 0 {
-		fmt.Printf("Download links: %d found\n", len(data.DownloadLinks))
-		for _, dl := range data.DownloadLinks {
-			fmt.Printf("  [%s] %s\n", dl.Host, dl.Name)
-		}
 	}
 }
 
@@ -255,6 +271,37 @@ func ResolveCookie(explicit, file string) string {
 	}
 	fmt.Fprintf(os.Stderr, "Using cookies from Firefox.\n")
 	return cookie
+}
+
+// DetectPlatformFromLink attempts to determine the platform from a download link's name and URL.
+func DetectPlatformFromLink(name, url string) string {
+	lower := strings.ToLower(name + " " + url)
+
+	// Linux indicators
+	linuxTerms := []string{"linux", "ubuntu", "debian", "fedora", "arch", ".appimage", ".sh", "tar.gz", "tgz"}
+	for _, term := range linuxTerms {
+		if strings.Contains(lower, term) {
+			return "linux"
+		}
+	}
+
+	// Windows indicators
+	windowsTerms := []string{"windows", "win", ".exe", ".msi", "setup", "installer"}
+	for _, term := range windowsTerms {
+		if strings.Contains(lower, term) {
+			return "windows"
+		}
+	}
+
+	// Mac indicators
+	macTerms := []string{"macos", "mac", "osx", ".dmg", ".pkg", "darwin"}
+	for _, term := range macTerms {
+		if strings.Contains(lower, term) {
+			return "macos"
+		}
+	}
+
+	return "unknown"
 }
 
 // ApplyThreadData copies scraped ThreadData fields onto a Game.

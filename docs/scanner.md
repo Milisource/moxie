@@ -20,6 +20,23 @@ The scanner walks a directory tree, identifies which subdirectories are games, d
 
 5. **Check for category directories** — if the directory name matches a known engine (`Unity`, `Ren'Py`, `RPGM`, `HTML`, etc.) **and** it contains subdirectories that look like games, it's treated as a category folder (not a game itself). The walk continues into its children.
 
+### Version Extraction
+
+`ExtractVersion(name)` extracts a version string from a directory or file name using regex patterns tried in priority order:
+
+1. **Date** — `\d{4}-\d{2}-\d{2}` (e.g. `2025-11-14`, `Game-2025-11-14`)
+2. **Dot-separated** — `[vV]?[a-zA-Z]?\d+\.\d+(?:\.\d+)*` with optional trailing build letter (e.g. `v1.0.3`, `1.0`, `V5.4.91`, `v0.7.7i`)
+3. **Dash/underscore** — `[vV]?\d+(?:[._-]\d+)+` converted to dots (e.g. `v1-0-3` → `1.0.3`, `1_0_0` → `1.0.0`)
+4. **Underscore-only fallback** — `[vV]?\d+_\d+(?:_\d+)*` converted to dots (e.g. `v1_0_3` → `1.0.3`)
+5. **Single/double-digit** — `[vV]\d{1,2}` (e.g. `v5`, `v01`, `v0`)
+
+**Boundary handling:** Go's regex `\b` treats `_` as a word character. Since most F95Zone game directories use underscores around versions (`FullEmberDoors_v0.1.7_Linux`), the patterns use explicit `(?:^|[^a-zA-Z0-9])` / `(?:$|[^a-zA-Z0-9])` instead of `\b` to prevent underscore-delimited versions from being missed.
+
+**Known limitations:**
+- Versions without a non-alphanumeric delimiter before `v`/`V` are missed (e.g. `WINv01` — `N` and `v` are adjacent letters)
+- Trailing build letters are kept in the extracted version (`v0.7.7i` → `"0.7.7i"`)
+- No semver parsing — `NormalizeVersion()` in the sync code handles comparison
+
 ### Engine Detection
 
 On the detected game directory, `engine.Detect(dir)` is called. It reads the directory listing once and checks 20+ profiles in priority order (see table below). Each profile specifies files, subdirectories, or extensions that must be present. First match wins.

@@ -592,16 +592,37 @@ func TestExtractVersionFromBrackets(t *testing.T) {
 		input string
 		want  string
 	}{
+		// Explicit v/ver/version prefix (always matched first)
 		{"Game [v1.31] [BadColor]", "1.31"},
 		{"Game [ver 2.0] [Studio]", "2.0"},
 		{"Game [version 1.5.2] [Studio]", "1.5.2"},
 		{"Game [v0.5] [Studio]", "0.5"},
-		{"No Version Brackets", ""},
-		{"Game [1.0] without v prefix", ""}, // must have v/ver prefix
 		{"Game [v1.0]", "1.0"},
 		{"[v1.0.0] Game At Start", "1.0.0"},
-		{"Multiple [v1.0] [v2.0]", "1.0"}, // first match wins
-		{"[v 0.5]", ""},                   // space between v and digit not handled
+		{"Multiple [v1.0] [v2.0]", "1.0"},               // first match wins
+		{"[v 0.5]", ""},                                  // space between v and digit not handled
+		{"Game [v1.0 Alpha] [Dev]", "1.0"},               // prerelease suffix
+		{"Game [Ch. 2 v3.0] [Dev]", "3.0"},               // chapter + version
+
+		// Date in brackets (per F95Zone title format rules)
+		{"Game [2018-07-18] [Dev]", "2018-07-18"},
+		{"Game [2024-02-29] [Dev]", "2024-02-29"},
+
+		// Bare version in brackets (immediate ] after last digit)
+		{"Game [1.0] [Dev]", "1.0"},
+		{"Game [0.5.2] [Studio]", "0.5.2"},
+
+		// [Final] sentinel for complete games
+		{"Game [Final] [Dev]", "Final"},
+		{"Game [final] [Dev]", "Final"},
+
+		// Not versions — ranges, days, chapters without embedded v
+		{"No Version Brackets", ""},
+		{"Game [Ch. 1-5]", ""},  // range, no v
+		{"Game [Ep. 1-5]", ""},  // range, no v
+		{"Game [Day 3]", ""},    // day marker
+		{"Game [Part 1-5]", ""}, // part range
+
 		{"", ""},
 	}
 	for _, tt := range tests {

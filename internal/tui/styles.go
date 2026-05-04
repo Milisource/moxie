@@ -84,6 +84,14 @@ var (
 
 	updateAvailableStyle = lipgloss.NewStyle().
 				Foreground(yellow)
+
+	greenStyle = lipgloss.NewStyle().
+			Foreground(green).
+			Bold(true)
+
+	redStyle = lipgloss.NewStyle().
+			Foreground(red).
+			Bold(true)
 )
 
 // statusColor returns a lipgloss color for the given game status.

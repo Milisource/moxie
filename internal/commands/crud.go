@@ -159,7 +159,7 @@ func List(args []string) {
 		for _, g := range games {
 			ver := g.Version
 			if ver == "" {
-				ver = "-"
+				ver = "unknown"
 			}
 			// Collect compact warning indicators.
 			var warns []string
@@ -182,7 +182,7 @@ func List(args []string) {
 		for _, g := range games {
 			ver := g.Version
 			if ver == "" {
-				ver = "-"
+				ver = "unknown"
 			}
 			fmt.Printf("%-4d %-30s %-12s %-8s %-10s %s\n",
 				g.ID, util.Truncate(g.Title, 30), g.Engine, ver, g.Status, util.Truncate(g.Path, 30))

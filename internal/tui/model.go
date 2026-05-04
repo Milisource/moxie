@@ -1,18 +1,20 @@
 package tui
 
 import (
+	"sync"
+
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/scraper"
 )
 
 // ─── View Mode ─────────────────────────────────────────────────────────────
 
-// ViewMode represents which screen the TUI is currently showing.
 type ViewMode int
 
 const (
@@ -22,7 +24,6 @@ const (
 
 // ─── Sort Field ────────────────────────────────────────────────────────────
 
-// SortField represents the field to sort the game list by.
 type SortField int
 
 const (
@@ -47,7 +48,6 @@ func (s SortField) String() string {
 	}
 }
 
-// Indicator returns the sort field name with a direction arrow.
 func (s SortField) Indicator() string {
 	switch s {
 	case SortID:
@@ -93,6 +93,31 @@ type detailGameLoadedMsg struct {
 
 type filterTickMsg struct{}
 
+type downloadProgressMsg struct {
+	gameID   int64
+	progress downloader.Progress
+	status   db.DownloadStatus
+	err      string
+}
+
+type downloadStartedMsg struct {
+	gameID int64
+	err    error
+}
+
+// ─── Active Download ───────────────────────────────────────────────────────
+
+type activeDownload struct {
+	mu       sync.Mutex
+	gameID   int64
+	url      string
+	host     string
+	destDir  string
+	status   db.DownloadStatus
+	progress downloader.Progress
+	err      string
+}
+
 // ─── Model ─────────────────────────────────────────────────────────────────
 
 type model struct {
@@ -132,8 +157,11 @@ type model struct {
 	scraperClient *scraper.Client
 
 	// filters
-	engineFilter string // empty = all
-	statusFilter string // empty = all
+	engineFilter string
+	statusFilter string
+
+	// active downloads
+	activeDownloads map[int64]*activeDownload
 }
 
 // initialModel creates the root model with default Bubble Tea components.
@@ -174,11 +202,12 @@ func initialModel(database *db.Database, sc *scraper.Client) model {
 	fi.PlaceholderStyle = lipgloss.NewStyle().Foreground(subtle)
 
 	return model{
-		db:            database,
-		table:         t,
-		filterInput:   fi,
-		sortBy:        SortID,
-		scraperClient: sc,
+		db:              database,
+		table:           t,
+		filterInput:     fi,
+		sortBy:          SortID,
+		scraperClient:   sc,
+		activeDownloads: make(map[int64]*activeDownload),
 	}
 }
 

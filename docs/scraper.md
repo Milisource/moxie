@@ -60,7 +60,14 @@ When a block is detected, the scraper stops gracefully and surfaces the issue to
 | **Download Links** | All `<a href>` anchors hosting on 40+ approved file hosts |
 | **Thread ID** | Regex from URL: `/threads/slug.12345/` → `12345` |
 
-The version extraction is two-tiered: first it tries the structured metadata block (the "Overview" section with key: value pairs that F95Zone thread authors maintain), then falls back to free-form regex scanning of the full post body. The metadata block parser normalizes keys (`"Release Date"` → `release_date`, `"Ver"` → `version`) and only recognizes fields in a known allowlist.
+The version extraction is three-tiered: first the structured metadata block (the "Overview" section with key: value pairs), then bracketed tags in the thread title, then free-form regex scanning of the full post body. The metadata block parser normalizes keys (`"Release Date"` → `release_date`, `"Ver"` → `version`) and only recognizes fields in a known allowlist.
+
+The bracketed-title fallback (`extractVersionFromBrackets`) follows F95Zone's [official title format rules](https://f95zone.to/threads/game-uploading-rules-2024-02-29.524/) — `Game Name [Version] [Developer]` — and tries patterns in priority order:
+
+1. **`[vX.Y]` / `[ver X.Y]` / `[version X.Y]`** — explicit prefix, also matches embedded forms like `[Ch. 2 v3.0]` and `[v1.0 Alpha]`
+2. **`[YYYY-MM-DD]`** — date-based version for games without a version number
+3. **`[X.Y]`** — bare version without v/ver prefix (safe: `]` must be immediate, so `[Ch. 1.5]` is not a false positive)
+4. **`[Final]`** — sentinel for complete games with no version number
 
 ### Auto-Association (`scrape --auto`)
 

@@ -19,7 +19,9 @@ A local game library manager for adult games. Scans directories, detects engines
 | **Architecture** | [architecture.md](architecture.md) | Package diagram, data flow, design rationale, future path |
 | **Scanner** | [scanner.md](scanner.md) | Directory walk, engine detection profiles, exclusion list, limitations |
 | **Scraper** | [scraper.md](scraper.md) | HTTP client, rate limiting, HTML parsing, auto-association |
-| **Commands** | (this doc) | 28 CLI handlers in 8 domain files: crud, scrape, sync, cleanup, play, steam, rename, config |
+| **Downloader** | [downloader.md](downloader.md) | HTTP downloads with resume, progress tracking, SSRF protection |
+| **Archive** | [archive.md](archive.md) | Archive extraction (.zip, .7z, .rar, .tar.gz), platform detection |
+| **Commands** | (this doc) | 30+ CLI handlers: crud, scrape, sync, cleanup, play, steam, rename, config, download |
 | **Config** | (this doc) | Config I/O (`ConfigDir`, `DbPath`, `ReadConfig`, `WriteConfig`) in `internal/config/` |
 | **Utilities** | (this doc) | Formatters, version normalization, helpers in `internal/util/` |
 | **Logging** | (this doc) | Structured logging wrapper around `log/slog` in `internal/log/` |
@@ -93,14 +95,24 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] `FindMatches` non-game thread filtering (was missing from associate.go)
 - [x] CHANGELOG.md and expanded AGENTS.md with project conventions
 - [x] `make install` and `make clean` targets
+- [x] Version extraction from directory names fixed — `\b` replaced with explicit non-alphanumeric boundaries to handle underscore-delimited versions (e.g. `FullEmberDoors_v0.1.7_Linux`, `Game_V1.0.0_HotFix`)
+- [x] Single/double-digit version pattern added — `v5`, `v01`, `v0` now detected
+- [x] Trailing build letter support — `v0.7.7i` captured as `"0.7.7i"` instead of missed
+- [x] TUI `🔄` update indicator fixed — requires both `Version` and `LatestVersion` non-empty (previously triggered on empty local version, falsely marking every game with scraped metadata as having an update)
+- [x] Empty versions display as `"unknown"` in TUI table, detail view, and `moxie list` CLI output (replaces bare `-`)
+- [x] Stale `? no version detected` output suppressed in `RunUpdateCheck()` and `SyncGame()` during sync — no action needed from user
+- [x] Bracketed-title version extraction expanded per F95Zone title format rules — supports `[YYYY-MM-DD]`, `[X.Y]` bare versions, `[Final]` sentinel, `[Ch. 2 v3.0]` embedded chapter+version, and `[v1.0 Alpha]` prerelease suffixes
 
 ### Upcoming
 
 - [x] DB migration: store_links + steam_app_id columns for persistent Steam/Itch.io links
 - [x] SGDB artwork activation by real Steam App ID (DownloadSGDBArtwork priority 1)
+- [x] Download manager / file organizer with resume support, progress bars, platform priority
+- [x] Archive extraction (.zip, .7z, .rar, .tar.gz) with auto-detection
+- [x] Download links table with platform detection (Linux/Windows/MacOS)
+- [x] Dead link validation (404/5XX/DMCA detection)
 - [ ] FTS5 full-text search
 - [ ] Cover image download and local caching
-- [ ] Download manager / file organizer
 - [ ] Directory watcher (auto-scan on file changes)
 - [ ] Export/import library (JSON backup)
 - [ ] Wails desktop GUI
@@ -109,7 +121,7 @@ A local game library manager for adult games. Scans directories, detects engines
 
 - **No FTS5** — uses `LIKE '%query%'` on title only
 - **False positives** — tool/editor directories and generic folder names may be misdetected as games
-- **No archive scanning** — `.zip`/`.rar`/`.7z` at scan roots are not inspected
+- **No archive scanning** — `.zip`/`.rar`/`.7z` at scan roots are not inspected (but can be extracted after download)
 - **No content-based dedup** — same game in multiple paths creates duplicate records
 - **No cover caching** — cover URLs are stored but images are not downloaded
 - **Non-UTF-8 filenames** — Latin1/Shift-JIS display incorrectly in the TUI

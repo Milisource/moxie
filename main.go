@@ -90,6 +90,12 @@ func main() {
 		commands.Cleanup(os.Args[2:])
 	case "refresh-versions":
 		commands.RefreshVersions(os.Args[2:])
+	case "download":
+		commands.Download(os.Args[2:])
+	case "downloads":
+		commands.ListDownloads(os.Args[2:])
+	case "check-links":
+		commands.CheckDeadLinks(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -122,6 +128,9 @@ Usage:
   moxie cleanup [flags]                Detect and fix wrong F95Zone thread associations
   moxie update                           Check for and install moxie updates
   moxie refresh-versions [flags]       Re-extract versions from directory names
+  moxie download <id> [flags]          Download game from F95Zone links
+  moxie downloads [flags]              List download history
+  moxie check-links [flags]            Validate download links for dead URLs
 
 Flags for 'scan':
   --json           Output results as JSON

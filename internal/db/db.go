@@ -104,6 +104,48 @@ func migrate(conn *sql.DB) error {
 		return err
 	}
 
+	// Migration: create downloads table
+	conn.Exec(`
+		CREATE TABLE IF NOT EXISTS downloads (
+			id INTEGER PRIMARY KEY,
+			game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+			url TEXT NOT NULL,
+			host TEXT,
+			filename TEXT,
+			dest_path TEXT,
+			status TEXT DEFAULT 'pending',
+			bytes_downloaded INTEGER DEFAULT 0,
+			total_bytes INTEGER DEFAULT 0,
+			speed_bytes_per_sec REAL DEFAULT 0,
+			percent_complete REAL DEFAULT 0,
+			error TEXT,
+			started_at TEXT,
+			completed_at TEXT,
+			created_at TEXT DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_downloads_game_id ON downloads(game_id);
+		CREATE INDEX IF NOT EXISTS idx_downloads_status ON downloads(status);
+	`)
+
+	// Migration: create download_links table for scraped links
+	conn.Exec(`
+		CREATE TABLE IF NOT EXISTS download_links (
+			id INTEGER PRIMARY KEY,
+			game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+			url TEXT NOT NULL,
+			host TEXT,
+			name TEXT,
+			platform TEXT DEFAULT 'unknown',
+			is_dead INTEGER DEFAULT 0,
+			dead_reason TEXT,
+			last_checked TEXT,
+			created_at TEXT DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_download_links_game_id ON download_links(game_id);
+		CREATE INDEX IF NOT EXISTS idx_download_links_platform ON download_links(platform);
+		CREATE INDEX IF NOT EXISTS idx_download_links_is_dead ON download_links(is_dead);
+	`)
+
 	// Migration: add version tracking columns for existing databases.
 	// SQLite has no IF NOT EXISTS for ALTER TABLE, so ignore errors.
 	conn.Exec("ALTER TABLE games ADD COLUMN latest_version TEXT")
@@ -490,4 +532,345 @@ func (db *Database) TotalSize() (int64, error) {
 	var total int64
 	err := db.conn.QueryRow("SELECT COALESCE(SUM(size_bytes), 0) FROM games").Scan(&total)
 	return total, err
+}
+
+// ---------------------------------------------------------------------------
+// CRUD: Downloads
+// ---------------------------------------------------------------------------
+
+// scanDownload scans a download row from the database.
+func scanDownload(s scanner) (*Download, error) {
+	var d Download
+	var host, filename, destPath, status, errStr, startedAtStr, completedAtStr, createdAtStr sql.NullString
+
+	err := s.Scan(
+		&d.ID, &d.GameID, &d.URL, &host, &filename, &destPath,
+		&status, &d.BytesDownloaded, &d.TotalBytes, &d.SpeedBytesPerSec, &d.PercentComplete,
+		&errStr, &startedAtStr, &completedAtStr, &createdAtStr,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if host.Valid {
+		d.Host = host.String
+	}
+	if filename.Valid {
+		d.Filename = filename.String
+	}
+	if destPath.Valid {
+		d.DestPath = destPath.String
+	}
+	if status.Valid {
+		d.Status = DownloadStatus(status.String)
+	}
+	if errStr.Valid {
+		d.Error = errStr.String
+	}
+	if startedAtStr.Valid {
+		d.StartedAt = parseTime(startedAtStr.String)
+	}
+	if completedAtStr.Valid {
+		d.CompletedAt = parseTime(completedAtStr.String)
+	}
+	if createdAtStr.Valid {
+		d.CreatedAt = parseTime(createdAtStr.String)
+	}
+
+	return &d, nil
+}
+
+// CreateDownload inserts a new download record.
+func (db *Database) CreateDownload(d *Download) (int64, error) {
+	if d == nil {
+		return 0, errors.New("db: cannot insert nil download")
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	d.CreatedAt, _ = time.Parse(time.RFC3339, now)
+
+	res, err := db.conn.Exec(`
+		INSERT INTO downloads (game_id, url, host, filename, dest_path, status,
+			bytes_downloaded, total_bytes, speed_bytes_per_sec, percent_complete,
+			error, started_at, completed_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.GameID, d.URL, nullableString(d.Host), nullableString(d.Filename), nullableString(d.DestPath),
+		string(d.Status), d.BytesDownloaded, d.TotalBytes, d.SpeedBytesPerSec, d.PercentComplete,
+		nullableString(d.Error), nullableTime(d.StartedAt), nullableTime(d.CompletedAt), now,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	d.ID, err = res.LastInsertId()
+	return d.ID, err
+}
+
+// GetDownload retrieves a download by its ID.
+func (db *Database) GetDownload(id int64) (*Download, error) {
+	row := db.conn.QueryRow(`
+		SELECT id, game_id, url, host, filename, dest_path, status,
+			bytes_downloaded, total_bytes, speed_bytes_per_sec, percent_complete,
+			error, started_at, completed_at, created_at
+		FROM downloads WHERE id = ?`, id)
+
+	d, err := scanDownload(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// GetDownloadByGameID retrieves the most recent download for a game.
+func (db *Database) GetDownloadByGameID(gameID int64) (*Download, error) {
+	row := db.conn.QueryRow(`
+		SELECT id, game_id, url, host, filename, dest_path, status,
+			bytes_downloaded, total_bytes, speed_bytes_per_sec, percent_complete,
+			error, started_at, completed_at, created_at
+		FROM downloads WHERE game_id = ? ORDER BY created_at DESC LIMIT 1`, gameID)
+
+	d, err := scanDownload(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// ListDownloads returns all downloads optionally filtered by status.
+func (db *Database) ListDownloads(status string) ([]Download, error) {
+	query := `
+		SELECT id, game_id, url, host, filename, dest_path, status,
+			bytes_downloaded, total_bytes, speed_bytes_per_sec, percent_complete,
+			error, started_at, completed_at, created_at
+		FROM downloads`
+
+	var args []any
+	if status != "" {
+		query += " WHERE status = ?"
+		args = append(args, status)
+	}
+
+	query += " ORDER BY created_at DESC"
+
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var downloads []Download
+	for rows.Next() {
+		d, err := scanDownload(rows)
+		if err != nil {
+			return nil, err
+		}
+		downloads = append(downloads, *d)
+	}
+	return downloads, rows.Err()
+}
+
+// UpdateDownload updates a download record.
+func (db *Database) UpdateDownload(d *Download) error {
+	if d == nil {
+		return errors.New("db: cannot update nil download")
+	}
+
+	_, err := db.conn.Exec(`
+		UPDATE downloads SET
+			game_id = ?, url = ?, host = ?, filename = ?, dest_path = ?, status = ?,
+			bytes_downloaded = ?, total_bytes = ?, speed_bytes_per_sec = ?, percent_complete = ?,
+			error = ?, started_at = ?, completed_at = ?
+		WHERE id = ?`,
+		d.GameID, d.URL, nullableString(d.Host), nullableString(d.Filename), nullableString(d.DestPath),
+		string(d.Status), d.BytesDownloaded, d.TotalBytes, d.SpeedBytesPerSec, d.PercentComplete,
+		nullableString(d.Error), nullableTime(d.StartedAt), nullableTime(d.CompletedAt),
+		d.ID,
+	)
+	return err
+}
+
+// DeleteDownload removes a download by its ID.
+func (db *Database) DeleteDownload(id int64) error {
+	_, err := db.conn.Exec("DELETE FROM downloads WHERE id = ?", id)
+	return err
+}
+
+// DeleteDownloadsByGameID removes all downloads for a game.
+func (db *Database) DeleteDownloadsByGameID(gameID int64) error {
+	_, err := db.conn.Exec("DELETE FROM downloads WHERE game_id = ?", gameID)
+	return err
+}
+
+// ---------------------------------------------------------------------------
+// CRUD: DownloadLinks
+// ---------------------------------------------------------------------------
+
+// scanDownloadLink scans a download_link row from the database.
+func scanDownloadLink(s scanner) (*DownloadLink, error) {
+	var d DownloadLink
+	var host, name, platform, deadReason, lastCheckedStr, createdAtStr sql.NullString
+
+	err := s.Scan(
+		&d.ID, &d.GameID, &d.URL, &host, &name, &platform,
+		&d.IsDead, &deadReason, &lastCheckedStr, &createdAtStr,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if host.Valid {
+		d.Host = host.String
+	}
+	if name.Valid {
+		d.Name = name.String
+	}
+	if platform.Valid {
+		d.Platform = Platform(platform.String)
+	}
+	if deadReason.Valid {
+		d.DeadReason = deadReason.String
+	}
+	if lastCheckedStr.Valid {
+		d.LastChecked = parseTime(lastCheckedStr.String)
+	}
+	if createdAtStr.Valid {
+		d.CreatedAt = parseTime(createdAtStr.String)
+	}
+
+	return &d, nil
+}
+
+// CreateDownloadLink inserts a new download link record.
+func (db *Database) CreateDownloadLink(d *DownloadLink) (int64, error) {
+	if d == nil {
+		return 0, errors.New("db: cannot insert nil download link")
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	d.CreatedAt, _ = time.Parse(time.RFC3339, now)
+
+	res, err := db.conn.Exec(`
+		INSERT INTO download_links (game_id, url, host, name, platform, is_dead, dead_reason, last_checked, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.GameID, d.URL, nullableString(d.Host), nullableString(d.Name), string(d.Platform),
+		d.IsDead, nullableString(d.DeadReason), nullableTime(d.LastChecked), now,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	d.ID, err = res.LastInsertId()
+	return d.ID, err
+}
+
+// GetDownloadLink retrieves a download link by its ID.
+func (db *Database) GetDownloadLink(id int64) (*DownloadLink, error) {
+	row := db.conn.QueryRow(`
+		SELECT id, game_id, url, host, name, platform, is_dead, dead_reason, last_checked, created_at
+		FROM download_links WHERE id = ?`, id)
+
+	d, err := scanDownloadLink(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// GetDownloadLinkByURL retrieves a download link by game ID and URL.
+func (db *Database) GetDownloadLinkByURL(gameID int64, url string) (*DownloadLink, error) {
+	row := db.conn.QueryRow(`
+		SELECT id, game_id, url, host, name, platform, is_dead, dead_reason, last_checked, created_at
+		FROM download_links WHERE game_id = ? AND url = ?`, gameID, url)
+
+	d, err := scanDownloadLink(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// ListDownloadLinks returns all download links for a game, optionally filtering by platform.
+func (db *Database) ListDownloadLinks(gameID int64, platform string, includeDead bool) ([]DownloadLink, error) {
+	query := `
+		SELECT id, game_id, url, host, name, platform, is_dead, dead_reason, last_checked, created_at
+		FROM download_links WHERE game_id = ?`
+	args := []any{gameID}
+
+	if !includeDead {
+		query += " AND is_dead = 0"
+	}
+	if platform != "" {
+		query += " AND platform = ?"
+		args = append(args, platform)
+	}
+
+	query += " ORDER BY created_at DESC"
+
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var links []DownloadLink
+	for rows.Next() {
+		d, err := scanDownloadLink(rows)
+		if err != nil {
+			return nil, err
+		}
+		links = append(links, *d)
+	}
+	return links, rows.Err()
+}
+
+// UpdateDownloadLink updates a download link record.
+func (db *Database) UpdateDownloadLink(d *DownloadLink) error {
+	if d == nil {
+		return errors.New("db: cannot update nil download link")
+	}
+
+	_, err := db.conn.Exec(`
+		UPDATE download_links SET
+			game_id = ?, url = ?, host = ?, name = ?, platform = ?,
+			is_dead = ?, dead_reason = ?, last_checked = ?
+		WHERE id = ?`,
+		d.GameID, d.URL, nullableString(d.Host), nullableString(d.Name), string(d.Platform),
+		d.IsDead, nullableString(d.DeadReason), nullableTime(d.LastChecked),
+		d.ID,
+	)
+	return err
+}
+
+// MarkDownloadLinkDead marks a link as dead with a reason.
+func (db *Database) MarkDownloadLinkDead(id int64, reason string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.conn.Exec(`
+		UPDATE download_links SET is_dead = 1, dead_reason = ?, last_checked = ?
+		WHERE id = ?`,
+		reason, now, id)
+	return err
+}
+
+// DeleteDownloadLink removes a download link by its ID.
+func (db *Database) DeleteDownloadLink(id int64) error {
+	_, err := db.conn.Exec("DELETE FROM download_links WHERE id = ?", id)
+	return err
+}
+
+// DeleteDownloadLinksByGameID removes all download links for a game.
+func (db *Database) DeleteDownloadLinksByGameID(gameID int64) error {
+	_, err := db.conn.Exec("DELETE FROM download_links WHERE game_id = ?", gameID)
+	return err
 }

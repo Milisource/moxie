@@ -163,45 +163,56 @@ func analyzeDir(dir, root string) DetectedGame {
 }
 
 // version patterns tried in order; first match wins.
+// NOTE: \b in Go regex treats _ as a word character, so versions delimited
+// by underscores are not bounded by \b. Instead we use explicit
+// (?:^|[^a-zA-Z0-9]) / (?:$|[^a-zA-Z0-9]) boundaries and capture groups.
 var (
 	// Date-based versions: "2025-11-14", "2026-03-31"
-	dateVerRE = regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2})\b`)
+	dateVerRE = regexp.MustCompile(`(?:^|[^a-zA-Z0-9])(\d{4}-\d{2}-\d{2})(?:$|[^a-zA-Z0-9])`)
 	// Dot-separated with optional v/V prefix: v1.0.3, 1.0, V5.4.91, B.0.10.7.5.2
-	dotVerRE = regexp.MustCompile(`\b[vV]?[a-zA-Z]?\d+\.\d+(?:\.\d+)*(?:\s*HotFix)?\b`)
-	// Underscore-separated: v1_0_3, 1_0, V5_4_91
-	usVerRE = regexp.MustCompile(`\b[vV]?\d+_\d+(?:_\d+)*\b`)
-	// Dash-separated: 0-20-16, v1-0-3 (converts to dots)
-	dashVerRE = regexp.MustCompile(`\b[vV]?\d+(?:[._-]\d+)+\b`)
+	// Trailing [a-zA-Z]? catches build identifiers (e.g. v0.7.7i).
+	dotVerRE = regexp.MustCompile(`(?:^|[^a-zA-Z0-9])([vV]?[a-zA-Z]?\d+\.\d+(?:\.\d+)*(?:\s*HotFix)?[a-zA-Z]?)(?:$|[^a-zA-Z0-9])`)
+	// Dash/underscore/dot-separated: 0-20-16, v1-0-3, v1_0_3 (converts to dots)
+	dashVerRE = regexp.MustCompile(`(?:^|[^a-zA-Z0-9])([vV]?\d+(?:[._-]\d+)+)(?:$|[^a-zA-Z0-9])`)
+	// Underscore-separated fallback: v1_0_3, 1_0, V5_4_91
+	usVerRE = regexp.MustCompile(`(?:^|[^a-zA-Z0-9])([vV]?\d+_\d+(?:_\d+)*)(?:$|[^a-zA-Z0-9])`)
+	// Single/double-digit versions with v prefix: v5, v01, v0
+	singleVerRE = regexp.MustCompile(`(?:^|[^a-zA-Z0-9])([vV]\d{1,2})(?:$|[^a-zA-Z0-9])`)
 )
 
 // ExtractVersion attempts to pull a version string from a directory/file name.
-// Patterns are tried: date-like, dot-separated, then underscore-separated.
+// Patterns are tried: date-like, dot-separated, then dash/underscore-separated,
+// and finally single/double-digit with v prefix.
 // Returns empty string if no version is found.
 func ExtractVersion(name string) string {
 	if name == "" {
 		return ""
 	}
 	// Try date pattern first (most specific).
-	if m := dateVerRE.FindString(name); m != "" {
-		return m
+	if m := dateVerRE.FindStringSubmatch(name); len(m) > 1 {
+		return m[1]
 	}
 	// Try dot-separated version.
-	if m := dotVerRE.FindString(name); m != "" {
-		// Clean: strip leading v/V prefix.
-		ver := strings.TrimLeft(m, "vV")
+	if m := dotVerRE.FindStringSubmatch(name); len(m) > 1 {
+		ver := strings.TrimLeft(m[1], "vV")
 		return strings.TrimSpace(ver)
 	}
-	// Try dash-separated, convert dashes to dots.
-	if m := dashVerRE.FindString(name); m != "" {
-		ver := strings.TrimLeft(m, "vV")
+	// Try dash-separated, convert dashes/underscores to dots.
+	if m := dashVerRE.FindStringSubmatch(name); len(m) > 1 {
+		ver := strings.TrimLeft(m[1], "vV")
 		ver = strings.ReplaceAll(ver, "-", ".")
 		ver = strings.ReplaceAll(ver, "_", ".")
 		return strings.TrimSpace(ver)
 	}
 	// Try underscore-separated, convert underscores to dots.
-	if m := usVerRE.FindString(name); m != "" {
-		ver := strings.TrimLeft(m, "vV")
+	if m := usVerRE.FindStringSubmatch(name); len(m) > 1 {
+		ver := strings.TrimLeft(m[1], "vV")
 		return strings.ReplaceAll(ver, "_", ".")
+	}
+	// Try single/double-digit versions with v prefix.
+	if m := singleVerRE.FindStringSubmatch(name); len(m) > 1 {
+		ver := strings.TrimLeft(m[1], "vV")
+		return strings.TrimSpace(ver)
 	}
 	return ""
 }
