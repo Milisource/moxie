@@ -119,12 +119,18 @@ func IsSteamRunning() (bool, error) {
 	}
 }
 
-// isSteamRunningLinux checks for any process with "steam" in its comm name.
-// This covers both native and Flatpak Steam clients.
+// isSteamRunningLinux checks /proc for known Steam process names.
+// Matches exact comm names, not substrings, to avoid false positives
+// (e.g. on CI runners where unrelated process names may contain "steam").
 func isSteamRunningLinux() (bool, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return false, nil
+	}
+	// Only exact comm names from the Steam client and its helpers.
+	steamProcesses := map[string]bool{
+		"steam":          true, // main client
+		"steamwebhelper": true, // embedded Chromium helper
 	}
 	for _, e := range entries {
 		if !e.IsDir() || !isNumeric(e.Name()) {
@@ -134,7 +140,8 @@ func isSteamRunningLinux() (bool, error) {
 		if err != nil {
 			continue
 		}
-		if strings.Contains(strings.TrimSpace(string(data)), "steam") {
+		comm := strings.TrimSpace(string(data))
+		if steamProcesses[comm] {
 			return true, nil
 		}
 	}
