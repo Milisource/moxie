@@ -8,7 +8,31 @@ import (
 
 // CheckLink validates a download URL by making a HEAD request.
 // Returns nil if the link is valid, or an error describing why it's dead.
+// For host-specific hosts (Buzzheavier, Mega, etc.) this auto-detects
+// the host and delegates to CheckLinkWithHost.
 func CheckLink(url string) error {
+	host := IdentifyHostInURL(url)
+	return CheckLinkWithHost(url, host)
+}
+
+// CheckLinkWithHost validates a download URL with explicit host awareness.
+// For hosts that require special resolution (Buzzheavier HTMX, etc.), it
+// uses the HostResolver to get the real download URL before checking.
+func CheckLinkWithHost(url, host string) error {
+	// For host-specific resolvers that don't serve direct HTTP, use the
+	// resolver to validate the link instead of a simple HEAD request.
+	switch host {
+	case "buzzheavier":
+		resolver := NewHostResolver()
+		_, err := resolver.Resolve(url, host)
+		if err != nil {
+			return fmt.Errorf("Buzzheavier: %w", err)
+		}
+		return nil
+	case "mega":
+		return fmt.Errorf("Mega uses encrypted protocol — cannot validate via HTTP")
+	}
+
 	if !isValidDownloadURL(url) {
 		return fmt.Errorf("invalid URL")
 	}
@@ -16,7 +40,6 @@ func CheckLink(url string) error {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// Follow redirects, but limit to 10
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects")
 			}
