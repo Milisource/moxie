@@ -103,11 +103,15 @@ func (m *model) updateTableRows() {
 	for _, g := range m.filtered {
 		ver := g.Version
 		if ver == "" {
-			ver = "-"
+			if g.LatestVersion != "" {
+				ver = g.LatestVersion
+			} else {
+				ver = "unknown"
+			}
 		}
 		engineStyled := engineStyle(g.Engine).Render(g.Engine)
 		title := truncate(g.Title, 72)
-		if g.LatestVersion != "" && g.LatestVersion != g.Version {
+		if g.LatestVersion != "" && g.Version != "" && g.LatestVersion != g.Version {
 			indicator := updateAvailableStyle.Render(" 🔄")
 			title += indicator
 		}

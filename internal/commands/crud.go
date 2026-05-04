@@ -85,7 +85,7 @@ func Scan(args []string) {
 	defer database.Close()
 
 	saved := 0
-	skipped := 0
+	updated := 0
 	for _, g := range games {
 		// Check if already exists by path.
 		existing, err := database.GetGameByPath(g.Path)
@@ -94,8 +94,18 @@ func Scan(args []string) {
 			continue
 		}
 		if existing != nil {
-			fmt.Fprintf(os.Stderr, "  Skipping %s (already in library)\n", g.Title)
-			skipped++
+			// Update existing record with newly detected scan data
+			// (e.g., improved version extraction from directory or files).
+			existing.Version = g.Version
+			existing.Engine = string(g.Engine)
+			existing.SizeBytes = g.SizeBytes
+			existing.ExePath = g.ExePath
+			if err := database.UpdateGame(existing); err != nil {
+				fmt.Fprintf(os.Stderr, "  Error updating %s: %v\n", g.Title, err)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "  Updated: %s (%s, v%s)\n", g.Title, g.Engine, g.Version)
+			updated++
 			continue
 		}
 
@@ -120,7 +130,7 @@ func Scan(args []string) {
 			saved++
 		}
 	}
-	fmt.Fprintf(os.Stderr, "\nSaved %d games, skipped %d (already in library).\n", saved, skipped)
+	fmt.Fprintf(os.Stderr, "\nSaved %d games, updated %d.\n", saved, updated)
 }
 
 // List lists all games in the library.
@@ -159,7 +169,11 @@ func List(args []string) {
 		for _, g := range games {
 			ver := g.Version
 			if ver == "" {
-				ver = "unknown"
+				if g.LatestVersion != "" {
+					ver = g.LatestVersion
+				} else {
+					ver = "unknown"
+				}
 			}
 			// Collect compact warning indicators.
 			var warns []string
@@ -182,7 +196,11 @@ func List(args []string) {
 		for _, g := range games {
 			ver := g.Version
 			if ver == "" {
-				ver = "unknown"
+				if g.LatestVersion != "" {
+					ver = g.LatestVersion
+				} else {
+					ver = "unknown"
+				}
 			}
 			fmt.Printf("%-4d %-30s %-12s %-8s %-10s %s\n",
 				g.ID, util.Truncate(g.Title, 30), g.Engine, ver, g.Status, util.Truncate(g.Path, 30))

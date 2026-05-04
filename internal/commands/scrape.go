@@ -319,9 +319,10 @@ func ApplyThreadData(game *db.Game, data *scraper.ThreadData, url string) {
 		game.Title = StripThreadPrefix(data.Title)
 	}
 	if data.Version != "" {
-		// LatestVersion tracks the F95Zone version.
-		// Version is the locally-installed version (from directory
-		// name scan) — never overwrite it with F95Zone data.
+		// LatestVersion always tracks the F95Zone version for
+		// update detection. Version is the locally-installed
+		// version (from directory name scan) — never overwrite
+		// it with F95Zone data so the update comparison works.
 		game.LatestVersion = data.Version
 	}
 	if data.ThreadID > 0 {

@@ -52,7 +52,7 @@ The TUI has three visual modes, switched via the `viewMode` field in the model:
 - **Sort cycling** — `s` cycles ID → Title → Engine → Version (desc). The active sort field and direction appear in the status bar as `Title ↑` or `Version ↓`.
 - **Engine colors** — each engine type has a distinct Lip Gloss color (Unity = cyan, RenPy = magenta, RPGM = green, etc.). Applied per-row via `engineColor(e)`.
 - **Update indicators** — a `🔄` marker appears next to game titles where both `latest_version` and `version` are known and differ. If the local version is empty (no version found in the directory name), no indicator is shown — an unknown local version cannot confirm an update.
-- **Unknown versions** — games without a detected version display as `"unknown"` instead of a bare dash. This applies in the library table, detail view, and `moxie list` output.
+- **Unknown versions** — games without a detected version show the scraped `LatestVersion` from F95Zone when available, falling back to `"unknown"` only when neither source has a version. This applies in the library table, detail view, and `moxie list` output.
 
 ### Overlays
 

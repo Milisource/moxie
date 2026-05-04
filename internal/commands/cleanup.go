@@ -451,7 +451,10 @@ func RefreshVersions(args []string) {
 	for _, g := range games {
 		dirVer := scanner.ExtractVersion(filepath.Base(g.Path))
 		if dirVer == "" {
-			continue // no version in directory name
+			dirVer = scanner.ExtractVersionFromDir(g.Path)
+		}
+		if dirVer == "" {
+			continue // no version in directory name or files
 		}
 		if g.Version == dirVer {
 			continue // already matches

@@ -87,18 +87,19 @@ func Scan(root string) ([]DetectedGame, error) {
 				return filepath.SkipDir
 			}
 		}
-		// Check if this directory looks like a game root.
-		if looksLikeGameRoot(path) {
-			// If this directory is named after a known engine AND contains
-			// game-like subdirectories, it's a category folder — skip it
-			// and scan its children instead.
-			if isCategoryDir(path) {
-				return nil
-			}
-			gameDirs[path] = &trackedGame{}
-			currentGameDir = path // descend to accumulate sizes
+		// Check if this directory looks like a game root using a single
+		// directory read (avoids redundant os.ReadDir in hasGameMarkers).
+		entries, readErr := os.ReadDir(path)
+		if readErr != nil || !hasGameMarkersFromEntries(entries) {
 			return nil
 		}
+		// If it's named after a known engine and has subdirectories,
+		// it's a category folder — walk children instead.
+		if isEngineName(strings.ToLower(name)) && hasSubDir(entries) {
+			return nil
+		}
+		gameDirs[path] = &trackedGame{}
+		currentGameDir = path // descend to accumulate sizes
 		return nil
 	})
 	if err != nil {
@@ -119,15 +120,34 @@ func Scan(root string) ([]DetectedGame, error) {
 			defer func() { <-sem }()
 
 			result := engine.Detect(d)
+			ver := ExtractVersion(filepath.Base(d))
+			if ver == "" {
+				ver = ExtractVersionFromDir(d)
+			}
+			if ver == "" {
+				// Nested games: version is often in the parent directory
+				// name (e.g. "Game v1.0/Game/" → "1.0" from parent).
+				if parent := filepath.Dir(d); parent != d {
+					ver = ExtractVersion(filepath.Base(parent))
+				}
+			}
 			g := DetectedGame{
 				Title:     filepath.Base(d),
 				Path:      d,
 				Engine:    result.Engine,
-				Version:   ExtractVersion(filepath.Base(d)),
+				Version:   ver,
 				SizeBytes: size,
 			}
 			if exe := findGameExe(d); exe != "" {
 				g.ExePath = exe
+				// Some games only have the version in the executable
+				// filename (e.g. "[Full]EmberDoors_v0.1.7_Linux.x86_64").
+				if ver == "" {
+					if exeVer := ExtractVersion(filepath.Base(exe)); exeVer != "" {
+						ver = exeVer
+						g.Version = ver
+					}
+				}
 			}
 			mu.Lock()
 			games = append(games, g)
@@ -148,16 +168,31 @@ func ScanSingle(dir string) (DetectedGame, error) {
 func analyzeDir(dir, root string) DetectedGame {
 	result := engine.Detect(dir)
 	name := filepath.Base(dir)
+
+	ver := ExtractVersion(name)
+	if ver == "" {
+		ver = ExtractVersionFromDir(dir)
+	}
+	if ver == "" {
+		if parent := filepath.Dir(dir); parent != dir {
+			ver = ExtractVersion(filepath.Base(parent))
+		}
+	}
+
 	g := DetectedGame{
 		Title:     name,
 		Path:      dir,
 		Engine:    result.Engine,
-		Version:   ExtractVersion(name),
+		Version:   ver,
 		SizeBytes: dirSize(dir),
 	}
-	// Find the main executable.
 	if exe := findGameExe(dir); exe != "" {
 		g.ExePath = exe
+		if ver == "" {
+			if exeVer := ExtractVersion(filepath.Base(exe)); exeVer != "" {
+				g.Version = exeVer
+			}
+		}
 	}
 	return g
 }
@@ -169,6 +204,11 @@ func analyzeDir(dir, root string) DetectedGame {
 var (
 	// Date-based versions: "2025-11-14", "2026-03-31"
 	dateVerRE = regexp.MustCompile(`(?:^|[^a-zA-Z0-9])(\d{4}-\d{2}-\d{2})(?:$|[^a-zA-Z0-9])`)
+	// Compact date versions: "20260403" (YYYYMMDD, no separators).
+	// Uses \D boundary so dates attached to words like "Data20260403"
+	// are matched. Year/month/day validation prevents false positives
+	// on arbitrary 8-digit numbers like "Game12345678".
+	yyyymmddRE = regexp.MustCompile(`(?:\D|^)((?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))(?:\D|$)`)
 	// Dot-separated with optional v/V prefix: v1.0.3, 1.0, V5.4.91, B.0.10.7.5.2
 	// Trailing [a-zA-Z]? catches build identifiers (e.g. v0.7.7i).
 	dotVerRE = regexp.MustCompile(`(?:^|[^a-zA-Z0-9])([vV]?[a-zA-Z]?\d+\.\d+(?:\.\d+)*(?:\s*HotFix)?[a-zA-Z]?)(?:$|[^a-zA-Z0-9])`)
@@ -178,6 +218,11 @@ var (
 	usVerRE = regexp.MustCompile(`(?:^|[^a-zA-Z0-9])([vV]?\d+_\d+(?:_\d+)*)(?:$|[^a-zA-Z0-9])`)
 	// Single/double-digit versions with v prefix: v5, v01, v0
 	singleVerRE = regexp.MustCompile(`(?:^|[^a-zA-Z0-9])([vV]\d{1,2})(?:$|[^a-zA-Z0-9])`)
+
+	// File-content version regexes (used by ExtractVersionFromDir).
+	verIniRE = regexp.MustCompile(`(?i)\bver(?:sion)?\.?\s*`)
+	pkgVerRE = regexp.MustCompile(`"version"\s*:\s*"([^"]+)"`)
+	rpyVerRE = regexp.MustCompile(`(?i)define\s+config\.version\s*=\s*"([^"]+)"`)
 )
 
 // ExtractVersion attempts to pull a version string from a directory/file name.
@@ -190,6 +235,10 @@ func ExtractVersion(name string) string {
 	}
 	// Try date pattern first (most specific).
 	if m := dateVerRE.FindStringSubmatch(name); len(m) > 1 {
+		return m[1]
+	}
+	// Try compact YYYYMMDD date (no separators).
+	if m := yyyymmddRE.FindStringSubmatch(name); len(m) > 1 {
 		return m[1]
 	}
 	// Try dot-separated version.
@@ -222,28 +271,23 @@ func looksLikeGameRoot(dir string) bool {
 	return hasGameMarkers(dir)
 }
 
-// hasGameMarkers checks for game engine files and executables.
-func hasGameMarkers(dir string) bool {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false
-	}
-
+// hasGameMarkersFromEntries checks a pre-read directory listing for game
+// engine files and executables. Extracted from hasGameMarkers so callers
+// can avoid redundant os.ReadDir calls.
+func hasGameMarkersFromEntries(entries []os.DirEntry) bool {
 	hasExe := false
-	hasGameMarkers := false
+	hasMarkers := false
 
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() {
-			// Check for engine-specific directories.
 			switch {
 			case name == "renpy", name == "www", name == "Engine",
 				strings.HasSuffix(name, "_Data"),
 				strings.HasPrefix(name, "game") && !strings.HasPrefix(name, "games"):
-				hasGameMarkers = true
+				hasMarkers = true
 			}
 		} else {
-			// Check for executable files.
 			ext := strings.ToLower(filepath.Ext(name))
 			switch ext {
 			case ".exe", ".sh", ".app", ".x86_64", ".x86":
@@ -251,19 +295,39 @@ func hasGameMarkers(dir string) bool {
 					hasExe = true
 				}
 			}
-			// Check for engine marker files.
 			switch {
 			case name == "package.json",
 				strings.HasSuffix(name, ".pck"),
 				strings.HasSuffix(name, ".rpyc"),
 				strings.HasSuffix(name, ".rpa"),
 				strings.HasPrefix(name, "Game.rgss"):
-				hasGameMarkers = true
+				hasMarkers = true
 			}
 		}
 	}
 
-	return hasExe || hasGameMarkers
+	return hasExe || hasMarkers
+}
+
+// hasGameMarkers checks for game engine files and executables by reading
+// the directory listing. Prefer hasGameMarkersFromEntries when the listing
+// has already been read to avoid redundant I/O.
+func hasGameMarkers(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	return hasGameMarkersFromEntries(entries)
+}
+
+// hasSubDir returns true if the entries contain at least one subdirectory.
+func hasSubDir(entries []os.DirEntry) bool {
+	for _, e := range entries {
+		if e.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // isCategoryDir returns true if the directory name matches a known engine
@@ -347,19 +411,83 @@ func dirSize(dir string) int64 {
 }
 
 // shouldSkip returns true if a file/dir name matches the exclusion list.
+// Uses exact-match map first, then substring fallback for prefix patterns.
 func shouldSkip(name string) bool {
 	lower := strings.ToLower(name)
-	excluded := []string{
-		"unins", "uninstall", "uninst",
-		"unitycrashhandler", "notification_helper",
-		"python", "pythonw", "zsync", "zsyncmake",
-		"dxsetup", "vc_redist",
-		"config", "saved", "logs", "crashes",
+	if exactExcluded[lower] {
+		return true
 	}
-	for _, ex := range excluded {
+	for _, ex := range subExcluded {
 		if strings.Contains(lower, ex) {
 			return true
 		}
 	}
 	return false
+}
+
+// Exclusion patterns for shouldSkip. Exact matches go in the map for O(1)
+// lookup; substring patterns (prefixes like "unins") stay in the slice.
+var (
+	exactExcluded = map[string]bool{
+		"config":    true,
+		"saved":     true,
+		"logs":      true,
+		"crashes":   true,
+	}
+	subExcluded = []string{
+		"unins",
+		"unitycrashhandler",
+		"notification_helper",
+		"python",
+		"pythonw",
+		"zsync",
+		"zsyncmake",
+		"dxsetup",
+		"vc_redist",
+	}
+)
+
+// ExtractVersionFromDir tries to extract a version string from known files
+// inside the game directory when the directory name itself contains no version.
+// Checks, in order: Game.ini Title= field, package.json "version" field,
+// game/options.rpy config.version (Ren'Py).
+func ExtractVersionFromDir(dir string) string {
+	// Try Game.ini (RPG Maker games) — Title= frequently contains a version.
+	// Common patterns: "v1.05", "ver0.31", "v3.26", "B.0.7.9.1".
+	iniPath := filepath.Join(dir, "Game.ini")
+	if data, err := os.ReadFile(iniPath); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(strings.ToLower(line), "title=") {
+				continue
+			}
+			if idx := strings.Index(line, "="); idx >= 0 {
+				val := strings.TrimSpace(line[idx+1:])
+				val = verIniRE.ReplaceAllString(val, "v")
+				if ver := ExtractVersion(val); ver != "" {
+					return ver
+				}
+			}
+		}
+	}
+
+	// Try package.json (HTML/NW.js/Electron games).
+	if data, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
+		if m := pkgVerRE.FindStringSubmatch(string(data)); len(m) > 1 {
+			if ver := m[1]; ver != "" {
+				return ver
+			}
+		}
+	}
+
+	// Try game/options.rpy (Ren'Py games).
+	if data, err := os.ReadFile(filepath.Join(dir, "game", "options.rpy")); err == nil {
+		if m := rpyVerRE.FindStringSubmatch(string(data)); len(m) > 1 {
+			if ver := m[1]; ver != "" {
+				return ver
+			}
+		}
+	}
+
+	return ""
 }

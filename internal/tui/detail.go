@@ -44,7 +44,14 @@ func (m model) detailView() string {
 	b.WriteString("\n\n")
 
 	// ── Game info ─────────────────────────────────────────────────
-	ver := orDash(game.Version)
+	ver := game.Version
+	if ver == "" {
+		if game.LatestVersion != "" {
+			ver = game.LatestVersion
+		} else {
+			ver = "unknown"
+		}
+	}
 	tags := renderTags(game.Tags)
 	added := game.CreatedAt.Format("2006-01-02")
 	updated := game.UpdatedAt.Format("2006-01-02")
@@ -52,7 +59,7 @@ func (m model) detailView() string {
 	var info []string
 	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Title:"), valueStyle.Render(game.Title)))
 	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Engine:"), valueStyle.Render(game.Engine)))
-	if game.LatestVersion != "" && game.LatestVersion != game.Version {
+	if game.LatestVersion != "" && game.Version != "" && game.LatestVersion != game.Version {
 		latestStr := fmt.Sprintf(" (latest: %s 🆕)", game.LatestVersion)
 		info = append(info, fmt.Sprintf("%s  %s%s", labelStyle.Render("Version:"), valueStyle.Render(ver), updateAvailableStyle.Render(latestStr)))
 	} else {

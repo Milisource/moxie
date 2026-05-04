@@ -25,10 +25,20 @@ The scanner walks a directory tree, identifies which subdirectories are games, d
 `ExtractVersion(name)` extracts a version string from a directory or file name using regex patterns tried in priority order:
 
 1. **Date** — `\d{4}-\d{2}-\d{2}` (e.g. `2025-11-14`, `Game-2025-11-14`)
-2. **Dot-separated** — `[vV]?[a-zA-Z]?\d+\.\d+(?:\.\d+)*` with optional trailing build letter (e.g. `v1.0.3`, `1.0`, `V5.4.91`, `v0.7.7i`)
-3. **Dash/underscore** — `[vV]?\d+(?:[._-]\d+)+` converted to dots (e.g. `v1-0-3` → `1.0.3`, `1_0_0` → `1.0.0`)
-4. **Underscore-only fallback** — `[vV]?\d+_\d+(?:_\d+)*` converted to dots (e.g. `v1_0_3` → `1.0.3`)
-5. **Single/double-digit** — `[vV]\d{1,2}` (e.g. `v5`, `v01`, `v0`)
+2. **Compact date** — `YYYYMMDD` without separators (e.g. `Data20260403`, `Game-20260403`). Uses `\D` boundary so dates attached to words are matched. Year/month/day validation prevents false positives on arbitrary 8-digit numbers.
+3. **Dot-separated** — `[vV]?[a-zA-Z]?\d+\.\d+(?:\.\d+)*` with optional trailing build letter (e.g. `v1.0.3`, `1.0`, `V5.4.91`, `v0.7.7i`)
+4. **Dash/underscore** — `[vV]?\d+(?:[._-]\d+)+` converted to dots (e.g. `v1-0-3` → `1.0.3`, `1_0_0` → `1.0.0`)
+5. **Underscore-only fallback** — `[vV]?\d+_\d+(?:_\d+)*` converted to dots (e.g. `v1_0_3` → `1.0.3`)
+6. **Single/double-digit** — `[vV]\d{1,2}` (e.g. `v5`, `v01`, `v0`)
+
+When the directory name yields no version, the scanner escalates through additional fallbacks:
+
+- **File contents** (`ExtractVersionFromDir`) — checks known files inside the game directory:
+  - `Game.ini` (RPG Maker) — parses the `Title=` line, normalizes common version prefixes (`ver` → `v`, `version` → `v`) and applies the same regex patterns
+  - `package.json` (HTML/NW.js) — reads the `"version"` field
+  - `game/options.rpy` (Ren'Py) — reads `config.version`
+- **Parent directory name** — many games are nested (e.g. `Game v1.0/Game Windows/Game.exe`), so the scanner checks the parent dir for version when the game dir itself has none
+- **Executable filename** — some games only have the version in the executable name (e.g. `[Full]EmberDoors_v0.1.7_Linux.x86_64` → `0.1.7`)
 
 **Boundary handling:** Go's regex `\b` treats `_` as a word character. Since most F95Zone game directories use underscores around versions (`FullEmberDoors_v0.1.7_Linux`), the patterns use explicit `(?:^|[^a-zA-Z0-9])` / `(?:$|[^a-zA-Z0-9])` instead of `\b` to prevent underscore-delimited versions from being missed.
 

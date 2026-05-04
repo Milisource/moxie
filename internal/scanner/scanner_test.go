@@ -144,6 +144,8 @@ func TestExtractVersion(t *testing.T) {
 
 		// Versions delimited by underscores (fix: \b doesn't work with _)
 		{"FullEmberDoors_v0.1.7_Linux", "0.1.7"},
+		// Bracketed prefix + extension: [Full]EmberDoors_v0.1.7_Linux.x86_64
+		{"[Full]EmberDoors_v0.1.7_Linux.x86_64", "0.1.7"},
 		{"Vice_Empire_Tycoon_V1.6.1_Trial_Build", "1.6.1"},
 		{"Society_v1.28", "1.28"},
 		{"Game_V1.0.0_HotFix", "1.0.0"},
@@ -166,6 +168,13 @@ func TestExtractVersion(t *testing.T) {
 
 		// False-positive guard: no v prefix, just trailing digits
 		{"Boneka_Ascension_WINv01", ""}, // N+v both letters, no delimiter
+
+		// Compact YYYYMMDD dates (no separators)
+		{"Data20260403", "20260403"},
+		{"ReGame_20260403", "20260403"},
+		{"Game-20260403", "20260403"},
+		// False-positive check: invalid month/day rejected
+		{"Game12345678", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -325,6 +334,59 @@ func TestScanSingle(t *testing.T) {
 	}
 	if g.Title != filepath.Base(gameDir) {
 		t.Errorf("expected title to be dir name")
+	}
+}
+
+// TestScanSingleNestedGame verifies that ScanSingle extracts the version from
+// the parent directory name when the game is in a subdirectory.
+// E.g., "Game v1.0/Game/" → version "1.0" from parent.
+func TestScanSingleNestedGame(t *testing.T) {
+	root := t.TempDir()
+
+	// Parent directory has the version in its name.
+	parentDir := filepath.Join(root, "MyGame v2.5.1")
+	os.MkdirAll(parentDir, 0755)
+
+	// Game subdirectory (the actual game root).
+	gameDir := filepath.Join(parentDir, "MyGame Windows")
+	os.MkdirAll(filepath.Join(gameDir, "www"), 0755)
+	os.WriteFile(filepath.Join(gameDir, "Game.exe"), []byte("exe"), 0644)
+
+	g, err := ScanSingle(gameDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Version != "2.5.1" {
+		t.Errorf("expected version 2.5.1 from parent dir, got %q", g.Version)
+	}
+}
+
+// TestExtractVersionFromExeFallback verifies that when no version is found in
+// the directory name, parent dir, or file contents, the executable filename is
+// checked as a last resort.
+func TestExtractVersionFromExeFallback(t *testing.T) {
+	root := t.TempDir()
+
+	// Game dir with no version in its name or parent.
+	gameDir := filepath.Join(root, "GameDir")
+	os.MkdirAll(gameDir, 0755)
+
+	// Exe with version in its filename (uses brackets and x86_64 extension).
+	exeName := "[Full]EmberDoors_v0.1.7_Linux.x86_64"
+	os.WriteFile(filepath.Join(gameDir, exeName), make([]byte, 10000), 0644)
+
+	// Unity _Data dir to trigger Unity engine detection.
+	os.MkdirAll(filepath.Join(gameDir, "[Full]EmberDoors_v0.1.7_Linux_Data"), 0755)
+
+	g, err := ScanSingle(gameDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Version != "0.1.7" {
+		t.Errorf("expected version 0.1.7 from exe filename, got %q", g.Version)
+	}
+	if g.ExePath == "" {
+		t.Error("expected exe path to be set")
 	}
 }
 

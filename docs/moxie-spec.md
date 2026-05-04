@@ -96,12 +96,22 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] CHANGELOG.md and expanded AGENTS.md with project conventions
 - [x] `make install` and `make clean` targets
 - [x] Version extraction from directory names fixed — `\b` replaced with explicit non-alphanumeric boundaries to handle underscore-delimited versions (e.g. `FullEmberDoors_v0.1.7_Linux`, `Game_V1.0.0_HotFix`)
+- [x] Compact YYYYMMDD date pattern added — `Data20260403` detected as valid date version (with month/day validation to avoid false positives on arbitrary 8-digit numbers)
+- [x] File-based version extraction from `Game.ini` (RPG Maker), `package.json` (HTML/NW.js), and `game/options.rpy` (Ren'Py) — catches versions missed in directory names
 - [x] Single/double-digit version pattern added — `v5`, `v01`, `v0` now detected
 - [x] Trailing build letter support — `v0.7.7i` captured as `"0.7.7i"` instead of missed
 - [x] TUI `🔄` update indicator fixed — requires both `Version` and `LatestVersion` non-empty (previously triggered on empty local version, falsely marking every game with scraped metadata as having an update)
 - [x] Empty versions display as `"unknown"` in TUI table, detail view, and `moxie list` CLI output (replaces bare `-`)
 - [x] Stale `? no version detected` output suppressed in `RunUpdateCheck()` and `SyncGame()` during sync — no action needed from user
 - [x] Bracketed-title version extraction expanded per F95Zone title format rules — supports `[YYYY-MM-DD]`, `[X.Y]` bare versions, `[Final]` sentinel, `[Ch. 2 v3.0]` embedded chapter+version, and `[v1.0 Alpha]` prerelease suffixes
+- [x] Display-layer fallback shows `LatestVersion` when `Version` is empty (instead of backfilling DB) — preserves update detection while eliminating "unknown" display
+- [x] Parent directory name fallback for nested games (e.g. `Game v1.0/Game Windows/` detects `1.0` from parent)
+- [x] Executable filename version extraction (e.g. `[Full]EmberDoors_v0.1.7_Linux.x86_64` → `0.1.7`)
+- [x] Scan command now updates existing games instead of skipping them — improved version detection takes effect on re-scan
+- [x] `RefreshVersions` command uses `ExtractVersionFromDir` as fallback, matching scanner logic
+- [x] `shouldSkip` optimized — exact-match map for O(1) lookup, substring slice fallback for prefix patterns
+- [x] Walk path optimized — single `os.ReadDir` per directory reused across game marker and category checks (was double-read)
+- [x] Regex compilation hoisted to package level — `verIniRE`, `pkgVerRE`, `rpyVerRE` compiled once at init instead of per-call
 
 ### Upcoming
 
