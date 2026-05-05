@@ -112,6 +112,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] `shouldSkip` optimized — exact-match map for O(1) lookup, substring slice fallback for prefix patterns
 - [x] Walk path optimized — single `os.ReadDir` per directory reused across game marker and category checks (was double-read)
 - [x] Regex compilation hoisted to package level — `verIniRE`, `pkgVerRE`, `rpyVerRE` compiled once at init instead of per-call
+- [x] Download fallback — when a link fails (e.g. Mega encrypted protocol), the CLI and TUI automatically try the next-best link in platform-priority order. Mega links deprioritized to -200 in host scoring.
 
 ### Upcoming
 
@@ -121,6 +122,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Archive extraction (.zip, .7z, .rar, .tar.gz) with auto-detection
 - [x] Download links table with platform detection (Linux/Windows/MacOS)
 - [x] Dead link validation (404/5XX/DMCA detection)
+- [ ] Mega download support (native SDK or megatools subprocess wrapper)
 - [ ] FTS5 full-text search
 - [ ] Cover image download and local caching
 - [ ] Directory watcher (auto-scan on file changes)
@@ -129,6 +131,7 @@ A local game library manager for adult games. Scans directories, detects engines
 
 ### Known Limitations
 
+- **Mega downloads not supported** — Mega's proprietary encrypted protocol cannot be handled via HTTP. Mega links are deprioritized to -200 in host scoring; the downloader auto-fallbacks to the next-best link. Only when all links fail is the user informed. A native Mega SDK integration is planned.
 - **No FTS5** — uses `LIKE '%query%'` on title only
 - **False positives** — tool/editor directories and generic folder names may be misdetected as games
 - **No archive scanning** — `.zip`/`.rar`/`.7z` at scan roots are not inspected (but can be extracted after download)

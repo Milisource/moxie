@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -81,14 +82,15 @@ func (m model) scrapeMeta(gameID int64, url string) tea.Cmd {
 	}
 }
 
-// startDownloadCmd launches a download in a background goroutine.
+// startDownloadCmd launches a download in a background goroutine, trying links in priority order.
 // Progress is written to the model's activeDownloads map.
-func (m model) startDownloadCmd(gameID int64, url, host, destDir string) tea.Cmd {
-	// Create download record
+func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir string) tea.Cmd {
+	firstLink := links[0]
+
 	dl := &db.Download{
 		GameID:   gameID,
-		URL:      url,
-		Host:     host,
+		URL:      firstLink.URL,
+		Host:     firstLink.Host,
 		DestPath: destDir,
 		Status:   db.DownloadStatusDownloading,
 	}
@@ -101,35 +103,62 @@ func (m model) startDownloadCmd(gameID int64, url, host, destDir string) tea.Cmd
 	}
 	dl.ID = dlID
 
-	// Set up active download state
 	ad := &activeDownload{
 		gameID:  gameID,
-		url:     url,
-		host:    host,
+		url:     firstLink.URL,
+		host:    firstLink.Host,
 		destDir: destDir,
 		status:  db.DownloadStatusDownloading,
 	}
 	m.activeDownloads[gameID] = ad
 
-	// Launch download in background
 	go func() {
-		err := downloader.DownloadWithHost(url, host, destDir, 0, func(p downloader.Progress) {
-			ad.mu.Lock()
-			ad.progress = p
-			ad.mu.Unlock()
-			dl.BytesDownloaded = p.BytesDownloaded
-			dl.TotalBytes = p.TotalBytes
-			dl.SpeedBytesPerSec = p.SpeedBytesPerSec
-			dl.PercentComplete = p.Percent
-			m.db.UpdateDownload(dl)
-		})
+		var lastErr error
+		for i, link := range links {
+			if i > 0 {
+				ad.mu.Lock()
+				ad.url = link.URL
+				ad.host = link.Host
+				ad.status = db.DownloadStatusDownloading
+				ad.progress = downloader.Progress{}
+				ad.err = ""
+				ad.mu.Unlock()
+
+				dl.URL = link.URL
+				dl.Host = link.Host
+				dl.Status = db.DownloadStatusDownloading
+				dl.BytesDownloaded = 0
+				dl.TotalBytes = 0
+				dl.SpeedBytesPerSec = 0
+				dl.PercentComplete = 0
+				dl.Error = ""
+				m.db.UpdateDownload(dl)
+			}
+
+			err := downloader.DownloadWithHost(link.URL, link.Host, destDir, 0, func(p downloader.Progress) {
+				ad.mu.Lock()
+				ad.progress = p
+				ad.mu.Unlock()
+				dl.BytesDownloaded = p.BytesDownloaded
+				dl.TotalBytes = p.TotalBytes
+				dl.SpeedBytesPerSec = p.SpeedBytesPerSec
+				dl.PercentComplete = p.Percent
+				m.db.UpdateDownload(dl)
+			})
+
+			if err == nil {
+				lastErr = nil
+				break
+			}
+			lastErr = err
+		}
 
 		ad.mu.Lock()
-		if err != nil {
+		if lastErr != nil {
 			ad.status = db.DownloadStatusFailed
-			ad.err = err.Error()
+			ad.err = lastErr.Error()
 			dl.Status = db.DownloadStatusFailed
-			dl.Error = err.Error()
+			dl.Error = lastErr.Error()
 		} else {
 			ad.status = db.DownloadStatusCompleted
 			ad.progress.Percent = 100
@@ -177,14 +206,14 @@ func (m model) getDownloadProgress(gameID int64) (downloader.Progress, db.Downlo
 	return ad.progress, ad.status, ad.err
 }
 
-// resolveDownloadLink finds a download URL+host for a game, checking DB then scraping.
-func (m model) resolveDownloadLink(game *db.Game) (url, host string, err error) {
+// resolveDownloadLinks finds all viable download links for a game, sorted by platform score.
+func (m model) resolveDownloadLinks(game *db.Game) ([]db.DownloadLink, error) {
 	links, listErr := m.db.ListDownloadLinks(game.ID, "", false)
 	if listErr == nil && len(links) > 0 {
 		targetPlatform := downloader.CurrentPlatform()
-		best := selectBestLinkByPlatform(links, targetPlatform)
-		if best != nil {
-			return best.URL, best.Host, nil
+		sorted := sortLinksByPlatform(links, targetPlatform)
+		if len(sorted) > 0 {
+			return sorted, nil
 		}
 	}
 
@@ -203,14 +232,14 @@ func (m model) resolveDownloadLink(game *db.Game) (url, host string, err error) 
 			}
 			links, _ = m.db.ListDownloadLinks(game.ID, "", false)
 			targetPlatform := downloader.CurrentPlatform()
-			best := selectBestLinkByPlatform(links, targetPlatform)
-			if best != nil {
-				return best.URL, best.Host, nil
+			sorted := sortLinksByPlatform(links, targetPlatform)
+			if len(sorted) > 0 {
+				return sorted, nil
 			}
 		}
 	}
 
-	return "", "", fmt.Errorf("no download links found")
+	return nil, fmt.Errorf("no download links found")
 }
 
 // isOnlineOnlyLink returns true if the link text or URL indicates a browser-only version.
@@ -219,12 +248,9 @@ func isOnlineOnlyLink(name, url string) bool {
 	return strings.Contains(lower, "online") || strings.Contains(lower, "gamejolt")
 }
 
-// selectBestLinkByPlatform picks the best link based on platform + host reliability.
+// sortLinksByPlatform returns all links sorted by platform + host reliability score (descending).
 // Skips online-only links that aren't downloadable.
-func selectBestLinkByPlatform(links []db.DownloadLink, targetPlatform downloader.Platform) *db.DownloadLink {
-	if len(links) == 0 {
-		return nil
-	}
+func sortLinksByPlatform(links []db.DownloadLink, targetPlatform downloader.Platform) []db.DownloadLink {
 	type sl struct {
 		link  db.DownloadLink
 		score int
@@ -236,8 +262,10 @@ func selectBestLinkByPlatform(links []db.DownloadLink, targetPlatform downloader
 		}
 		score := downloader.PlatformPriority(downloader.Platform(link.Platform), targetPlatform)
 		switch link.Host {
-		case "vikingfile", "buzzheavier", "pixeldrain", "mega", "gofile":
+		case "vikingfile", "buzzheavier", "pixeldrain", "gofile":
 			score += 15
+		case "mega":
+			score -= 200
 		case "mediafire", "workupload":
 			score += 8
 		case "krakenfiles", "googledrive":
@@ -248,11 +276,12 @@ func selectBestLinkByPlatform(links []db.DownloadLink, targetPlatform downloader
 	if len(scored) == 0 {
 		return nil
 	}
-	best := scored[0]
-	for _, s := range scored[1:] {
-		if s.score > best.score {
-			best = s
-		}
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+	result := make([]db.DownloadLink, len(scored))
+	for i, s := range scored {
+		result[i] = s.link
 	}
-	return &best.link
+	return result
 }

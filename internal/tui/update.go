@@ -394,14 +394,14 @@ func (m model) handleDownloadKey() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	url, host, resolveErr := m.resolveDownloadLink(game)
+	links, resolveErr := m.resolveDownloadLinks(game)
 	if resolveErr != nil {
 		m.err = fmt.Errorf("Cannot find download link: %v", resolveErr)
 		return m, nil
 	}
 
-	m.notice = fmt.Sprintf("Downloading from %s...", host)
-	return m, m.startDownloadCmd(m.selectedID, url, host, destDir)
+	m.notice = fmt.Sprintf("Downloading from %s...", links[0].Host)
+	return m, m.startDownloadCmd(m.selectedID, links, destDir)
 }
 
 func (m model) handleFilterInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {

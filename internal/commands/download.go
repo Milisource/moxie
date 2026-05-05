@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -112,21 +113,52 @@ func Download(args []string) {
 		}
 	}
 
-	if selectedLink == nil {
+	if len(links) == 0 {
 		fmt.Fprintf(os.Stderr, "No download links found for this game.\n")
 		fmt.Fprintf(os.Stderr, "Run 'moxie scrape %d' to fetch links from F95Zone.\n", id)
 		os.Exit(1)
 	}
 
-	link := selectedLink
-	fmt.Fprintf(os.Stderr, "Selected download: [%s] [%s] %s\n", link.Platform, link.Host, link.Name)
+	type scoredLink struct {
+		link  db.DownloadLink
+		score int
+	}
+	var scored []scoredLink
+	for _, link := range links {
+		if isOnlineOnlyLink(link.Name, link.URL) {
+			continue
+		}
+		score := downloader.PlatformPriority(downloader.Platform(link.Platform), targetPlatform)
+		host := strings.ToLower(link.Host)
+		switch host {
+		case "vikingfile", "buzzheavier", "pixeldrain", "gofile":
+			score += 15
+		case "mega":
+			score -= 200
+		case "mediafire", "workupload":
+			score += 8
+		case "krakenfiles", "googledrive":
+			score += 5
+		}
+		scored = append(scored, scoredLink{link, score})
+	}
+	if len(scored) == 0 {
+		fmt.Fprintf(os.Stderr, "No download links found for this game.\n")
+		fmt.Fprintf(os.Stderr, "Run 'moxie scrape %d' to fetch links from F95Zone.\n", id)
+		os.Exit(1)
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
 
-	// Create download record
+	bestLink := scored[0].link
+	fmt.Fprintf(os.Stderr, "Selected download: [%s] [%s] %s\n", bestLink.Platform, bestLink.Host, bestLink.Name)
+
 	dlRecord := &db.Download{
 		GameID:   id,
-		URL:      link.URL,
-		Host:     link.Host,
-		Filename: link.Name,
+		URL:      bestLink.URL,
+		Host:     bestLink.Host,
+		Filename: bestLink.Name,
 		DestPath: destDir,
 		Status:   db.DownloadStatusPending,
 	}
@@ -137,32 +169,57 @@ func Download(args []string) {
 	}
 	dlRecord.ID = dlID
 
-	// Update status to downloading
-	dlRecord.Status = db.DownloadStatusDownloading
-	dlRecord.StartedAt = time.Now()
-	database.UpdateDownload(dlRecord)
-
-	// Perform download with progress
 	fmt.Fprintf(os.Stderr, "\nDownloading to: %s\n\n", destDir)
 
-	progressFn := func(p downloader.Progress) {
-		dlRecord.BytesDownloaded = p.BytesDownloaded
-		dlRecord.TotalBytes = p.TotalBytes
-		dlRecord.SpeedBytesPerSec = p.SpeedBytesPerSec
-		dlRecord.PercentComplete = p.Percent
-		database.UpdateDownload(dlRecord)
-		renderProgressBar(p)
+	var lastErr error
+	for i, sl := range scored {
+		link := sl.link
+
+		if i > 0 {
+			dlRecord.URL = link.URL
+			dlRecord.Host = link.Host
+			dlRecord.Filename = link.Name
+			dlRecord.Status = db.DownloadStatusDownloading
+			dlRecord.StartedAt = time.Now()
+			dlRecord.BytesDownloaded = 0
+			dlRecord.TotalBytes = 0
+			dlRecord.SpeedBytesPerSec = 0
+			dlRecord.PercentComplete = 0
+			dlRecord.Error = ""
+			database.UpdateDownload(dlRecord)
+
+			fmt.Fprintf(os.Stderr, "\nRetrying with [%s] [%s] %s\n", link.Platform, link.Host, link.Name)
+		} else {
+			dlRecord.Status = db.DownloadStatusDownloading
+			dlRecord.StartedAt = time.Now()
+			database.UpdateDownload(dlRecord)
+		}
+
+		progressFn := func(p downloader.Progress) {
+			dlRecord.BytesDownloaded = p.BytesDownloaded
+			dlRecord.TotalBytes = p.TotalBytes
+			dlRecord.SpeedBytesPerSec = p.SpeedBytesPerSec
+			dlRecord.PercentComplete = p.Percent
+			database.UpdateDownload(dlRecord)
+			renderProgressBar(p)
+		}
+
+		err = downloader.Download(link.URL, destDir, 0, progressFn)
+		if err == nil {
+			lastErr = nil
+			break
+		}
+		lastErr = err
+		fmt.Fprintf(os.Stderr, "\n  [%s] download failed: %v\n", link.Host, err)
 	}
 
-	err = downloader.Download(link.URL, destDir, 0, progressFn)
-
-	if err != nil {
+	if lastErr != nil {
 		dlRecord.Status = db.DownloadStatusFailed
-		dlRecord.Error = err.Error()
+		dlRecord.Error = lastErr.Error()
 		dlRecord.CompletedAt = time.Now()
 		database.UpdateDownload(dlRecord)
 
-		fmt.Fprintf(os.Stderr, "\n\nDownload failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "\n\nDownload failed: %v\n", lastErr)
 		os.Exit(1)
 	}
 
@@ -176,7 +233,7 @@ func Download(args []string) {
 
 	// Auto-extract if enabled and it's an archive
 	if *extract {
-		downloadedFile := findDownloadedFile(destDir, link.Name)
+		downloadedFile := findDownloadedFile(destDir, dlRecord.Filename)
 		if downloadedFile != "" && archive.IsArchiveFile(downloadedFile) {
 			fmt.Fprintf(os.Stderr, "\nExtracting archive...\n")
 			dlRecord.Status = db.DownloadStatusExtracting
@@ -233,8 +290,10 @@ func selectBestLinkByPlatform(links []db.DownloadLink, targetPlatform downloader
 
 		host := strings.ToLower(link.Host)
 		switch host {
-		case "vikingfile", "buzzheavier", "pixeldrain", "mega", "gofile":
+		case "vikingfile", "buzzheavier", "pixeldrain", "gofile":
 			score += 15
+		case "mega":
+			score -= 200
 		case "mediafire", "workupload":
 			score += 8
 		case "krakenfiles", "googledrive":

@@ -45,7 +45,7 @@ downloader.DownloadWithHost(urlStr, host, destDir, expectedTotal, onProgress)
 | **Buzzheavier** | HTMX: `<url>/download` with `HX-Request: true` + `Referer`, follows `hx-redirect` header | ✅ |
 | **Gofile** | Content API + direct download to `{fileID}.gofile.io/{fileID}` | ✅ |
 | **VikingFile** | Direct HTTP (standard) | ✅ |
-| **Mega** | Instructs user to run `megatools` CLI (encrypted protocol, not HTTP-accessible) | ⚠️ |
+| **Mega** | Unsupported — encrypted protocol not HTTP-accessible. Skipped in host scoring; auto-fallbacks to next-best link. | ❌ |
 
 All other hosts pass through for standard HTTP download.
 
@@ -82,13 +82,13 @@ Response mapping:
 
 **Resume support** — F95Zone game downloads can be 10+ GB. Network interruptions are common. `.part` files with `Range` headers let users resume without restarting.
 
-**Host-specific resolvers** — only Pixeldrain, Buzzheavier, Gofile, and VikingFile are handled today because they are the most-used hosts. Each has different API requirements (HTMX headers, content APIs, direct URLs). Mega is intentionally not supported — its encrypted protocol requires `megatools`.
+**Host-specific resolvers** — only Pixeldrain, Buzzheavier, Gofile, and VikingFile are handled today because they are the most-used hosts. Each has different API requirements (HTMX headers, content APIs, direct URLs).
 
 **SSRF protection** — reused from the Steam artwork downloader (`internal/steam/grid.go`). Blocks metadata endpoints that could leak cloud credentials.
 
 ## Known Limitations
 
-- No Mega SDK integration (requires megatools CLI)
+- **Mega not supported** — Mega uses a proprietary encrypted protocol not accessible via HTTP. Links are deprioritized to -200 in host scoring so they are always tried last. If no other link succeeds, a fallback error suggests the user download manually or use megatools. A native Mega SDK integration is planned for a future release.
 - No multi-part download support
 - No bandwidth throttling
 - Buzzheavier resolution may break if their HTMX API changes
