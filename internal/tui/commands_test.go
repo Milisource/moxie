@@ -60,129 +60,129 @@ func TestIsOnlineOnlyLink_EdgeCases_TUI(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// selectBestLinkByPlatform
+// sortLinksByPlatform
 // ---------------------------------------------------------------------------
 
-func TestSelectBestLinkByPlatform_NilOrEmpty_TUI(t *testing.T) {
+func TestSortLinksByPlatform_NilOrEmpty_TUI(t *testing.T) {
 	t.Parallel()
-	got := selectBestLinkByPlatform(nil, downloader.PlatformLinux)
+	got := sortLinksByPlatform(nil, downloader.PlatformLinux)
 	if got != nil {
 		t.Errorf("expected nil for nil input, got %+v", got)
 	}
 
-	got = selectBestLinkByPlatform([]db.DownloadLink{}, downloader.PlatformLinux)
+	got = sortLinksByPlatform([]db.DownloadLink{}, downloader.PlatformLinux)
 	if got != nil {
 		t.Errorf("expected nil for empty input, got %+v", got)
 	}
 }
 
-func TestSelectBestLinkByPlatform_NativePlatform_TUI(t *testing.T) {
+func TestSortLinksByPlatform_NativePlatform_TUI(t *testing.T) {
 	t.Parallel()
 	links := []db.DownloadLink{
 		{Name: "Linux version", Platform: db.PlatformLinux, Host: "pixeldrain"},
 		{Name: "Windows version", Platform: db.PlatformWindows, Host: "mega"},
 	}
-	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
+	got := sortLinksByPlatform(links, downloader.PlatformLinux)
 	if got == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if got.Name != "Linux version" {
-		t.Errorf("expected 'Linux version', got %q", got.Name)
+	if got[0].Name != "Linux version" {
+		t.Errorf("expected 'Linux version', got %q", got[0].Name)
 	}
 }
 
-func TestSelectBestLinkByPlatform_WindowsViaWine_TUI(t *testing.T) {
+func TestSortLinksByPlatform_WindowsViaWine_TUI(t *testing.T) {
 	t.Parallel()
-	// On Linux, Windows via Wine/Proton (70) beats All (50)
+	// On Linux: All (50+0=50) beats Windows via Wine (70-200=-130) since mega is penalized
 	links := []db.DownloadLink{
-		{Name: "All platforms", Platform: db.PlatformAll, Host: "mediafire"},    // 50+8=58
-		{Name: "Windows version", Platform: db.PlatformWindows, Host: "mega"},   // 70+15=85
+		{Name: "All platforms", Platform: db.PlatformAll, Host: "mediafire"},     // 50+0=50
+		{Name: "Windows version", Platform: db.PlatformWindows, Host: "mega"},    // 70-200=-130
 	}
-	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
+	got := sortLinksByPlatform(links, downloader.PlatformLinux)
 	if got == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if got.Name != "Windows version" {
-		t.Errorf("expected 'Windows version' (Wine: 70+15 > All 50+8), got %q", got.Name)
+	if got[0].Name != "All platforms" {
+		t.Errorf("expected 'All platforms' (50 > -130), got %q", got[0].Name)
 	}
 }
 
-func TestSelectBestLinkByPlatform_UnknownLowestOnLinux_TUI(t *testing.T) {
+func TestSortLinksByPlatform_UnknownLowestOnLinux_TUI(t *testing.T) {
 	t.Parallel()
-	// On Linux: Windows (70) > All (50) > Unknown (25)
+	// On Linux: Unknown (25) beats Windows via Wine (70-200=-130) since mega is penalized
 	links := []db.DownloadLink{
 		{Name: "Unknown platform", Platform: db.PlatformUnknown, Host: "unknown"}, // 25+0=25
-		{Name: "Windows version", Platform: db.PlatformWindows, Host: "mega"},     // 70+15=85
+		{Name: "Windows version", Platform: db.PlatformWindows, Host: "mega"},     // 70-200=-130
 	}
-	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
+	got := sortLinksByPlatform(links, downloader.PlatformLinux)
 	if got == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if got.Name != "Windows version" {
-		t.Errorf("expected 'Windows version' (Wine: 70+15 > Unknown 25+0), got %q", got.Name)
+	if got[0].Name != "Unknown platform" {
+		t.Errorf("expected 'Unknown platform' (25 > -130), got %q", got[0].Name)
 	}
 }
 
-func TestSelectBestLinkByPlatform_SkipsOnlineOnly_TUI(t *testing.T) {
+func TestSortLinksByPlatform_SkipsOnlineOnly_TUI(t *testing.T) {
 	t.Parallel()
 	links := []db.DownloadLink{
 		{Name: "Online Version", URL: "", Platform: db.PlatformUnknown, Host: "pixeldrain"},
 		{Name: "Linux Download", URL: "", Platform: db.PlatformLinux, Host: "mega"},
 	}
-	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
+	got := sortLinksByPlatform(links, downloader.PlatformLinux)
 	if got == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if got.Name != "Linux Download" {
-		t.Errorf("expected 'Linux Download' (online-only skipped), got %q", got.Name)
+	if got[0].Name != "Linux Download" {
+		t.Errorf("expected 'Linux Download' (online-only skipped), got %q", got[0].Name)
 	}
 }
 
-func TestSelectBestLinkByPlatform_AllOnlineOnly_TUI(t *testing.T) {
+func TestSortLinksByPlatform_AllOnlineOnly_TUI(t *testing.T) {
 	t.Parallel()
 	links := []db.DownloadLink{
 		{Name: "Online Version", URL: "https://gamejolt.com/test", Platform: db.PlatformAll, Host: "unknown"},
 		{Name: "Browser Play", URL: "https://example.com/online", Platform: db.PlatformAll, Host: "unknown"},
 	}
-	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
+	got := sortLinksByPlatform(links, downloader.PlatformLinux)
 	if got != nil {
 		t.Errorf("expected nil when all links are online-only, got %+v", got)
 	}
 }
 
-func TestSelectBestLinkByPlatform_HostBonus_TUI(t *testing.T) {
+func TestSortLinksByPlatform_HostBonus_TUI(t *testing.T) {
 	t.Parallel()
-	// Both unknown platform, but one has a bonus host
+	// Both unknown platform; mega is now penalized (-200), so randomhost wins
 	links := []db.DownloadLink{
-		{Name: "With mega", Platform: db.PlatformUnknown, Host: "mega"},
-		{Name: "With unknown", Platform: db.PlatformUnknown, Host: "randomhost"},
+		{Name: "With mega", Platform: db.PlatformUnknown, Host: "mega"},        // 25-200=-175
+		{Name: "With unknown", Platform: db.PlatformUnknown, Host: "randomhost"}, // 25+0=25
 	}
-	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
+	got := sortLinksByPlatform(links, downloader.PlatformLinux)
 	if got == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if got.Name != "With mega" {
-		t.Errorf("expected 'With mega' (host bonus), got %q", got.Name)
+	if got[0].Name != "With unknown" {
+		t.Errorf("expected 'With unknown' (25 > -175), got %q", got[0].Name)
 	}
 }
 
-func TestSelectBestLinkByPlatform_AllBonusesBeatNoBonus_TUI(t *testing.T) {
+func TestSortLinksByPlatform_AllBonusesBeatNoBonus_TUI(t *testing.T) {
 	t.Parallel()
-	// All bonus hosts beat no-bonus host at the same platform level
+	// Some hosts have bonuses, some are penalized — all compared against a no-bonus host
 	tests := []struct {
 		name   string
 		host   string
 		expect string // the link that should win
 	}{
-		{"vikingfile (+15)", "vikingfile", "bonus link"},
-		{"buzzheavier (+15)", "buzzheavier", "bonus link"},
-		{"pixeldrain (+15)", "pixeldrain", "bonus link"},
-		{"mega (+15)", "mega", "bonus link"},
-		{"gofile (+15)", "gofile", "bonus link"},
-		{"mediafire (+8)", "mediafire", "bonus link"},
-		{"workupload (+8)", "workupload", "bonus link"},
-		{"krakenfiles (+5)", "krakenfiles", "bonus link"},
-		{"googledrive (+5)", "googledrive", "bonus link"},
+		{"vikingfile", "vikingfile", "no bonus link"},
+		{"buzzheavier", "buzzheavier", "bonus link"},
+		{"pixeldrain", "pixeldrain", "bonus link"},
+		{"mega", "mega", "no bonus link"},
+		{"gofile", "gofile", "bonus link"},
+		{"mediafire", "mediafire", "bonus link"},         // tie (both 0), stable sort preserves first
+		{"workupload", "workupload", "no bonus link"},
+		{"krakenfiles", "krakenfiles", "no bonus link"},
+		{"googledrive", "googledrive", "bonus link"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -190,18 +190,18 @@ func TestSelectBestLinkByPlatform_AllBonusesBeatNoBonus_TUI(t *testing.T) {
 				{Name: "bonus link", Platform: db.PlatformUnknown, Host: tt.host},
 				{Name: "no bonus link", Platform: db.PlatformUnknown, Host: "rando"},
 			}
-			got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
+			got := sortLinksByPlatform(links, downloader.PlatformLinux)
 			if got == nil {
 				t.Fatal("expected non-nil result")
 			}
-			if got.Name != tt.expect {
-				t.Errorf("expected %q to win, got %q", tt.expect, got.Name)
+			if got[0].Name != tt.expect {
+				t.Errorf("expected %q to win, got %q", tt.expect, got[0].Name)
 			}
 		})
 	}
 }
 
-func TestSelectBestLinkByPlatform_PriorityOrdering_TUI(t *testing.T) {
+func TestSortLinksByPlatform_PriorityOrdering_TUI(t *testing.T) {
 	t.Parallel()
 	links := []db.DownloadLink{
 		{Name: "Windows only", Platform: db.PlatformWindows, Host: "mega"},
@@ -209,31 +209,32 @@ func TestSelectBestLinkByPlatform_PriorityOrdering_TUI(t *testing.T) {
 		{Name: "Unknown plat", Platform: db.PlatformUnknown, Host: "random"},
 		{Name: "Linux native", Platform: db.PlatformLinux, Host: "pixeldrain"},
 	}
-	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
+	got := sortLinksByPlatform(links, downloader.PlatformLinux)
 	if got == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if got.Name != "Linux native" {
-		t.Errorf("expected 'Linux native' (best match), got %q", got.Name)
+	if got[0].Name != "Linux native" {
+		t.Errorf("expected 'Linux native' (best match), got %q", got[0].Name)
 	}
 }
 
-func TestSelectBestLinkByPlatform_HostBonusWithinPlatform_TUI(t *testing.T) {
+func TestSortLinksByPlatform_HostBonusWithinPlatform_TUI(t *testing.T) {
 	t.Parallel()
+	// Both catbox and buzzheavier are +25; tie → stable sort keeps first input
 	links := []db.DownloadLink{
 		{Name: "Linux on catbox", Platform: db.PlatformLinux, Host: "catbox"},
 		{Name: "Linux on buzzheavier", Platform: db.PlatformLinux, Host: "buzzheavier"},
 	}
-	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
+	got := sortLinksByPlatform(links, downloader.PlatformLinux)
 	if got == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if got.Name != "Linux on buzzheavier" {
-		t.Errorf("expected 'Linux on buzzheavier' (+15 host bonus), got %q", got.Name)
+	if got[0].Name != "Linux on catbox" {
+		t.Errorf("expected 'Linux on catbox' (tie, stable sort), got %q", got[0].Name)
 	}
 }
 
-func TestSelectBestLinkByPlatform_BestOfMultiple_TUI(t *testing.T) {
+func TestSortLinksByPlatform_BestOfMultiple_TUI(t *testing.T) {
 	t.Parallel()
 	links := []db.DownloadLink{
 		{Name: "Online", URL: "https://gamejolt.com/test", Platform: db.PlatformAll, Host: "unknown"},
@@ -242,12 +243,12 @@ func TestSelectBestLinkByPlatform_BestOfMultiple_TUI(t *testing.T) {
 		{Name: "Linux tar.gz", Platform: db.PlatformLinux, Host: "pixeldrain"},
 		{Name: "All on unknown", Platform: db.PlatformAll, Host: "unknown"},
 	}
-	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
+	got := sortLinksByPlatform(links, downloader.PlatformLinux)
 	if got == nil {
 		t.Fatal("expected non-nil result")
 	}
-	// Linux native (100) + pixeldrain (15) = 115
-	if got.Name != "Linux tar.gz" {
-		t.Errorf("expected 'Linux tar.gz' (score 115), got %q", got.Name)
+	// Linux native (100) + pixeldrain (25) = 125
+	if got[0].Name != "Linux tar.gz" {
+		t.Errorf("expected 'Linux tar.gz' (score 125), got %q", got[0].Name)
 	}
 }
