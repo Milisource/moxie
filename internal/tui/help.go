@@ -35,6 +35,7 @@ func (m model) helpView() string {
 		"    d           Delete selected game",
 		"    e           Edit game title (detail view)",
 		"    s           Cycle game status (detail view)",
+		"    x           Edit game executable path (detail view)",
 		"    o           Show game folder path",
 		"    u           Set / edit F95Zone URL (detail view)",
 		"    p           Play game hint (detail view)",

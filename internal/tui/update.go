@@ -45,6 +45,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleUrlInput(msg, key)
 		}
 
+		if m.editingExe {
+			return m.handleExeKey(msg, key)
+		}
+
 		if m.editing {
 			return m.handleEditKey(msg, key)
 		}
@@ -180,20 +184,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.pollDownloads()
 
 	case downloadProgressMsg:
-		if !m.hasActiveDownloads() {
-			for id, ad := range m.activeDownloads {
-				ad.mu.Lock()
-				if ad.status == db.DownloadStatusCompleted || ad.status == db.DownloadStatusFailed {
-					// Keep completed downloads visible for a few seconds
-					delete(m.activeDownloads, id)
-				}
-				ad.mu.Unlock()
-			}
-		}
 		if m.hasActiveDownloads() {
 			return m, m.pollDownloads()
 		}
-		return m, nil
 	}
 
 	return m, cmd
@@ -246,6 +239,35 @@ func (m model) handleEditKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 	var editCmd tea.Cmd
 	m.editInput, editCmd = m.editInput.Update(msg)
 	return m, editCmd
+}
+
+func (m model) handleExeKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc":
+		m.editingExe = false
+		return m, nil
+	case "enter":
+		newExe := strings.TrimSpace(m.exeInput.Value())
+		game, err := m.db.GetGame(m.selectedID)
+		if err == nil && game != nil {
+			// Resolve relative paths against the game directory
+			if newExe != "" && !filepath.IsAbs(newExe) {
+				newExe = filepath.Join(game.Path, newExe)
+			}
+			game.ExePath = newExe
+			if err := m.db.UpdateGame(game); err != nil {
+				m.err = fmt.Errorf("exe update failed: %w", err)
+			} else {
+				m.notice = fmt.Sprintf("Exe set to %s", orDash(newExe))
+				m.err = nil
+			}
+		}
+		m.editingExe = false
+		return m, tea.Batch(m.loadGames(), m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
+	}
+	var exeCmd tea.Cmd
+	m.exeInput, exeCmd = m.exeInput.Update(msg)
+	return m, exeCmd
 }
 
 func (m model) handleUrlInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
@@ -348,6 +370,21 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		m.setUrl = true
 		m.err = nil
 		return m, textinput.Blink
+	case "x":
+		game, err := m.db.GetGame(m.selectedID)
+		if err != nil || game == nil {
+			return m, nil
+		}
+		ei := textinput.New()
+		ei.SetValue(game.ExePath)
+		ei.Focus()
+		ei.CharLimit = 512
+		ei.Prompt = "Exe: "
+		ei.PromptStyle = accentStyle
+		m.exeInput = ei
+		m.editingExe = true
+		m.err = nil
+		return m, textinput.Blink
 	case "p":
 		game, err := m.db.GetGame(m.selectedID)
 		if err != nil || game == nil {
@@ -394,14 +431,14 @@ func (m model) handleDownloadKey() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	url, host, resolveErr := m.resolveDownloadLink(game)
+	links, resolveErr := m.resolveDownloadLinks(game)
 	if resolveErr != nil {
 		m.err = fmt.Errorf("Cannot find download link: %v", resolveErr)
 		return m, nil
 	}
 
-	m.notice = fmt.Sprintf("Downloading from %s...", host)
-	return m, m.startDownloadCmd(m.selectedID, url, host, destDir)
+	m.notice = fmt.Sprintf("Downloading from %s...", links[0].Host)
+	return m, m.startDownloadCmd(m.selectedID, links, destDir, game.Path, game.Engine, m.f95Cookie)
 }
 
 func (m model) handleFilterInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -35,7 +36,7 @@ func (m model) detailView() string {
 
 	// ── Header ────────────────────────────────────────────────────
 	back := titleStyle.Render("◂  Back to Library  ")
-	hint := subtleStyle.Render("[Esc] back  [e] edit  [s] status  [d] delete  [o] path  [u] url  [p] play  [g] download")
+	hint := subtleStyle.Render("[Esc] back  [e] edit  [s] status  [x] exe  [d] delete  [o] path  [u] url  [p] play  [g] download")
 	gap := max(0, w-lipgloss.Width(back)-lipgloss.Width(hint)-4)
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, back, strings.Repeat(" ", gap), hint))
 	b.WriteString("\n")
@@ -69,6 +70,7 @@ func (m model) detailView() string {
 		valueStyle.Copy().Foreground(statusColor(game.Status)).Render(game.Status)))
 	info = append(info, "")
 	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Path:"), valueStyle.Render(game.Path)))
+	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Exe:"), valueStyle.Render(orDash(game.ExePath))))
 	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Size:"), valueStyle.Render(formatSize(game.SizeBytes))))
 	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Added:"), valueStyle.Render(added)))
 	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Updated:"), valueStyle.Render(updated)))
@@ -92,15 +94,16 @@ func (m model) detailView() string {
 	b.WriteString("\n")
 
 	// ── Download section ──────────────────────────────────────────
-	progress, status, errStr := m.getDownloadProgress(game.ID)
+	progress, status, errStr, stepMsg := m.getDownloadProgress(game.ID)
 	if status != "" {
+		b.WriteString(accentStyle.Render("  Download"))
 		b.WriteString("\n")
-		b.WriteString(downloadSection(game.ID, progress, status, errStr, w))
+		b.WriteString(downloadSection(game.ID, progress, status, errStr, stepMsg, w))
 	}
 
 	// ── Action buttons ────────────────────────────────────────────
 	actions := subtleStyle.Render(
-		"  [e] Edit Title  [s] Cycle Status  [d] Delete  [o] Show Path  [u] Set URL  [p] Play  [g] Download  [Esc] Back  ",
+		"  [e] Edit Title  [s] Cycle Status  [x] Edit Exe  [d] Delete  [o] Show Path  [u] Set URL  [p] Play  [g] Download  [Esc] Back  ",
 	)
 	b.WriteString(actions)
 
@@ -122,6 +125,34 @@ func (m model) detailView() string {
 		b.WriteString(editBox)
 	}
 
+	if m.editingExe {
+		b.WriteString("\n\n")
+		b.WriteString(accentStyle.Render("  Executable path"))
+		b.WriteString("\n")
+		b.WriteString(subtleStyle.Render("  Enter a path (or filename in game dir), or clear to auto-detect."))
+		b.WriteString("\n")
+		// Show available executables in the game directory
+		if m.detailGame != nil && m.detailGame.Path != "" {
+			exes := listExecutables(m.detailGame.Path)
+			if len(exes) > 0 {
+				b.WriteString(subtleStyle.Render("  Available:"))
+				b.WriteString("\n")
+				for _, exe := range exes {
+					rel, _ := filepath.Rel(m.detailGame.Path, exe)
+					b.WriteString(fmt.Sprintf("    %s\n", subtleStyle.Render(rel)))
+				}
+			}
+		}
+		b.WriteString("\n")
+		exeBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(purple).
+			Padding(0, 1).
+			Width(max(0, w-8)).
+			Render(m.exeInput.View())
+		b.WriteString(exeBox)
+	}
+
 	if m.setUrl {
 		b.WriteString("\n\n")
 		urlBox := lipgloss.NewStyle().
@@ -137,23 +168,39 @@ func (m model) detailView() string {
 }
 
 // downloadSection renders download progress or status for a game.
-func downloadSection(gameID int64, p downloader.Progress, status db.DownloadStatus, errStr string, width int) string {
+func downloadSection(gameID int64, p downloader.Progress, status db.DownloadStatus, errStr string, stepMsg string, width int) string {
 	var b strings.Builder
 
 	switch status {
 	case db.DownloadStatusDownloading, db.DownloadStatusPending:
-		bar := renderProgressBarWidget(p.Percent, width-8)
-		speed := formatSpeed(p.SpeedBytesPerSec)
-		downloaded := formatSize(p.BytesDownloaded)
-		total := formatSize(p.TotalBytes)
-		b.WriteString(accentStyle.Render("  Downloading:"))
-		b.WriteString("\n\n")
-		b.WriteString("  " + bar + "\n")
-		b.WriteString(subtleStyle.Render(fmt.Sprintf("  %s / %s  •  %s  •  %.1f%%", downloaded, total, speed, p.Percent)))
+		if stepMsg != "" && p.BytesDownloaded <= 0 {
+			// Step-by-step host finding / trying phase
+			if strings.HasPrefix(stepMsg, "✗") {
+				b.WriteString(redStyle.Render("  " + stepMsg))
+			} else {
+				b.WriteString(accentStyle.Render("  " + stepMsg))
+			}
+		} else if p.BytesDownloaded > 0 {
+			// Actual download progress
+			bar := renderProgressBarWidget(p.Percent, width-8)
+			speed := formatSpeed(p.SpeedBytesPerSec)
+			downloaded := formatSize(p.BytesDownloaded)
+			total := formatSize(p.TotalBytes)
+			b.WriteString(accentStyle.Render("  Downloading:"))
+			b.WriteString("\n\n")
+			b.WriteString("  " + bar + "\n")
+			b.WriteString(subtleStyle.Render(fmt.Sprintf("  %s / %s  •  %s  •  %.1f%%", downloaded, total, speed, p.Percent)))
+		} else {
+			b.WriteString(accentStyle.Render("  " + stepMsg))
+		}
 
 	case db.DownloadStatusCompleted:
 		b.WriteString(greenStyle.Render("  ✓ Download completed!"))
 		b.WriteString("\n")
+		if stepMsg != "" {
+			b.WriteString(subtleStyle.Render("  " + stepMsg))
+			b.WriteString("\n")
+		}
 		b.WriteString(subtleStyle.Render(fmt.Sprintf("  %s downloaded", formatSize(p.BytesDownloaded))))
 
 	case db.DownloadStatusFailed:
@@ -162,7 +209,7 @@ func downloadSection(gameID int64, p downloader.Progress, status db.DownloadStat
 		b.WriteString(subtleStyle.Render(fmt.Sprintf("  %s", errStr)))
 
 	case db.DownloadStatusExtracting:
-		b.WriteString(accentStyle.Render("  Extracting archive..."))
+		b.WriteString(accentStyle.Render("  " + stepMsg))
 
 	default:
 		return ""

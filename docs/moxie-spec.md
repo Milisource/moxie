@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
 **Version:** 0.3.51-alpha (May 2026)
-**Status:** Alpha — 0.3.51 (SGDB parse fix, icon/logo support, store links persistence, Steam AppID artwork pipeline, self-update command)
+**Status:** Alpha — 0.3.51 (SGDB parse fix, icon/logo support, store links persistence, Steam AppID artwork pipeline, self-update command). Download: Beta (6 host resolvers: Pixeldrain, Buzzheavier, Gofile, Google Drive, DataNodes, MixDrop, VikingFile (beta))
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
@@ -81,6 +81,12 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] `internal/log/` package — `log/slog` wrapper with Debug/Info/Warn/Error levels
 - [x] Scraper decoupled from database — `ScrapeInput` replaces `db.Game` in `FindMatches`
 - [x] Engine matching deduplicated — `findEngineInText` helper replaces 4 inline loops
+- [x] Engine domain logic extracted — `EngineTagVariants`, `EngineMatchesThread`, `FindF95Engine`, `ExtractEngineFromTitle`, `FormatTagsBrief` moved from `commands/cleanup.go` to `engine/engine_tags.go`
+- [x] Scraper domain logic extracted — `StripThreadPrefix` moved to `scraper/title.go`, `ApplyThreadData` moved to `scraper/apply.go`
+- [x] Steam domain logic extracted — `ExtractSteamAppID` moved from `commands/steam_artwork.go` to `steam/appid.go`
+- [x] Downloader domain logic extracted — `DetectPlatformFromLink` moved from `commands/scrape.go` to `downloader/detect.go`
+- [x] Cross-package deduplication — `IsOnlineOnly`, `ScoreLinkHost`, `ScoreDownloadLink`, `FindMostRecentFile` unified in `downloader/links.go`
+- [x] File separation — 7 monolith files split into 22+ entity-grouped files across all packages (db: entity CRUD, downloader: per-host resolvers, commands: sync/steam/download subcommand files, scraper: parser sub-files)
 - [x] Lipgloss style cache — 14 pre-built engine styles eliminate per-cell allocations
 - [x] Steam backup rotation — fixed-name backups replace unbounded timestamped accumulation
 - [x] Browser cookie error surfaced — kooky read errors included in diagnostic messages
@@ -112,6 +118,23 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] `shouldSkip` optimized — exact-match map for O(1) lookup, substring slice fallback for prefix patterns
 - [x] Walk path optimized — single `os.ReadDir` per directory reused across game marker and category checks (was double-read)
 - [x] Regex compilation hoisted to package level — `verIniRE`, `pkgVerRE`, `rpyVerRE` compiled once at init instead of per-call
+- [x] Download fallback — when a link fails (e.g. Mega encrypted protocol), the CLI and TUI automatically try the next-best link in platform-priority order. Mega links deprioritized to -200 in host scoring.
+- [x] Masked URL unmasking — `f95zone.to/masked/<host>/...` URLs are automatically extracted to real host URLs before resolution
+- [x] Application-wide logging — per-day log files (`moxie-YYYY-MM-DD.log`) written to `~/.config/moxie/logs/` via `log.Init()`; instruments download attempts, fallbacks, resolve failures, and completion
+- [x] Update merge — downloaded+extracted game files are merged into the existing game directory, preserving user saves, mods, and configs based on engine-aware preserve patterns (14 engines). Optional .old backup.
+- [x] `moxie install <id> <path>` command — manual archive→extract→merge→DB-update pipeline for games whose download links all failed
+- [x] `moxie play <id|name>` fuzzy name search — tries numeric ID first, falls back to title `LIKE` search with multi-word retry, interactive picker for multiple results
+- [x] Host scoring reorganized — verified hosts (Pixeldrain, Buzzheavier, Gofile, Catbox) weighted +25, may-work hosts (DataNodes, Google Drive, MixDrop) weighted +10, borked hosts (Mega, VikingFile, WorkUpload, KrakenFiles, Bunkrr) penalized -200
+- [x] Google Drive resolver — two-step confirm token extraction for >100 MB large files; `GET /uc?export=download&id=<ID>` → parse HTML for `confirm=` token → re-request with `&confirm=<TOKEN>`
+- [x] DataNodes resolver — cookie + POST flow: `GET /download/<CODE>` for session cookies → parse hidden form fields → `POST` same URL with cookies → follow 302 redirect to CDN download URL
+- [x] VikingFile resolver — form POST flow: GET page for hidden fields → POST with op/download1/id/rand/method_free → follow 302 redirect (blocked by Cloudflare Turnstile captcha, classified as beta)
+- [x] MixDrop resolver — passthrough with User-Agent header (may be blocked by interstitial file pages, classified as beta)
+- [x] Download validation (`IsValidGameFile`) — rejects files < 4096 bytes or that aren't archives/executables; catches interstitial HTML pages that fake hosts serve instead of real files
+- [x] TUI step-by-step download status — `stepMsg` field on `activeDownload` shows host-finding phase, per-host attempt, failure reasons, extract/merge progress; rendered in `downloadSection()` in real-time via 500 ms poll tick
+- [x] Cookie wiring through download pipeline — `f95Cookie` parameter threaded through `Download()` → `DownloadWithHost()` → `HostResolver.SetF95Cookie()` → `followRedirect()` for authenticating F95Zone masked URL HEAD requests
+- [x] Archive progress improvements — `totalFiles` excludes directory entries so progress shows only real file extractions; filenames truncated to 60 chars in CLI progress output
+- [x] `internal/updater/` package — `Merge()` copies new files from extracted archive to game directory, preserves user saves/configs/mods via engine-aware glob patterns; optional `.old` backup with automatic restore
+- [x] `internal/log/` per-day log files — `log.Init(config.LogDir())` in `main()` writes structured logs to `~/.config/moxie/logs/moxie-YYYY-MM-DD.log`; instruments download attempts, fallbacks, resolve failures, and completions
 
 ### Upcoming
 
@@ -122,6 +145,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Download links table with platform detection (Linux/Windows/MacOS)
 - [x] Dead link validation (404/5XX/DMCA detection)
 - [ ] FTS5 full-text search
+- [ ] Mega download support (native SDK or megatools subprocess wrapper)
 - [ ] Cover image download and local caching
 - [ ] Directory watcher (auto-scan on file changes)
 - [ ] Export/import library (JSON backup)
@@ -129,11 +153,13 @@ A local game library manager for adult games. Scans directories, detects engines
 
 ### Known Limitations
 
+- **Mega downloads not supported** — Mega's proprietary encrypted protocol cannot be handled via HTTP. Mega links are deprioritized to -200 in host scoring; the downloader auto-fallbacks to the next-best link. Only when all links fail is the user informed. A native SDK/integration is planned.
+- **Download feature is BETA** — Most file hosts use anti-bot protection (Cloudflare, CAPTCHAs, JS challenges) that HTTP clients cannot bypass. Only Pixeldrain (via API) has reliable support. Other hosts may fail intermittently. The fallback loop tries all available links and shows detailed per-host errors. When all links fail, use `moxie install <id> <path>` with a manually downloaded archive.
 - **No FTS5** — uses `LIKE '%query%'` on title only
 - **False positives** — tool/editor directories and generic folder names may be misdetected as games
 - **No archive scanning** — `.zip`/`.rar`/`.7z` at scan roots are not inspected (but can be extracted after download)
 - **No content-based dedup** — same game in multiple paths creates duplicate records
 - **No cover caching** — cover URLs are stored but images are not downloaded
 - **Non-UTF-8 filenames** — Latin1/Shift-JIS display incorrectly in the TUI
-- **Commands package** — 100+ `os.Exit(1)` calls in CLI wrappers make the I/O layer untestable; future refactor should extract remaining business logic from command functions
+- **Commands package** — 100+ `os.Exit(1)` calls in CLI wrappers make the I/O layer untestable; domain logic has been extracted from commands into proper packages (engine, scraper, steam, downloader); remaining handlers are thin orchestrators
 - **No Wine detection** — `play` command tries `wine` on PATH and CrossOver on macOS, but doesn't auto-detect Wine installations or offer to install it

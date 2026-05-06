@@ -421,6 +421,64 @@ func TestExtractDeveloperFromMeta_Fallback(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// extractOverviewText
+// ---------------------------------------------------------------------------
+
+func TestExtractOverviewText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string // substring that should be present in the result
+		not   string // substring that should NOT be present
+	}{
+		{
+			name:  "extracts between Overview and Download",
+			input: "Overview\nThis is a great game.\nVersion: 1.0\nDeveloper: Foo\nDownload\nmega links here\n",
+			want:  "This is a great game.\nVersion: 1.0\nDeveloper: Foo",
+			not:   "Download",
+		},
+		{
+			name:  "handles Overview with colon",
+			input: "Overview:\nSome description here.\n\nChangelog\nFixed bugs",
+			want:  "Some description here.",
+			not:   "Changelog",
+		},
+		{
+			name:  "falls back to full text when no Overview heading",
+			input: "Just some text without an overview heading",
+			want:  "Just some text without an overview heading",
+			not:   "",
+		},
+		{
+			name:  "handles Developer Notes as section boundary",
+			input: "Overview\nDescription text\nDeveloper Notes\nSome notes",
+			want:  "Description text",
+			not:   "Developer Notes",
+		},
+		{
+			name:  "handles Installation as section boundary",
+			input: "Overview:\nDesc\nInstallation:\nStep 1",
+			want:  "Desc",
+			not:   "Installation",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractOverviewText(tt.input)
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("extractOverviewText = %q, want it to contain %q", got, tt.want)
+			}
+			if tt.not != "" && strings.Contains(got, tt.not) {
+				t.Errorf("extractOverviewText = %q, should NOT contain %q", got, tt.not)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // parseThreadHTML — realistic XenForo HTML
 // ---------------------------------------------------------------------------
 
@@ -447,6 +505,9 @@ const testXenForoHTML = `<!DOCTYPE html>
     <article class="message message--post" data-author="SomeStudio">
       <div class="message-content">
         <div class="bbWrapper">
+          <script type="text/template">
+            <img src="https://attachments.f95zone.to/2025/12/5597256_banner_f95.png" class="bbImage" data-zoom-target="1" alt="banner f95.png" />
+          </script>
           <h2>Overview</h2>
           <p>Welcome to the thread for My Awesome Game!</p>
           <p>This is an adult RPG with lots of content.</p>
@@ -527,12 +588,21 @@ func TestParseThreadHTML(t *testing.T) {
 		t.Errorf("CoverURL = %q, want %q", td.CoverURL, expectedCover)
 	}
 
-	// --- Overview (should contain first post body text) ---
+	// --- Overview (should contain just the description text) ---
 	if td.Overview == "" {
 		t.Error("Overview should not be empty")
 	}
 	if !strings.Contains(td.Overview, "Welcome to the thread") {
-		t.Error("Overview should contain the first post's text")
+		t.Error("Overview should contain the description text")
+	}
+	if strings.Contains(td.Overview, "<img src") {
+		t.Error("Overview must not contain raw HTML from <script> templates")
+	}
+	if strings.Contains(td.Overview, "Download") {
+		t.Error("Overview should not include the Download section")
+	}
+	if strings.Contains(td.Overview, "Changelog") {
+		t.Error("Overview should not include the Changelog section")
 	}
 
 	// --- DownloadLinks ---

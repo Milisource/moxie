@@ -7,6 +7,7 @@ import (
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/commands"
 	"github.com/mili/moxie/internal/config"
+	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/tui"
 )
@@ -14,6 +15,9 @@ import (
 var version = "0.3.51-alpha"
 
 func main() {
+	log.Init(config.LogDir())
+	log.Info("moxie started", "version", version, "args", os.Args[1:])
+
 	if len(os.Args) < 2 {
 		// First-run welcome if no database exists yet
 		dbPath := config.DbPath()
@@ -92,6 +96,8 @@ func main() {
 		commands.RefreshVersions(os.Args[2:])
 	case "download":
 		commands.Download(os.Args[2:])
+	case "install":
+		commands.Install(os.Args[2:])
 	case "downloads":
 		commands.ListDownloads(os.Args[2:])
 	case "check-links":
@@ -117,7 +123,7 @@ Usage:
   moxie rename [flags]              Rename game directories using clean titles
   moxie check-updates [flags]       Check F95Zone for version updates
   moxie sync [game-id] [flags]      Full sync or sync a single game
-  moxie play <id>                   Launch a game
+  moxie play <id|name>              Launch a game by ID or fuzzy name search
   moxie steam add <id> [flags]        Add a game to Steam library
   moxie steam remove <id>              Remove a game from Steam library
   moxie steam list                     List games added to Steam
@@ -131,6 +137,7 @@ Usage:
   moxie download <id> [flags]          Download game from F95Zone links
   moxie downloads [flags]              List download history
   moxie check-links [flags]            Validate download links for dead URLs
+  moxie install <id> <path>             Install a downloaded archive into a game directory
 
 Flags for 'scan':
   --json           Output results as JSON
@@ -182,7 +189,7 @@ func cmdTUI() {
 		sc = scraper.NewClient(cookieStr)
 	}
 
-	if err := tui.Run(config.DbPath(), sc); err != nil {
+	if err := tui.Run(config.DbPath(), sc, cookieStr); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 		os.Exit(1)
 	}

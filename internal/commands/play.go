@@ -1,35 +1,66 @@
 package commands
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/mili/moxie/internal/db"
-	"github.com/mili/moxie/internal/util"
 )
 
-// Play launches a game.
+// Play launches a game by ID or fuzzy name search.
+// Usage: moxie play <id>  or  moxie play <name>
 func Play(args []string) {
 	fs := flag.NewFlagSet("play", flag.ExitOnError)
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: moxie play <id>\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie play <id>  or  moxie play <name>\n")
+		fmt.Fprintf(os.Stderr, "  <id>    Game ID number (from `moxie list`)\n")
+		fmt.Fprintf(os.Stderr, "  <name>  Fuzzy title search (e.g. \"Cyan Brain\" or \"Cyan\")\n")
 		os.Exit(1)
 	}
-	id := util.MustParseInt(fs.Arg(0))
 
 	database := OpenDB()
 	defer database.Close()
 
-	game, err := database.GetGame(id)
-	if err != nil || game == nil {
-		fmt.Fprintf(os.Stderr, "Game %d not found.\n", id)
+	raw := fs.Arg(0)
+	var game *db.Game
+
+	// Try numeric ID first.
+	if id, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		g, gErr := database.GetGame(id)
+		if gErr == nil && g != nil {
+			game = g
+		}
+	}
+
+	// Fall back to fuzzy name search if ID lookup failed or arg wasn't numeric.
+	if game == nil {
+		results, srchErr := database.SearchGames(raw)
+		if srchErr != nil || len(results) == 0 {
+			// Arg might contain spaces — try it as a multi-word query.
+			results, srchErr = database.SearchGames(strings.Join(fs.Args(), " "))
+		}
+		if srchErr != nil || len(results) == 0 {
+			fmt.Fprintf(os.Stderr, "No game found matching %q.\n", raw)
+			os.Exit(1)
+		}
+		if len(results) == 1 {
+			game = &results[0]
+		} else {
+			game = promptSelectGame(results)
+		}
+	}
+
+	if game == nil {
+		fmt.Fprintf(os.Stderr, "Game not found.\n")
 		os.Exit(1)
 	}
 
@@ -51,6 +82,25 @@ func Play(args []string) {
 	}
 	// Don't wait — let it run independently.
 	go cmd.Wait()
+}
+
+// promptSelectGame shows a numbered list of games and asks the user to pick one.
+func promptSelectGame(games []db.Game) *db.Game {
+	fmt.Fprintf(os.Stderr, "\nMultiple games found:\n")
+	for i, g := range games {
+		fmt.Fprintf(os.Stderr, "  %2d. [%d] %s  (%s)\n", i+1, g.ID, g.Title, g.Engine)
+	}
+	fmt.Fprintf(os.Stderr, "\nEnter number or 0 to cancel: ")
+
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	n, err := strconv.Atoi(input)
+	if err != nil || n < 1 || n > len(games) {
+		return nil
+	}
+	return &games[n-1]
 }
 
 // ResolveExecutable finds the best executable to launch for a game.

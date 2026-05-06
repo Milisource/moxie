@@ -91,7 +91,7 @@ func TestStripThreadPrefix(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := StripThreadPrefix(tt.input)
+			got := scraper.StripThreadPrefix(tt.input)
 			if got != tt.want {
 				t.Errorf("StripThreadPrefix(%q) = %q, want %q", tt.input, got, tt.want)
 			}
@@ -102,7 +102,7 @@ func TestStripThreadPrefix(t *testing.T) {
 func TestStripThreadPrefix_MultiplePrefixes(t *testing.T) {
 	t.Parallel()
 	// Multiple consecutive prefix words should all be stripped.
-	got := StripThreadPrefix("RPGM Completed My Game")
+	got := scraper.StripThreadPrefix("RPGM Completed My Game")
 	if got != "My Game" {
 		t.Errorf("StripThreadPrefix(RPGM Completed My Game) = %q, want %q", got, "My Game")
 	}
@@ -111,7 +111,7 @@ func TestStripThreadPrefix_MultiplePrefixes(t *testing.T) {
 func TestStripThreadPrefix_NoClearTitle(t *testing.T) {
 	t.Parallel()
 	// If stripping removes everything, the original should be returned.
-	got := StripThreadPrefix("Unity")
+	got := scraper.StripThreadPrefix("Unity")
 	if got != "Unity" {
 		t.Errorf("StripThreadPrefix('Unity') = %q, want %q", got, "Unity")
 	}
@@ -133,7 +133,7 @@ func TestApplyThreadData_WithStoreLinks(t *testing.T) {
 		ThreadID: 100,
 	}
 
-	ApplyThreadData(game, data, "https://f95zone.to/threads/test.100/")
+	scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/test.100/")
 
 	if len(game.StoreLinks) != 2 {
 		t.Fatalf("expected 2 store links, got %d: %v", len(game.StoreLinks), game.StoreLinks)
@@ -159,7 +159,7 @@ func TestApplyThreadData_SteamAppIDExtracted(t *testing.T) {
 		ThreadID: 200,
 	}
 
-	ApplyThreadData(game, data, "https://f95zone.to/threads/test.200/")
+	scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/test.200/")
 
 	if game.SteamAppID != 54321 {
 		t.Errorf("SteamAppID = %d, want 54321", game.SteamAppID)
@@ -184,7 +184,7 @@ func TestApplyThreadData_NoStoreLinks(t *testing.T) {
 		StoreLinks: nil, // no store links
 	}
 
-	ApplyThreadData(game, data, "https://f95zone.to/threads/test.300/")
+	scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/test.300/")
 
 	// StoreLinks should remain nil/unset when ThreadData has none.
 	if game.StoreLinks != nil {
@@ -207,7 +207,7 @@ func TestApplyThreadData_EmptyStoreLinks(t *testing.T) {
 		ThreadID:   400,
 	}
 
-	ApplyThreadData(game, data, "https://f95zone.to/threads/test.400/")
+	scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/test.400/")
 
 	// When ThreadData has empty StoreLinks map, game should keep its links
 	// because the condition is len(data.StoreLinks) > 0.
@@ -235,7 +235,7 @@ func TestApplyThreadData_SteamURLWithoutAppID(t *testing.T) {
 		ThreadID: 500,
 	}
 
-	ApplyThreadData(game, data, "https://f95zone.to/threads/test.500/")
+	scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/test.500/")
 
 	// StoreLinks should still be set (the URL matched the steam matcher).
 	if v, ok := game.StoreLinks["steam"]; !ok {
@@ -261,7 +261,7 @@ func TestApplyThreadData_NonSteamStoreLinkDoesNotSetSteamAppID(t *testing.T) {
 		ThreadID: 600,
 	}
 
-	ApplyThreadData(game, data, "https://f95zone.to/threads/test.600/")
+	scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/test.600/")
 
 	if _, ok := game.StoreLinks["itch"]; !ok {
 		t.Fatal("expected itch store link")
@@ -288,7 +288,7 @@ func TestApplyThreadData_StoreLinksOverwriteExisting(t *testing.T) {
 		ThreadID: 700,
 	}
 
-	ApplyThreadData(game, data, "https://f95zone.to/threads/test.700/")
+	scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/test.700/")
 
 	if len(game.StoreLinks) != 2 {
 		t.Fatalf("expected 2 store links, got %d: %v", len(game.StoreLinks), game.StoreLinks)

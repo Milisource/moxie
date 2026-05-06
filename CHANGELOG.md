@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Single/double-digit version pattern** — `v5`, `v01`, `v0` now detected from directory names (F95-kq8)
 - **Trailing build letter support** — `v0.7.7i` captured as `"0.7.7i"` instead of missed (F95-kq8)
 - **Expanded bracketed-title version extraction** — per F95Zone title format rules: supports `[YYYY-MM-DD]`, bare `[X.Y]`, `[Final]`, `[Ch. 2 v3.0]`, and `[v1.0 Alpha]` patterns (F95-kq8)
+- **Application-wide per-day logging** — `internal/log/` enhanced with `Init(dir)` that creates `moxie-YYYY-MM-DD.log` files in `~/.config/moxie/logs/`. Wired via `config.LogDir()` at startup. Instruments download attempts, fallbacks, resolve failures, extraction, and merge throughout the downloader, CLI, and TUI packages (F95-nle)
+- **Download fallback loop** — CLI and TUI now iterate through all available download links in platform-priority order instead of failing on the first error. Failed links are logged and skipped; the loop only exits when all links are exhausted. Shows per-link error summary with manual download fallback hint (F95-nle)
+- **Download validation** — `IsValidGameFile()` rejects interstitial HTML pages (minimum 4096 bytes, must be an archive format or executable). Prevents ~80 KB HTML ad pages from being silently "downloaded" as game files (F95-nle)
+- **`moxie install <id> <path>` command** — Manually downloaded archives can now be fed through the full pipeline: validate format → extract → merge into game directory (preserving saves/mods/configs) → update DB version. Reuses `archive.Extract()` and `updater.Merge()` (F95-nle)
+- **`moxie play <id|name>` fuzzy name search** — Now accepts game name in addition to numeric ID. Uses `db.SearchGames()` for LIKE-based title matching. Multiple matches prompt the user to pick from a numbered list (F95-nle)
+- **`internal/updater/` package** — `Merge()` merges extracted game files into existing game directories, preserving user saves, mods, and configs based on 14 engine-aware glob patterns (e.g., `game/saves/*` for Ren'Py, `save/*` + `Game.ini` + `package.json` for RPGM). Creates `.old` backup directory (F95-nle)
+- **Google Drive resolver** — Two-step confirm token extraction for files >100 MB. Handles virus-scan interstitial page by parsing `uc-download-link` and extracting the confirm token. Falls through to direct UC URL for small files (F95-nle)
+- **DataNodes resolver** — Cookie + POST flow: scrapes download page for hidden form fields, submits with session cookies, follows redirect to CDN URL. Handles both `/download/<CODE>` and `/<CODE>/<filename>` URL formats (F95-nle)
+- **MixDrop resolver** — Pass-through download for archive files with User-Agent header (beta) (F95-nle)
+- **VikingFile resolver** — Form POST scraper that extracts hidden fields (`op`, `id`, `rand`, `method_free`) from the download page, submits them, and follows redirects to the CDN URL. Marked beta — blocked by Cloudflare anti-bot on most requests (F95-nle)
+- **Masked F95Zone URL resolution** — `HostResolver.Resolve()` detects `f95zone.to/masked/` URLs, performs a HEAD request to follow the redirect through to the real host URL, re-identifies the host, and recursively applies host-specific resolution (F95-nle)
+- **F95Zone cookie wiring through download pipeline** — Browser cookies from `browser.GetF95Cookies()` are threaded through the entire call chain: `main.go` → `tui.Run()` → model → `startDownloadCmd()` → `DownloadWithHost()` → `HostResolver.SetF95Cookie()` → `followRedirect()`. Authenticates HEAD requests to masked F95Zone URLs (F95-nle)
+- **Host scoring reorganization** — New priority tiers based on verified downloadability: **+25** (verified working: pixeldrain, buzzheavier, gofile, catbox), **+10** (may work: datanodes, google drive, mixdrop), **0** (default: everything else), **-200** (known not to work via HTTP: mega, vikingfile, workupload, krakenfiles, bunkrr). Deprioritized hosts are tried last so failed downloads are fast and actionable (F95-nle)
+- **TUI step-by-step download status display** — `activeDownload.stepMsg` provides live status updates in the detail view: "Finding suitable host..." → "Trying: Pixeldrain..." → "Downloading..." (with progress bar) → "Extracting archive..." → "Merging into game directory..." → "✓ Download completed!" or "✗ All links failed" with per-link error summary (F95-nle)
+- **Direct host verification** — Research confirmed only 6 of 18 previously assumed "direct" hosts are truly direct HTTP downloads (Catbox, Transfer.sh, Quax, Vern, YourFileStore, Files.dp.ua). The rest have Cloudflare, captchas, countdown timers, or interstitial pages. Downloader docs updated with full 44-host feasibility matrix (F95-nle)
 
 ### Fixed
 
@@ -23,6 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Scan now updates existing games** — `moxie scan` updates version/engine/size/exe on re-scan instead of skipping, so improved detection takes effect immediately (F95-kq8)
 - **`RefreshVersions` file-content fallback** — now calls `ExtractVersionFromDir` matching full scanner logic, not just directory name (F95-kq8)
 - **Stale `? no version detected` output** — suppressed in `RunUpdateCheck()` and `SyncGame()` since no user action is needed (F95-kq8)
+- **TUI download result never displayed** — Completed/failed downloads were deleted from the `activeDownloads` map immediately on the first poll after finishing, so the detail view never rendered the result. Removed auto-cleanup; results now stay visible until the user navigates away (F95-nle)
+- **ZIP archive progress always ~92% at completion** — `totalFiles` counted all ZIP entries including directories. Changed to count only non-directory files so progress reaches 100%. tar.gz extraction already handled this correctly (F95-nle)
+- **Clobbered archive progress filenames** — `\r` carriage return overwrite left text bleeding from longer previous filenames. Filenames now truncated to 60 chars with `%-60s` width padding to clear the line (F95-nle)
+- **DataNodes regex mismatch** — Expected `/download/<CODE>` URL format but real F95Zone links use `/<CODE>/<filename>`. Resolver now handles both formats (F95-nle)
+- **Pixeldrain masked URL never resolved** — `IdentifyHostInURL` matched "pixeldrain" inside the masked F95Zone URL string and routed to `resolvePixeldrain`, which extracted the file ID from the wrong URL. Fixed by detecting `/masked/` in the URL first and following the redirect before applying host resolution (F95-nle)
+
+### Architecture
+
+- **File separation** — 7 monolith files (700-884 lines each) split into 22+ entity-grouped files across all packages. `db/db.go` split into core + games + downloads + download_links + scraped_meta; `downloader/hosts.go` split into one-file-per-host (9 resolvers + helpers); `commands/sync.go` split into check + game + auto; `commands/steam.go` split into add/remove/list/proton/artwork; `scraper/parser.go` split into version/metadata/links; `commands/download.go` split into exec + links + UI (F95-57h, F95-wn7, F95-0s4, F95-37v, F95-rjk, F95-tup, F95-6p9)
+- **Domain logic extraction** — engine matching functions (`EngineTagVariants`, `EngineCompat`, `EngineMatchesThread`, `FindF95Engine`, `ExtractEngineFromTitle`, `FormatTagsBrief`) moved from `commands/cleanup.go` to `engine/engine_tags.go`; `StripThreadPrefix` moved to `scraper/title.go`; `ExtractSteamAppID` moved to `steam/appid.go`; `DetectPlatformFromLink` moved to `downloader/detect.go`; `ApplyThreadData` moved to `scraper/apply.go`. All domain logic now lives in proper packages; `commands/` is thin orchestrators (F95-mwa, F95-56u, F95-ee2, F95-3cw, F95-dny)
+- **Cross-package deduplication** — `IsOnlineOnly`, `ScoreLinkHost`, `ScoreDownloadLink`, and `FindMostRecentFile` extracted to `downloader/links.go`, eliminating 3 duplicate implementations across `commands/download.go` and `tui/commands.go` (F95-9w0)
 
 ### Changed
 
@@ -31,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`shouldSkip` optimized** — exact-match map for `config`/`saved`/`logs`/`crashes`, substring slice for prefix patterns (F95-kq8)
 - **Walk path optimized** — single `os.ReadDir` reused across game marker and category checks instead of double-read (F95-kq8)
 - **Regex compilation hoisted** — `verIniRE`, `pkgVerRE`, `rpyVerRE` compiled once at package init instead of per-call (F95-kq8)
+- **Download feature marked as Beta** — Most file hosts use anti-bot protection (Cloudflare, CAPTCHAs, JS challenges) that HTTP clients cannot bypass. Only Pixeldrain, Buzzheavier, and verified direct hosts have reliable support. All other hosts may fail intermittently. When all links fail, `moxie install <id> <path>` accepts a manually downloaded archive (F95-nle)
+- **Updated host resolver table** — `docs/downloader.md` now includes a complete 44-host feasibility matrix with ✅ Direct, ⚡ API, ⚠️ Difficult, and ❌ Impossible ratings based on verified research (F95-nle)
+- **Updated architecture and component docs** — `docs/architecture.md`, `docs/tui.md`, `docs/downloader.md`, and `docs/moxie-spec.md` updated for logging infrastructure, updater package, TUI download flow, and download validation (F95-nle)
 
 ## [0.3.5-alpha] - 2026-05-04
 

@@ -4,7 +4,7 @@
 
 The archive package (`internal/archive/`) provides extraction of common game archive formats with progress reporting and path traversal protection. Game files downloaded from F95Zone are typically distributed as .zip, .7z, .rar, or .tar.gz archives.
 
-Four files: `archive.go`, `zip.go`, `targz.go`, `tools.go`.
+Six files: `archive.go`, `zip.go`, `targz.go`, `tools.go`, `zip_test.go`, `targz_test.go`.
 
 ## How
 
@@ -33,6 +33,12 @@ result, err := archive.Extract(archivePath, destDir, Options{
 ```
 
 Extraction creates a subdirectory named after the archive (without extension) inside `destDir`. So `downloads/game.zip` extracts to `downloads/game/...`.
+
+**Progress callback notes:**
+- `totalFiles` counts only regular files — directory entries are excluded, so progress accurately reflects file extraction work.
+- `currentFile` may be long; CLI callers typically truncate to 60 characters for display.
+- `bytesTotal` is computed from uncompressed sizes in ZIP archives, raw archive size in tar.gz (no per-file compression), or 0 for 7z/RAR (external tools).
+- `bytesProcessed` is the cumulative uncompressed bytes written so far.
 
 ### Format-Specific Extractors
 

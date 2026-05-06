@@ -9,6 +9,7 @@ import (
 
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/util"
 )
@@ -76,7 +77,7 @@ func Scrape(args []string) {
 	}
 
 	// Update game with scraped data.
-	ApplyThreadData(game, data, url)
+	scraper.ApplyThreadData(game, data, url)
 
 	if err := database.UpdateGame(game); err != nil {
 		fmt.Fprintf(os.Stderr, "Error updating game: %v\n", err)
@@ -103,7 +104,7 @@ func Scrape(args []string) {
 
 		fmt.Printf("Download links: %d found\n", len(data.DownloadLinks))
 		for _, dl := range data.DownloadLinks {
-			linkPlatform := DetectPlatformFromLink(dl.Name, dl.URL)
+			linkPlatform := downloader.DetectPlatformFromLink(dl.Name, dl.URL)
 			link := &db.DownloadLink{
 				GameID:   id,
 				URL:      dl.URL,
@@ -213,7 +214,7 @@ func ScrapeBatch(args []string) {
 			continue
 		}
 
-		ApplyThreadData(game, td, e.url)
+		scraper.ApplyThreadData(game, td, e.url)
 		if err := database.UpdateGame(game); err != nil {
 			fmt.Fprintf(os.Stderr, "  ✗ Save error: %v\n", err)
 			failed++
@@ -273,77 +274,6 @@ func ResolveCookie(explicit, file string) string {
 	return cookie
 }
 
-// DetectPlatformFromLink attempts to determine the platform from a download link's name and URL.
-func DetectPlatformFromLink(name, url string) string {
-	lower := strings.ToLower(name + " " + url)
-
-	// Linux indicators
-	linuxTerms := []string{"linux", "ubuntu", "debian", "fedora", "arch", ".appimage", ".sh", "tar.gz", "tgz"}
-	for _, term := range linuxTerms {
-		if strings.Contains(lower, term) {
-			return "linux"
-		}
-	}
-
-	// Windows indicators
-	windowsTerms := []string{"windows", "win", ".exe", ".msi", "setup", "installer"}
-	for _, term := range windowsTerms {
-		if strings.Contains(lower, term) {
-			return "windows"
-		}
-	}
-
-	// Mac indicators
-	macTerms := []string{"macos", "mac", "osx", ".dmg", ".pkg", "darwin"}
-	for _, term := range macTerms {
-		if strings.Contains(lower, term) {
-			return "macos"
-		}
-	}
-
-	return "unknown"
-}
-
-// ApplyThreadData copies scraped ThreadData fields onto a Game.
-// Non-empty fields in data overwrite the corresponding game fields.
-func ApplyThreadData(game *db.Game, data *scraper.ThreadData, url string) {
-	if data.Title != "" {
-		// Extract engine from F95Zone thread prefix before stripping.
-		// Useful when scanner can't determine the engine (e.g., RPG Maker
-		// MV/MZ games with HTML/JS files get detected as "HTML").
-		if f95Eng := ExtractEngineFromTitle(data.Title); f95Eng != "" {
-			if game.Engine == "" || game.Engine == "Unknown" || game.Engine == "Others" {
-				game.Engine = f95Eng
-			}
-		}
-		game.Title = StripThreadPrefix(data.Title)
-	}
-	if data.Version != "" {
-		// LatestVersion always tracks the F95Zone version for
-		// update detection. Version is the locally-installed
-		// version (from directory name scan) — never overwrite
-		// it with F95Zone data so the update comparison works.
-		game.LatestVersion = data.Version
-	}
-	if data.ThreadID > 0 {
-		game.F95ThreadID = data.ThreadID
-	}
-	game.F95URL = url
-	if len(data.Tags) > 0 {
-		game.Tags = data.Tags
-	}
-	if data.Status != "" {
-		game.Status = data.Status
-	}
-	if len(data.StoreLinks) > 0 {
-		game.StoreLinks = data.StoreLinks
-	}
-	if steamURL, hasSteam := data.StoreLinks["steam"]; hasSteam {
-		if appID, ok := ExtractSteamAppID(steamURL); ok {
-			game.SteamAppID = int64(appID)
-		}
-	}
-}
 
 // ScrapeAutoWrapper opens the database and runs auto-association.
 // This wrapper exists so Scrape can call it without already having a DB handle.

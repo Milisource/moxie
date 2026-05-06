@@ -2,6 +2,7 @@ package tui
 
 import (
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -108,14 +109,16 @@ type downloadStartedMsg struct {
 // ─── Active Download ───────────────────────────────────────────────────────
 
 type activeDownload struct {
-	mu       sync.Mutex
-	gameID   int64
-	url      string
-	host     string
-	destDir  string
-	status   db.DownloadStatus
-	progress downloader.Progress
-	err      string
+	mu          sync.Mutex
+	gameID      int64
+	url         string
+	host        string
+	destDir     string
+	status      db.DownloadStatus
+	progress    downloader.Progress
+	err         string
+	stepMsg     string // "Finding suitable host...", "Trying Pixeldrain...", etc.
+	completedAt time.Time // set when status becomes Completed or Failed
 }
 
 // ─── Model ─────────────────────────────────────────────────────────────────
@@ -149,12 +152,19 @@ type model struct {
 	editing   bool
 	editInput textinput.Model
 
+	// exe path editing
+	editingExe bool
+	exeInput   textinput.Model
+
 	// url assignment
 	setUrl   bool
 	urlInput textinput.Model
 
 	// scraper
 	scraperClient *scraper.Client
+
+	// f95 cookie for authenticating download HEAD requests
+	f95Cookie string
 
 	// filters
 	engineFilter string
@@ -165,7 +175,7 @@ type model struct {
 }
 
 // initialModel creates the root model with default Bubble Tea components.
-func initialModel(database *db.Database, sc *scraper.Client) model {
+func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) model {
 	cols := []table.Column{
 		{Title: "ID", Width: 5},
 		{Title: "Title", Width: 48},
@@ -207,6 +217,7 @@ func initialModel(database *db.Database, sc *scraper.Client) model {
 		filterInput:     fi,
 		sortBy:          SortID,
 		scraperClient:   sc,
+		f95Cookie:       f95Cookie,
 		activeDownloads: make(map[int64]*activeDownload),
 	}
 }

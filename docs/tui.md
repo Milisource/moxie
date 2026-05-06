@@ -25,14 +25,14 @@ Model ←─── Update ←─── View
 | File | Responsibility |
 |---|---|
 | `tui.go` | Entry point — opens DB, creates `tea.NewProgram` with alt screen |
-| `model.go` | Model struct, Bubble Tea columns, sort fields, Init method |
+| `model.go` | Model struct, Bubble Tea columns, sort fields, Init method, active download tracking |
 | `update.go` | Message handler, key bindings, filter/sort cycling, CRUD delegation |
 | `library.go` | Library list view rendering (title bar, status line, table, footer) |
-| `detail.go` | Game detail view rendering (info box, actions, edit/url overlays) |
+| `detail.go` | Game detail view rendering (info box, actions, edit/url overlays, download progress) |
 | `help.go` | Help overlay with keyboard shortcut reference |
 | `styles.go` | Lip Gloss style palette, engine color map, status color map |
 | `helpers.go` | Filter/sort logic, executable finder, `launchExe`, size formatting |
-| `commands.go` | Tea commands for async DB operations (loadGames, loadMeta) |
+| `commands.go` | Tea commands for async DB operations (loadGames, loadMeta, startDownload, pollDownloads) |
 
 ### Views
 
@@ -53,6 +53,50 @@ The TUI has three visual modes, switched via the `viewMode` field in the model:
 - **Engine colors** — each engine type has a distinct Lip Gloss color (Unity = cyan, RenPy = magenta, RPGM = green, etc.). Applied per-row via `engineColor(e)`.
 - **Update indicators** — a `🔄` marker appears next to game titles where both `latest_version` and `version` are known and differ. If the local version is empty (no version found in the directory name), no indicator is shown — an unknown local version cannot confirm an update.
 - **Unknown versions** — games without a detected version show the scraped `LatestVersion` from F95Zone when available, falling back to `"unknown"` only when neither source has a version. This applies in the library table, detail view, and `moxie list` output.
+
+### Downloads
+
+The TUI provides a download workflow accessible from the detail view (`g` key). Downloads run asynchronously in a background goroutine while the TUI remains responsive.
+
+#### Link Resolution
+
+`resolveDownloadLinks()` retrieves download links from the database first. If none are found, it scrapes the game's F95Zone thread (requires a scraper client with valid cookies). Links are sorted by platform priority + host reliability score (descending) using the same `ScoreDownloadLink` logic as the CLI.
+
+#### Fallback Loop
+
+`startDownloadCmd()` launches a background goroutine that tries each link in priority order:
+
+1. Calls `downloader.DownloadWithHost()` with the best link
+2. On success, validates with `downloader.IsValidGameFile()` — rejects interstitial HTML pages
+3. On failure or validation reject, logs the error and tries the next link
+4. If all links fail, shows a summary with per-link failure reasons and suggests manual install
+
+#### Step-by-Step Status Display
+
+The `activeDownload` struct carries a `stepMsg` string that provides real-time status text. The detail view renders this in `downloadSection()`:
+
+| State | Display |
+|-------|---------|
+| **Finding host** | `"Trying: buzzheavier..."` (accent color) |
+| **Downloading** | Progress bar with speed, bytes, percentage |
+| **Host failed** | `"✗ Failed: vikingfile"` (red) |
+| **Fallback retry** | `"Trying next: datanodes..."` (accent) |
+| **Complete** | `"✓ Download succeeded!"` (green) |
+| **Extracting** | `"Extracting archive..."` (accent) |
+| **Merging** | `"Merging into game directory..."` (accent) |
+| **All failed** | `"✗ All links failed"` (red) with per-host error summary and `moxie install` hint |
+
+The TUI polls every 500ms (`pollDownloads()`) to check active download progress and trigger re-renders. This is implemented via `tea.Tick` and the `downloadProgressMsg` message type.
+
+#### Post-Download Pipeline
+
+After a successful download, the TUI automatically:
+1. Extracts the archive if it's a recognized format (zip, 7z, rar, tar.gz)
+2. Removes the archive file
+3. Merges extracted files into the game directory via `updater.Merge()` (preserving saves/configs)
+4. Creates a `.old` backup of the original game directory before merging
+
+All steps are reported via `stepMsg` updates visible in the detail view.
 
 ### Overlays
 

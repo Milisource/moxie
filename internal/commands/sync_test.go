@@ -33,7 +33,7 @@ func TestApplyThreadData_VersionPreservation(t *testing.T) {
 			ThreadID: 12345,
 		}
 
-		ApplyThreadData(game, data, "https://f95zone.to/threads/my-game.12345/")
+		scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/my-game.12345/")
 
 		if game.LatestVersion != "1.0" {
 			t.Errorf("LatestVersion = %q, want %q", game.LatestVersion, "1.0")
@@ -55,7 +55,7 @@ func TestApplyThreadData_VersionPreservation(t *testing.T) {
 			ThreadID: 12345,
 		}
 
-		ApplyThreadData(game, data, "https://f95zone.to/threads/my-game.12345/")
+		scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/my-game.12345/")
 
 		if game.LatestVersion != "1.0" {
 			t.Errorf("LatestVersion = %q, want %q", game.LatestVersion, "1.0")
@@ -77,7 +77,7 @@ func TestApplyThreadData_VersionPreservation(t *testing.T) {
 			ThreadID: 12345,
 		}
 
-		ApplyThreadData(game, data, "https://f95zone.to/threads/my-game.12345/")
+		scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/my-game.12345/")
 
 		if game.LatestVersion != "1.0" {
 			t.Errorf("LatestVersion should be unchanged, got %q", game.LatestVersion)
@@ -104,7 +104,7 @@ func TestApplyThreadData_SetsEngineFromF95Prefix(t *testing.T) {
 		data := &scraper.ThreadData{
 			Title: "RPGM Local Name [v1.0] [Dev]",
 		}
-		ApplyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
+		scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
 
 		if game.Engine != "RPGM" {
 			t.Errorf("Engine = %q, want %q", game.Engine, "RPGM")
@@ -116,7 +116,7 @@ func TestApplyThreadData_SetsEngineFromF95Prefix(t *testing.T) {
 		data := &scraper.ThreadData{
 			Title: "Unity Local Name [v1.0] [Dev]",
 		}
-		ApplyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
+		scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
 
 		if game.Engine != "Unity" {
 			t.Errorf("Engine = %q, want %q", game.Engine, "Unity")
@@ -128,7 +128,7 @@ func TestApplyThreadData_SetsEngineFromF95Prefix(t *testing.T) {
 		data := &scraper.ThreadData{
 			Title: "Ren'Py Local Name [v1.0] [Dev]",
 		}
-		ApplyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
+		scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
 
 		if game.Engine != "RenPy" {
 			t.Errorf("Engine = %q, want %q", game.Engine, "RenPy")
@@ -140,7 +140,7 @@ func TestApplyThreadData_SetsEngineFromF95Prefix(t *testing.T) {
 		data := &scraper.ThreadData{
 			Title: "RPGM Local Name [v1.0] [Dev]",
 		}
-		ApplyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
+		scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/game.12345/")
 
 		if game.Engine != "Unity" {
 			t.Errorf("Engine should remain Unity, got %q", game.Engine)
@@ -162,7 +162,7 @@ func TestApplyThreadData_URLAndThreadID(t *testing.T) {
 	}
 	url := "https://f95zone.to/threads/game-title.54321/"
 
-	ApplyThreadData(game, data, url)
+	scraper.ApplyThreadData(game, data, url)
 
 	if game.F95URL != url {
 		t.Errorf("F95URL = %q, want %q", game.F95URL, url)
@@ -181,7 +181,7 @@ func TestApplyThreadData_TagsAndStatus(t *testing.T) {
 		Tags:   []string{"adult", "rpg", "parody"},
 		Status: "completed",
 	}
-	ApplyThreadData(game, data, "https://f95zone.to/threads/game.54321/")
+	scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/game.54321/")
 
 	if len(game.Tags) != 3 || game.Tags[0] != "adult" {
 		t.Errorf("Tags = %v, want [adult rpg parody]", game.Tags)
@@ -198,7 +198,7 @@ func TestApplyThreadData_StripsTitlePrefix(t *testing.T) {
 	data := &scraper.ThreadData{
 		Title: "RPGM Completed My Game [v1.0] [Dev]",
 	}
-	ApplyThreadData(game, data, "https://f95zone.to/threads/my-game.54321/")
+	scraper.ApplyThreadData(game, data, "https://f95zone.to/threads/my-game.54321/")
 
 	// The title should have the engine/status prefix stripped.
 	want := "My Game [v1.0] [Dev]"

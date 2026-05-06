@@ -15,14 +15,15 @@ import (
 // Run opens the database at dbPath, creates the Bubble Tea program, and runs
 // the interactive terminal UI. The database is closed when the program exits.
 // scraperClient may be nil — if nil, URL updates won't trigger re-scraping.
-func Run(dbPath string, scraperClient *scraper.Client) error {
+// f95Cookie is the F95Zone session cookie used to authenticate download HEAD requests.
+func Run(dbPath string, scraperClient *scraper.Client, f95Cookie string) error {
 	database, err := db.Open(dbPath)
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
-	p := tea.NewProgram(initialModel(database, scraperClient), tea.WithAltScreen())
+	p := tea.NewProgram(initialModel(database, scraperClient, f95Cookie), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return err
 	}

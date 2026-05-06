@@ -16,7 +16,12 @@ func extractZip(archivePath, destDir string, opts Options) (*Result, error) {
 	defer r.Close()
 
 	result := &Result{}
-	totalFiles := len(r.File)
+	totalFiles := 0
+	for _, f := range r.File {
+		if !f.FileInfo().IsDir() {
+			totalFiles++
+		}
+	}
 
 	// Calculate total size
 	var totalBytes int64

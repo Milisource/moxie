@@ -114,38 +114,12 @@ func CleanGameTitle(g db.Game) string {
 
 	// If we have a scraped F95Zone title, strip engine/status prefix tags.
 	if g.F95URL != "" {
-		title = StripThreadPrefix(title)
+		title = scraper.StripThreadPrefix(title)
 	}
 
 	// Filesystem-safe: replace forbidden chars, limit length.
 	title = FilesystemSafe(title)
 	return title
-}
-
-// StripThreadPrefix removes known engine/status/category prefix words
-// from an F95Zone thread title.
-func StripThreadPrefix(title string) string {
-	// Known engine/status/category prefix words.
-	prefixWords := map[string]bool{
-		"unity": true, "ren'py": true, "renpy": true, "rpgm": true,
-		"vn": true, "html": true, "flash": true, "java": true,
-		"godot": true, "electron": true, "unreal": true, "others": true, "html5": true,
-		"completed": true, "abandoned": true, "onhold": true,
-		"collection": true, "video": true, "mod": true, "cheat": true,
-		"tool": true, "daz": true, "update": true, "req": true,
-		"request": true, "seeking": true, "announcement": true,
-	}
-
-	words := strings.Fields(title)
-	for len(words) > 0 && prefixWords[strings.ToLower(strings.TrimRight(words[0], "•"))] {
-		words = words[1:]
-	}
-
-	result := strings.TrimSpace(strings.Join(words, " "))
-	if result == "" {
-		return title
-	}
-	return result
 }
 
 // FilesystemSafe replaces characters that are illegal in directory names.

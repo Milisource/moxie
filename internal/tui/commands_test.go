@@ -38,9 +38,9 @@ func TestIsOnlineOnlyLink_TUI(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isOnlineOnlyLink(tt.text, tt.url)
+			got := downloader.IsOnlineOnly(tt.text, tt.url)
 			if got != tt.want {
-				t.Errorf("isOnlineOnlyLink(%q, %q) = %v, want %v", tt.text, tt.url, got, tt.want)
+				t.Errorf("downloader.IsOnlineOnly(%q, %q) = %v, want %v", tt.text, tt.url, got, tt.want)
 			}
 		})
 	}
@@ -48,13 +48,13 @@ func TestIsOnlineOnlyLink_TUI(t *testing.T) {
 
 func TestIsOnlineOnlyLink_EdgeCases_TUI(t *testing.T) {
 	t.Parallel()
-	if !isOnlineOnlyLink("play online now", "") {
+	if !downloader.IsOnlineOnly("play online now", "") {
 		t.Error("expected 'play online now' to be online-only")
 	}
-	if isOnlineOnlyLink("on the go", "") {
+	if downloader.IsOnlineOnly("on the go", "") {
 		t.Error("expected 'on the go' NOT to be online-only")
 	}
-	if isOnlineOnlyLink("bone", "") {
+	if downloader.IsOnlineOnly("bone", "") {
 		t.Error("expected 'bone' NOT to be online-only")
 	}
 }

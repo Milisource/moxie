@@ -2,17 +2,24 @@ package downloader
 
 import (
 	"fmt"
-	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
+
+	"github.com/mili/moxie/internal/log"
 )
 
 // HostResolver resolves a file host URL to a direct downloadable URL.
 // Many hosts require cookies, headers, or API calls before serving the file.
 type HostResolver struct {
-	client *http.Client
+	client    *http.Client
+	f95Cookie string
+}
+
+// SetF95Cookie sets the F95Zone session cookie string used to authenticate
+// HEAD requests when resolving masked F95Zone redirect URLs.
+func (r *HostResolver) SetF95Cookie(cookie string) {
+	r.f95Cookie = cookie
 }
 
 // NewHostResolver creates a resolver with a shared HTTP client.
@@ -38,7 +45,28 @@ type ResolveResult struct {
 
 // Resolve takes a URL and host label, returns a direct download URL + headers.
 // If no host-specific handler exists, returns the URL as-is for direct download.
+// F95Zone masked URLs (f95zone.to/masked/) are resolved via HEAD redirect first,
+// then host-specific resolution is applied on the real download URL.
 func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) {
+	log.Debug("resolving host URL", "host", host, "url", url)
+
+	// F95Zone masked URLs are redirect endpoints — unwrap them first by following
+	// a HEAD request to get the real download URL, then resolve from there.
+	if strings.Contains(strings.ToLower(url), "/masked/") {
+		log.Debug("masked URL detected", "url", url)
+		realURL, err := r.followRedirect(url)
+		realHost := IdentifyHostInURL(realURL)
+		log.Debug("followRedirect result", "real_url", realURL, "real_host", realHost, "error", err)
+		if err != nil {
+			log.Warn("failed to follow masked URL redirect", "url", url, "error", err)
+			// Fall through to host-specific resolution with the original URL;
+			// it will fail, but the caller's fallback loop will try other links.
+		} else if realURL != url {
+			log.Debug("masked URL resolved", "original", url, "real", realURL)
+			return r.Resolve(realURL, realHost)
+		}
+	}
+
 	switch host {
 	case "pixeldrain":
 		return r.resolvePixeldrain(url)
@@ -46,8 +74,14 @@ func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) 
 		return r.resolveBuzzheavier(url)
 	case "gofile":
 		return r.resolveGofile(url)
+	case "datanodes":
+		return r.resolveDatanodes(url)
 	case "vikingfile":
 		return r.resolveVikingFile(url)
+	case "mixdrop":
+		return r.resolveMixdrop(url)
+	case "google drive":
+		return r.resolveGoogleDrive(url)
 	case "mega":
 		return r.resolveMega(url)
 	default:
@@ -59,187 +93,42 @@ func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) 
 	}
 }
 
-// --- Pixeldrain ---
-// API: GET https://pixeldrain.com/api/file/<FILE_ID>
-// Direct download URL, no special headers needed.
-func (r *HostResolver) resolvePixeldrain(url string) (*ResolveResult, error) {
-	// Extract file ID from various URL formats:
-	// https://pixeldrain.com/u/<FILE_ID>
-	// https://pixeldrain.com/api/file/<FILE_ID>
-	re := regexp.MustCompile(`pixeldrain\.com/(?:u|api/file)/([a-zA-Z0-9_-]+)`)
-	matches := re.FindStringSubmatch(url)
-	if len(matches) < 2 {
-		return nil, fmt.Errorf("could not extract Pixeldrain file ID from: %s", url)
-	}
-	fileID := matches[1]
-	directURL := fmt.Sprintf("https://pixeldrain.com/api/file/%s", fileID)
-	return &ResolveResult{
-		URL: directURL,
-		Headers: map[string]string{
-			"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
-		},
-	}, nil
-}
-
-// --- Buzzheavier ---
-// Uses HTMX-based download flow: GET <url>/download with HX-Request header
-// Response includes hx-redirect header with the actual download URL.
-// Also supports direct DD (buzzheavier.com/dd/<ID>) and torrents.
-func (r *HostResolver) resolveBuzzheavier(url string) (*ResolveResult, error) {
-	// Clean the URL
-	url = strings.TrimRight(url, "/")
-
-	// Try direct domain first
-	ddURL := strings.Replace(url, "buzzheavier.com", "dd.buzzheavier.com", 1)
-	resp, err := r.client.Get(ddURL)
-	if err == nil && resp.StatusCode == http.StatusOK {
-		resp.Body.Close()
-		// If it's a file (has Content-Disposition), we can download directly
-		if ct := resp.Header.Get("Content-Type"); ct != "" && !strings.Contains(ct, "text/html") {
-			return &ResolveResult{
-				URL: ddURL,
-				Headers: map[string]string{
-					"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
-				},
-			}, nil
-		}
-	} else if resp != nil {
-		resp.Body.Close()
-	}
-
-	// Use HTMX-based resolution: GET <url>/download with HX-Request header
-	dlURL := url + "/download"
-	req, err := http.NewRequest("GET", dlURL, nil)
+// followRedirect performs a HEAD request to url and follows redirects to find
+// the final destination URL. Used to unwrap F95Zone masked redirect endpoints
+// before applying host-specific URL resolution.
+func (r *HostResolver) followRedirect(url string) (string, error) {
+	log.Debug("followRedirect request", "url", url, "has_cookie", r.f95Cookie != "")
+	req, err := http.NewRequest("HEAD", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create buzzheavier request: %w", err)
+		return url, fmt.Errorf("create head request: %w", err)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
-	req.Header.Set("HX-Request", "true")
-	req.Header.Set("HX-Current-URL", url)
-	req.Header.Set("Referer", url)
 	req.Header.Set("Accept", "*/*")
+	if r.f95Cookie != "" {
+		req.Header.Set("Cookie", r.f95Cookie)
+	}
 
-	resp, err = r.client.Do(req)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("buzzheavier resolve: %w", err)
+		return url, fmt.Errorf("head request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
-		return nil, fmt.Errorf("buzzheavier: HTTP %d", resp.StatusCode)
+	// After following redirects, resp.Request.URL is the final URL
+	finalURL := resp.Request.URL.String()
+	if finalURL == "" {
+		return url, nil
 	}
-
-	// The actual download URL is in the hx-redirect header
-	redirectURL := resp.Header.Get("hx-redirect")
-	if redirectURL == "" {
-		// Some versions return it in body
-		body, _ := io.ReadAll(resp.Body)
-		redirectURL = strings.TrimSpace(string(body))
-	}
-	if redirectURL == "" {
-		// Fallback: try the URL directly
-		redirectURL = url
-	}
-
-	// Ensure absolute URL
-	if strings.HasPrefix(redirectURL, "/") {
-		redirectURL = "https://dd.buzzheavier.com" + redirectURL
-	}
-
-	return &ResolveResult{
-		URL: redirectURL,
-		Headers: map[string]string{
-			"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
-			"Referer":    url,
-		},
-	}, nil
-}
-
-// --- Gofile ---
-// API: GET https://api.gofile.io/getContent?contentId=<FILE_ID>&wt=4fd6sg89d7s6
-// Then redirects to download server.
-func (r *HostResolver) resolveGofile(url string) (*ResolveResult, error) {
-	// Extract file ID from URL:
-	// https://gofile.io/d/<FILE_ID>
-	re := regexp.MustCompile(`gofile\.io/(?:d|download)/([a-zA-Z0-9]+)`)
-	matches := re.FindStringSubmatch(url)
-	if len(matches) < 2 {
-		// Try direct download subdomain
-		if strings.Contains(url, ".gofile.io") {
-			return &ResolveResult{
-				URL: url,
-				Headers: map[string]string{
-					"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
-				},
-			}, nil
-		}
-		return nil, fmt.Errorf("could not extract Gofile file ID from: %s", url)
-	}
-	fileID := matches[1]
-
-	// Gofile requires an account token for full-speed downloads in 2025+.
-	// For free downloads, use the direct download link pattern.
-	directURL := fmt.Sprintf("https://%s.gofile.io/%s", fileID, fileID)
-
-	// Try the content API first (may work without auth for some files)
-	apiURL := fmt.Sprintf("https://api.gofile.io/getContent?contentId=%s", fileID)
-	req, _ := http.NewRequest("GET", apiURL, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := r.client.Do(req)
-	if err == nil {
-		defer resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			// API returned content - parse response for download URL
-			body, _ := io.ReadAll(resp.Body)
-			return parseGofileAPIResponse(body, directURL)
-		}
-	}
-
-	// Fallback: try direct download
-	return &ResolveResult{
-		URL: directURL,
-		Headers: map[string]string{
-			"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
-			"Cookie":     "accountToken=guest",
-		},
-	}, nil
-}
-
-// parseGofileAPIResponse attempts to extract a download URL from the Gofile API JSON response.
-func parseGofileAPIResponse(body []byte, fallbackURL string) (*ResolveResult, error) {
-	// The response looks like: {"status":"ok","data":{"<fileId>":{"downloadPage":"https://...",...}}}
-	// For now, just return the fallback. Full JSON parsing would add complexity.
-	return &ResolveResult{
-		URL: fallbackURL,
-		Headers: map[string]string{
-			"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
-		},
-	}, nil
-}
-
-// --- VikingFile ---
-// Direct download via standard HTTP.
-func (r *HostResolver) resolveVikingFile(url string) (*ResolveResult, error) {
-	return &ResolveResult{
-		URL: url,
-		Headers: map[string]string{
-			"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
-		},
-	}, nil
-}
-
-// --- Mega ---
-// Mega uses proprietary encrypted protocol. Cannot be handled with simple HTTP.
-// Inform user to use megatools CLI or download manually in browser.
-func (r *HostResolver) resolveMega(url string) (*ResolveResult, error) {
-	return nil, fmt.Errorf(
-		"Mega uses encrypted protocol - use megatools CLI:\n"+
-			"  megatools dl --path <dest> '%s'\n"+
-			"  Install: brew install megatools / apt install megatools",
-		url,
-	)
+	return finalURL, nil
 }
 
 // IdentifyHostInURL extracts the host label from a URL for host-specific routing.
@@ -290,6 +179,7 @@ func IdentifyHostInURL(rawURL string) string {
 		{"hexload", "hexload"},
 		{"hexload", "hexupload"},
 		{"mixdrop", "mixdrop"},
+		{"mixdrop", "m1xdrop"},
 		{"protondrive", "proton drive"},
 		{"quax", "qu.ax"},
 		{"terminal", "terminal"},

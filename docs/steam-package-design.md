@@ -33,6 +33,7 @@ internal/steam/
 ├── grid.go            # Artwork download, resize, placement
 ├── proton.go          # Proton/Wine compatibility config (Linux)
 ├── steamgriddb.go     # SteamGridDB API client (optional; can be deferred)
+├── appid.go           # Steam App ID extraction from store URLs
 └── steam_test.go      # Test fixtures and unit tests
 ```
 

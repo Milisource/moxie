@@ -21,6 +21,11 @@ func ConfigDir() string {
 	}
 }
 
+// LogDir returns the directory for per-day log files.
+func LogDir() string {
+	return filepath.Join(ConfigDir(), "logs")
+}
+
 // DbPath returns the path to the games database.
 func DbPath() string {
 	dir := ConfigDir()

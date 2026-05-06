@@ -2,7 +2,7 @@
 
 ## What
 
-The scraper sends authenticated HTTP requests to F95Zone, parses XenForo thread pages for game metadata, searches the forum for matching threads, and auto-associates local games with F95Zone entries. It lives across 8 files in `internal/scraper/`: HTTP client (`scraper.go`), HTML parser (`parser.go`), cookie handling (`cookies.go`), search (`search.go`), association algorithm (`associate.go`), and types (`types.go`).
+The scraper sends authenticated HTTP requests to F95Zone, parses XenForo thread pages for game metadata, searches the forum for matching threads, and auto-associates local games with F95Zone entries. It lives in `internal/scraper/`: HTTP client (`scraper.go`), HTML parser (split across `parser.go`, `parser_version.go`, `parser_metadata.go`, `parser_links.go`), cookie handling (`cookies.go`), search (`search.go`), association algorithm (`associate.go`), title handling (`title.go` — `StripThreadPrefix`), metadata application (`apply.go` — `ApplyThreadData`), non-game thread detection (`nongame.go`), and types (`types.go`).
 
 ## How
 

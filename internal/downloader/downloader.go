@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mili/moxie/internal/archive"
+	"github.com/mili/moxie/internal/log"
 )
 
 var blockedDownloadHosts = []string{
@@ -73,19 +76,27 @@ func (wc *writeCounter) Write(p []byte) (int, error) {
 
 // DownloadWithHost downloads a file with host-specific URL resolution.
 // The host label enables specialized handling for hosts like Buzzheavier, Pixeldrain, etc.
-func DownloadWithHost(urlStr, host, destDir string, expectedTotal int64, onProgress func(Progress)) error {
+// f95Cookie is an optional F95Zone session cookie used to authenticate masked redirects.
+func DownloadWithHost(urlStr, host, destDir string, expectedTotal int64, onProgress func(Progress), f95Cookie string) error {
+	log.Debug("download start", "url", urlStr, "host", host, "dest", destDir)
 	resolver := NewHostResolver()
+	if f95Cookie != "" {
+		resolver.SetF95Cookie(f95Cookie)
+	}
 	resolved, resolveErr := resolver.Resolve(urlStr, host)
 	if resolveErr != nil {
+		log.Info("download resolve failed", "host", host, "error", resolveErr)
 		return fmt.Errorf("resolve %s URL: %w", host, resolveErr)
 	}
+	log.Debug("download resolving via HTTP", "resolved_url", resolved.URL, "headers", len(resolved.Headers))
 	return downloadWithHeaders(resolved.URL, resolved.Headers, destDir, expectedTotal, onProgress)
 }
 
 // Download downloads a file using standard HTTP, auto-detecting the host.
-func Download(urlStr, destDir string, expectedTotal int64, onProgress func(Progress)) error {
+// f95Cookie is an optional F95Zone session cookie used to authenticate masked redirects.
+func Download(urlStr, destDir string, expectedTotal int64, onProgress func(Progress), f95Cookie string) error {
 	host := IdentifyHostInURL(urlStr)
-	return DownloadWithHost(urlStr, host, destDir, expectedTotal, onProgress)
+	return DownloadWithHost(urlStr, host, destDir, expectedTotal, onProgress, f95Cookie)
 }
 
 func downloadWithHeaders(urlStr string, headers map[string]string, destDir string, expectedTotal int64, onProgress func(Progress)) error {
@@ -224,6 +235,8 @@ func downloadWithHeaders(urlStr string, headers map[string]string, destDir strin
 		return fmt.Errorf("rename: %w", err)
 	}
 
+	log.Info("download complete", "file", filepath.Base(finalPath), "size_bytes", wc.total)
+
 	if onProgress != nil {
 		onProgress(Progress{
 			BytesDownloaded: wc.total,
@@ -233,4 +246,22 @@ func downloadWithHeaders(urlStr string, headers map[string]string, destDir strin
 	}
 
 	return nil
+}
+
+// IsValidGameFile returns true if the downloaded file appears to be a real game
+// file (archive, executable, etc.) rather than an interstitial HTML page or ad.
+func IsValidGameFile(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() < 4096 {
+		return false
+	}
+	if archive.IsArchiveFile(path) {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".exe", ".sh", ".x86_64", ".bin", ".run", ".AppImage":
+		return true
+	}
+	return false
 }

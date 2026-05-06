@@ -6,6 +6,16 @@ An embedded SQLite database that stores game metadata, scraped F95Zone enrichmen
 
 ## How
 
+### Package Structure
+
+The database package is split across 6 files in `internal/db/`:
+- `db.go` — `Database` struct, connection (`Open`/`Close`), schema migration (`migrate`), stats (`GameCount`, `TotalSize`), nullable helpers
+- `models.go` — `Game`, `Download`, `DownloadLink`, `ScrapedMeta` structs
+- `games.go` — Game CRUD (`InsertGame`, `GetGame`, `ListGames`, `SearchGames`, `UpdateGame`, `DeleteGame`)
+- `downloads.go` — Download job CRUD
+- `download_links.go` — Download link CRUD including dead-link marking
+- `scraped_meta.go` — Scraped metadata CRUD (`UpsertScrapedMeta`, `GetScrapedMeta`)
+
 ### Driver
 
 Uses `ncruces/go-sqlite3` — a pure Go SQLite driver (no CGO). This means the binary cross-compiles trivially: `GOOS=windows go build` produces a working Windows binary without a cross-compiled C toolchain. The driver implements the `database/sql` interface, swapped in via `import _ "github.com/ncruces/go-sqlite3/driver"`.

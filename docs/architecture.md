@@ -17,7 +17,8 @@ moxie is a local game library manager. It scans directories for installed games,
 │ scanner  │ │ engine   │ │ db       │ │ scraper  │ │ tui      │ │ steam    │
 │ WalkDir  │ │ detect   │ │ SQLite   │ │ HTTP     │ │ Bubble   │ │ shortcuts│
 │ size     │ │ profiles │ │ CRUD     │ │ parse    │ │ Tea      │ │ VDF      │
-│ find exe │ │ NW.js    │ │ migrate  │ │ search   │ │          │ │ SGDB API │
+│ find exe │ │ tags     │ │ 6 files  │ │ apply    │ │          │ │ SGDB API │
+│ ver extr │ │ match    │ │ migrate  │ │ search   │ │          │ │ appid    │
 └────┬─────┘ └────┬─────┘ └──────────┘ └────┬─────┘ └──────────┘ │ artwork  │
      │            │                          │                    └──────────┘
      └─────┬──────┘                          │
@@ -31,17 +32,37 @@ moxie is a local game library manager. It scans directories for installed games,
                                      └──────────────┘
 
 package main          internal/util/          internal/commands/
-    main.go              config.go              crud.go    (scan, list, info, add, remove)
-                         helpers.go             scrape.go  (scrape, resolve cookie)
-                                                sync.go    (runScrapeAuto, runUpdateCheck)
-                                                cleanup.go (engine mismatch, refresh-versions)
-                                                play.go    (resolveExecutable, launch)
-                                                steam.go   (steam add/remove/list)
-                                                rename.go  (stripThreadPrefix)
-                                                config.go  (config get/set/show)
+    main.go              config.go              crud.go          (scan, list, info, add, remove)
+                         helpers.go             scrape.go        (scrape, resolve cookie)
+                sync.go          (Sync dispatcher, RunScrapeAuto)
+                sync_check.go    (RunUpdateCheck, CheckUpdates)
+                sync_game.go     (SyncGameLogic)
+                cleanup.go       (engine mismatch, refresh-versions)
+                play.go          (resolveExecutable, launch, fuzzy name search)
+                install.go       (install from archive → extract → merge → DB update)
+                steam.go         (Steam dispatcher)
+                                                steam_add.go     (steam add)
+                                                steam_remove.go  (steam remove)
+                                                steam_list.go    (steam list, proton-list)
+                                                steam_proton.go  (proton-set)
+                                                steam_artwork.go (fix-artwork, SGDB helpers)
+                                                download.go      (download)
+                                                download_links.go(link selection, dead-link check)
+                                                download_ui.go   (progress bars, formatting)
+                                                rename.go        (rename, FilesystemSafe)
+                                                config.go        (config get/set/show)
+                                                install.go       (install from archive)
+                                                update.go        (self-update)
+                                                dbutil.go        (OpenDB)
 ```
 
-`config.json` is stored in the platform-standard config directory — `~/.config/moxie/` on Linux. `internal/util/` provides config I/O and shared formatters; `internal/commands/` contains all 28 CLI command handlers in 8 domain-grouped files.
+`config.json` is stored in the platform-standard config directory — `~/.config/moxie/` on Linux. `internal/util/` provides config I/O and shared formatters; `internal/commands/` contains all CLI command handlers across 22 domain-grouped files.
+
+Additional shared packages:
+
+- **`internal/log/`** — `slog` wrapper with `Init(dir)` that creates per-day log files (`moxie-YYYY-MM-DD.log`) in the platform log directory (`~/.config/moxie/logs/`). Called once from `main()` before any command runs. All download attempts, fallbacks, resolve failures, and completions are instrumented through this logger.
+
+- **`internal/updater/`** — `Merge()` copies files from a downloaded+extracted archive into the game directory, preserving user saves, mods, and configs based on engine-aware glob patterns (14 engines + default fallback). Supports optional `.old` backup with automatic restore of preserved files.
 
 ### Data Flow Through the System
 
@@ -49,9 +70,9 @@ package main          internal/util/          internal/commands/
 
 2. **Store** — `db.InsertGame()` writes a `Game` row to SQLite. The game's path is unique (duplicate paths are skipped on subsequent scans). Title is sanitized via `scraper.SanitizeTitle()` before saving.
 
-3. **Scrape** — `scraper.Client.ScrapeThread()` sends an authenticated HTTP GET to an F95Zone thread URL. The `cookieTransport` injects the `Cookie` header from kooky-extracted browser cookies. `goquery` parses the XenForo HTML into a `ThreadData` struct (title, version, developer, tags, overview, cover URL, download links).
+3. **Scrape** — `scraper.Client.ScrapeThread()` sends an authenticated HTTP GET to an F95Zone thread URL. The `cookieTransport` injects the `Cookie` header from kooky-extracted browser cookies. `goquery` parses the XenForo HTML into a `ThreadData` struct (title, version, developer, tags, overview, cover URL, download links). The same cookie is also threaded through the download pipeline — `Download() → DownloadWithHost() → HostResolver.SetF95Cookie() → followRedirect()` — to authenticate F95Zone masked URL HEAD requests during download resolution.
 
-4. **Associate** — `scraper.FindMatches()` finds unassociated games, sanitizes their titles, searches F95Zone, scores candidate threads by title similarity (exact=1.0, contains=0.85, word overlap=proportional), and auto-accepts the best match.
+4. **Associate** — `scraper.FindMatches()` finds unassociated games, sanitizes their titles, searches F95Zone, scores candidate threads by title similarity (exact=1.0, contains=0.85, word overlap=proportional), engine-aware scoring (+0.15 boost), and auto-accepts the best match. Engine matching logic (`EngineMatchesThread`, `EngineTagVariants`, `ExtractEngineFromTitle`) lives in `internal/engine/engine_tags.go` rather than the commands layer. After association, `scraper.ApplyThreadData()` copies scraped metadata onto the DB game record.
 
 5. **Check updates** — Re-scrapes every associated game's thread, extracts the version from the structured header block, compares with `latest_version` in the DB, and reports differences.
 

@@ -179,8 +179,44 @@ func orDash(s string) string {
 	return s
 }
 
+// listExecutables returns all playable executables in a directory (non-recursive).
+// Skips known non-game files (uninstallers, crash handlers, setup programs).
+// Used to show the user what executables are available when editing exe_path.
+func listExecutables(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var exes []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		ext := strings.ToLower(filepath.Ext(name))
+
+		// Skip known non-game executables.
+		lower := strings.ToLower(name)
+		if strings.Contains(lower, "unitycrashhandler") ||
+			strings.Contains(lower, "unins") ||
+			strings.Contains(lower, "setup") {
+			continue
+		}
+
+		switch {
+		case ext == ".exe" || ext == ".sh" || ext == ".x86_64" || ext == ".x86":
+			exes = append(exes, filepath.Join(dir, name))
+		case strings.HasSuffix(name, ".AppImage"):
+			exes = append(exes, filepath.Join(dir, name))
+		}
+	}
+	return exes
+}
+
 // findPlayableExe finds the best executable in a game directory.
 // Prefers native Linux binaries over .exe files.
+// If knownExe is set and exists on disk, it is returned directly.
 func findPlayableExe(dir, knownExe string) string {
 	// If we know the exe and it exists, use it.
 	if knownExe != "" {
@@ -189,8 +225,8 @@ func findPlayableExe(dir, knownExe string) string {
 		}
 	}
 
-	entries, err := os.ReadDir(dir)
-	if err != nil {
+	all := listExecutables(dir)
+	if len(all) == 0 {
 		return ""
 	}
 
@@ -198,21 +234,9 @@ func findPlayableExe(dir, knownExe string) string {
 	var appImages []string
 	var exes []string
 
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		fullPath := filepath.Join(dir, name)
-		ext := strings.ToLower(filepath.Ext(name))
-
-		// Skip non-game executables.
-		lower := strings.ToLower(name)
-		if strings.Contains(lower, "unitycrashhandler") ||
-			strings.Contains(lower, "unins") ||
-			strings.Contains(lower, "setup") {
-			continue
-		}
+	for _, fullPath := range all {
+		ext := strings.ToLower(filepath.Ext(fullPath))
+		name := filepath.Base(fullPath)
 
 		switch {
 		case strings.HasSuffix(name, ".AppImage"):

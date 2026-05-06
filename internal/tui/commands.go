@@ -2,13 +2,18 @@ package tui
 
 import (
 	"fmt"
-	"strings"
+	"os"
+	"path/filepath"
+	"sort"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/mili/moxie/internal/archive"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
+	"github.com/mili/moxie/internal/log"
+	"github.com/mili/moxie/internal/updater"
 )
 
 // loadGames fetches all games from the database.
@@ -81,14 +86,17 @@ func (m model) scrapeMeta(gameID int64, url string) tea.Cmd {
 	}
 }
 
-// startDownloadCmd launches a download in a background goroutine.
+// startDownloadCmd launches a download in a background goroutine, trying links in priority order.
 // Progress is written to the model's activeDownloads map.
-func (m model) startDownloadCmd(gameID int64, url, host, destDir string) tea.Cmd {
-	// Create download record
+// After successful download + extract, merges new files into gamePath, preserving saves/configs.
+func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, gamePath, engine, f95Cookie string) tea.Cmd {
+	firstLink := links[0]
+	log.Info("tui download started", "game_id", gameID, "host", firstLink.Host, "total_links", len(links))
+
 	dl := &db.Download{
 		GameID:   gameID,
-		URL:      url,
-		Host:     host,
+		URL:      firstLink.URL,
+		Host:     firstLink.Host,
 		DestPath: destDir,
 		Status:   db.DownloadStatusDownloading,
 	}
@@ -101,40 +109,145 @@ func (m model) startDownloadCmd(gameID int64, url, host, destDir string) tea.Cmd
 	}
 	dl.ID = dlID
 
-	// Set up active download state
 	ad := &activeDownload{
 		gameID:  gameID,
-		url:     url,
-		host:    host,
+		url:     firstLink.URL,
+		host:    firstLink.Host,
 		destDir: destDir,
 		status:  db.DownloadStatusDownloading,
+		stepMsg: "Finding suitable host...",
 	}
 	m.activeDownloads[gameID] = ad
 
-	// Launch download in background
 	go func() {
-		err := downloader.DownloadWithHost(url, host, destDir, 0, func(p downloader.Progress) {
+		var lastErr error
+		var failures []string
+		for i, link := range links {
+			if i > 0 {
+				ad.mu.Lock()
+				ad.url = link.URL
+				ad.host = link.Host
+				ad.status = db.DownloadStatusDownloading
+				ad.progress = downloader.Progress{}
+				ad.err = ""
+				ad.stepMsg = fmt.Sprintf("Trying next: %s...", link.Host)
+				ad.mu.Unlock()
+
+				dl.URL = link.URL
+				dl.Host = link.Host
+				dl.Status = db.DownloadStatusDownloading
+				dl.BytesDownloaded = 0
+				dl.TotalBytes = 0
+				dl.SpeedBytesPerSec = 0
+				dl.PercentComplete = 0
+				dl.Error = ""
+				m.db.UpdateDownload(dl)
+
+				log.Info("tui download fallback", "game_id", gameID, "attempt", i+1, "host", link.Host)
+			} else {
+				ad.mu.Lock()
+				ad.stepMsg = fmt.Sprintf("Trying: %s...", link.Host)
+				ad.mu.Unlock()
+			}
+
+			err := downloader.DownloadWithHost(link.URL, link.Host, destDir, 0, func(p downloader.Progress) {
+				ad.mu.Lock()
+				if p.BytesDownloaded > 0 {
+					ad.stepMsg = "Downloading..."
+				}
+				ad.progress = p
+				ad.mu.Unlock()
+				dl.BytesDownloaded = p.BytesDownloaded
+				dl.TotalBytes = p.TotalBytes
+				dl.SpeedBytesPerSec = p.SpeedBytesPerSec
+				dl.PercentComplete = p.Percent
+				m.db.UpdateDownload(dl)
+			}, f95Cookie)
+
+			if err == nil {
+				// Validate the downloaded file — reject interstitial HTML pages
+				downloadedFile := findMostRecentFile(destDir)
+				if downloadedFile != "" && !downloader.IsValidGameFile(downloadedFile) {
+					os.Remove(downloadedFile)
+					err = fmt.Errorf("downloaded content is not a valid game file (interstitial page)")
+					log.Warn("tui download validation failed", "game_id", gameID, "host", link.Host, "file", filepath.Base(downloadedFile))
+				}
+			}
+
+			if err == nil {
+				lastErr = nil
+				break
+			}
+			lastErr = err
+			failures = append(failures, fmt.Sprintf("[%s] ✗ %s", link.Host, err.Error()))
 			ad.mu.Lock()
-			ad.progress = p
+			ad.stepMsg = fmt.Sprintf("✗ Failed: %s", link.Host)
 			ad.mu.Unlock()
-			dl.BytesDownloaded = p.BytesDownloaded
-			dl.TotalBytes = p.TotalBytes
-			dl.SpeedBytesPerSec = p.SpeedBytesPerSec
-			dl.PercentComplete = p.Percent
-			m.db.UpdateDownload(dl)
-		})
+			log.Warn("tui download attempt failed", "game_id", gameID, "host", link.Host, "error", err)
+		}
 
 		ad.mu.Lock()
-		if err != nil {
+		if lastErr != nil {
+			summary := fmt.Sprintf("All %d download links failed:\n", len(links))
+			for _, f := range failures {
+				summary += "  " + f + "\n"
+			}
+			if len(links) > 0 {
+				summary += "\n  → Download manually and run:\n"
+				summary += fmt.Sprintf("    moxie install %d <path-to-file>", gameID)
+			}
 			ad.status = db.DownloadStatusFailed
-			ad.err = err.Error()
+			ad.err = summary
+			ad.stepMsg = "✗ All links failed"
+			ad.completedAt = time.Now()
 			dl.Status = db.DownloadStatusFailed
-			dl.Error = err.Error()
+			dl.Error = lastErr.Error()
+			log.Error("tui download failed (all links exhausted)", "game_id", gameID, "links_tried", len(links), "error", lastErr)
 		} else {
 			ad.status = db.DownloadStatusCompleted
 			ad.progress.Percent = 100
+			ad.stepMsg = "✓ Download succeeded!"
 			dl.Status = db.DownloadStatusCompleted
 			dl.PercentComplete = 100
+			log.Info("tui download succeeded", "game_id", gameID, "host", dl.Host)
+
+			// Auto-extract if the downloaded file is an archive
+			downloadedFile := findMostRecentFile(destDir)
+			if downloadedFile != "" && archive.IsArchiveFile(downloadedFile) {
+				ad.stepMsg = "Extracting archive..."
+				ad.status = db.DownloadStatusExtracting
+				dl.Status = db.DownloadStatusExtracting
+				m.db.UpdateDownload(dl)
+				ad.mu.Unlock()
+
+				log.Info("extracting archive", "file", filepath.Base(downloadedFile))
+				result, extractErr := archive.Extract(downloadedFile, destDir, archive.Options{})
+				ad.mu.Lock()
+				if extractErr != nil {
+					log.Warn("extraction failed", "file", filepath.Base(downloadedFile), "error", extractErr)
+				} else {
+					log.Info("extraction complete", "files", result.FilesExtracted, "dest", result.Destination)
+					os.Remove(downloadedFile)
+
+					// Merge extracted files into game directory, preserving saves
+					ad.mu.Unlock()
+					ad.mu.Lock()
+					ad.stepMsg = "Merging into game directory..."
+					ad.mu.Unlock()
+					mergeResult, mergeErr := updater.Merge(gamePath, engine, result.Destination, true)
+					ad.mu.Lock()
+					if mergeErr != nil {
+						log.Warn("merge failed", "game", gamePath, "error", mergeErr)
+					} else {
+						log.Info("merge complete", "game", gamePath, "copied", mergeResult.FilesCopied, "preserved", mergeResult.FilesPreserved)
+					}
+				}
+				ad.status = db.DownloadStatusCompleted
+				ad.progress.Percent = 100
+				ad.completedAt = time.Now()
+				dl.Status = db.DownloadStatusCompleted
+				dl.PercentComplete = 100
+			}
 		}
 		dl.CompletedAt = time.Now()
 		m.db.UpdateDownload(dl)
@@ -167,24 +280,24 @@ func (m model) hasActiveDownloads() bool {
 }
 
 // getDownloadProgress returns a snapshot of a download's progress.
-func (m model) getDownloadProgress(gameID int64) (downloader.Progress, db.DownloadStatus, string) {
+func (m model) getDownloadProgress(gameID int64) (downloader.Progress, db.DownloadStatus, string, string) {
 	ad, ok := m.activeDownloads[gameID]
 	if !ok {
-		return downloader.Progress{}, "", ""
+		return downloader.Progress{}, "", "", ""
 	}
 	ad.mu.Lock()
 	defer ad.mu.Unlock()
-	return ad.progress, ad.status, ad.err
+	return ad.progress, ad.status, ad.err, ad.stepMsg
 }
 
-// resolveDownloadLink finds a download URL+host for a game, checking DB then scraping.
-func (m model) resolveDownloadLink(game *db.Game) (url, host string, err error) {
+// resolveDownloadLinks finds all viable download links for a game, sorted by platform score.
+func (m model) resolveDownloadLinks(game *db.Game) ([]db.DownloadLink, error) {
 	links, listErr := m.db.ListDownloadLinks(game.ID, "", false)
 	if listErr == nil && len(links) > 0 {
 		targetPlatform := downloader.CurrentPlatform()
-		best := selectBestLinkByPlatform(links, targetPlatform)
-		if best != nil {
-			return best.URL, best.Host, nil
+		sorted := sortLinksByPlatform(links, targetPlatform)
+		if len(sorted) > 0 {
+			return sorted, nil
 		}
 	}
 
@@ -203,56 +316,46 @@ func (m model) resolveDownloadLink(game *db.Game) (url, host string, err error) 
 			}
 			links, _ = m.db.ListDownloadLinks(game.ID, "", false)
 			targetPlatform := downloader.CurrentPlatform()
-			best := selectBestLinkByPlatform(links, targetPlatform)
-			if best != nil {
-				return best.URL, best.Host, nil
+			sorted := sortLinksByPlatform(links, targetPlatform)
+			if len(sorted) > 0 {
+				return sorted, nil
 			}
 		}
 	}
 
-	return "", "", fmt.Errorf("no download links found")
+	return nil, fmt.Errorf("no download links found")
 }
 
-// isOnlineOnlyLink returns true if the link text or URL indicates a browser-only version.
-func isOnlineOnlyLink(name, url string) bool {
-	lower := strings.ToLower(name + " " + url)
-	return strings.Contains(lower, "online") || strings.Contains(lower, "gamejolt")
-}
-
-// selectBestLinkByPlatform picks the best link based on platform + host reliability.
+// sortLinksByPlatform returns all links sorted by platform + host reliability score (descending).
 // Skips online-only links that aren't downloadable.
-func selectBestLinkByPlatform(links []db.DownloadLink, targetPlatform downloader.Platform) *db.DownloadLink {
-	if len(links) == 0 {
-		return nil
-	}
+func sortLinksByPlatform(links []db.DownloadLink, targetPlatform downloader.Platform) []db.DownloadLink {
 	type sl struct {
 		link  db.DownloadLink
 		score int
 	}
 	var scored []sl
 	for _, link := range links {
-		if isOnlineOnlyLink(link.Name, link.URL) {
+		if downloader.IsOnlineOnly(link.Name, link.URL) {
 			continue
 		}
-		score := downloader.PlatformPriority(downloader.Platform(link.Platform), targetPlatform)
-		switch link.Host {
-		case "vikingfile", "buzzheavier", "pixeldrain", "mega", "gofile":
-			score += 15
-		case "mediafire", "workupload":
-			score += 8
-		case "krakenfiles", "googledrive":
-			score += 5
-		}
+		score := downloader.ScoreDownloadLink(link, targetPlatform)
 		scored = append(scored, sl{link, score})
 	}
 	if len(scored) == 0 {
 		return nil
 	}
-	best := scored[0]
-	for _, s := range scored[1:] {
-		if s.score > best.score {
-			best = s
-		}
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+	result := make([]db.DownloadLink, len(scored))
+	for i, s := range scored {
+		result[i] = s.link
 	}
-	return &best.link
+	return result
+}
+
+// findMostRecentFile returns the path of the most recently modified regular file
+// in a directory, or empty string if the directory is empty/unreadable.
+func findMostRecentFile(dir string) string {
+	return downloader.FindMostRecentFile(dir)
 }

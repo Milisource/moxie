@@ -143,7 +143,7 @@ func TestDownload_RejectsNonHTTPS(t *testing.T) {
 	defer srv.Close()
 
 	destDir := t.TempDir()
-	err := Download(srv.URL, destDir, 0, nil)
+	err := Download(srv.URL, destDir, 0, nil, "")
 	if err == nil {
 		t.Fatal("expected error for non-https URL, got nil")
 	}
@@ -154,7 +154,7 @@ func TestDownload_RejectsNonHTTPS(t *testing.T) {
 
 func TestDownload_InvalidURL(t *testing.T) {
 	t.Parallel()
-	err := Download("", t.TempDir(), 0, nil)
+	err := Download("", t.TempDir(), 0, nil, "")
 	if err == nil {
 		t.Fatal("expected error for empty URL, got nil")
 	}
