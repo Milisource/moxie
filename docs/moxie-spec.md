@@ -144,6 +144,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Archive extraction (.zip, .7z, .rar, .tar.gz) with auto-detection
 - [x] Download links table with platform detection (Linux/Windows/MacOS)
 - [x] Dead link validation (404/5XX/DMCA detection)
+- [ ] Mega download support (native SDK or megatools subprocess wrapper)
 - [ ] FTS5 full-text search
 - [ ] Mega download support (native SDK or megatools subprocess wrapper)
 - [ ] Cover image download and local caching

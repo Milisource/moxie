@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -142,7 +143,6 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 				dl.PercentComplete = 0
 				dl.Error = ""
 				m.db.UpdateDownload(dl)
-
 				log.Info("tui download fallback", "game_id", gameID, "attempt", i+1, "host", link.Host)
 			} else {
 				ad.mu.Lock()
@@ -165,7 +165,6 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 			}, f95Cookie)
 
 			if err == nil {
-				// Validate the downloaded file — reject interstitial HTML pages
 				downloadedFile := findMostRecentFile(destDir)
 				if downloadedFile != "" && !downloader.IsValidGameFile(downloadedFile) {
 					os.Remove(downloadedFile)

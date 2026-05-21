@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mili/moxie/internal/archive"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
@@ -202,7 +204,6 @@ func Download(args []string) {
 
 		err = downloader.Download(link.URL, destDir, 0, progressFn, cookie)
 		if err == nil {
-			// Validate downloaded file is a real game file, not an interstitial page
 			downloadedFile := findDownloadedFile(destDir, dlRecord.Filename)
 			if downloadedFile != "" && !downloader.IsValidGameFile(downloadedFile) {
 				fi, _ := os.Stat(downloadedFile)
@@ -233,7 +234,6 @@ func Download(args []string) {
 
 		log.Error("download failed (all links exhausted)", "game_id", id, "links_tried", len(scored), "error", lastErr)
 
-		// Show per-link failure summary
 		fmt.Fprintf(os.Stderr, "\n\nDownload failed for all %d links:\n", len(scored))
 		for i, sl := range scored {
 			errMsg := "unknown error"
@@ -303,3 +303,237 @@ func Download(args []string) {
 }
 
 
+// selectBestLinkByPlatform selects the best download link based on platform priority.
+// Skips online-only links that aren't downloadable.
+func selectBestLinkByPlatform(links []db.DownloadLink, targetPlatform downloader.Platform) *db.DownloadLink {
+	if len(links) == 0 {
+		return nil
+	}
+
+	type scoredLink struct {
+		link  db.DownloadLink
+		score int
+	}
+	var scored []scoredLink
+
+	for _, link := range links {
+		if downloader.IsOnlineOnly(link.Name, link.URL) {
+			continue
+		}
+		score := downloader.ScoreDownloadLink(link, targetPlatform)
+		scored = append(scored, scoredLink{link, score})
+	}
+
+	if len(scored) == 0 {
+		return nil
+	}
+	best := scored[0]
+	for _, s := range scored[1:] {
+		if s.score > best.score {
+			best = s
+		}
+	}
+
+	return &best.link
+}
+
+// renderProgressBar renders a terminal progress bar.
+func renderProgressBar(p downloader.Progress) {
+	width := 40
+	filled := int(p.Percent / 100.0 * float64(width))
+	if filled > width {
+		filled = width
+	}
+
+	barStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("99"))
+	emptyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+
+	bar := strings.Repeat("█", filled)
+	empty := strings.Repeat("░", width-filled)
+
+	speed := formatSpeed(p.SpeedBytesPerSec)
+	percent := fmt.Sprintf("%5.1f%%", p.Percent)
+	size := fmt.Sprintf("%s / %s", formatBytes(p.BytesDownloaded), formatBytes(p.TotalBytes))
+
+	fmt.Fprintf(os.Stderr, "\r%s%s %s %s %s",
+		barStyle.Render(bar),
+		emptyStyle.Render(empty),
+		lipgloss.NewStyle().Bold(true).Render(percent),
+		speed,
+		size,
+	)
+}
+
+func formatSpeed(bytesPerSec float64) string {
+	if bytesPerSec < 1024 {
+		return fmt.Sprintf("%.0f B/s", bytesPerSec)
+	}
+	if bytesPerSec < 1024*1024 {
+		return fmt.Sprintf("%.1f KB/s", bytesPerSec/1024)
+	}
+	return fmt.Sprintf("%.1f MB/s", bytesPerSec/(1024*1024))
+}
+
+func formatBytes(b int64) string {
+	if b < 1024 {
+		return fmt.Sprintf("%d B", b)
+	}
+	if b < 1024*1024 {
+		return fmt.Sprintf("%.1f KB", float64(b)/1024)
+	}
+	if b < 1024*1024*1024 {
+		return fmt.Sprintf("%.1f MB", float64(b)/(1024*1024))
+	}
+	return fmt.Sprintf("%.1f GB", float64(b)/(1024*1024*1024))
+}
+
+// findDownloadedFile attempts to find the downloaded file in the destination directory.
+func findDownloadedFile(destDir, linkName string) string {
+	path := filepath.Join(destDir, linkName)
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+
+	if idx := strings.Index(linkName, "?"); idx > 0 {
+		path = filepath.Join(destDir, linkName[:idx])
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	entries, err := os.ReadDir(destDir)
+	if err != nil {
+		return ""
+	}
+
+	var mostRecent os.DirEntry
+	var mostRecentTime time.Time
+
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(mostRecentTime) {
+			mostRecent = e
+			mostRecentTime = info.ModTime()
+		}
+	}
+
+	if mostRecent != nil {
+		return filepath.Join(destDir, mostRecent.Name())
+	}
+
+	return ""
+}
+
+// ListDownloads shows all downloads and their status.
+func ListDownloads(args []string) {
+	fs := flag.NewFlagSet("downloads", flag.ExitOnError)
+	filterStatus := fs.String("status", "", "Filter by status (pending, downloading, completed, failed)")
+	fs.Parse(args)
+
+	database := OpenDB()
+	defer database.Close()
+
+	downloads, err := database.ListDownloads(*filterStatus)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error listing downloads: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(downloads) == 0 {
+		fmt.Fprintln(os.Stderr, "No downloads found.")
+		return
+	}
+
+	fmt.Printf("%-5s %-8s %-12s %-10s %-15s %s\n", "ID", "Game", "Status", "Progress", "Speed", "URL")
+	fmt.Println(strings.Repeat("-", 100))
+
+	for _, d := range downloads {
+		progress := fmt.Sprintf("%.1f%%", d.PercentComplete)
+		if d.Status == db.DownloadStatusCompleted {
+			progress = "100%"
+		}
+
+		speed := formatSpeed(d.SpeedBytesPerSec)
+		if d.Status != db.DownloadStatusDownloading {
+			speed = "-"
+		}
+
+		url := d.URL
+		if len(url) > 40 {
+			url = url[:37] + "..."
+		}
+
+		fmt.Printf("%-5d %-8d %-12s %-10s %-15s %s\n",
+			d.ID, d.GameID, d.Status, progress, speed, url)
+	}
+}
+
+// CheckDeadLinks validates all download links and marks dead ones.
+func CheckDeadLinks(args []string) {
+	fs := flag.NewFlagSet("check-links", flag.ExitOnError)
+	gameID := fs.Int64("game", 0, "Check links for specific game ID only")
+	deleteDead := fs.Bool("delete", false, "Delete dead links instead of just marking them")
+	fs.Parse(args)
+
+	database := OpenDB()
+	defer database.Close()
+
+	var links []db.DownloadLink
+	var err error
+
+	if *gameID > 0 {
+		links, err = database.ListDownloadLinks(*gameID, "", true)
+	} else {
+		// Get all games and their links
+		games, _ := database.ListGames("", "")
+		for _, g := range games {
+			gameLinks, _ := database.ListDownloadLinks(g.ID, "", true)
+			links = append(links, gameLinks...)
+		}
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error listing links: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(links) == 0 {
+		fmt.Fprintln(os.Stderr, "No download links found.")
+		return
+	}
+
+	fmt.Printf("Checking %d download links...\n\n", len(links))
+
+	checked, dead := 0, 0
+	for _, link := range links {
+		if link.IsDead {
+			fmt.Printf("[%s] Already marked dead: %s\n", link.Host, link.Name)
+			dead++
+			continue
+		}
+
+		fmt.Printf("Checking [%s] %s... ", link.Host, link.Name)
+		if err := downloader.CheckLink(link.URL); err != nil {
+			fmt.Printf("DEAD: %v\n", err)
+			if *deleteDead {
+				database.DeleteDownloadLink(link.ID)
+				fmt.Printf("  -> Deleted\n")
+			} else {
+				database.MarkDownloadLinkDead(link.ID, err.Error())
+				fmt.Printf("  -> Marked as dead\n")
+			}
+			dead++
+		} else {
+			fmt.Println("OK")
+		}
+		checked++
+	}
+
+	fmt.Printf("\nDone: %d checked, %d dead links found\n", checked, dead)
+}
