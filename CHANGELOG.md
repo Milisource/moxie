@@ -61,6 +61,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Updated host resolver table** — `docs/downloader.md` now includes a complete 44-host feasibility matrix with ✅ Direct, ⚡ API, ⚠️ Difficult, and ❌ Impossible ratings based on verified research (F95-nle)
 - **Updated architecture and component docs** — `docs/architecture.md`, `docs/tui.md`, `docs/downloader.md`, and `docs/moxie-spec.md` updated for logging infrastructure, updater package, TUI download flow, and download validation (F95-nle)
 
+## [0.3.52-alpha] - 2026-05-21
+
+### Fixed
+
+- **`moxie update` now uses correct GitHub repo URL** — changed from `mili/moxie` to `Milisource/moxie` to match the actual remote repository. The command was returning HTTP 404 when checking for updates (F95-pjg)
+
 ## [0.3.5-alpha] - 2026-05-04
 
 ### Added
@@ -182,7 +188,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **GitHub Actions release workflow** — `.github/workflows/release.yml` auto-builds all 6 platform/arch binaries on tag push, stamps version via `-ldflags`, and creates a GitHub Release with `softprops/action-gh-release`
 - **README** — updated install section, build-from-source instructions with version stamping, test count (223), and binary size (~16 MB)
 
-[Unreleased]: https://github.com/Milisource/moxie/compare/v0.3.5-alpha...HEAD
+[Unreleased]: https://github.com/Milisource/moxie/compare/v0.3.52-alpha...HEAD
+[0.3.52-alpha]: https://github.com/Milisource/moxie/compare/v0.3.5-alpha...v0.3.52-alpha
 [0.3.5-alpha]: https://github.com/Milisource/moxie/compare/v0.3.4-alpha...v0.3.5-alpha
 [0.3.4-alpha]: https://github.com/Milisource/moxie/compare/v0.3.3-alpha...v0.3.4-alpha
 [0.3.3-alpha]: https://github.com/Milisource/moxie/compare/v0.3.1-alpha...v0.3.3-alpha

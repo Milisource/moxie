@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
-**Version:** 0.3.51-alpha (May 2026)
-**Status:** Alpha — 0.3.51 (SGDB parse fix, icon/logo support, store links persistence, Steam AppID artwork pipeline, self-update command). Download: Beta (6 host resolvers: Pixeldrain, Buzzheavier, Gofile, Google Drive, DataNodes, MixDrop, VikingFile (beta))
+**Version:** 0.3.52-alpha (May 2026)
+**Status:** Alpha — 0.3.52 (moxie update fix — correct GitHub repo URL). Download: Beta (6 host resolvers: Pixeldrain, Buzzheavier, Gofile, Google Drive, DataNodes, MixDrop, VikingFile (beta))
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---

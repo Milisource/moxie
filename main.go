@@ -12,7 +12,7 @@ import (
 	"github.com/mili/moxie/internal/tui"
 )
 
-var version = "0.3.51-alpha"
+var version = "0.3.52-alpha"
 
 func main() {
 	log.Init(config.LogDir())

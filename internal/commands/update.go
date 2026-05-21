@@ -74,7 +74,7 @@ func Update(version string) {
 
 // fetchLatestRelease fetches the latest release info from GitHub.
 func fetchLatestRelease() (*githubRelease, error) {
-	req, err := http.NewRequest("GET", "https://api.github.com/repos/mili/moxie/releases/latest", nil)
+	req, err := http.NewRequest("GET", "https://api.github.com/repos/Milisource/moxie/releases/latest", nil)
 	if err != nil {
 		return nil, err
 	}
