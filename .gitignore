@@ -7,5 +7,6 @@ moxie
 workflow.log
 workflow2.log
 workflow3.log
+ci.log
 dist
 scripts/release.sh
