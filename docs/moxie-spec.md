@@ -151,6 +151,11 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Download links table with platform detection (Linux/Windows/MacOS)
 - [x] Dead link validation (404/5XX/DMCA detection)
 - [ ] Mega download support (native SDK or megatools subprocess wrapper)
+- [x] Protect user-curated fields (Version/Engine/ExePath) during rescan — only overwritten when empty or "Unknown"
+- [x] Scan tracking columns (`last_scanned_at`, `dir_mtime`) — per-game directory mtime tracking for incremental scanning
+- [x] Incremental scan by default — `moxie scan <dir>` skips known, unchanged directories; `--force` for full rescan
+- [x] `.old` directory exclusion — scanner skips updater backup dirs; `ListActiveGames()` filters them from all commands (list, sync, rename, download, tui, etc.)
+- [x] Help text reorganization — commands grouped into Core, F95Zone, Downloads, Steam, Admin sections
 - [ ] FTS5 full-text search (current: `LIKE '%query%'` only)
 - [ ] Cover image download and local caching
 - [ ] Directory watcher (auto-scan on file changes)
