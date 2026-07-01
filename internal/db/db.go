@@ -150,6 +150,8 @@ func migrate(conn *sql.DB) error {
 	conn.Exec("ALTER TABLE games ADD COLUMN version_checked_at TEXT")
 	conn.Exec("ALTER TABLE games ADD COLUMN store_links TEXT DEFAULT '{}'")
 	conn.Exec("ALTER TABLE games ADD COLUMN steam_app_id INTEGER")
+	conn.Exec("ALTER TABLE games ADD COLUMN last_scanned_at TEXT")
+	conn.Exec("ALTER TABLE games ADD COLUMN dir_mtime TEXT")
 
 	return nil
 }

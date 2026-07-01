@@ -23,6 +23,8 @@ type Game struct {
 	SteamAppID  int64             `json:"steam_app_id,omitempty"`
 	LatestVersion  string         `json:"latest_version,omitempty"`
 	VersionCheckedAt time.Time    `json:"version_checked_at,omitempty"`
+	LastScannedAt time.Time       `json:"last_scanned_at,omitempty"`
+	DirMTime     time.Time        `json:"dir_mtime,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
 }

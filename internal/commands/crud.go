@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/scanner"
@@ -108,6 +109,8 @@ func Scan(args []string) {
 				existing.ExePath = g.ExePath
 			}
 			existing.SizeBytes = g.SizeBytes
+			existing.LastScannedAt = time.Now().UTC()
+			existing.DirMTime = dirModTime(g.Path)
 			if err := database.UpdateGame(existing); err != nil {
 				fmt.Fprintf(os.Stderr, "  Error updating %s: %v\n", g.Title, err)
 				continue
@@ -122,14 +125,17 @@ func Scan(args []string) {
 			cleanTitle = g.Title
 		}
 
+		now := time.Now().UTC()
 		game := &db.Game{
-			Title:     cleanTitle,
-			Engine:    string(g.Engine),
-			Path:      g.Path,
-			ExePath:   g.ExePath,
-			Version:   g.Version,
-			SizeBytes: g.SizeBytes,
-			Status:    "unknown",
+			Title:         cleanTitle,
+			Engine:        string(g.Engine),
+			Path:          g.Path,
+			ExePath:       g.ExePath,
+			Version:       g.Version,
+			SizeBytes:     g.SizeBytes,
+			Status:        "unknown",
+			LastScannedAt: now,
+			DirMTime:      dirModTime(g.Path),
 		}
 		if _, err := database.InsertGame(game); err != nil {
 			fmt.Fprintf(os.Stderr, "  Error saving %s: %v\n", cleanTitle, err)
@@ -430,4 +436,14 @@ func Remove(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("Removed: %s (%s)\n", game.Title, game.Engine)
+}
+
+// dirModTime returns the directory modification time as a UTC time.Time.
+// Returns the zero time if stat fails.
+func dirModTime(dir string) time.Time {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime().UTC()
 }
