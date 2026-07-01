@@ -23,7 +23,7 @@ func Run(dbPath string, scraperClient *scraper.Client, f95Cookie string) error {
 	}
 	defer database.Close()
 
-	p := tea.NewProgram(initialModel(database, scraperClient, f95Cookie), tea.WithAltScreen())
+	p := tea.NewProgram(initialModel(database, scraperClient, f95Cookie), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		return err
 	}

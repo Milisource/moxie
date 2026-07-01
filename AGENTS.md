@@ -144,3 +144,99 @@ bd close <id>         # Complete work
 - Work is NOT complete until `git push` succeeds
 - NEVER push on your own, the user will push.
 <!-- END BEADS INTEGRATION -->
+
+<!-- BEGIN OPENGUIDE STRATEGY -->
+## OpenCode Configuration & Strategy
+
+### Agent Configuration
+
+Two Go-specific subagents are registered in `~/.config/opencode/opencode.json`:
+
+| Agent | Model | Temp | Purpose |
+|-------|-------|------|---------|
+| `go-moxie` | flash | 0.1 | Go dev: build, test, refactor, debug |
+| `go-tester` | flash | 0.1 | Test writing with project conventions |
+
+Both are registered in swarm-orchestrator's `permission.task` allowlist. Agent definition files with full context live in `~/.config/opencode/agents/go-moxie.md` and `go-tester.md`.
+
+### Skill Loading Strategy
+
+| When working on... | Load this skill |
+|---|---|
+| Any `.go` file | `go-moxie` |
+| `internal/tui/*` | `bubbletea-tui` |
+| `internal/scraper/*` | `f95zone-scraper` |
+| `internal/downloader/*` | `downloader-hosts` |
+| `internal/steam/*` | `steam-packaging` |
+| `internal/db/*` | `sqlite-database` |
+| `internal/engine/*` | `engine-detection` |
+
+Skills live in `.opencode/skills/<name>/SKILL.md` at the project root. They autoload when files matching the description are opened.
+
+### MCP Tool Strategy
+
+| MCP Server | Status | Use for |
+|------------|--------|---------|
+| `context7` | ✅ Enabled | Go library API docs (ncruces/go-sqlite3, charmbracelet/bubbletea, goquery, etc.) |
+| `searxng` | ✅ Enabled | F95Zone site changes, Steam API docs, general web research |
+| `chrome-devtools` | ✅ Enabled | Debugging web-related features, inspecting HTML for scraper parser updates |
+| `codegraph` | ✅ Enabled | Codebase-wide refactoring analysis, dependency graph visualization — DB lives at `/mnt/milk/F95/.codegraph/` via symlink |
+
+### Plugin Status
+
+| Plugin | Purpose | Status |
+|--------|---------|--------|
+| `opencode-beads` | Issue tracking & workflow | ✅ Installed |
+| `opencode-snippets` | Reusable code templates | ✅ Installed |
+| `oc-crofai` | Unknown — needs investigation | ⚠ Installed, undocumented |
+
+### Subagent Delegation Strategy
+
+| Task | Subagent | Why |
+|------|----------|-----|
+| Bug investigation | `debugger` | Systematic root cause analysis |
+| Code review | `code-review` | Framework-agnostic, catches convention drift |
+| Architecture design | `architect` + `oracle` | Plan + red-team review before implementation |
+| Refactoring | `refactorer` | Plans changes before editing, reduces risk |
+| Security audit | `security-engineer` | SSRF, path traversal, cookie handling |
+| Schema changes | `database-architect` | Migration planning, index optimization |
+| External API research | `researcher` | Fetches docs while primary agent continues |
+| Test writing | `test-engineer` | Project-pattern-aware test generation |
+| Complex features | `swarm-orchestrator` | Breaks into parallel subtasks |
+| Codebase exploration | `explore` | Fast file/code search across 116+ files |
+
+### Workflow Patterns
+
+**Adding a new engine type:**
+1. Load `engine-detection` skill
+2. Add `Engine` const + profile in `detector.go`
+3. Add color in `tui/styles.go`
+4. Add to CHECK constraint in `db/db.go`
+5. Add to engine tags in `engine_tags.go`
+6. Load `sqlite-database` skill for migration step
+7. Run quality gate
+
+**Adding a new download host:**
+1. Load `downloader-hosts` skill
+2. Create `hosts_<name>.go` with `HostResolver` interface
+3. Register in `hosts.go` factory
+4. Update link scoring in `links.go`
+5. Load `go-moxie` skill to write tests
+6. Run `go test ./internal/downloader/...`
+
+**Adding a new CLI command:**
+1. Create handler in `internal/commands/<name>.go`
+2. Add dispatch in `main.go` switch
+3. Update `printUsage()` in `main.go`
+4. Update `docs/moxie-spec.md` Completed list
+
+### Getting Best Model Performance
+
+1. **Load the relevant skill first** — skills provide full project context without cluttering the prompt
+2. **Use `architect` + `oracle` for big changes** — plan first with `oracle` as red team, then implement
+3. **Use `swarm-orchestrator` for cross-package features** — parallelizes independent subtasks
+4. **Use `codegraph` MCP** for dependency analysis before refactoring
+5. **Always run `go build ./... && go vet ./... && go test ./...`** — never skip the quality gate
+6. **Keep commits atomic** — `feat:` for features, `fix:` for bugs, `refactor:` for restructuring
+7. **Document behavior changes** — update relevant `docs/*.md` alongside code changes
+<!-- END OPENGUIDE STRATEGY -->

@@ -110,12 +110,23 @@ func (m *model) updateTableRows() {
 			}
 		}
 		engineStyled := engineStyle(g.Engine).Render(g.Engine)
+
+		// Determine if this game has a known path on disk.
+		hasPath := g.Path != ""
+
+		// ── Title column ───────────────────────────────────────────
 		title := truncate(g.Title, 72)
+		if !hasPath {
+			title = noPathStyle.Render(title)
+		}
+
+		// Update-available indicator (yellow)
 		if g.LatestVersion != "" && g.Version != "" && g.LatestVersion != g.Version {
 			indicator := updateAvailableStyle.Render(" 🔄")
 			title += indicator
 		}
-		// Show download indicator
+
+		// Download status indicator
 		if ad, ok := m.activeDownloads[g.ID]; ok {
 			ad.mu.Lock()
 			status := ad.status
@@ -129,12 +140,23 @@ func (m *model) updateTableRows() {
 				title += greenStyle.Render(" ✓")
 			}
 		}
+
+		// ── ID column: status-colored "tag" effect ─────────────────
+		idStr := fmt.Sprintf("%d", g.ID)
+		idStyled := statusStyle(g.Status).Render(idStr)
+		if !hasPath {
+			idStyled = noPathStyle.Render(idStr)
+		}
+
+		// ── Status column: color-coded text ────────────────────────
+		statusStyled := statusStyle(g.Status).Render(g.Status)
+
 		rows = append(rows, table.Row{
-			fmt.Sprintf("%d", g.ID),
+			idStyled,
 			title,
 			engineStyled,
 			ver,
-			g.Status,
+			statusStyled,
 		})
 	}
 	m.table.SetRows(rows)

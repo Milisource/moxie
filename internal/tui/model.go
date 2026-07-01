@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -145,8 +146,9 @@ type model struct {
 	deleteTitle  string
 
 	// detail view
-	detailGame  *db.Game
-	scrapedMeta *db.ScrapedMeta
+	detailGame     *db.Game
+	scrapedMeta    *db.ScrapedMeta
+	detailViewport viewport.Model
 
 	// edit (title rename)
 	editing   bool
@@ -219,6 +221,7 @@ func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) m
 		scraperClient:   sc,
 		f95Cookie:       f95Cookie,
 		activeDownloads: make(map[int64]*activeDownload),
+		detailViewport:  viewport.New(0, 0),
 	}
 }
 

@@ -33,12 +33,10 @@ func Scrape(args []string) {
 	}
 
 	if fs.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: moxie scrape <game-id> [flags]\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie scrape <id|name> [flags]\n")
 		fmt.Fprintf(os.Stderr, "       moxie scrape --auto\n")
 		os.Exit(1)
 	}
-	id := util.MustParseInt(fs.Arg(0))
-
 	if cookie == "" {
 		fmt.Fprintf(os.Stderr, "Cookie required. Use --cookie, --cookie-file, or log into f95zone.to in Firefox.\n")
 		os.Exit(1)
@@ -47,15 +45,17 @@ func Scrape(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
-	game, err := database.GetGame(id)
-	if err != nil || game == nil {
-		fmt.Fprintf(os.Stderr, "Game with ID %d not found.\n", id)
+	game := ResolveGame(database, fs.Arg(0))
+	if game == nil {
+		fmt.Fprintf(os.Stderr, "Cancelled.\n")
 		os.Exit(1)
 	}
 
 	url := *threadURL
 	if url == "" {
-		url = game.F95URL
+		// Use slug-agnostic URL from thread ID when available so
+		// version changes in the URL slug don't break scraping.
+		url = scraper.ResolveScrapeURL(game.F95URL, game.F95ThreadID)
 	}
 	if url == "" {
 		fmt.Fprintf(os.Stderr, "No F95Zone URL specified. Use --url or set it on the game first.\n")
@@ -84,10 +84,22 @@ func Scrape(args []string) {
 		os.Exit(1)
 	}
 
+	// Persist the successful association to cache so future auto-runs
+	// skip searching and use the thread ID directly.
+	if data.ThreadID > 0 {
+		scraper.LoadAssociationCache()
+		title := scraper.SanitizeTitle(game.Title)
+		if title == "" {
+			title = game.Title
+		}
+		scraper.SetCachedThreadID(title, data.ThreadID)
+		scraper.SaveAssociationCache()
+	}
+
 	// Save scraped metadata.
 	if data.Developer != "" || data.Overview != "" || data.CoverURL != "" {
 		meta := &db.ScrapedMeta{
-			GameID:    id,
+			GameID:    game.ID,
 			Developer: data.Developer,
 			Overview:  data.Overview,
 			CoverURL:  data.CoverURL,
@@ -100,13 +112,13 @@ func Scrape(args []string) {
 		// Save download links with platform detection.
 	if len(data.DownloadLinks) > 0 {
 		// Clear existing links for this game to avoid duplicates.
-		database.DeleteDownloadLinksByGameID(id)
+		database.DeleteDownloadLinksByGameID(game.ID)
 
 		fmt.Printf("Download links: %d found\n", len(data.DownloadLinks))
 		for _, dl := range data.DownloadLinks {
 			linkPlatform := downloader.DetectPlatformFromLink(dl.Name, dl.URL)
 			link := &db.DownloadLink{
-				GameID:   id,
+				GameID:   game.ID,
 				URL:      dl.URL,
 				Host:     dl.Host,
 				Name:     dl.Name,
@@ -221,6 +233,16 @@ func ScrapeBatch(args []string) {
 			continue
 		}
 
+		// Persist to association cache.
+		if td.ThreadID > 0 {
+			scraper.LoadAssociationCache()
+			title := scraper.SanitizeTitle(game.Title)
+			if title == "" {
+				title = game.Title
+			}
+			scraper.SetCachedThreadID(title, td.ThreadID)
+		}
+
 		if td.Developer != "" || td.Overview != "" || td.CoverURL != "" {
 			meta := &db.ScrapedMeta{
 				GameID:    e.id,
@@ -240,6 +262,9 @@ func ScrapeBatch(args []string) {
 		fmt.Fprintln(os.Stderr)
 		ok++
 	}
+
+	// Persist association cache entries from this batch.
+	scraper.SaveAssociationCache()
 
 	fmt.Fprintf(os.Stderr, "\nDone: %d scraped, %d failed.\n", ok, failed)
 }

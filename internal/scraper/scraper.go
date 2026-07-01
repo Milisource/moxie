@@ -262,6 +262,28 @@ func (c *Client) checkBlocked(resp *http.Response) (bodyStr string, err error) {
 	return bodyStr, nil
 }
 
+// ThreadURL constructs a slug-agnostic F95Zone thread URL from a thread ID.
+// XenForo resolves by thread ID regardless of slug content, so this URL
+// is stable across version updates (when the version in the slug changes).
+// When threadID is 0, returns empty string (caller should fall back to the
+// stored full URL in that case).
+func ThreadURL(threadID int64) string {
+	if threadID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("https://f95zone.to/threads/%d/", threadID)
+}
+
+// ResolveScrapeURL returns the best URL to use for scraping a game's thread.
+// Prefers a slug-agnostic URL from F95ThreadID when available, falling back
+// to the stored F95URL for backward compatibility with older DB entries.
+func ResolveScrapeURL(f95URL string, f95ThreadID int64) string {
+	if u := ThreadURL(f95ThreadID); u != "" {
+		return u
+	}
+	return f95URL
+}
+
 // ScrapeThread fetches and parses a XenForo thread page.
 func (c *Client) ScrapeThread(threadURL string) (*ThreadData, error) {
 	return c.ScrapeThreadWithContext(context.Background(), threadURL)

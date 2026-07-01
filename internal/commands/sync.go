@@ -81,6 +81,9 @@ func SyncGame(id int64, cookie string, unsafe bool, force bool) {
 		os.Exit(1)
 	}
 
+	// Persist any new cache entries (e.g. from a successful association).
+	scraper.SaveAssociationCache()
+
 	// Phase 1 result.
 	if result.Associated && result.ThreadData != nil {
 		fmt.Fprintf(os.Stderr, "  ✓ Associated: %s", result.ThreadData.Title)
@@ -144,15 +147,19 @@ func Sync(args []string) {
 		os.Exit(1)
 	}
 
-	// Single-game sync: moxie sync <game-id>
-	if fs.NArg() >= 1 {
-		id := util.MustParseInt(fs.Arg(0))
-		SyncGame(id, cookie, *unsafe, *force)
-		return
-	}
-
 	database := OpenDB()
 	defer database.Close()
+
+	// Single-game sync: moxie sync <game-id>
+	if fs.NArg() >= 1 {
+		game := ResolveGame(database, fs.Arg(0))
+		if game == nil {
+			fmt.Fprintf(os.Stderr, "Cancelled.\n")
+			os.Exit(1)
+		}
+		SyncGame(game.ID, cookie, *unsafe, *force)
+		return
+	}
 
 	// Phase 1: Associate games with F95Zone threads.
 	fmt.Fprintln(os.Stderr, "\n=== Phase 1/2: Associating games with F95Zone threads ===")
@@ -264,9 +271,14 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 	}
 	fmt.Fprintf(os.Stderr, "This is a background task — let it run. It'll pause occasionally to avoid rate limits.\n\n")
 
+	// Load persistent association cache (survives restarts).
+	scraper.LoadAssociationCache()
+
 	searchCache := make(map[string][]scraper.SearchResult) // sanitized_title -> search results
 	urlCache := make(map[string]string)                    // sanitized_title -> thread URL
 	processed := make(map[string]bool)                     // sanitized_title -> fully processed (skip duplicates)
+
+	defer scraper.SaveAssociationCache() // persist any new entries
 
 	for i, game := range queue {
 		elapsed := time.Since(startTime).Truncate(time.Second)
@@ -295,7 +307,15 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 
 		// Use caches to avoid redundant searches.
 		var results []scraper.SearchResult
-		if cachedURL, ok := urlCache[query]; ok {
+
+		// Level 1: Persistent association cache (survives restarts).
+		// When a game's thread has been manually identified, the cache
+		// provides the thread ID and we construct a slug-agnostic URL.
+		if cachedID := scraper.GetCachedThreadID(query); cachedID > 0 {
+			cachedURL := scraper.ThreadURL(cachedID)
+			results = []scraper.SearchResult{{Title: game.Title, URL: cachedURL}}
+			fmt.Fprintf(os.Stderr, "  (cached thread %d)\n", cachedID)
+		} else if cachedURL, ok := urlCache[query]; ok {
 			results = []scraper.SearchResult{{Title: game.Title, URL: cachedURL}}
 		} else {
 			var cached bool
@@ -419,6 +439,9 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 
 		// Cache the successful association so future runs return instantly.
 		urlCache[query] = best.URL
+		if data.ThreadID > 0 {
+			scraper.SetCachedThreadID(query, data.ThreadID)
+		}
 
 		log.Info("game associated",
 			"title", game.Title,

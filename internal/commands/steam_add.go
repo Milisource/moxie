@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/mili/moxie/internal/steam"
-	"github.com/mili/moxie/internal/util"
 )
 
 // SteamAdd adds a game to the Steam library.
@@ -24,11 +23,9 @@ func SteamAdd(args []string) {
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: moxie steam add <game-id>\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie steam add <id|name>\n")
 		os.Exit(1)
 	}
-	id := util.MustParseInt(fs.Arg(0))
-
 	// 1. Sanity checks for Steam.
 	steamRoot, err := steam.FindSteamRoot()
 	if err != nil {
@@ -66,13 +63,13 @@ func SteamAdd(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
-	game, err := database.GetGame(id)
-	if err != nil || game == nil {
-		fmt.Fprintf(os.Stderr, "Game with ID %d not found.\n", id)
+	game := ResolveGame(database, fs.Arg(0))
+	if game == nil {
+		fmt.Fprintf(os.Stderr, "Cancelled.\n")
 		os.Exit(1)
 	}
 
-	meta, _ := database.GetScrapedMeta(id)
+	meta, _ := database.GetScrapedMeta(game.ID)
 
 	// 3. Resolve executable.
 	exe := ResolveExecutable(*game)

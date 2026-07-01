@@ -26,6 +26,16 @@ func (m model) detailView() string {
 		return m.loadingView()
 	}
 
+	// Build the full scrollable content and set it on the viewport.
+	content := m.buildDetailContent()
+	m.detailViewport.SetContent(content)
+
+	return appStyle.Render(m.detailViewport.View())
+}
+
+// buildDetailContent renders all game detail content (header, info,
+// download section, overlays) into a single string for the viewport.
+func (m model) buildDetailContent() string {
 	game := m.detailGame
 
 	var b strings.Builder
@@ -164,7 +174,7 @@ func (m model) detailView() string {
 		b.WriteString(urlBox)
 	}
 
-	return appStyle.Render(b.String())
+	return b.String()
 }
 
 // downloadSection renders download progress or status for a game.

@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/mili/moxie/internal/steam"
-	"github.com/mili/moxie/internal/util"
 )
 
 // SteamRemove removes a game from the Steam library.
@@ -17,17 +16,15 @@ func SteamRemove(args []string) {
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: moxie steam remove <game-id>\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie steam remove <id|name>\n")
 		os.Exit(1)
 	}
-	id := util.MustParseInt(fs.Arg(0))
-
 	database := OpenDB()
 	defer database.Close()
 
-	game, err := database.GetGame(id)
-	if err != nil || game == nil {
-		fmt.Fprintf(os.Stderr, "Game with ID %d not found.\n", id)
+	game := ResolveGame(database, fs.Arg(0))
+	if game == nil {
+		fmt.Fprintf(os.Stderr, "Cancelled.\n")
 		os.Exit(1)
 	}
 

@@ -1,9 +1,9 @@
-
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
 .beads-credential-key
 moxie
+.codegraph
 workflow.log
 workflow2.log
 workflow3.log

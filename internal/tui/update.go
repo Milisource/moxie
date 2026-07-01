@@ -23,13 +23,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.reflowTable()
+		m.detailViewport.Width = msg.Width
+		m.detailViewport.Height = msg.Height
 		return m, nil
+
+	case tea.MouseMsg:
+		if m.viewMode == DetailView {
+			m.detailViewport, _ = m.detailViewport.Update(msg)
+			return m, nil
+		}
 
 	case tea.KeyMsg:
 		key := msg.String()
 
 		if key == "ctrl+c" {
 			return m, tea.Quit
+		}
+
+		// Forward all key events to the viewport when in detail view so that
+		// scrolling keys (↑/↓, pgup/pgdn, home/end) are handled even when
+		// an overlay (edit, delete, exe, url) is active.
+		if m.viewMode == DetailView {
+			m.detailViewport, _ = m.detailViewport.Update(msg)
 		}
 
 		if m.showHelp {
@@ -106,6 +121,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.viewMode = DetailView
 					m.err = nil
 					m.detailGame = nil
+					m.detailViewport.YOffset = 0
 					return m, tea.Batch(m.loadDetailGame(id), m.loadMeta(id))
 				}
 			}
@@ -324,6 +340,7 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		m.editInput = ei
 		m.editing = true
 		m.err = nil
+		m.detailViewport.YOffset = 999999 // auto-scroll to show the edit input
 		return m, textinput.Blink
 	case "s":
 		game, err := m.db.GetGame(m.selectedID)
@@ -347,6 +364,7 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
+		m.detailViewport.YOffset = 999999 // auto-scroll to show the delete prompt
 		return m, nil
 	case "o":
 		game, err := m.db.GetGame(m.selectedID)
@@ -369,6 +387,7 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		m.urlInput = ui
 		m.setUrl = true
 		m.err = nil
+		m.detailViewport.YOffset = 999999 // auto-scroll to show the URL input
 		return m, textinput.Blink
 	case "x":
 		game, err := m.db.GetGame(m.selectedID)
@@ -384,6 +403,7 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		m.exeInput = ei
 		m.editingExe = true
 		m.err = nil
+		m.detailViewport.YOffset = 999999 // auto-scroll to show the exe input
 		return m, textinput.Blink
 	case "p":
 		game, err := m.db.GetGame(m.selectedID)

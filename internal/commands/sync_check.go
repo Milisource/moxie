@@ -70,7 +70,10 @@ func RunUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			data, err := client.ScrapeThread(g.F95URL)
+			// Use slug-agnostic URL from thread ID when available so version
+			// changes in the URL slug don't break future scrapes.
+			scrapeURL := scraper.ResolveScrapeURL(g.F95URL, g.F95ThreadID)
+			data, err := client.ScrapeThread(scrapeURL)
 			if err != nil {
 				mu.Lock()
 				fmt.Fprintf(os.Stderr, "  %q ✗ %v\n", g.Title, err)

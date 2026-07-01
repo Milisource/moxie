@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/mili/moxie/internal/steam"
-	"github.com/mili/moxie/internal/util"
 )
 
 // SteamProtonSet sets the Proton version for a Steam game.
@@ -18,21 +17,19 @@ func SteamProtonSet(args []string) {
 	fs.Parse(args)
 
 	if *versionFlag == "" {
-		fmt.Fprintf(os.Stderr, "Usage: moxie steam proton-set <game-id> --version <proton>\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie steam proton-set <id|name> --version <proton>\n")
 		os.Exit(1)
 	}
 	if fs.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: moxie steam proton-set <game-id> --version <proton>\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie steam proton-set <id|name> --version <proton>\n")
 		os.Exit(1)
 	}
-	id := util.MustParseInt(fs.Arg(0))
-
 	database := OpenDB()
 	defer database.Close()
 
-	game, err := database.GetGame(id)
-	if err != nil || game == nil {
-		fmt.Fprintf(os.Stderr, "Game with ID %d not found.\n", id)
+	game := ResolveGame(database, fs.Arg(0))
+	if game == nil {
+		fmt.Fprintf(os.Stderr, "Cancelled.\n")
 		os.Exit(1)
 	}
 

@@ -23,64 +23,82 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 		OldVersion: game.Version,
 	}
 
+	// Load the association cache so GetCachedThreadID works.
+	scraper.LoadAssociationCache()
+
 	// Phase 1: Associate if needed.
 	if game.F95URL == "" {
 		if client == nil {
 			return nil, fmt.Errorf("cannot search F95Zone: no scraper client available")
 		}
 
-		if interactive {
-			fmt.Fprintf(os.Stderr, "  Searching F95Zone for %q...\n", game.Title)
-		}
 		query := scraper.SanitizeTitle(game.Title)
 		if query == "" {
 			query = game.Title
 		}
-		searchResults, err := client.SearchF95Zone(query)
-		if err != nil {
-			return nil, fmt.Errorf("search failed: %w", err)
-		}
-		result.SearchResults = searchResults
 
-		if len(searchResults) == 0 {
-			return nil, fmt.Errorf("no F95Zone results found for %q", game.Title)
-		}
-
-		// Pre-detect engine so we can boost candidates whose titles
-		// contain matching engine keywords (e.g., "RPGM Completed
-		// Demons Roots" over "[Translation Request] Demons Roots").
-		detEngine := engine.Detect(game.Path)
-		engVariants, hasEngVariants := engine.EngineTagVariants[string(detEngine.Engine)]
-
-		// Pick best match.
+		// Check persistent association cache first.
 		var best *scraper.SearchResult
 		var bestScore float64
-		for i, r := range searchResults {
-			score := scraper.ComputeMatchScore(game.Title, r.Title)
-			// Boost candidates whose title contains engine keywords
-			// matching the detected engine (e.g. RPGM, Unity, Flash).
-			// +0.15 is enough to push a 0.85 engine-tagged release
-			// thread above a 1.00 bare-title request thread.
-			if hasEngVariants {
-				titleLower := strings.ToLower(r.Title)
-				for _, variant := range engVariants {
-					if strings.Contains(titleLower, variant) {
-						score += 0.15
-						if score > 1.0 {
-							score = 1.0
+		var fromCache bool
+		var detEngine engine.Result // set below when not from cache
+
+		if cachedID := scraper.GetCachedThreadID(query); cachedID > 0 {
+			cachedURL := scraper.ThreadURL(cachedID)
+			best = &scraper.SearchResult{Title: game.Title, URL: cachedURL}
+			bestScore = 1.0
+			fromCache = true
+			if interactive {
+				fmt.Fprintf(os.Stderr, "  Using cached thread %d for %q\n", cachedID, game.Title)
+			}
+		} else {
+			if interactive {
+				fmt.Fprintf(os.Stderr, "  Searching F95Zone for %q...\n", game.Title)
+			}
+			searchResults, err := client.SearchF95Zone(query)
+			if err != nil {
+				return nil, fmt.Errorf("search failed: %w", err)
+			}
+			result.SearchResults = searchResults
+
+			if len(searchResults) == 0 {
+				return nil, fmt.Errorf("no F95Zone results found for %q", game.Title)
+			}
+
+			// Pre-detect engine so we can boost candidates whose titles
+			// contain matching engine keywords (e.g., "RPGM Completed
+			// Demons Roots" over "[Translation Request] Demons Roots").
+			detEngine = engine.Detect(game.Path)
+			engVariants, hasEngVariants := engine.EngineTagVariants[string(detEngine.Engine)]
+
+			// Pick best match.
+			for i, r := range searchResults {
+				score := scraper.ComputeMatchScore(game.Title, r.Title)
+				// Boost candidates whose title contains engine keywords
+				// matching the detected engine (e.g. RPGM, Unity, Flash).
+				// +0.15 is enough to push a 0.85 engine-tagged release
+				// thread above a 1.00 bare-title request thread.
+				if hasEngVariants {
+					titleLower := strings.ToLower(r.Title)
+					for _, variant := range engVariants {
+						if strings.Contains(titleLower, variant) {
+							score += 0.15
+							if score > 1.0 {
+								score = 1.0
+							}
+							break
 						}
-						break
 					}
 				}
-			}
-			marker := "  "
-			if score > bestScore {
-				bestScore = score
-				best = &searchResults[i]
-				marker = "→ "
-			}
-			if interactive {
-				fmt.Fprintf(os.Stderr, "  %s[%.0f%%] %s\n", marker, score*100, r.Title)
+				marker := "  "
+				if score > bestScore {
+					bestScore = score
+					best = &searchResults[i]
+					marker = "→ "
+				}
+				if interactive {
+					fmt.Fprintf(os.Stderr, "  %s[%.0f%%] %s\n", marker, score*100, r.Title)
+				}
 			}
 		}
 		result.BestMatch = best
@@ -90,7 +108,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 			return nil, fmt.Errorf("no good match found (best score: %.0f%%)", bestScore*100)
 		}
 
-		if interactive {
+		if interactive && !fromCache {
 			fmt.Fprintf(os.Stderr, "  Scraping %s...\n", best.URL)
 		}
 		data, err := client.ScrapeThread(best.URL)
@@ -99,18 +117,21 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 		}
 		result.ThreadData = data
 
-		// Check engine consistency before associating.
-		if !engine.EngineMatchesThread(detEngine, data.Tags, best.Title) {
-			result.EngineMismatch = true
-			if interactive {
-				fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread: %q, tags: %s)\n",
-					detEngine.Engine, util.Truncate(best.Title, 60), engine.FormatTagsBrief(data.Tags, 4))
-				fmt.Fprintf(os.Stderr, "  Associate anyway? [y/N]: ")
-				var answer string
-				fmt.Scanln(&answer)
-				if strings.ToLower(answer) != "y" {
-					fmt.Fprintln(os.Stderr, "  Cancelled.")
-					return nil, fmt.Errorf("association cancelled")
+		// Check engine consistency before associating (skip when
+		// using cached association — already verified previously).
+		if !fromCache {
+			if !engine.EngineMatchesThread(detEngine, data.Tags, best.Title) {
+				result.EngineMismatch = true
+				if interactive {
+					fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread: %q, tags: %s)\n",
+						detEngine.Engine, util.Truncate(best.Title, 60), engine.FormatTagsBrief(data.Tags, 4))
+					fmt.Fprintf(os.Stderr, "  Associate anyway? [y/N]: ")
+					var answer string
+					fmt.Scanln(&answer)
+					if strings.ToLower(answer) != "y" {
+						fmt.Fprintln(os.Stderr, "  Cancelled.")
+						return nil, fmt.Errorf("association cancelled")
+					}
 				}
 			}
 		}
@@ -118,6 +139,11 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 		scraper.ApplyThreadData(game, data, best.URL)
 		if err := database.UpdateGame(game); err != nil {
 			return nil, fmt.Errorf("save failed: %w", err)
+		}
+
+		// Cache the successful association so future runs skip searching.
+		if data.ThreadID > 0 {
+			scraper.SetCachedThreadID(query, data.ThreadID)
 		}
 
 		if data.Developer != "" || data.Overview != "" || data.CoverURL != "" {
@@ -153,7 +179,10 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 			return result, fmt.Errorf("scrape failed: no scraper client available")
 		}
 
-		data, err := client.ScrapeThread(game.F95URL)
+		// Use slug-agnostic URL from thread ID when available so version
+		// changes in the URL slug don't break future scrapes.
+		scrapeURL := scraper.ResolveScrapeURL(game.F95URL, game.F95ThreadID)
+		data, err := client.ScrapeThread(scrapeURL)
 		if err != nil {
 			return result, fmt.Errorf("scrape failed: %w", err)
 		}

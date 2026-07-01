@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
-**Version:** 0.3.52-alpha (May 2026)
-**Status:** Alpha — 0.3.52 (moxie update fix — correct GitHub repo URL). Download: Beta (6 host resolvers: Pixeldrain, Buzzheavier, Gofile, Google Drive, DataNodes, MixDrop, VikingFile (beta))
+**Version:** 0.4.0-alpha (July 2026)
+**Status:** Alpha — 0.4.0 (moxie update fix — correct GitHub repo URL). Download: Beta (6 host resolvers: Pixeldrain, Buzzheavier, Gofile, Google Drive, DataNodes, MixDrop, VikingFile (beta))
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
@@ -49,7 +49,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Cleanup command: engine mismatch detection, exe mismatch detection, interactive disassociation
 - [x] Engine compatibility map (RPGM↔HTML via NW.js, WolfRPG↔HTML)
 - [x] `--warnings` flag on `list` command
-- [x] 223 tests across 14 test files (scanner, engine, scraper, DB, helpers, commands, browser, tui, steam, util)
+- [x] 235 tests across 15 test files (scanner, engine, scraper, DB, helpers, commands, browser, tui, steam, util)
 - [x] Browser package tested — cookie value sanitization and header building (100% pure logic coverage)
 - [x] TUI package tested — filter/sort, status/engine colors, formatting helpers (100% pure logic coverage)
 - [x] Steam Proton VDF pure logic tested — vdfEscape, isValidProton, getOrCreateMap, encodeVDF/writeVDFMap (85-100%)
@@ -124,6 +124,12 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Update merge — downloaded+extracted game files are merged into the existing game directory, preserving user saves, mods, and configs based on engine-aware preserve patterns (14 engines). Optional .old backup.
 - [x] `moxie install <id> <path>` command — manual archive→extract→merge→DB-update pipeline for games whose download links all failed
 - [x] `moxie play <id|name>` fuzzy name search — tries numeric ID first, falls back to title `LIKE` search with multi-word retry, interactive picker for multiple results
+- [x] Fuzzy name search across ALL commands — shared `ResolveGame`/`ResolveFirstArg` helpers in `internal/commands/game_lookup.go` (143 lines, 12 tests) powering 17 command entry points (info, scrape, download, install, sync, remove, set-exe, set-path, config set-thread, steam add/remove/fix-artwork/proton-set)
+- [x] `ConfirmDestructive` helper — guards destructive operations (remove, set-exe, set-path, config set-thread) with name-match confirmation prompt; respects `--assume-yes` and non-interactive (piped) stdin
+- [x] TTY detection (`isInteractive()`) — skips interactive prompts when stdin is piped/redirected; prints matches to stderr and exits with code 1 instead of blocking
+- [x] `ResolveFirstArg` variant — for multi-arg commands like `install <id|name> <archive-path>` that must not consume subsequent positional args as part of the game name
+- [x] `LaunchCommand` working directory fix — `cmd.Dir` set to game root so Windows games under Wine resolve relative asset paths correctly
+- [x] `SelectBestExe` scoring overhaul — skips known runtime engines (`nwjc`, `nw`, `node`) and launchers (`unitycrashhandler`, `unins`, `setup`); awards +1 GB score bonus for `Game.exe`
 - [x] Host scoring reorganized — verified hosts (Pixeldrain, Buzzheavier, Gofile, Catbox) weighted +25, may-work hosts (DataNodes, Google Drive, MixDrop) weighted +10, borked hosts (Mega, VikingFile, WorkUpload, KrakenFiles, Bunkrr) penalized -200
 - [x] Google Drive resolver — two-step confirm token extraction for >100 MB large files; `GET /uc?export=download&id=<ID>` → parse HTML for `confirm=` token → re-request with `&confirm=<TOKEN>`
 - [x] DataNodes resolver — cookie + POST flow: `GET /download/<CODE>` for session cookies → parse hidden form fields → `POST` same URL with cookies → follow 302 redirect to CDN download URL
@@ -145,8 +151,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Download links table with platform detection (Linux/Windows/MacOS)
 - [x] Dead link validation (404/5XX/DMCA detection)
 - [ ] Mega download support (native SDK or megatools subprocess wrapper)
-- [ ] FTS5 full-text search
-- [ ] Mega download support (native SDK or megatools subprocess wrapper)
+- [ ] FTS5 full-text search (current: `LIKE '%query%'` only)
 - [ ] Cover image download and local caching
 - [ ] Directory watcher (auto-scan on file changes)
 - [ ] Export/import library (JSON backup)

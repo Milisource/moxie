@@ -1,14 +1,12 @@
 package commands
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 
 	"github.com/mili/moxie/internal/db"
@@ -30,37 +28,11 @@ func Play(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
-	raw := fs.Arg(0)
-	var game *db.Game
-
-	// Try numeric ID first.
-	if id, err := strconv.ParseInt(raw, 10, 64); err == nil {
-		g, gErr := database.GetGame(id)
-		if gErr == nil && g != nil {
-			game = g
-		}
-	}
-
-	// Fall back to fuzzy name search if ID lookup failed or arg wasn't numeric.
+	// Join all positional args so unquoted multi-word names still work.
+	raw := strings.Join(fs.Args(), " ")
+	game := ResolveGame(database, raw)
 	if game == nil {
-		results, srchErr := database.SearchGames(raw)
-		if srchErr != nil || len(results) == 0 {
-			// Arg might contain spaces — try it as a multi-word query.
-			results, srchErr = database.SearchGames(strings.Join(fs.Args(), " "))
-		}
-		if srchErr != nil || len(results) == 0 {
-			fmt.Fprintf(os.Stderr, "No game found matching %q.\n", raw)
-			os.Exit(1)
-		}
-		if len(results) == 1 {
-			game = &results[0]
-		} else {
-			game = promptSelectGame(results)
-		}
-	}
-
-	if game == nil {
-		fmt.Fprintf(os.Stderr, "Game not found.\n")
+		fmt.Fprintf(os.Stderr, "Cancelled.\n")
 		os.Exit(1)
 	}
 
@@ -70,7 +42,7 @@ func Play(args []string) {
 		os.Exit(1)
 	}
 
-	cmd := LaunchCommand(exe)
+	cmd := LaunchCommand(exe, game.Path)
 	if cmd == nil {
 		fmt.Fprintf(os.Stderr, "Cannot launch %q: no launcher available for this file type on %s.\n", exe, runtime.GOOS)
 		os.Exit(1)
@@ -82,25 +54,6 @@ func Play(args []string) {
 	}
 	// Don't wait — let it run independently.
 	go cmd.Wait()
-}
-
-// promptSelectGame shows a numbered list of games and asks the user to pick one.
-func promptSelectGame(games []db.Game) *db.Game {
-	fmt.Fprintf(os.Stderr, "\nMultiple games found:\n")
-	for i, g := range games {
-		fmt.Fprintf(os.Stderr, "  %2d. [%d] %s  (%s)\n", i+1, g.ID, g.Title, g.Engine)
-	}
-	fmt.Fprintf(os.Stderr, "\nEnter number or 0 to cancel: ")
-
-	reader := bufio.NewReader(os.Stdin)
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
-
-	n, err := strconv.Atoi(input)
-	if err != nil || n < 1 || n > len(games) {
-		return nil
-	}
-	return &games[n-1]
 }
 
 // ResolveExecutable finds the best executable to launch for a game.
@@ -199,59 +152,88 @@ func ResolveExecutable(g db.Game) string {
 }
 
 // SelectBestExe picks the most likely main executable from a list.
+// It skips known runtime engines and launchers, then picks by size
+// (game executables are typically bigger than their launchers).
 func SelectBestExe(paths []string) string {
 	if len(paths) == 1 {
 		return paths[0]
 	}
-	// Pick the largest — game executables are typically bigger than launchers.
-	var best string
-	var bestSize int64
+	// Score-based selection: prefer "Game.exe"-like names, penalize known runtimes.
+	type scored struct {
+		path  string
+		score int64
+		size  int64
+	}
+	var candidates []scored
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil {
 			continue
 		}
 		name := strings.ToLower(filepath.Base(p))
-		if strings.Contains(name, "unitycrashhandler") ||
+		base := strings.TrimSuffix(name, ".exe")
+
+		// Skip known runtimes and installers — they're engine binaries, not the game.
+		if base == "nwjc" || base == "nw" || base == "node" ||
+			strings.Contains(name, "unitycrashhandler") ||
 			strings.Contains(name, "unins") ||
 			strings.Contains(name, "setup") {
 			continue
 		}
-		if info.Size() > bestSize {
-			bestSize = info.Size()
-			best = p
+
+		// Score: size + bonus for common game executable names.
+		s := info.Size()
+		if base == "game" {
+			s += 1 << 30 // +1 GB bonus — strongly prefer Game.exe
+		}
+		candidates = append(candidates, scored{p, s, info.Size()})
+	}
+
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.score > best.score {
+			best = c
 		}
 	}
-	return best
+	return best.path
 }
 
-// LaunchCommand builds an exec.Cmd for the given executable.
-func LaunchCommand(exe string) *exec.Cmd {
+// LaunchCommand builds an exec.Cmd for the given executable, setting the
+// working directory to the game's root path so relative asset paths resolve.
+func LaunchCommand(exe, gameDir string) *exec.Cmd {
 	ext := strings.ToLower(filepath.Ext(exe))
+	setDir := func(cmd *exec.Cmd) *exec.Cmd {
+		cmd.Dir = gameDir
+		return cmd
+	}
 	switch {
 	case ext == ".appimage":
-		return exec.Command(exe)
+		return setDir(exec.Command(exe))
 	case ext == ".sh":
-		return exec.Command("sh", exe)
+		return setDir(exec.Command("sh", exe))
 	case ext == ".exe":
 		if runtime.GOOS == "windows" {
-			return exec.Command(exe)
+			return setDir(exec.Command(exe))
 		}
 		// Check for wine availability.
 		if winePath, err := exec.LookPath("wine"); err == nil {
-			return exec.Command(winePath, exe)
+			return setDir(exec.Command(winePath, exe))
 		}
 		// macOS: try CrossOver as fallback.
 		if runtime.GOOS == "darwin" {
 			crossoverWine := "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine"
 			if _, err := os.Stat(crossoverWine); err == nil {
-				return exec.Command(crossoverWine, exe)
+				return setDir(exec.Command(crossoverWine, exe))
 			}
 		}
 		fmt.Fprintf(os.Stderr, "⚠ wine not found — cannot launch .exe files on this platform.\n")
 		return nil
 	default:
 		// Native Linux binary (.x86_64, .x86, no extension).
-		return exec.Command(exe)
+		return setDir(exec.Command(exe))
 	}
 }

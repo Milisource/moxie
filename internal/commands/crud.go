@@ -221,21 +221,16 @@ func List(args []string) {
 // Info shows detailed information about a game.
 func Info(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: moxie info <id>\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie info <id|name>\n")
 		os.Exit(1)
 	}
-	id := util.MustParseInt(args[0])
 
 	database := OpenDB()
 	defer database.Close()
 
-	game, err := database.GetGame(id)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+	game := ResolveGame(database, args[0])
 	if game == nil {
-		fmt.Fprintf(os.Stderr, "Game with ID %d not found.\n", id)
+		fmt.Fprintf(os.Stderr, "Cancelled.\n")
 		os.Exit(1)
 	}
 
@@ -254,7 +249,7 @@ func Info(args []string) {
 	fmt.Printf("Updated:    %s\n", game.UpdatedAt.Format("2006-01-02 15:04"))
 
 	// Show scraped metadata if available.
-	meta, err := database.GetScrapedMeta(id)
+	meta, err := database.GetScrapedMeta(game.ID)
 	if err == nil && meta != nil {
 		fmt.Printf("\n--- F95Zone Metadata ---\n")
 		fmt.Printf("Developer:  %s\n", meta.Developer)
@@ -333,10 +328,9 @@ func Add(args []string) {
 // SetExe sets the executable path for a game.
 func SetExe(args []string) {
 	if len(args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: moxie set-exe <id> <exe-path>\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie set-exe <id|name> <exe-path>\n")
 		os.Exit(1)
 	}
-	id := util.MustParseInt(args[0])
 	exePath := filepath.Clean(args[1])
 
 	if _, err := os.Stat(exePath); err != nil {
@@ -347,9 +341,14 @@ func SetExe(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
-	game, err := database.GetGame(id)
-	if err != nil || game == nil {
-		fmt.Fprintf(os.Stderr, "Game with ID %d not found.\n", id)
+	game := ResolveGame(database, args[0])
+	if game == nil {
+		fmt.Fprintf(os.Stderr, "Cancelled.\n")
+		os.Exit(1)
+	}
+
+	if !ConfirmDestructive("Setting executable for", game, false) {
+		fmt.Fprintf(os.Stderr, "Aborted.\n")
 		os.Exit(1)
 	}
 
@@ -364,10 +363,9 @@ func SetExe(args []string) {
 // SetPath sets the filesystem path for a game.
 func SetPath(args []string) {
 	if len(args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: moxie set-path <id> <new-path>\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie set-path <id|name> <new-path>\n")
 		os.Exit(1)
 	}
-	id := util.MustParseInt(args[0])
 	newPath := filepath.Clean(args[1])
 
 	if _, err := os.Stat(newPath); err != nil {
@@ -378,9 +376,14 @@ func SetPath(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
-	game, err := database.GetGame(id)
-	if err != nil || game == nil {
-		fmt.Fprintf(os.Stderr, "Game with ID %d not found.\n", id)
+	game := ResolveGame(database, args[0])
+	if game == nil {
+		fmt.Fprintf(os.Stderr, "Cancelled.\n")
+		os.Exit(1)
+	}
+
+	if !ConfirmDestructive("Changing path for", game, false) {
+		fmt.Fprintf(os.Stderr, "Aborted.\n")
 		os.Exit(1)
 	}
 
@@ -396,21 +399,25 @@ func SetPath(args []string) {
 // Remove removes a game from the library.
 func Remove(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: moxie remove <id>\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie remove <id|name>\n")
 		os.Exit(1)
 	}
-	id := util.MustParseInt(args[0])
 
 	database := OpenDB()
 	defer database.Close()
 
-	game, err := database.GetGame(id)
-	if err != nil || game == nil {
-		fmt.Fprintf(os.Stderr, "Game with ID %d not found.\n", id)
+	game := ResolveGame(database, args[0])
+	if game == nil {
+		fmt.Fprintf(os.Stderr, "Cancelled.\n")
 		os.Exit(1)
 	}
 
-	if err := database.DeleteGame(id); err != nil {
+	if !ConfirmDestructive("Removing", game, false) {
+		fmt.Fprintf(os.Stderr, "Aborted.\n")
+		os.Exit(1)
+	}
+
+	if err := database.DeleteGame(game.ID); err != nil {
 		fmt.Fprintf(os.Stderr, "Error removing game: %v\n", err)
 		os.Exit(1)
 	}

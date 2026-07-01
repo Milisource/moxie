@@ -9,23 +9,21 @@ import (
 	"github.com/mili/moxie/internal/archive"
 	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/updater"
-	"github.com/mili/moxie/internal/util"
 )
 
 // Install installs a downloaded game archive into the game directory.
-// Usage: moxie install <game-id> <archive-path>
+// Usage: moxie install <id|name> <archive-path>
 func Install(args []string) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	fs.Parse(args)
 
 	if fs.NArg() < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: moxie install <game-id> <archive-path>\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie install <id|name> <archive-path>\n")
 		fmt.Fprintf(os.Stderr, "\nFlags:\n")
 		fs.PrintDefaults()
 		os.Exit(1)
 	}
 
-	id := util.MustParseInt(fs.Arg(0))
 	archivePath := fs.Arg(1)
 
 	// Validate archive exists and is a known format
@@ -42,9 +40,9 @@ func Install(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
-	game, err := database.GetGame(id)
-	if err != nil || game == nil {
-		fmt.Fprintf(os.Stderr, "Game with ID %d not found.\n", id)
+	game := ResolveFirstArg(database, fs.Arg(0))
+	if game == nil {
+		fmt.Fprintf(os.Stderr, "Cancelled.\n")
 		os.Exit(1)
 	}
 
@@ -99,12 +97,12 @@ func Install(args []string) {
 	if game.LatestVersion != "" && game.LatestVersion != game.Version {
 		game.Version = game.LatestVersion
 		if err := database.UpdateGame(game); err != nil {
-			log.Warn("failed to update game version", "game_id", id, "error", err)
+			log.Warn("failed to update game version", "game_id", game.ID, "error", err)
 		} else {
 			fmt.Fprintf(os.Stderr, "  Version updated to: %s\n", game.Version)
 		}
 	} else {
-		fmt.Fprintf(os.Stderr, "  Run 'moxie info %d' to see details, or set version with 'moxie config'\n", id)
+		fmt.Fprintf(os.Stderr, "  Run 'moxie info %d' to see details, or set version with 'moxie config'\n", game.ID)
 	}
 
 	// Print summary

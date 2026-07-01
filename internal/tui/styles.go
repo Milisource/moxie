@@ -86,13 +86,36 @@ var (
 				Foreground(yellow)
 
 	greenStyle = lipgloss.NewStyle().
-			Foreground(green).
-			Bold(true)
+		Foreground(green).
+		Bold(true)
 
 	redStyle = lipgloss.NewStyle().
-			Foreground(red).
-			Bold(true)
+		Foreground(red).
+		Bold(true)
+
+	// noPathStyle is used for games that are not found on disk (empty Path).
+	noPathStyle = lipgloss.NewStyle().
+			Foreground(subtle)
 )
+
+// statusStyles caches pre-built lipgloss styles for all known status values,
+// avoiding NewStyle allocations on every table row render.
+var statusStyles = map[string]lipgloss.Style{
+	"active":    lipgloss.NewStyle().Foreground(green),
+	"completed": lipgloss.NewStyle().Foreground(cyan),
+	"abandoned": lipgloss.NewStyle().Foreground(red),
+	"on_hold":   lipgloss.NewStyle().Foreground(yellow),
+	"unknown":   lipgloss.NewStyle().Foreground(subtle),
+}
+
+// statusStyle returns a cached style for the given status, falling back
+// to a dynamically created style for unknown values.
+func statusStyle(s string) lipgloss.Style {
+	if st, ok := statusStyles[s]; ok {
+		return st
+	}
+	return lipgloss.NewStyle().Foreground(statusColor(s))
+}
 
 // statusColor returns a lipgloss color for the given game status.
 func statusColor(s string) lipgloss.Color {

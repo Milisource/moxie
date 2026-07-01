@@ -93,17 +93,24 @@ func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) 
 	}
 }
 
-// followRedirect performs a HEAD request to url and follows redirects to find
+// followRedirect performs a GET request to url and follows redirects to find
 // the final destination URL. Used to unwrap F95Zone masked redirect endpoints
 // before applying host-specific URL resolution.
+//
+// GET is used instead of HEAD because some F95Zone masked URL handlers do
+// not serve the correct redirect on HEAD requests — they return the thread
+// page or login page instead. The Referer is set to an f95zone.to domain
+// to match the anti-hotlinking expectation.
 func (r *HostResolver) followRedirect(url string) (string, error) {
 	log.Debug("followRedirect request", "url", url, "has_cookie", r.f95Cookie != "")
-	req, err := http.NewRequest("HEAD", url, nil)
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return url, fmt.Errorf("create head request: %w", err)
+		return url, fmt.Errorf("create redirect-follow request: %w", err)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
-	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+	req.Header.Set("Referer", "https://f95zone.to/")
 	if r.f95Cookie != "" {
 		req.Header.Set("Cookie", r.f95Cookie)
 	}
@@ -119,16 +126,29 @@ func (r *HostResolver) followRedirect(url string) (string, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return url, fmt.Errorf("head request: %w", err)
+		return url, fmt.Errorf("redirect-follow GET failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// After following redirects, resp.Request.URL is the final URL
 	finalURL := resp.Request.URL.String()
 	if finalURL == "" {
 		return url, nil
 	}
+
+	// If the final URL is the F95Zone login page, the cookie is invalid or
+	// the session expired. Signal this clearly so the caller can surface it.
+	if isLoginRedirect(finalURL) {
+		return url, fmt.Errorf("redirected to login — F95Zone session may have expired; re-import cookies")
+	}
+
+	log.Debug("followRedirect result", "original", url, "final", finalURL, "status", resp.StatusCode)
 	return finalURL, nil
+}
+
+// isLoginRedirect returns true if the URL looks like an F95Zone login page.
+func isLoginRedirect(rawURL string) bool {
+	lower := strings.ToLower(rawURL)
+	return strings.Contains(lower, "/login") || strings.Contains(lower, "_xfRedirect")
 }
 
 // IdentifyHostInURL extracts the host label from a URL for host-specific routing.

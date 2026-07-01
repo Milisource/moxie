@@ -149,7 +149,17 @@ func downloadWithHeaders(urlStr string, headers map[string]string, destDir strin
 	}
 	defer resp.Body.Close()
 
+	log.Debug("download response", "url", urlStr, "status", resp.StatusCode, "content_length", resp.ContentLength, "content_type", resp.Header.Get("Content-Type"))
+
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
+		// Read first 1KB of response body to diagnose error pages
+		sniff := make([]byte, 1024)
+		n, _ := resp.Body.Read(sniff)
+		snippet := strings.TrimSpace(string(sniff[:n]))
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		log.Debug("non-OK response body snippet", "snippet", snippet)
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
