@@ -79,6 +79,10 @@ func ScanFiltered(root string, skipPaths map[string]bool) ([]DetectedGame, error
 		if name == "__MACOSX" {
 			return filepath.SkipDir
 		}
+		// Skip .old directories (updater rollback backups from Merge).
+		if strings.HasSuffix(name, ".old") {
+			return filepath.SkipDir
+		}
 		// Skip excluded directories.
 		if shouldSkip(name) {
 			return filepath.SkipDir

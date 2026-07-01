@@ -28,7 +28,9 @@ func Scan(args []string) {
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: moxie scan [--force] <directory>\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie scan [flags] <directory>\n")
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		fs.PrintDefaults()
 		os.Exit(1)
 	}
 	dir := fs.Arg(0)
@@ -476,22 +478,24 @@ func Remove(args []string) {
 	fmt.Printf("Removed: %s (%s)\n", game.Title, game.Engine)
 }
 
-// dirModTime returns the directory modification time as a UTC time.Time.
+// dirModTime returns the directory modification time as a UTC time.Time
+// truncated to second precision (RFC3339 storage resolution).
 // Returns the zero time if stat fails.
 func dirModTime(dir string) time.Time {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return time.Time{}
 	}
-	return info.ModTime().UTC()
+	return info.ModTime().UTC().Truncate(time.Second)
 }
 
 // mtimeMatches checks whether the directory's current modification time
-// matches the stored mtime from a previous scan. Returns true if stat
-// fails (conservative — treats unreadable dirs as unchanged to avoid
-// flooding errors).
+// matches the stored mtime from a previous scan. Compares at second
+// precision because stored mtimes are serialized via RFC3339 which
+// drops sub-second components. Returns true if stat fails (conservative
+// — treats unreadable dirs as unchanged to avoid flooding errors).
 func mtimeMatches(dir string, stored time.Time) bool {
-	stored = stored.UTC()
+	stored = stored.UTC().Truncate(time.Second)
 	current := dirModTime(dir)
 	if current.IsZero() {
 		return true // can't stat, treat as unchanged
