@@ -94,12 +94,20 @@ func Scan(args []string) {
 			continue
 		}
 		if existing != nil {
-			// Update existing record with newly detected scan data
-			// (e.g., improved version extraction from directory or files).
-			existing.Version = g.Version
-			existing.Engine = string(g.Engine)
+			// Update existing record with newly detected scan data.
+			// Only overwrite fields the user may have curated if they're
+			// still empty or set to fallback values — preserves manual
+			// corrections (engine re-classification, custom exe, etc.).
+			if existing.Version == "" {
+				existing.Version = g.Version
+			}
+			if existing.Engine == "" || existing.Engine == "Unknown" {
+				existing.Engine = string(g.Engine)
+			}
+			if existing.ExePath == "" {
+				existing.ExePath = g.ExePath
+			}
 			existing.SizeBytes = g.SizeBytes
-			existing.ExePath = g.ExePath
 			if err := database.UpdateGame(existing); err != nil {
 				fmt.Fprintf(os.Stderr, "  Error updating %s: %v\n", g.Title, err)
 				continue
