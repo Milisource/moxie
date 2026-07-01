@@ -72,7 +72,7 @@ func resolveBestLink(database *db.Database, game db.Game, cookie, targetPlatform
 // downloadAllOpen finds all games with pending updates, opens their download
 // links in the browser, and optionally watches for the downloaded archives.
 func downloadAllOpen(database *db.Database, cookie, targetPlatform, watchDir string, extract, doWatch bool) {
-	games, err := database.ListGames("", "")
+	games, err := database.ListActiveGames("", "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error listing games: %v\n", err)
 		os.Exit(1)

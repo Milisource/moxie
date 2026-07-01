@@ -112,70 +112,87 @@ func main() {
 func printUsage() {
 	fmt.Fprintf(os.Stderr, `moxie - F95Zone Game Library Manager
 
-Usage:
-  moxie scan <directory> [flags]   Scan directory for games
-  moxie tui                        Launch interactive TUI
-  moxie add <path> [flags]         Manually add a game
-  moxie info <id>                  Show game details
-  moxie scrape <game-id> [flags]   Scrape F95Zone metadata
-  moxie list [flags]               List all games in library
-  moxie remove <id>                Remove a game from library
-  moxie rename [flags]              Rename game directories using clean titles
-  moxie check-updates [flags]       Check F95Zone for version updates
-  moxie sync [game-id] [flags]      Full sync or sync a single game
-  moxie play <id|name>              Launch a game by ID or fuzzy name search
-  moxie steam add <id> [flags]        Add a game to Steam library
-  moxie steam remove <id>              Remove a game from Steam library
-  moxie steam list                     List games added to Steam
-  moxie steam proton-list              List available Proton versions
-  moxie steam proton-set <id>          Set Proton version for a Steam game
-  moxie steam fix-artwork <id>         Re-download Steam artwork for a game
-  moxie config <set|get|show>          Manage configuration settings
-  moxie cleanup [flags]                Detect and fix wrong F95Zone thread associations
-  moxie update                           Check for and install moxie updates
-  moxie refresh-versions [flags]       Re-extract versions from directory names
-  moxie download <id> [flags]          Download game from F95Zone links
-  moxie downloads [flags]              List download history
-  moxie check-links [flags]            Validate download links for dead URLs
-  moxie install <id> <path>             Install a downloaded archive into a game directory
+USAGE
+  moxie <command> [args] [flags]
 
-Flags for 'scan':
-  --json           Output results as JSON
-  --no-save        Don't save to database (print only)
-  --engine <type>  Filter by engine type
+CORE
+  scan <dir> [flags]          Scan directory for new games (incremental by default)
+  list [flags]                List all games in library
+  tui                         Launch interactive terminal UI
+  info <id|name>              Show detailed game info
+  play <id|name>              Launch a game
+  add <path> [flags]          Manually add a game to library
+  remove <id|name>            Remove a game from library
+  rename [flags]              Rename game directories to clean titles
 
-Flags for 'scrape':
-  --cookie <str>   Cookie header string from browser DevTools
-  --cookie-file <path>  Read cookie from file
-  --url <url>      F95Zone thread URL (if game has no URL set)
+F95ZONE
+  sync [id] [flags]           Full sync: auto-associate + check version updates
+  scrape <id> [flags]         Scrape F95Zone metadata for a game
+  check-updates [flags]       Check all games for newer versions on F95Zone
+  refresh-versions [flags]    Re-extract version strings from directory names
 
-Flags for 'list':
-  --json           Output as JSON
-  --engine <type>  Filter by engine
-  --status <s>     Filter by status
-  --warnings       Add warnings column (engine/exe mismatch indicators)
+DOWNLOADS
+  download <id> [flags]       Download a game from F95Zone links
+  install <id> <archive>      Install a downloaded archive into game directory
+  downloads [flags]           List download history
+  check-links [flags]         Validate download links (detect dead URLs)
 
-Flags for 'add':
-  --title <name>   Game title
-  --engine <type>  Game engine
-  --version <ver>  Game version
-  --tags <tags>    Comma-separated tags
+STEAM
+  steam add <id> [flags]      Add a game to Steam library
+  steam remove <id>           Remove from Steam
+  steam list                  List games added to Steam
+  steam proton-list           List available Proton versions
+  steam proton-set <id>       Set Proton version for a game
+  steam fix-artwork <id>      Re-download Steam artwork
 
-Flags for 'cleanup':
-  --dry-run        Preview issues without making changes
-  --assume-yes     Auto-disassociate flagged games without prompting
-  -y               Shorthand for --assume-yes
+ADMIN
+  cleanup [flags]             Detect and fix wrong F95Zone thread associations
+  config <set|get|show>       Manage configuration settings
+  update                      Check for and install moxie updates
 
-Flags for 'sync' and 'check-updates':
-  --cookie <str>     Cookie header string from browser DevTools
-  --cookie-file <path>  Read cookie from file
-  --unsafe           ⚠ Skip rate limiting (risks IP ban)
-  --force            Force re-check even if checked within 24h
+GLOBAL FLAGS
+  --help, -h                  Show help for any command
 
-Tip: Set a SteamGridDB API key for higher-quality artwork!
-     Get one free at https://www.steamgriddb.com/profile/preferences
-     moxie config set steamgriddb-key <key>
-     moxie steam fix-artwork <id>
+COMMON FLAGS
+
+  scan:
+    --force                   Full rescan (skip nothing, re-detect all games)
+    --no-save                 Print detected games without saving to library
+    --engine <type>           Filter by engine (Unity, RenPy, RPGM, etc.)
+    --json                    Output as JSON
+
+  list:
+    --engine <type>           Filter by engine
+    --status <s>              Filter by status (active, completed, etc.)
+    --warnings                Show engine/exe mismatch warnings
+    --json                    Output as JSON
+
+  sync, check-updates:
+    --cookie <str>            Cookie header from browser DevTools
+    --cookie-file <path>      Read cookie from file
+    --unsafe                  ⚠ Skip rate limiting (may get IP-banned)
+    --force                   Re-check even if checked within 24h
+
+  scrape:
+    --cookie <str>            Cookie header from browser DevTools
+    --cookie-file <path>      Read cookie from file
+    --url <url>               F95Zone thread URL (if game has no URL)
+
+  add:
+    --title <name>            Game title (defaults to directory name)
+    --engine <type>           Game engine (auto-detected if omitted)
+    --version <ver>           Game version
+    --tags <tags>             Comma-separated tags
+
+  cleanup:
+    --dry-run                 Preview issues without making changes
+    --assume-yes, -y          Auto-disassociate flagged games
+
+TIP
+  Set a SteamGridDB API key for higher-quality artwork!
+    Get one free: https://www.steamgriddb.com/profile/preferences
+    moxie config set steamgriddb-key <key>
+    moxie steam fix-artwork <id>
 
 `)
 }

@@ -199,7 +199,7 @@ func List(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
-	games, err := database.ListGames(*engineFilter, *statusFilter)
+	games, err := database.ListActiveGames(*engineFilter, *statusFilter)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error listing games: %v\n", err)
 		os.Exit(1)

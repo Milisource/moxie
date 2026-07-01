@@ -168,7 +168,7 @@ func Sync(args []string) {
 	// Phase 2: Check for version updates.
 	fmt.Fprintln(os.Stderr, "\n=== Phase 2/2: Checking for version updates ===")
 
-	allGames, err := database.ListGames("", "")
+	allGames, err := database.ListActiveGames("", "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return
@@ -211,7 +211,7 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 		fmt.Fprintln(os.Stderr)
 	}
 
-	allGames, err := database.ListGames("", "")
+	allGames, err := database.ListActiveGames("", "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading games: %v\n", err)
 		os.Exit(1)

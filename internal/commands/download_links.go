@@ -107,7 +107,7 @@ func CheckDeadLinks(args []string) {
 		links, err = database.ListDownloadLinks(*gameID, "", true)
 	} else {
 		// Get all games and their links
-		games, _ := database.ListGames("", "")
+		games, _ := database.ListActiveGames("", "")
 		for _, g := range games {
 			gameLinks, _ := database.ListDownloadLinks(g.ID, "", true)
 			links = append(links, gameLinks...)

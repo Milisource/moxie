@@ -170,6 +170,21 @@ func (db *Database) GetGameByPath(path string) (*Game, error) {
 // ListGames returns all games optionally filtered by engine and/or status.
 // An empty string for either parameter means "no filter".
 func (db *Database) ListGames(engine, status string) ([]Game, error) {
+	return db.listGamesFiltered(engine, status, false)
+}
+
+// ListActiveGames returns all non-backup games (excluding .old directories)
+// optionally filtered by engine and/or status. An empty string for either
+// parameter means "no filter". Backup directories created by the updater's
+// Merge() function are hidden from normal listing, sync, and TUI views.
+func (db *Database) ListActiveGames(engine, status string) ([]Game, error) {
+	return db.listGamesFiltered(engine, status, true)
+}
+
+// listGamesFiltered is the shared implementation for ListGames and
+// ListActiveGames. When excludeBackups is true, paths ending in .old
+// are excluded from results.
+func (db *Database) listGamesFiltered(engine, status string, excludeBackups bool) ([]Game, error) {
 	query := `
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
@@ -179,6 +194,9 @@ func (db *Database) ListGames(engine, status string) ([]Game, error) {
 	var conditions []string
 	var args []any
 
+	if excludeBackups {
+		conditions = append(conditions, "path NOT LIKE '%.old'")
+	}
 	if engine != "" {
 		conditions = append(conditions, "engine = ?")
 		args = append(args, engine)

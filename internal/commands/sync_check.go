@@ -168,7 +168,7 @@ func CheckUpdates(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
-	allGames, err := database.ListGames("", "")
+	allGames, err := database.ListActiveGames("", "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

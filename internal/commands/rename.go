@@ -22,7 +22,7 @@ func Rename(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
-	games, err := database.ListGames("", "")
+	games, err := database.ListActiveGames("", "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading games: %v\n", err)
 		os.Exit(1)

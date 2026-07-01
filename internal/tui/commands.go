@@ -19,7 +19,7 @@ import (
 // loadGames fetches all games from the database.
 func (m model) loadGames() tea.Cmd {
 	return func() tea.Msg {
-		games, err := m.db.ListGames("", "")
+		games, err := m.db.ListActiveGames("", "")
 		if err != nil {
 			return errMsg{err}
 		}
@@ -55,7 +55,7 @@ func (m model) deleteGame(id int64) tea.Cmd {
 		if err := m.db.DeleteGame(id); err != nil {
 			return gameDeletedMsg{err: err}
 		}
-		games, err := m.db.ListGames("", "")
+		games, err := m.db.ListActiveGames("", "")
 		if err != nil {
 			return gameDeletedMsg{err: err}
 		}
