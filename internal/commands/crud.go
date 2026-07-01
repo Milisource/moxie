@@ -16,15 +16,19 @@ import (
 )
 
 // Scan scans a directory for games and optionally saves them to the database.
+// By default it performs an incremental scan, skipping directories already
+// known to the database whose modification time hasn't changed. Use --force
+// to rescan everything and re-detect all games.
 func Scan(args []string) {
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "Output as JSON")
 	noSave := fs.Bool("no-save", false, "Don't save to database")
 	engineFilter := fs.String("engine", "", "Filter by engine")
+	force := fs.Bool("force", false, "Full rescan — detect all games, skip nothing")
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: moxie scan <directory>\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie scan [--force] <directory>\n")
 		os.Exit(1)
 	}
 	dir := fs.Arg(0)
@@ -35,8 +39,36 @@ func Scan(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "Scanning %s...\n", absDir)
-	games, err := scanner.Scan(absDir)
+	// Default: incremental scan — skip known, unchanged game directories.
+	// With --force: scan everything (skipPaths stays nil).
+	var skipPaths map[string]bool
+	skipped := 0
+	if !*force {
+		database := OpenDB()
+		entries, err := database.AllGamePaths()
+		database.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error querying known games: %v\n", err)
+			os.Exit(1)
+		}
+		skipPaths = make(map[string]bool, len(entries))
+		for _, e := range entries {
+			// If directory mtime matches last scan, skip it (unchanged).
+			// If no mtime recorded (legacy), skip by path alone — the
+			// scanner will still re-detect and update tracking data.
+			if e.DirMTime.IsZero() || mtimeMatches(e.Path, e.DirMTime) {
+				skipPaths[e.Path] = true
+				skipped++
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "Scanning %s...", absDir)
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, " (skipping %d unchanged)", skipped)
+	}
+	fmt.Fprintf(os.Stderr, "\n")
+	games, err := scanner.ScanFiltered(absDir, skipPaths)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error scanning: %v\n", err)
 		os.Exit(1)
@@ -69,8 +101,14 @@ func Scan(args []string) {
 		}
 		fmt.Println()
 	}
+	if skipped > 0 {
+		fmt.Printf("  (%d known games skipped, use --force to rescan)\n", skipped)
+	}
 
-	if *noSave || len(games) == 0 {
+	if *noSave || (len(games) == 0 && !*force) {
+		if len(games) == 0 && skipped > 0 {
+			fmt.Println("No new games detected.")
+		}
 		return
 	}
 
@@ -446,4 +484,17 @@ func dirModTime(dir string) time.Time {
 		return time.Time{}
 	}
 	return info.ModTime().UTC()
+}
+
+// mtimeMatches checks whether the directory's current modification time
+// matches the stored mtime from a previous scan. Returns true if stat
+// fails (conservative — treats unreadable dirs as unchanged to avoid
+// flooding errors).
+func mtimeMatches(dir string, stored time.Time) bool {
+	stored = stored.UTC()
+	current := dirModTime(dir)
+	if current.IsZero() {
+		return true // can't stat, treat as unchanged
+	}
+	return current.Equal(stored)
 }

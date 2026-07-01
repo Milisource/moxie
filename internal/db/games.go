@@ -278,6 +278,35 @@ func (db *Database) UpdateGame(g *Game) error {
 	return err
 }
 
+// AllGamePaths returns all game paths and their directory mtimes.
+// Used by --new-only scan to skip already-known directories.
+type GamePathEntry struct {
+	Path    string
+	DirMTime time.Time
+}
+
+func (db *Database) AllGamePaths() ([]GamePathEntry, error) {
+	rows, err := db.conn.Query(`SELECT path, dir_mtime FROM games ORDER BY path`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []GamePathEntry
+	for rows.Next() {
+		var e GamePathEntry
+		var dirMTimeStr sql.NullString
+		if err := rows.Scan(&e.Path, &dirMTimeStr); err != nil {
+			return nil, err
+		}
+		if dirMTimeStr.Valid {
+			e.DirMTime = parseTime(dirMTimeStr.String)
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
 // DeleteGame removes a game by its primary key.
 func (db *Database) DeleteGame(id int64) error {
 	_, err := db.conn.Exec("DELETE FROM games WHERE id = ?", id)

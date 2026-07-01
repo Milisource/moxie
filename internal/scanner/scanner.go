@@ -27,6 +27,14 @@ type DetectedGame struct {
 // It skips known non-game paths and engine crash handlers.
 // Sizes are accumulated in a single walk — no separate dirSize pass.
 func Scan(root string) ([]DetectedGame, error) {
+	return ScanFiltered(root, nil)
+}
+
+// ScanFiltered is like Scan but skips game directories whose paths
+// are present in skipPaths. When skipPaths is nil or empty, behaves
+// identically to Scan. This allows callers to implement incremental
+// scans by passing the set of already-known game paths.
+func ScanFiltered(root string, skipPaths map[string]bool) ([]DetectedGame, error) {
 	root = filepath.Clean(root)
 
 	// Single walk: detect game directories and accumulate file sizes
@@ -92,6 +100,10 @@ func Scan(root string) ([]DetectedGame, error) {
 		entries, readErr := os.ReadDir(path)
 		if readErr != nil || !hasGameMarkersFromEntries(entries) {
 			return nil
+		}
+		// If --new-only is active and this path is already known, skip it.
+		if skipPaths != nil && skipPaths[path] {
+			return filepath.SkipDir
 		}
 		// If it's named after a known engine and has subdirectories,
 		// it's a category folder — walk children instead.
