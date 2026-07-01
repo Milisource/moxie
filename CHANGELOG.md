@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0-alpha] - 2026-07-01
+
+### Added
+
+- **Fuzzy name search for all commands** — Shared `ResolveGame`/`ResolveFirstArg` helpers in `internal/commands/game_lookup.go` (143 lines, 12 tests) power 17 command entry points. Commands like `moxie info`, `moxie download`, `moxie remove`, `moxie steam add` now accept game names in addition to numeric IDs. Backward compatible — numeric IDs still work (F95-yy8)
+- **Interactive multi-match picker** — When a fuzzy search returns multiple results (e.g. `moxie info Demon` matches 6 games), a numbered list is shown with ID, title, and engine. User picks by number or enters 0 to cancel (F95-yy8)
+- **TTY detection** — `isInteractive()` checks whether stdin is a terminal. When piped (non-interactive), `promptSelectGame` prints matches to stderr and exits with code 1 instead of blocking (F95-ci3)
+- **`ConfirmDestructive` helper** — Guards destructive operations (remove, set-exe, set-path, config set-thread) with a confirmation prompt: `[Name Match] Removing 'Demonherd' [ID 88] — confirm? (y/N)`. Skips when `--assume-yes` is set or stdin is not a TTY (F95-5cr)
+- **`ResolveFirstArg` variant** — For multi-arg commands like `moxie install <id|name> <archive-path>` — only the first positional token is searched, preventing subsequent args from being consumed as part of the game name (F95-3bu)
+- **Multi-word unquoted name support** — All positional args are joined before resolution, so `moxie play Cyan Brain` works the same as `moxie play "Cyan Brain"` (F95-b21)
+- **`SelectBestExe` scoring overhaul** — Skips known runtime engines (`nwjc`, `nw`, `node`) and installers (`unitycrashhandler`, `unins`, `setup`). Awards +1 GB score bonus for `Game.exe` — fixes Demonherd launching nwjc.exe instead of Game.exe (F95-b21)
+- **`LaunchCommand` working directory fix** — `cmd.Dir` set to game root so Windows games under Wine resolve relative asset paths correctly (F95-b21)
+- **Cross-device update fallback** — `replaceBinary` now uses copy+delete when `os.Rename` fails across filesystem boundaries (e.g. `/tmp` on tmpfs → `/home` on ext4) (F95-b21)
+- **Updated usage strings** — 12 commands now show `<id|name>` syntax in help text (F95-b21)
+
+### Fixed
+
+- **`cleanExtractPath` test on Windows CI** — Hardcoded Unix `/tmp/dest` paths replaced with `filepath.Join` + `t.TempDir()`, fixing cross-platform test failures (F95-b21)
+
+### Changed
+
+- **CI/CD Go version** — `.github/workflows/ci.yml` and `release.yml` updated from Go 1.24 to 1.26 to match `go.mod` (F95-b21)
+- **Documentation updated** — `docs/moxie-spec.md` version bumped to 0.4.0-alpha with 7 new feature entries
+
 ## [Unreleased]
 
 ### Added
@@ -188,7 +212,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **GitHub Actions release workflow** — `.github/workflows/release.yml` auto-builds all 6 platform/arch binaries on tag push, stamps version via `-ldflags`, and creates a GitHub Release with `softprops/action-gh-release`
 - **README** — updated install section, build-from-source instructions with version stamping, test count (223), and binary size (~16 MB)
 
-[Unreleased]: https://github.com/Milisource/moxie/compare/v0.3.52-alpha...HEAD
+[Unreleased]: https://github.com/Milisource/moxie/compare/v0.4.0-alpha...HEAD
+[0.4.0-alpha]: https://github.com/Milisource/moxie/compare/v0.3.52-alpha...v0.4.0-alpha
 [0.3.52-alpha]: https://github.com/Milisource/moxie/compare/v0.3.5-alpha...v0.3.52-alpha
 [0.3.5-alpha]: https://github.com/Milisource/moxie/compare/v0.3.4-alpha...v0.3.5-alpha
 [0.3.4-alpha]: https://github.com/Milisource/moxie/compare/v0.3.3-alpha...v0.3.4-alpha

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mili/moxie/internal/log"
 )
 
 // githubRelease represents the GitHub API response for a release.
@@ -168,6 +170,48 @@ func downloadBinary(url string) (string, error) {
 	return tmpPath, nil
 }
 
+// renameOrCopy attempts an atomic rename across the same filesystem, falling
+// back to copy+delete when src and dest are on different mount points.
+func renameOrCopy(src, dst string) error {
+	err := os.Rename(src, dst)
+	if err == nil {
+		return nil
+	}
+	// If the error is a cross-device link (rename across filesystems),
+	// fall back to copy + delete.
+	if strings.Contains(err.Error(), "invalid cross-device link") ||
+		strings.Contains(err.Error(), "The system cannot move the file") {
+		log.Debug("rename across filesystems, falling back to copy", "src", src, "dst", dst)
+		return copyFile(src, dst)
+	}
+	return err
+}
+
+// copyFile copies a file from src to dst, preserving permissions.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0755)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(dst)
+		return err
+	}
+	return nil
+}
+
 // replaceBinary atomically replaces the current binary with the downloaded one.
 func replaceBinary(tmpPath string) error {
 	exe, err := os.Executable()
@@ -181,12 +225,13 @@ func replaceBinary(tmpPath string) error {
 	}
 
 	backupPath := exe + ".bak"
-	if err := os.Rename(exe, backupPath); err != nil {
+	if err := renameOrCopy(exe, backupPath); err != nil {
 		return fmt.Errorf("cannot back up current binary: %w", err)
 	}
 
-	if err := os.Rename(tmpPath, exe); err != nil {
-		os.Rename(backupPath, exe)
+	if err := renameOrCopy(tmpPath, exe); err != nil {
+		// Restore backup on failure.
+		renameOrCopy(backupPath, exe)
 		return fmt.Errorf("cannot install update: %w", err)
 	}
 
