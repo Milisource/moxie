@@ -190,24 +190,26 @@ func TestIsArchiveFile(t *testing.T) {
 
 func TestCleanExtractPath_Normal(t *testing.T) {
 	t.Parallel()
+	// Use a real temp dir so the test works on all OS path conventions
+	// (Windows uses drive letters and backslashes).
+	destDir := t.TempDir()
 	tests := []struct {
 		name     string
 		filePath string
-		destDir  string
 		want     string
 	}{
-		{"simple file", "file.txt", "/tmp/dest", "/tmp/dest/file.txt"},
-		{"nested", "subdir/file.txt", "/tmp/dest", "/tmp/dest/subdir/file.txt"},
-		{"deep nested", "deep/nested/path/file.txt", "/tmp/dest", "/tmp/dest/deep/nested/path/file.txt"},
+		{"simple file", "file.txt", filepath.Join(destDir, "file.txt")},
+		{"nested", "subdir/file.txt", filepath.Join(destDir, "subdir", "file.txt")},
+		{"deep nested", "deep/nested/path/file.txt", filepath.Join(destDir, "deep", "nested", "path", "file.txt")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := cleanExtractPath(tt.filePath, tt.destDir)
+			got, err := cleanExtractPath(tt.filePath, destDir)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if !strings.HasSuffix(got, tt.want) && got != tt.want {
-				t.Errorf("cleanExtractPath(%q, %q) = %q, want suffix %q", tt.filePath, tt.destDir, got, tt.want)
+			if got != tt.want {
+				t.Errorf("cleanExtractPath(%q, %q) = %q, want %q", tt.filePath, destDir, got, tt.want)
 			}
 		})
 	}
