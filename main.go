@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/mili/moxie/internal/browser"
@@ -16,9 +17,32 @@ var version = "0.4.0-alpha"
 
 func main() {
 	log.Init(config.LogDir())
-	log.Info("moxie started", "version", version, "args", os.Args[1:])
 
-	if len(os.Args) < 2 {
+	// Parse global flags before command dispatch.
+	// --verbose / -v enables debug logging. The flag is consumed here and
+	// stripped from args so subcommand parsers never see it.
+	args := os.Args[1:]
+	if len(args) > 0 {
+		verbose := false
+		filtered := make([]string, 0, len(args))
+		for _, a := range args {
+			switch a {
+			case "--verbose", "-v", "--debug", "-d":
+				verbose = true
+			default:
+				filtered = append(filtered, a)
+			}
+		}
+		args = filtered
+		if verbose {
+			log.SetLevel(slog.LevelDebug)
+			log.Debug("verbose logging enabled")
+		}
+	}
+
+	log.Info("moxie started", "version", version, "args", args)
+
+	if len(args) < 1 {
 		// First-run welcome if no database exists yet
 		dbPath := config.DbPath()
 		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
@@ -50,63 +74,84 @@ func main() {
 		os.Exit(1)
 	}
 
-	if os.Args[1] == "--version" || os.Args[1] == "-version" || os.Args[1] == "version" {
+	if len(args) >= 1 && (args[0] == "--version" || args[0] == "-version" || args[0] == "version") {
 		fmt.Println("moxie", version)
 		os.Exit(0)
 	}
 
-	switch os.Args[1] {
-	case "scan":
-		commands.Scan(os.Args[2:])
-	case "tui":
-		cmdTUI()
-	case "add":
-		commands.Add(os.Args[2:])
-	case "info":
-		commands.Info(os.Args[2:])
-	case "scrape":
-		commands.Scrape(os.Args[2:])
-	case "scrape-batch":
-		commands.ScrapeBatch(os.Args[2:])
-	case "set-path":
-		commands.SetPath(os.Args[2:])
-	case "set-exe":
-		commands.SetExe(os.Args[2:])
-	case "list":
-		commands.List(os.Args[2:])
-	case "remove":
-		commands.Remove(os.Args[2:])
-	case "rename":
-		commands.Rename(os.Args[2:])
-	case "check-updates", "updates":
-		commands.CheckUpdates(os.Args[2:])
-	case "sync":
-		commands.Sync(os.Args[2:])
-	case "play":
-		commands.Play(os.Args[2:])
-	case "steam":
-		commands.Steam(os.Args[2:])
-	case "config":
-		commands.Config(os.Args[2:])
-	case "update":
-		commands.Update(version)
-	case "cleanup":
-		commands.Cleanup(os.Args[2:])
-	case "refresh-versions":
-		commands.RefreshVersions(os.Args[2:])
-	case "download":
-		commands.Download(os.Args[2:])
-	case "install":
-		commands.Install(os.Args[2:])
-	case "downloads":
-		commands.ListDownloads(os.Args[2:])
-	case "check-links":
-		commands.CheckDeadLinks(os.Args[2:])
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])
-		printUsage()
-		os.Exit(1)
+	if len(args) >= 1 {
+		switch args[0] {
+		case "scan":
+			commands.Scan(args[1:])
+		case "tui":
+			cmdTUI()
+		case "add":
+			commands.Add(args[1:])
+		case "info":
+			commands.Info(args[1:])
+		case "scrape":
+			commands.Scrape(args[1:])
+		case "scrape-batch":
+			commands.ScrapeBatch(args[1:])
+		case "set-path":
+			commands.SetPath(args[1:])
+		case "set-exe":
+			commands.SetExe(args[1:])
+		case "list":
+			commands.List(args[1:])
+		case "remove":
+			commands.Remove(args[1:])
+		case "rename":
+			commands.Rename(args[1:])
+		case "check-updates", "updates":
+			commands.CheckUpdates(args[1:])
+		case "sync":
+			commands.Sync(args[1:])
+		case "play":
+			commands.Play(args[1:])
+		case "steam":
+			commands.Steam(args[1:])
+		case "config":
+			commands.Config(args[1:])
+		case "history":
+			commands.History(args[1:])
+		case "update":
+			commands.Update(version)
+		case "cleanup":
+			commands.Cleanup(args[1:])
+		case "refresh-versions":
+			commands.RefreshVersions(args[1:])
+		case "download":
+			commands.Download(args[1:])
+		case "install":
+			commands.Install(args[1:])
+		case "downloads":
+			commands.ListDownloads(args[1:])
+		case "check-links":
+			commands.CheckDeadLinks(args[1:])
+		case "restore":
+			commands.Restore(args[1:])
+		case "purge":
+			commands.Purge(args[1:])
+		case "set-status":
+			commands.SetStatus(args[1:])
+		case "collections", "collection":
+			commands.Collections(args[1:])
+		case "export":
+			commands.Export(args[1:])
+		case "import":
+			commands.Import(args[1:])
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown command: %s\n", args[0])
+			printUsage()
+			os.Exit(1)
+		}
+		return
 	}
+
+	// If we get here, no args — already handled above, but keep as safeguard.
+	printUsage()
+	os.Exit(1)
 }
 
 func printUsage() {
@@ -121,9 +166,16 @@ CORE
   tui                         Launch interactive terminal UI
   info <id|name>              Show detailed game info
   play <id|name>              Launch a game
+  history [count]             Show recently played games
   add <path> [flags]          Manually add a game to library
-  remove <id|name>            Remove a game from library
+  remove <id|name>            Remove a game from library (soft delete)
+  restore <id|name>           Restore a soft-deleted game
+  purge                       Permanently delete all soft-deleted games
   rename [flags]              Rename game directories to clean titles
+  set-status [flags] <status> Update game status (active/completed/abandoned/on_hold/unknown)
+  collections [sub] [args]    Manage game collections
+  export [--output file]      Export library as JSON
+  import <file>               Import games from JSON export
 
 F95ZONE
   sync [id] [flags]           Full sync: auto-associate + check version updates
@@ -152,6 +204,7 @@ ADMIN
 
 GLOBAL FLAGS
   --help, -h                  Show help for any command
+  --verbose, -v               Enable debug logging
 
 COMMON FLAGS
 
@@ -164,6 +217,7 @@ COMMON FLAGS
   list:
     --engine <type>           Filter by engine
     --status <s>              Filter by status (active, completed, etc.)
+    --deleted                 Show soft-deleted games instead of active ones
     --warnings                Show engine/exe mismatch warnings
     --json                    Output as JSON
 
@@ -183,6 +237,11 @@ COMMON FLAGS
     --engine <type>           Game engine (auto-detected if omitted)
     --version <ver>           Game version
     --tags <tags>             Comma-separated tags
+
+  set-status:
+    --engine <type>           Batch-update games with this engine
+    --all                     Update status for ALL games in library
+    -y                        Skip confirmation prompt
 
   cleanup:
     --dry-run                 Preview issues without making changes

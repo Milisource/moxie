@@ -18,44 +18,77 @@ func (m model) helpView() string {
 		h = 24
 	}
 
-	lines := []string{
-		"               Keyboard Shortcuts               ",
-		"",
-		"  ── Navigation ─────────────────────────────",
-		"    ↑ / k       Move selection up",
-		"    ↓ / j       Move selection down",
-		"    Enter       View game details",
-		"    Esc / ←     Return to library list",
-		"",
-		"  ── Actions ────────────────────────────────",
-		"    /           Filter / search games",
-		"    s           Cycle sort field",
-		"    Ctrl+E      Cycle engine filter",
-		"    Ctrl+S      Cycle status filter",
-		"    d           Delete selected game",
-		"    e           Edit game title (detail view)",
-		"    s           Cycle game status (detail view)",
-		"    x           Edit game executable path (detail view)",
-		"    o           Show game folder path",
-		"    u           Set / edit F95Zone URL (detail view)",
-		"    p           Play game hint (detail view)",
-		"    g           Download game (detail view)",
-		"",
-		"  ── General ────────────────────────────────",
-		"    ?           Toggle this help screen",
-		"    q           Quit (library view only)",
-		"    Ctrl+C      Force quit (anywhere)",
-		"",
-		"  ── CLI Quick Start (outside TUI) ────────",
-		"    moxie scan ~/Downloads     Scan for games",
-		"    moxie scrape --auto        Scrape F95Zone metadata",
-		"    moxie steam add <id>       Add a game to Steam",
-		"    moxie steam fix-artwork <id>  Download Steam artwork",
-		"    moxie check-updates        Check for game updates",
-		"",
-		"  Press any key to close help  ",
+	// Build context-aware help sections.
+	// Library view is the default; detail view has extra actions.
+	libraryKeys := []string{
+		"  ↑/k          Move selection up",
+		"  ↓/j          Move selection down",
+		"  Enter        View game details",
+		"  /            Filter/search games",
+		"  s            Cycle sort field",
+		"  Ctrl+E       Cycle engine filter",
+		"  Ctrl+S       Cycle status filter",
+		"  c            Cycle collection filter",
+		"  d            Delete selected game",
 	}
-	content := strings.Join(lines, "\n")
+
+	detailKeys := []string{
+		"  Esc/←        Return to library list",
+		"  e            Edit game title",
+		"  s            Cycle game status",
+		"  x            Edit executable path",
+		"  u            Set/edit F95Zone URL",
+		"  o            Show game folder path",
+		"  p            Play game",
+		"  g            Download game",
+	}
+	if m.viewMode == DetailView {
+		// In detail view, q quits directly too
+		detailKeys = append(detailKeys, "  q            Quit")
+	}
+
+	globalKeys := []string{
+		"  ?            Toggle this help screen",
+		"  q            Quit",
+		"  Ctrl+C       Force quit (anywhere)",
+	}
+
+	// ── Build left column: Library Navigation & Actions ─────────
+	leftLines := []string{
+		"  ── Library Navigation ──",
+	}
+	leftLines = append(leftLines, libraryKeys...)
+	leftLines = append(leftLines, "")
+
+	leftLines = append(leftLines, "  ── Global ──")
+	leftLines = append(leftLines, globalKeys...)
+
+	leftContent := strings.Join(leftLines, "\n")
+
+	// ── Build right column: Detail Actions ────────────────────
+	rightLines := []string{
+		"  ── Detail View Actions ──",
+	}
+	rightLines = append(rightLines, detailKeys...)
+
+	rightContent := strings.Join(rightLines, "\n")
+
+	// Combine into two-column layout
+	colGap := 4
+	combined := lipgloss.JoinHorizontal(lipgloss.Top,
+		leftContent,
+		strings.Repeat(" ", colGap),
+		rightContent,
+	)
+
+	// Add a header
+	header := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(purple).
+		Render("  Keyboard Shortcuts  ")
+
+	// Wrap in a box
+	content := header + "\n\n" + combined
 	boxed := helpBoxStyle.Render(content)
 
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, boxed)

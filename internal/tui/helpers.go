@@ -2,16 +2,13 @@ package tui
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
 
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/launcher"
 )
 
 // reflowTable adjusts column widths and table height to fit the current
@@ -55,8 +52,8 @@ func (m *model) rebuildFiltered() {
 }
 
 // filterAndSort returns a filtered and sorted copy of the games slice.
-func filterAndSort(games []db.Game, titleFilter, engineFilter, statusFilter string, sortBy SortField) []db.Game {
-	var out []db.Game
+func filterAndSort(games []db.GameSummary, titleFilter, engineFilter, statusFilter string, sortBy SortField) []db.GameSummary {
+	var out []db.GameSummary
 	flw := strings.ToLower(titleFilter)
 	for _, g := range games {
 		if titleFilter != "" && !strings.Contains(strings.ToLower(g.Title), flw) {
@@ -127,7 +124,10 @@ func (m *model) updateTableRows() {
 		}
 
 		// Download status indicator
-		if ad, ok := m.activeDownloads[g.ID]; ok {
+		m.activeDownloadsMu.Lock()
+		ad, ok := m.activeDownloads[g.ID]
+		m.activeDownloadsMu.Unlock()
+		if ok {
 			ad.mu.Lock()
 			status := ad.status
 			ad.mu.Unlock()
@@ -201,136 +201,22 @@ func orDash(s string) string {
 	return s
 }
 
-// listExecutables returns all playable executables in a directory (non-recursive).
-// Skips known non-game files (uninstallers, crash handlers, setup programs).
-// Used to show the user what executables are available when editing exe_path.
+// listExecutables delegates to the shared launcher package.
+// Returns all playable executables in a directory (non-recursive).
 func listExecutables(dir string) []string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-
-	var exes []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		ext := strings.ToLower(filepath.Ext(name))
-
-		// Skip known non-game executables.
-		lower := strings.ToLower(name)
-		if strings.Contains(lower, "unitycrashhandler") ||
-			strings.Contains(lower, "unins") ||
-			strings.Contains(lower, "setup") {
-			continue
-		}
-
-		switch {
-		case ext == ".exe" || ext == ".sh" || ext == ".x86_64" || ext == ".x86":
-			exes = append(exes, filepath.Join(dir, name))
-		case strings.HasSuffix(name, ".AppImage"):
-			exes = append(exes, filepath.Join(dir, name))
-		}
-	}
-	return exes
+	return launcher.ListExecutables(dir)
 }
 
-// findPlayableExe finds the best executable in a game directory.
-// Prefers native Linux binaries over .exe files.
-// If knownExe is set and exists on disk, it is returned directly.
-func findPlayableExe(dir, knownExe string) string {
-	// If we know the exe and it exists, use it.
-	if knownExe != "" {
-		if _, err := os.Stat(knownExe); err == nil {
-			return knownExe
+// patchGameSummary applies a mutation to the in-memory allGames entry for the
+// given game ID and rebuilds filtered/table views. Avoids a full list reload.
+func (m *model) patchGameSummary(mutate func(s *db.GameSummary)) {
+	for i := range m.allGames {
+		if m.allGames[i].ID == m.selectedID {
+			mutate(&m.allGames[i])
+			break
 		}
 	}
-
-	all := listExecutables(dir)
-	if len(all) == 0 {
-		return ""
-	}
-
-	var nativeBinaries []string
-	var appImages []string
-	var exes []string
-
-	for _, fullPath := range all {
-		ext := strings.ToLower(filepath.Ext(fullPath))
-		name := filepath.Base(fullPath)
-
-		switch {
-		case strings.HasSuffix(name, ".AppImage"):
-			appImages = append(appImages, fullPath)
-		case ext == ".x86_64" || ext == ".x86" || ext == ".sh":
-			nativeBinaries = append(nativeBinaries, fullPath)
-		case ext == ".exe":
-			exes = append(exes, fullPath)
-		}
-	}
-
-	// Prefer AppImages, then native binaries, then .exe (via Wine).
-	if len(appImages) > 0 {
-		return pickLargest(appImages)
-	}
-	if len(nativeBinaries) > 0 {
-		return pickLargest(nativeBinaries)
-	}
-	if len(exes) > 0 {
-		return pickLargest(exes)
-	}
-	return ""
-}
-
-func pickLargest(paths []string) string {
-	if len(paths) == 1 {
-		return paths[0]
-	}
-	var best string
-	var bestSize int64
-	for _, p := range paths {
-		info, err := os.Stat(p)
-		if err != nil {
-			continue
-		}
-		if info.Size() > bestSize {
-			bestSize = info.Size()
-			best = p
-		}
-	}
-	return best
-}
-
-// launchExe starts a game executable. Uses Wine on Linux/macOS for .exe files,
-// and tries CrossOver on macOS as a fallback.
-func launchExe(exe string) error {
-	ext := strings.ToLower(filepath.Ext(exe))
-	var cmd *exec.Cmd
-	switch {
-	case ext == ".appimage":
-		cmd = exec.Command(exe)
-	case ext == ".sh":
-		cmd = exec.Command("sh", exe)
-	case ext == ".exe":
-		if runtime.GOOS == "windows" {
-			cmd = exec.Command(exe)
-		} else if winePath, err := exec.LookPath("wine"); err == nil {
-			cmd = exec.Command(winePath, exe)
-		} else if runtime.GOOS == "darwin" {
-			crossoverWine := "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine"
-			if _, err := os.Stat(crossoverWine); err == nil {
-				cmd = exec.Command(crossoverWine, exe)
-			} else {
-				return fmt.Errorf("wine not found and CrossOver not available — cannot launch .exe files on %s", runtime.GOOS)
-			}
-		} else {
-			return fmt.Errorf("wine not found — cannot launch .exe files on %s", runtime.GOOS)
-		}
-	default:
-		cmd = exec.Command(exe)
-	}
-	return cmd.Start()
+	m.rebuildFiltered()
 }
 
 // renderTags joins tags with commas, returning "-" for empty.

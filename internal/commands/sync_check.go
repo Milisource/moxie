@@ -7,12 +7,14 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/scraper"
+	"github.com/mili/moxie/internal/util"
 )
 
 // RunUpdateCheck scrapes each game's F95Zone thread, compares versions, and
@@ -54,6 +56,14 @@ func RunUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 		return 0, nil
 	}
 
+	total := len(games)
+	startTime := time.Now()
+
+	// Estimate: ~5 seconds per game with rate limiting, less with concurrent workers.
+	estSeconds := total * 5 / 3 // 3 concurrent workers
+	estDuration := time.Duration(estSeconds) * time.Second
+	fmt.Fprintf(os.Stderr, "  Checking %d games (up to 3 concurrent) — est. %s\n\n", total, util.FormatDuration(estDuration))
+
 	var results []UpdateResult
 	updatesFound := 0
 
@@ -62,13 +72,17 @@ func RunUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 	var mu sync.Mutex            // protects results slice and updatesFound counter
 	var saveMu sync.Mutex        // serializes SQLite writes (prevents BUSY errors)
 	var wg sync.WaitGroup
+	var completed int64
 
-	for _, g := range games {
+	for i, g := range games {
+		index := i + 1
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(g db.Game) {
+		go func(g db.Game, idx int) {
 			defer wg.Done()
 			defer func() { <-sem }()
+
+			elapsed := time.Since(startTime).Truncate(time.Second)
 
 			// Use slug-agnostic URL from thread ID when available so version
 			// changes in the URL slug don't break future scrapes.
@@ -76,9 +90,10 @@ func RunUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 			data, err := client.ScrapeThread(scrapeURL)
 			if err != nil {
 				mu.Lock()
-				fmt.Fprintf(os.Stderr, "  %q ✗ %v\n", g.Title, err)
+				fmt.Fprintf(os.Stderr, "  [%d/%d] %s %q ✗ %v\n", idx, total, elapsed, g.Title, err)
 				results = append(results, UpdateResult{Game: g, Error: err.Error()})
 				mu.Unlock()
+				atomic.AddInt64(&completed, 1)
 				return
 			}
 			latest := data.Version
@@ -114,27 +129,43 @@ func RunUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 					fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", g.Title, err)
 				}
 			}
+
+			// Compute ETA for progress display.
+			done := atomic.AddInt64(&completed, 1)
+			elapsed = time.Since(startTime).Truncate(time.Second)
+			eta := ""
+			if done >= 5 && done < int64(total) {
+				avgPerItem := time.Since(startTime) / time.Duration(done)
+				remaining := time.Duration(int64(total)-done) * avgPerItem
+				eta = fmt.Sprintf(" (ETA: %s)", remaining.Truncate(time.Second))
+			}
+
 			mu.Lock()
 			if isNew {
 				updatesFound++
-				fmt.Fprintf(os.Stderr, "  %q 🔄 %s → %s%s\n", g.Title, knownVer, latest, engineWarn)
+				fmt.Fprintf(os.Stderr, "  [%d/%d] %s%s %q 🔄 %s → %s%s\n", idx, total, elapsed, eta, g.Title, knownVer, latest, engineWarn)
 			} else if knownVer != "" {
 				// Local version is known and matches F95Zone.
-				fmt.Fprintf(os.Stderr, "  %q ✓ %s%s\n", g.Title, latest, engineWarn)
+				fmt.Fprintf(os.Stderr, "  [%d/%d] %s%s %q ✓ %s%s\n", idx, total, elapsed, eta, g.Title, latest, engineWarn)
 			} else if latest != "" {
 				// F95Zone has a version but we don't know the local version.
-				fmt.Fprintf(os.Stderr, "  %q ? %s (local version unknown)%s\n", g.Title, latest, engineWarn)
+				fmt.Fprintf(os.Stderr, "  [%d/%d] %s%s %q ? %s (local version unknown)%s\n", idx, total, elapsed, eta, g.Title, latest, engineWarn)
 			}
 			results = append(results, UpdateResult{Game: g, Current: knownVer, Latest: latest, IsNew: isNew})
 			mu.Unlock()
-		}(g)
+		}(g, index)
 	}
 	wg.Wait()
 
+	elapsed := time.Since(startTime).Truncate(time.Second)
+
 	log.Info("update check complete",
 		"updates", updatesFound,
-		"total", len(games)+cooldownSkipped,
+		"total", total+cooldownSkipped,
+		"elapsed", elapsed.String(),
 	)
+
+	fmt.Fprintf(os.Stderr, "\n  Done: %d checked, %d updates found in %s\n", total, updatesFound, elapsed)
 
 	return updatesFound, results
 }
@@ -168,17 +199,10 @@ func CheckUpdates(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
-	allGames, err := database.ListActiveGames("", "")
+	trackable, err := database.GamesWithF95URL()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
-	}
-
-	var trackable []db.Game
-	for _, g := range allGames {
-		if g.F95URL != "" {
-			trackable = append(trackable, g)
-		}
 	}
 	if len(trackable) == 0 {
 		fmt.Println("No games have F95Zone URLs. Run 'moxie sync' first.")

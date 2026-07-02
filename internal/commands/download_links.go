@@ -100,34 +100,51 @@ func CheckDeadLinks(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
-	var links []db.DownloadLink
+	var allLinks []db.DownloadLinkWithGame
 	var err error
 
 	if *gameID > 0 {
-		links, err = database.ListDownloadLinks(*gameID, "", true)
+		// Single game: load links via per-game query
+		gameLinks, listErr := database.ListDownloadLinks(*gameID, "", true)
+		if listErr != nil {
+			fmt.Fprintf(os.Stderr, "Error listing links: %v\n", listErr)
+			os.Exit(1)
+		}
+		game, getErr := database.GetGame(*gameID)
+		if getErr != nil {
+			fmt.Fprintf(os.Stderr, "Error loading game: %v\n", getErr)
+			os.Exit(1)
+		}
+		title := ""
+		path := ""
+		if game != nil {
+			title = game.Title
+			path = game.Path
+		}
+		for _, l := range gameLinks {
+			allLinks = append(allLinks, db.DownloadLinkWithGame{
+				DownloadLink: l,
+				GameTitle:    title,
+				GamePath:     path,
+			})
+		}
 	} else {
-		// Get all games and their links
-		games, _ := database.ListActiveGames("", "")
-		for _, g := range games {
-			gameLinks, _ := database.ListDownloadLinks(g.ID, "", true)
-			links = append(links, gameLinks...)
+		allLinks, err = database.AllDownloadLinks(true)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error listing links: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error listing links: %v\n", err)
-		os.Exit(1)
-	}
-
-	if len(links) == 0 {
+	if len(allLinks) == 0 {
 		fmt.Fprintln(os.Stderr, "No download links found.")
 		return
 	}
 
-	fmt.Printf("Checking %d download links...\n\n", len(links))
+	fmt.Printf("Checking %d download links...\n\n", len(allLinks))
 
 	checked, dead := 0, 0
-	for _, link := range links {
+	for _, link := range allLinks {
 		if link.IsDead {
 			fmt.Printf("[%s] Already marked dead: %s\n", link.Host, link.Name)
 			dead++

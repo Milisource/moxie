@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mili/moxie/internal/db"
@@ -38,6 +40,54 @@ type SyncGameResult struct {
 	OldVersion      string                  // previously known version
 	ScrapedMetadata bool                    // metadata (developer/overview/cover) was saved
 	CooldownSkipped bool                    // skipped because of 24h cooldown
+}
+
+// SyncConfig holds the parameters for RunSync.
+type SyncConfig struct {
+	Cookie     string
+	CookieFile string
+	Unsafe     bool
+	Force      bool
+	Parallel   int
+}
+
+// RunSync performs a full library sync: associate games with F95Zone threads
+// and check for version updates. This is the testable logic function — it
+// returns errors instead of os.Exit.
+func RunSync(database *db.Database, cfg SyncConfig) error {
+	cookie := ResolveCookie(cfg.Cookie, cfg.CookieFile)
+	if cookie == "" {
+		return fmt.Errorf("cookie required. Log into f95zone.to in Firefox")
+	}
+
+	// Phase 1: Associate games with F95Zone threads.
+	fmt.Fprintln(os.Stderr, "\n=== Phase 1/2: Associating games with F95Zone threads ===")
+	var client *scraper.Client
+	if cfg.Unsafe {
+		client = scraper.NewUnsafeClient(cookie)
+		fmt.Fprintln(os.Stderr, "⚠  --unsafe: rate limiting disabled. You may get IP-banned or Cloudflare-blocked.")
+		fmt.Fprintln(os.Stderr)
+	} else {
+		client = scraper.NewClient(cookie)
+	}
+	if err := RunScrapeAuto(database, client, cfg.Force, cfg.Parallel); err != nil {
+		return fmt.Errorf("auto-association: %w", err)
+	}
+
+	// Phase 2: Check for version updates.
+	fmt.Fprintln(os.Stderr, "\n=== Phase 2/2: Checking for version updates ===")
+	trackable, err := database.GamesWithF95URL()
+	if err != nil {
+		return fmt.Errorf("querying games with F95 URLs: %w", err)
+	}
+	if len(trackable) == 0 {
+		fmt.Fprintln(os.Stderr, "No games have F95Zone URLs. Nothing to check.")
+		return nil
+	}
+
+	updatesFound, _ := RunUpdateCheck(database, client, trackable, cfg.Force)
+	fmt.Fprintf(os.Stderr, "\n=== %d updates available ===\n", updatesFound)
+	return nil
 }
 
 // SyncGame syncs a single game: associate it with F95Zone (if needed)
@@ -139,6 +189,7 @@ func Sync(args []string) {
 	cookieFile := fs.String("cookie-file", "", "Cookie file")
 	unsafe := fs.Bool("unsafe", false, "⚠ Skip rate limiting")
 	force := fs.Bool("force", false, "Force re-check even if checked within 24h")
+	parallel := fs.Int("parallel", 1, "Number of concurrent scrapers (default 1 = sequential)")
 	fs.Parse(args)
 
 	cookie := ResolveCookie(*cookieStr, *cookieFile)
@@ -161,75 +212,40 @@ func Sync(args []string) {
 		return
 	}
 
-	// Phase 1: Associate games with F95Zone threads.
-	fmt.Fprintln(os.Stderr, "\n=== Phase 1/2: Associating games with F95Zone threads ===")
-	RunScrapeAuto(database, cookie, *unsafe, *force)
-
-	// Phase 2: Check for version updates.
-	fmt.Fprintln(os.Stderr, "\n=== Phase 2/2: Checking for version updates ===")
-
-	allGames, err := database.ListActiveGames("", "")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return
+	cfg := SyncConfig{
+		Cookie:     *cookieStr,
+		CookieFile: *cookieFile,
+		Unsafe:     *unsafe,
+		Force:      *force,
+		Parallel:   *parallel,
 	}
-
-	var trackable []db.Game
-	for _, g := range allGames {
-		if g.F95URL != "" {
-			trackable = append(trackable, g)
-		}
+	if err := RunSync(database, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
-	if len(trackable) == 0 {
-		fmt.Fprintln(os.Stderr, "No games have F95Zone URLs. Nothing to check.")
-		return
-	}
-
-	var client *scraper.Client
-	if *unsafe {
-		client = scraper.NewUnsafeClient(cookie)
-	} else {
-		client = scraper.NewClient(cookie)
-	}
-
-	updatesFound, _ := RunUpdateCheck(database, client, trackable, *force)
-	fmt.Fprintf(os.Stderr, "\n=== %d updates available ===\n", updatesFound)
 }
 
 // RunScrapeAuto finds and associates F95Zone threads for unassociated games.
 // When force is false, games that were recently searched without success
 // (within UpdateCheckCooldown) are skipped to avoid redundant API calls.
-func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool) {
-	if cookie == "" {
-		fmt.Fprintf(os.Stderr, "Cookie required for auto-association.\n")
-		fmt.Fprintf(os.Stderr, "Log into f95zone.to in Firefox, or use --cookie/--cookie-file.\n")
-		os.Exit(1)
-	}
-
-	if unsafe {
-		fmt.Fprintln(os.Stderr, "⚠  --unsafe: rate limiting disabled. You may get IP-banned or Cloudflare-blocked.")
-		fmt.Fprintln(os.Stderr)
-	}
-
-	allGames, err := database.ListActiveGames("", "")
+// The workers parameter controls how many concurrent scrapers run
+// (1 = sequential, the default for backward compatibility).
+func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, workers int) error {
+	unassociated, err := database.GamesWithoutF95URL()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading games: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("loading games: %w", err)
 	}
 
-	// Filter to unassociated games (no F95Zone URL).
 	// Skip games that were recently searched without success to avoid
 	// redundant API calls.  Use --force to override.
 	var queue []db.Game
 	var cooldownSkipped int
-	for _, g := range allGames {
-		if g.F95URL == "" {
-			if !force && !g.VersionCheckedAt.IsZero() && time.Since(g.VersionCheckedAt) < UpdateCheckCooldown {
-				cooldownSkipped++
-				continue
-			}
-			queue = append(queue, g)
+	for _, g := range unassociated {
+		if !force && !g.VersionCheckedAt.IsZero() && time.Since(g.VersionCheckedAt) < UpdateCheckCooldown {
+			cooldownSkipped++
+			continue
 		}
+		queue = append(queue, g)
 	}
 	if len(queue) == 0 {
 		if cooldownSkipped > 0 {
@@ -237,241 +253,328 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 		} else {
 			fmt.Println("All games already have F95Zone URLs. Nothing to associate.")
 		}
-		return
+		return nil
 	}
 
-	var client *scraper.Client
-	if unsafe {
-		client = scraper.NewUnsafeClient(cookie)
-	} else {
-		client = scraper.NewClient(cookie)
-	}
 	total := len(queue)
-	associated := 0
-	skipped := 0
-	interrupted := false
 	startTime := time.Now()
+
+	// Enforce positive parallelism (0 would deadlock).
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 10 {
+		workers = 10
+		fmt.Fprintf(os.Stderr, "  (capping parallel scrapers at 10)\n")
+	}
+
+	mode := "sequential"
+	if workers > 1 {
+		mode = fmt.Sprintf("parallel (%d workers)", workers)
+	}
 
 	log.Info("auto-association started",
 		"total", total,
-		"unsafe", unsafe,
+		"workers", workers,
 	)
 
-	// Estimate: each game = 1 search + maybe 1 thread read
+	// Estimate: each game = 1 search + maybe 1 thread read.
 	estSeconds := total * 8
-	if unsafe {
-		estSeconds = total * 2 // much faster without delays
+	if workers > 1 {
+		estSeconds = total * 8 / workers // parallel throughput
 	}
 	estDuration := time.Duration(estSeconds) * time.Second
-	fmt.Fprintf(os.Stderr, "\n=== Auto-Associating %d games ===\n", total)
-	if unsafe {
-		fmt.Fprintf(os.Stderr, "Estimated time: ~%s (unsafe mode — no rate limiting).\n", util.FormatDuration(estDuration))
-	} else {
-		fmt.Fprintf(os.Stderr, "Estimated time: ~%s at current rate limits.\n", util.FormatDuration(estDuration))
-	}
+	fmt.Fprintf(os.Stderr, "\n=== Auto-Associating %d games (%s) ===\n", total, mode)
+	fmt.Fprintf(os.Stderr, "Estimated time: ~%s at current rate limits.\n", util.FormatDuration(estDuration))
 	fmt.Fprintf(os.Stderr, "This is a background task — let it run. It'll pause occasionally to avoid rate limits.\n\n")
 
 	// Load persistent association cache (survives restarts).
 	scraper.LoadAssociationCache()
-
-	searchCache := make(map[string][]scraper.SearchResult) // sanitized_title -> search results
-	urlCache := make(map[string]string)                    // sanitized_title -> thread URL
-	processed := make(map[string]bool)                     // sanitized_title -> fully processed (skip duplicates)
-
 	defer scraper.SaveAssociationCache() // persist any new entries
 
-	for i, game := range queue {
-		elapsed := time.Since(startTime).Truncate(time.Second)
+	// Track completed count for ETA estimation.
+	var completedCount int64
 
-		// Deduplicate: skip games whose sanitized title was already processed.
+	// Shared state between worker goroutines.
+	type workResult struct {
+		game        db.Game
+		query       string
+		associated  bool
+		skipped     bool
+		interrupted bool
+		title       string // display title for output
+		msg         string // one-line result message
+	}
+
+	// Channel of games to process.
+	type workItem struct {
+		game  db.Game
+		query string
+		index int
+	}
+
+	jobs := make(chan workItem, len(queue))
+	resultCh := make(chan workResult, len(queue))
+
+	// Build the job queue with dedup.
+	var processedJobQueries = make(map[string]bool)
+	for i, game := range queue {
 		query := scraper.SanitizeTitle(game.Title)
 		if query == "" {
 			query = game.Title
 		}
-		if processed[query] {
-			log.Debug("skipping duplicate", "title", game.Title, "index", i+1, "total", total)
-			fmt.Fprintf(os.Stderr, "[%d/%d] %s %q — skipping (duplicate)\n",
-				i+1, total, elapsed, game.Title)
-			skipped++
+		if processedJobQueries[query] {
+			log.Debug("skipping duplicate", "title", game.Title)
 			continue
 		}
+		processedJobQueries[query] = true
+		jobs <- workItem{game: game, query: query, index: i + 1}
+	}
+	close(jobs)
 
-		log.Debug("processing game for association", "title", game.Title, "index", i+1, "total", total)
+	// mutex for serialized SQLite writes (prevents SQLITE_BUSY)
+	var saveMu sync.Mutex
 
-		fmt.Fprintf(os.Stderr, "[%d/%d] %s %q",
-			i+1, total, elapsed, game.Title)
-		if query != game.Title {
-			fmt.Fprintf(os.Stderr, "  (search: %q)", query)
-		}
-		fmt.Fprintln(os.Stderr)
+	// Launch workers.
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
 
-		// Use caches to avoid redundant searches.
-		var results []scraper.SearchResult
+			for job := range jobs {
+				game, query := job.game, job.query
+				elapsed := time.Since(startTime).Truncate(time.Second)
 
-		// Level 1: Persistent association cache (survives restarts).
-		// When a game's thread has been manually identified, the cache
-		// provides the thread ID and we construct a slug-agnostic URL.
-		if cachedID := scraper.GetCachedThreadID(query); cachedID > 0 {
-			cachedURL := scraper.ThreadURL(cachedID)
-			results = []scraper.SearchResult{{Title: game.Title, URL: cachedURL}}
-			fmt.Fprintf(os.Stderr, "  (cached thread %d)\n", cachedID)
-		} else if cachedURL, ok := urlCache[query]; ok {
-			results = []scraper.SearchResult{{Title: game.Title, URL: cachedURL}}
-		} else {
-			var cached bool
-			results, cached = searchCache[query]
-			if !cached {
-				var err error
-				results, err = client.SearchF95Zone(query)
-				if err != nil {
-					if util.IsBlocked(err) {
-						log.Error("blocked during auto-association", "error", err)
-						fmt.Fprintf(os.Stderr, "  ⚠ BLOCKED: stopping auto-association\n    %v\n", err)
-						fmt.Fprintf(os.Stderr, "  Try refreshing your F95Zone session in Firefox and running again.\n")
-						interrupted = true
-						break
+				// Compute ETA if we have progress data.
+				done := atomic.LoadInt64(&completedCount)
+				eta := ""
+				if done >= 5 && done < int64(total) {
+					avgPerItem := time.Since(startTime) / time.Duration(done)
+					remaining := time.Duration(int64(total)-done) * avgPerItem
+					eta = fmt.Sprintf(" (ETA: %s)", remaining.Truncate(time.Second))
+				}
+
+				fmt.Fprintf(os.Stderr, "[%d/%d] %s%s %q", job.index, total, elapsed, eta, game.Title)
+				if query != game.Title {
+					fmt.Fprintf(os.Stderr, "  (search: %q)", query)
+				}
+				fmt.Fprintln(os.Stderr)
+
+				// Check persistent cache first.
+				var searchRes []scraper.SearchResult
+				if cachedID := scraper.GetCachedThreadID(query); cachedID > 0 {
+					cachedURL := scraper.ThreadURL(cachedID)
+					searchRes = []scraper.SearchResult{{Title: game.Title, URL: cachedURL}}
+					fmt.Fprintf(os.Stderr, "  (cached thread %d)\n", cachedID)
+				} else {
+					var err error
+					searchRes, err = client.SearchF95Zone(query)
+					if err != nil {
+						if util.IsBlocked(err) {
+							log.Error("blocked during auto-association", "error", err)
+							resultCh <- workResult{
+								game: game, query: query,
+								interrupted: true,
+								msg:         fmt.Sprintf("  ⚠ BLOCKED: %v\n  Try refreshing your F95Zone session.\n", err),
+							}
+							return // worker stops on block
+						}
+						resultCh <- workResult{
+							game: game, query: query,
+							skipped: true,
+							msg:     fmt.Sprintf("  ✗ Search failed: %v\n\n", err),
+						}
+						atomic.AddInt64(&completedCount, 1)
+						continue
 					}
-					fmt.Fprintf(os.Stderr, "  ✗ Search failed: %v\n\n", err)
-					processed[query] = true
-					skipped++
+				}
+
+				if len(searchRes) == 0 {
+					saveMu.Lock()
+					game.VersionCheckedAt = time.Now()
+					if err := database.UpdateGame(&game); err != nil {
+						fmt.Fprintf(os.Stderr, "  ⚠ Failed to update cooldown for %q: %v\n", game.Title, err)
+					}
+					saveMu.Unlock()
+					resultCh <- workResult{
+						game: game, query: query,
+						skipped: true,
+						msg:     "  ✗ No search results\n",
+					}
+					atomic.AddInt64(&completedCount, 1)
 					continue
 				}
-				searchCache[query] = results
-			}
-		}
 
-		if len(results) == 0 {
-			fmt.Fprintln(os.Stderr, "  ✗ No search results")
-			processed[query] = true
-			game.VersionCheckedAt = time.Now()
-			if err := database.UpdateGame(&game); err != nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ Failed to update cooldown for %q: %v\n", game.Title, err)
-			}
-			skipped++
-			continue
-		}
+				// Score and select best match.
+				detEngine := engine.Detect(game.Path)
+				engVariants, hasEngVariants := engine.EngineTagVariants[string(detEngine.Engine)]
 
-		// Pre-detect engine for score boosting (prefer engine-tagged
-		// release threads over bare-title request threads).
-		detEngine := engine.Detect(game.Path)
-		engVariants, hasEngVariants := engine.EngineTagVariants[string(detEngine.Engine)]
-
-		// Show results with scores.  Skip non-game threads (requests,
-		// recommendations, identification threads, etc.) when choosing
-		// the best match, but still display them for context.
-		var best *scraper.SearchResult
-		var bestScore float64
-		for j, r := range results {
-			score := scraper.ComputeMatchScore(game.Title, r.Title)
-			// Boost engine-matching candidates (see SyncGameLogic for rationale).
-			if hasEngVariants {
-				titleLower := strings.ToLower(r.Title)
-				for _, variant := range engVariants {
-					if strings.Contains(titleLower, variant) {
-						score += 0.15
-						if score > 1.0 {
-							score = 1.0
+				var best *scraper.SearchResult
+				var bestScore float64
+				for j, r := range searchRes {
+					score := scraper.ComputeMatchScore(game.Title, r.Title)
+					if hasEngVariants {
+						titleLower := strings.ToLower(r.Title)
+						for _, variant := range engVariants {
+							if strings.Contains(titleLower, variant) {
+								score += 0.15
+								if score > 1.0 {
+									score = 1.0
+								}
+								break
+							}
 						}
-						break
 					}
+					isNonGame := scraper.IsNonGameThread(r.Title)
+					marker := "  "
+					if !isNonGame && score > bestScore {
+						bestScore = score
+						best = &searchRes[j]
+						marker = "→ "
+					}
+					skipLabel := ""
+					if isNonGame {
+						skipLabel = " [non-game]"
+					}
+					fmt.Fprintf(os.Stderr, "  %s[%.0f%%] %s%s\n", marker, score*100,
+						util.Truncate(r.Title, 55), skipLabel)
+				}
+
+				if best == nil || bestScore < 0.3 {
+					saveMu.Lock()
+					game.VersionCheckedAt = time.Now()
+					if err := database.UpdateGame(&game); err != nil {
+						fmt.Fprintf(os.Stderr, "  ⚠ Failed to update cooldown for %q: %v\n", game.Title, err)
+					}
+					saveMu.Unlock()
+					resultCh <- workResult{
+						game: game, query: query,
+						skipped: true,
+						msg:     fmt.Sprintf("  ✗ No good match (best: %.0f%%)\n\n", bestScore*100),
+					}
+					atomic.AddInt64(&completedCount, 1)
+					continue
+				}
+
+				// Scrape the best match.
+				fmt.Fprintf(os.Stderr, "  ⬇ Scraping %s...\n", best.URL)
+				data, err := client.ScrapeThread(best.URL)
+				if err != nil {
+					if util.IsBlocked(err) {
+						log.Error("blocked during scrape", "error", err)
+						resultCh <- workResult{
+							game: game, query: query,
+							interrupted: true,
+							msg:         fmt.Sprintf("  ⚠ BLOCKED: %v\n  Try refreshing your F95Zone session.\n", err),
+						}
+						return // worker stops on block
+					}
+					resultCh <- workResult{
+						game: game, query: query,
+						skipped: true,
+						msg:     fmt.Sprintf("  ✗ Scrape failed: %v\n\n", err),
+					}
+					atomic.AddInt64(&completedCount, 1)
+					continue
+				}
+
+				// Check engine consistency.
+				if !engine.EngineMatchesThread(detEngine, data.Tags, best.Title) {
+					atomic.AddInt64(&completedCount, 1)
+					resultCh <- workResult{
+						game: game, query: query,
+						skipped: true,
+						msg: fmt.Sprintf("  ⚠ Engine mismatch (scanner: %s, thread: %q, tags: %s) — skipping\n",
+							detEngine.Engine, util.Truncate(best.Title, 60), engine.FormatTagsBrief(data.Tags, 4)),
+					}
+					continue
+				}
+
+				scraper.ApplyThreadData(&game, data, best.URL)
+				game.VersionCheckedAt = time.Now()
+
+				saveMu.Lock()
+				if err := database.UpdateGame(&game); err != nil {
+					fmt.Fprintf(os.Stderr, "  ✗ Save failed: %v\n\n", err)
+					saveMu.Unlock()
+					atomic.AddInt64(&completedCount, 1)
+					resultCh <- workResult{
+						game: game, query: query,
+						skipped: true,
+						msg:     fmt.Sprintf("  ✗ Save failed: %v\n\n", err),
+					}
+					continue
+				}
+				saveMu.Unlock()
+
+				// Cache the successful association.
+				if data.ThreadID > 0 {
+					scraper.SetCachedThreadID(query, data.ThreadID)
+				}
+
+				// Save scraped metadata.
+				if data.Developer != "" || data.Overview != "" || data.CoverURL != "" {
+					saveMu.Lock()
+					meta := &db.ScrapedMeta{
+						GameID:    game.ID,
+						Developer: data.Developer,
+						Overview:  data.Overview,
+						CoverURL:  data.CoverURL,
+					}
+					if err := database.UpsertScrapedMeta(meta); err != nil {
+						fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", game.Title, err)
+					}
+					saveMu.Unlock()
+				}
+
+				log.Info("game associated", "title", game.Title, "version", data.Version)
+
+				savedMsg := fmt.Sprintf("  ✓ Saved (%s)", game.Title)
+				if data.Version != "" {
+					savedMsg += fmt.Sprintf(" v%s", data.Version)
+				}
+				if data.Developer != "" {
+					savedMsg += fmt.Sprintf(" • %s", data.Developer)
+				}
+				savedMsg += "\n"
+
+				atomic.AddInt64(&completedCount, 1)
+				resultCh <- workResult{
+					game:       game,
+					query:      query,
+					associated: true,
+					msg:        savedMsg,
 				}
 			}
-			isNonGame := scraper.IsNonGameThread(r.Title)
-			marker := "  "
-			if !isNonGame && score > bestScore {
-				bestScore = score
-				best = &results[j]
-				marker = "→ "
-			}
-			skipLabel := ""
-			if isNonGame {
-				skipLabel = " [non-game]"
-			}
-			fmt.Fprintf(os.Stderr, "  %s[%.0f%%] %s%s\n", marker, score*100,
-				util.Truncate(r.Title, 55), skipLabel)
-		}
+		}(w)
+	}
 
-		if best == nil || bestScore < 0.3 {
-			fmt.Fprintf(os.Stderr, "  ✗ No good match (best: %.0f%%)\n\n", bestScore*100)
-			processed[query] = true
-			game.VersionCheckedAt = time.Now()
-			if err := database.UpdateGame(&game); err != nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ Failed to update cooldown for %q: %v\n", game.Title, err)
-			}
+	// Close results when all workers finish.
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	// Collect results.
+	associated := 0
+	skipped := 0
+	interrupted := false
+	processed := make(map[string]bool)
+
+	for res := range resultCh {
+		processed[res.query] = true
+		if res.interrupted {
+			interrupted = true
+			fmt.Fprint(os.Stderr, res.msg)
+			break
+		}
+		if res.associated {
+			associated++
+		} else {
 			skipped++
-			continue
 		}
-
-		// Scrape the best match.
-		fmt.Fprintf(os.Stderr, "  ⬇ Scraping %s...\n", best.URL)
-		data, err := client.ScrapeThread(best.URL)
-		if err != nil {
-			if util.IsBlocked(err) {
-				fmt.Fprintf(os.Stderr, "  ⚠ BLOCKED: stopping auto-association\n    %v\n", err)
-				fmt.Fprintf(os.Stderr, "  Try refreshing your F95Zone session in Firefox.\n")
-				break
-			}
-			fmt.Fprintf(os.Stderr, "  ✗ Scrape failed: %v\n\n", err)
-			processed[query] = true
-			skipped++
-			continue
-		}
-
-		// Check engine consistency BEFORE saving. Uses the pre-detected
-		// engine from score boosting (see above).
-		if !engine.EngineMatchesThread(detEngine, data.Tags, best.Title) {
-			fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread: %q, tags: %s) — skipping\n",
-				detEngine.Engine, util.Truncate(best.Title, 60), engine.FormatTagsBrief(data.Tags, 4))
-			processed[query] = true
-			skipped++
-			continue
-		}
-
-		scraper.ApplyThreadData(&game, data, best.URL)
-		game.VersionCheckedAt = time.Now()
-
-		if err := database.UpdateGame(&game); err != nil {
-			fmt.Fprintf(os.Stderr, "  ✗ Save failed: %v\n\n", err)
-			processed[query] = true
-			skipped++
-			continue
-		}
-
-		// Cache the successful association so future runs return instantly.
-		urlCache[query] = best.URL
-		if data.ThreadID > 0 {
-			scraper.SetCachedThreadID(query, data.ThreadID)
-		}
-
-		log.Info("game associated",
-			"title", game.Title,
-			"version", data.Version,
-		)
-		fmt.Fprintf(os.Stderr, "  ✓ Saved (%s)", game.Title)
-		if data.Version != "" {
-			fmt.Fprintf(os.Stderr, " v%s", data.Version)
-		}
-		if data.Developer != "" {
-			fmt.Fprintf(os.Stderr, " • %s", data.Developer)
-		}
-		fmt.Fprintln(os.Stderr)
-
-		// Save scraped metadata.
-		if data.Developer != "" || data.Overview != "" || data.CoverURL != "" {
-			meta := &db.ScrapedMeta{
-				GameID:    game.ID,
-				Developer: data.Developer,
-				Overview:  data.Overview,
-				CoverURL:  data.CoverURL,
-			}
-			if err := database.UpsertScrapedMeta(meta); err != nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", game.Title, err)
-			}
-		}
-
-		associated++
-		processed[query] = true
-		fmt.Fprintln(os.Stderr)
+		fmt.Fprint(os.Stderr, res.msg)
 	}
 
 	elapsed := time.Since(startTime).Truncate(time.Second)
@@ -489,4 +592,5 @@ func RunScrapeAuto(database *db.Database, cookie string, unsafe bool, force bool
 	}
 	fmt.Fprintf(os.Stderr, "=== Done: %d associated, %d skipped, %d/%d total in %s ===\n",
 		associated, skipped, associated+skipped, total, elapsed)
+	return nil
 }

@@ -33,7 +33,7 @@ func SteamProtonSet(args []string) {
 		os.Exit(1)
 	}
 
-	exe := ResolveExecutable(*game)
+	exe := resolveGameExe(game)
 	if exe == "" {
 		fmt.Fprintf(os.Stderr, "No executable found for %q.\n", game.Title)
 		os.Exit(1)

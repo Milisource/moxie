@@ -7,10 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/launcher"
 )
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -94,36 +96,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+s":
 			m.cycleStatusFilter()
 			return m, nil
+		case "c":
+			if len(m.collections) == 0 {
+				return m, m.loadCollections()
+			}
+			m.cycleCollectionFilter()
+			return m, tea.Batch(m.loadGames(), m.loadCollections())
 		case "d":
-			row := m.table.SelectedRow()
-			if len(row) > 0 {
-				var id int64
-				if n, _ := fmt.Sscanf(row[0], "%d", &id); n > 0 {
-					m.deleteID = id
-					m.selectedID = id
-					m.confirmDelete = true
-					m.deleteTitle = ""
-					for _, g := range m.allGames {
-						if g.ID == id {
-							m.deleteTitle = g.Title
-							break
-						}
-					}
-				}
+			cursor := m.table.Cursor()
+			if cursor >= 0 && cursor < len(m.filtered) {
+				g := m.filtered[cursor]
+				m.deleteID = g.ID
+				m.selectedID = g.ID
+				m.confirmDelete = true
+				m.deleteTitle = g.Title
 			}
 			return m, nil
 		case "e", "enter":
-			row := m.table.SelectedRow()
-			if len(row) > 0 {
-				var id int64
-				if n, _ := fmt.Sscanf(row[0], "%d", &id); n > 0 {
-					m.selectedID = id
-					m.viewMode = DetailView
-					m.err = nil
-					m.detailGame = nil
-					m.detailViewport.YOffset = 0
-					return m, tea.Batch(m.loadDetailGame(id), m.loadMeta(id))
-				}
+			cursor := m.table.Cursor()
+			if cursor >= 0 && cursor < len(m.filtered) {
+				id := m.filtered[cursor].ID
+				m.selectedID = id
+				m.viewMode = DetailView
+				m.err = nil
+				m.detailGame = nil
+				m.detailViewport.YOffset = 0
+				return m, tea.Batch(m.loadDetailGame(id), m.loadMeta(id))
 			}
 			return m, nil
 		case "?":
@@ -190,6 +188,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case collectionsLoadedMsg:
+		m.collections = msg.collections
+		m.cycleCollectionFilter()
+		return m, tea.Batch(m.loadGames())
+
+	case startupTipExpiredMsg:
+		m.showStartupTip = false
+		return m, nil
+
+	// ── Spinner ──────────────────────────────────────────────────
+	case spinner.TickMsg:
+		if !m.spinnerActive {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
 	// ── Download messages ─────────────────────────────────────────
 	case downloadStartedMsg:
 		if msg.err != nil {
@@ -197,11 +213,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.notice = fmt.Sprintf("Download started for game %d", msg.gameID)
+		if !m.spinnerActive && m.hasActiveDownloads() {
+			m.spinnerActive = true
+			return m, tea.Batch(m.pollDownloads(), func() tea.Msg { return m.spinner.Tick() })
+		}
 		return m, m.pollDownloads()
 
 	case downloadProgressMsg:
 		if m.hasActiveDownloads() {
 			return m, m.pollDownloads()
+		}
+		if m.spinnerActive {
+			m.spinnerActive = false
 		}
 	}
 
@@ -239,18 +262,17 @@ func (m model) handleEditKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 	case "enter":
 		newTitle := strings.TrimSpace(m.editInput.Value())
 		if newTitle != "" {
-			game, err := m.db.GetGame(m.selectedID)
-			if err == nil && game != nil {
-				game.Title = newTitle
-				if err := m.db.UpdateGame(game); err != nil {
-					m.err = fmt.Errorf("rename failed: %w", err)
-				} else {
-					m.err = nil
-				}
+			if err := m.db.UpdateGameTitle(m.selectedID, newTitle); err != nil {
+				m.err = fmt.Errorf("rename failed: %w", err)
+			} else {
+				m.err = nil
+				m.patchGameSummary(func(s *db.GameSummary) {
+					s.Title = newTitle
+				})
 			}
 		}
 		m.editing = false
-		return m, tea.Batch(m.loadGames(), m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
+		return m, tea.Batch(m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
 	}
 	var editCmd tea.Cmd
 	m.editInput, editCmd = m.editInput.Update(msg)
@@ -264,22 +286,20 @@ func (m model) handleExeKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		newExe := strings.TrimSpace(m.exeInput.Value())
-		game, err := m.db.GetGame(m.selectedID)
-		if err == nil && game != nil {
-			// Resolve relative paths against the game directory
-			if newExe != "" && !filepath.IsAbs(newExe) {
-				newExe = filepath.Join(game.Path, newExe)
-			}
-			game.ExePath = newExe
-			if err := m.db.UpdateGame(game); err != nil {
-				m.err = fmt.Errorf("exe update failed: %w", err)
-			} else {
-				m.notice = fmt.Sprintf("Exe set to %s", orDash(newExe))
-				m.err = nil
+		// Resolve relative paths against the game directory using detailGame or a GetGame call
+		if newExe != "" && !filepath.IsAbs(newExe) {
+			if g := m.detailGame; g != nil {
+				newExe = filepath.Join(g.Path, newExe)
 			}
 		}
+		if err := m.db.UpdateGameExePath(m.selectedID, newExe); err != nil {
+			m.err = fmt.Errorf("exe update failed: %w", err)
+		} else {
+			m.notice = fmt.Sprintf("Exe set to %s", orDash(newExe))
+			m.err = nil
+		}
 		m.editingExe = false
-		return m, tea.Batch(m.loadGames(), m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
+		return m, tea.Batch(m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
 	}
 	var exeCmd tea.Cmd
 	m.exeInput, exeCmd = m.exeInput.Update(msg)
@@ -295,22 +315,18 @@ func (m model) handleUrlInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 	case "enter":
 		url := strings.TrimSpace(m.urlInput.Value())
 		if url != "" {
-			game, err := m.db.GetGame(m.selectedID)
-			if err == nil && game != nil {
-				game.F95URL = url
-				if err := m.db.UpdateGame(game); err != nil {
-					m.err = fmt.Errorf("URL update failed: %w", err)
-					m.setUrl = false
-					return m, tea.Batch(m.loadGames(), m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
-				}
+			if err := m.db.UpdateGameF95URL(m.selectedID, url); err != nil {
+				m.err = fmt.Errorf("URL update failed: %w", err)
+				m.setUrl = false
+				return m, tea.Batch(m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
 			}
 			m.setUrl = false
 			if m.scraperClient != nil {
 				m.notice = "URL updated — scraping metadata..."
-				return m, tea.Batch(m.loadGames(), m.loadDetailGame(m.selectedID), m.scrapeMeta(m.selectedID, url))
+				return m, tea.Batch(m.loadDetailGame(m.selectedID), m.scrapeMeta(m.selectedID, url))
 			}
 			m.notice = "URL updated"
-			return m, tea.Batch(m.loadGames(), m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
+			return m, tea.Batch(m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
 		}
 	}
 	var urlCmd tea.Cmd
@@ -342,18 +358,32 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.detailViewport.YOffset = 999999 // auto-scroll to show the edit input
 		return m, textinput.Blink
-	case "s":
-		game, err := m.db.GetGame(m.selectedID)
-		if err != nil || game == nil {
+	case "s", "a", "c", "b", "h", "u":
+		if m.detailGame == nil {
 			return m, nil
 		}
-		game.Status = nextStatus(game.Status)
-		if err := m.db.UpdateGame(game); err != nil {
+		var newStatus string
+		if key == "s" {
+			// "s" cycles to the next status
+			newStatus = nextStatus(m.detailGame.Status)
+		} else {
+			// Direct selection: a=active, c=completed, b=abandoned, h=on_hold, u=unknown
+			newStatus = statusKeyForRune([]rune(key)[0])
+		}
+		if newStatus == "" || newStatus == m.detailGame.Status {
+			return m, nil
+		}
+		if err := m.db.UpdateGameStatus(m.selectedID, newStatus); err != nil {
 			m.err = fmt.Errorf("status update failed: %w", err)
 		} else {
 			m.err = nil
+			// Keep detailGame in sync
+			m.detailGame.Status = newStatus
+			m.patchGameSummary(func(s *db.GameSummary) {
+				s.Status = newStatus
+			})
 		}
-		return m, tea.Batch(m.loadGames(), m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
+		return m, tea.Batch(m.loadDetailGame(m.selectedID), m.loadMeta(m.selectedID))
 	case "d":
 		m.deleteID = m.selectedID
 		m.confirmDelete = true
@@ -373,7 +403,7 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		}
 		m.notice = game.Path
 		return m, nil
-	case "u":
+	case "ctrl+u":
 		game, err := m.db.GetGame(m.selectedID)
 		if err != nil || game == nil {
 			return m, nil
@@ -410,12 +440,12 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		if err != nil || game == nil {
 			return m, nil
 		}
-		exe := findPlayableExe(game.Path, game.ExePath)
+		exe := launcher.ResolveExecutable(game.Path, game.ExePath)
 		if exe == "" {
 			m.err = fmt.Errorf("No executable found in %s", game.Path)
 			return m, nil
 		}
-		if err := launchExe(exe); err != nil {
+		if err := launcher.Launch(exe, game.Path); err != nil {
 			m.err = fmt.Errorf("Failed to launch: %v", err)
 		} else {
 			m.notice = fmt.Sprintf("Launching: %s", filepath.Base(exe))
@@ -435,7 +465,10 @@ func (m model) handleDownloadKey() (tea.Model, tea.Cmd) {
 	}
 
 	// Check if already downloading
-	if ad, ok := m.activeDownloads[m.selectedID]; ok {
+	m.activeDownloadsMu.Lock()
+	ad, ok := m.activeDownloads[m.selectedID]
+	m.activeDownloadsMu.Unlock()
+	if ok {
 		ad.mu.Lock()
 		status := ad.status
 		ad.mu.Unlock()
@@ -527,4 +560,38 @@ func (m *model) cycleStatusFilter() {
 	}
 	m.statusFilter = statuses[0]
 	m.rebuildFiltered()
+}
+
+func (m *model) cycleCollectionFilter() {
+	if len(m.collections) == 0 {
+		m.collectionFilter = 0
+		m.collectionName = ""
+		return
+	}
+
+	// Find the next collection after the current filter, or start from 0.
+	// Index 0 in the cycle means "no filter".
+	type entry struct {
+		id   int64
+		name string
+	}
+	entries := make([]entry, 0, len(m.collections)+1)
+	entries = append(entries, entry{0, "All"})
+	for _, c := range m.collections {
+		entries = append(entries, entry{c.ID, c.Name})
+	}
+
+	// Find where we are now.
+	for i, e := range entries {
+		if e.id == m.collectionFilter {
+			next := (i + 1) % len(entries)
+			m.collectionFilter = entries[next].id
+			m.collectionName = entries[next].name
+			return
+		}
+	}
+
+	// Fallback: start at "All".
+	m.collectionFilter = 0
+	m.collectionName = "All"
 }

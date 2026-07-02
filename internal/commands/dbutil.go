@@ -6,6 +6,7 @@ import (
 
 	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/launcher"
 )
 
 // OpenDB opens the SQLite database and exits on error.
@@ -17,4 +18,9 @@ func OpenDB() *db.Database {
 		os.Exit(1)
 	}
 	return database
+}
+
+// resolveGameExe finds the best executable for a game using the shared launcher.
+func resolveGameExe(game *db.Game) string {
+	return launcher.ResolveExecutable(game.Path, game.ExePath)
 }

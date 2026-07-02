@@ -479,6 +479,7 @@ func TestDeleteGame(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Soft delete — game should still exist with deleted_at set.
 	if err := db.DeleteGame(id); err != nil {
 		t.Fatalf("DeleteGame failed: %v", err)
 	}
@@ -487,13 +488,77 @@ func TestDeleteGame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got == nil {
+		t.Fatal("GetGame should still return the game after soft delete")
+	}
+	if got.DeletedAt.IsZero() {
+		t.Fatal("deleted_at should be set after soft delete")
+	}
+
+	// The game should NOT appear in active lists.
+	active, err := db.ListActiveGames("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range active {
+		if a.ID == id {
+			t.Fatal("soft-deleted game should not appear in ListActiveGames")
+		}
+	}
+
+	// But it SHOULD appear in ListDeletedGames.
+	deleted, err := db.ListDeletedGames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range deleted {
+		if d.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("soft-deleted game should appear in ListDeletedGames")
+	}
+
+	// Permanent delete.
+	if err := db.DeleteGamePermanent(id); err != nil {
+		t.Fatalf("DeleteGamePermanent failed: %v", err)
+	}
+	got, err = db.GetGame(id)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got != nil {
-		t.Fatal("GetGame should return nil after DeleteGame")
+		t.Fatal("GetGame should return nil after permanent delete")
 	}
 
 	// Deleting a non-existent ID should not error.
 	if err := db.DeleteGame(99999); err != nil {
 		t.Errorf("DeleteGame on non-existent ID: %v", err)
+	}
+
+	// Restore test.
+	id2, err := db.InsertGame(&Game{Title: "Restore Me", Engine: "Unity", Path: "/restore-me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeleteGame(id2); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RestoreGame(id2); err != nil {
+		t.Fatalf("RestoreGame failed: %v", err)
+	}
+	got, err = db.GetGame(id2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("GetGame should return game after restore")
+	}
+	if !got.DeletedAt.IsZero() {
+		t.Fatal("deleted_at should be cleared after restore")
 	}
 }
 
@@ -603,8 +668,8 @@ func TestScrapedMetaCascadeDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Delete the parent game — scraped_meta should cascade.
-	if err := db.DeleteGame(id); err != nil {
+	// Permanently delete the parent game — scraped_meta should cascade.
+	if err := db.DeleteGamePermanent(id); err != nil {
 		t.Fatal(err)
 	}
 

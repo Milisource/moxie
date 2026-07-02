@@ -39,7 +39,7 @@ func SteamFixArtwork(args []string) {
 	if *nameFlag != "" {
 		name = *nameFlag
 	}
-	exe := ResolveExecutable(*game)
+	exe := resolveGameExe(game)
 	if exe == "" {
 		fmt.Fprintf(os.Stderr, "No executable found for %q.\n", game.Title)
 		os.Exit(1)
@@ -106,9 +106,9 @@ func ResolveSGDBKey(flagKey string) string {
 	if key := os.Getenv("STEAMGRIDDB_KEY"); key != "" {
 		return key
 	}
-	// Check JSON config (new format).
+	// Check JSON config.
 	if cfg, err := config.ReadConfig(); err == nil {
-		if key, ok := cfg["steamgriddb-key"]; ok && key != "" {
+		if key := cfg.Get("steamgriddb-key"); key != "" {
 			return key
 		}
 	}

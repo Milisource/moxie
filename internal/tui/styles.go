@@ -96,6 +96,32 @@ var (
 	// noPathStyle is used for games that are not found on disk (empty Path).
 	noPathStyle = lipgloss.NewStyle().
 			Foreground(subtle)
+
+	// sectionHeaderStyle renders section headers in the detail view.
+	sectionHeaderStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(white).
+				Background(purpleBg).
+				Padding(0, 1).
+				MarginTop(1).
+				MarginBottom(1)
+
+	// tagStyle renders individual tags in the detail view.
+	tagStyle = lipgloss.NewStyle().
+			Foreground(purple).
+			Background(lipgloss.Color("237")).
+			Padding(0, 1).
+			MarginRight(1)
+
+	// copyHintStyle renders hints for copyable URLs.
+	copyHintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("243")).
+			Italic(true)
+
+	// statusOptionStyle renders interactive status selector options.
+	statusOptionStyle = lipgloss.NewStyle().
+				Foreground(white).
+				Bold(true)
 )
 
 // statusStyles caches pre-built lipgloss styles for all known status values,

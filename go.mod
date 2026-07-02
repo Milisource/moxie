@@ -10,7 +10,6 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/ncruces/go-sqlite3 v0.34.0
-	github.com/wakeful-cloud/vdf v0.0.0-20210218214150-0be6ec18b390
 	golang.org/x/image v0.39.0
 )
 

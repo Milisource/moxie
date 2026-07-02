@@ -13,6 +13,11 @@ import (
 	"github.com/mili/moxie/internal/engine"
 )
 
+// ScanProgressFunc is an optional callback for reporting scan progress.
+// The dirsExamined and gamesFound counters update as the walk progresses.
+// phase is "walk" (first pass, finding games) or "detect" (second pass, engine detection).
+type ScanProgressFunc func(dirsExamined, gamesFound int, phase string)
+
 // DetectedGame is the result of scanning a game directory.
 type DetectedGame struct {
 	Title     string        `json:"title"`     // directory name as title fallback
@@ -27,14 +32,15 @@ type DetectedGame struct {
 // It skips known non-game paths and engine crash handlers.
 // Sizes are accumulated in a single walk — no separate dirSize pass.
 func Scan(root string) ([]DetectedGame, error) {
-	return ScanFiltered(root, nil)
+	return ScanFiltered(root, nil, nil)
 }
 
 // ScanFiltered is like Scan but skips game directories whose paths
 // are present in skipPaths. When skipPaths is nil or empty, behaves
 // identically to Scan. This allows callers to implement incremental
 // scans by passing the set of already-known game paths.
-func ScanFiltered(root string, skipPaths map[string]bool) ([]DetectedGame, error) {
+// progress is an optional callback that reports dirs examined and games found.
+func ScanFiltered(root string, skipPaths map[string]bool, progress ScanProgressFunc) ([]DetectedGame, error) {
 	root = filepath.Clean(root)
 
 	// Single walk: detect game directories and accumulate file sizes
@@ -44,6 +50,8 @@ func ScanFiltered(root string, skipPaths map[string]bool) ([]DetectedGame, error
 	}
 	gameDirs := make(map[string]*trackedGame)
 	var currentGameDir string
+
+	dirsExamined := 0
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -72,6 +80,11 @@ func ScanFiltered(root string, skipPaths map[string]bool) ([]DetectedGame, error
 
 		if !d.IsDir() {
 			return nil
+		}
+
+		dirsExamined++
+		if progress != nil {
+			progress(dirsExamined, len(gameDirs), "walk")
 		}
 
 		name := d.Name()
@@ -128,6 +141,7 @@ func ScanFiltered(root string, skipPaths map[string]bool) ([]DetectedGame, error
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, runtime.NumCPU())
+	var detectedCount int64
 	for dir, tg := range gameDirs {
 		wg.Add(1)
 		go func(d string, size int64) {
@@ -167,6 +181,10 @@ func ScanFiltered(root string, skipPaths map[string]bool) ([]DetectedGame, error
 			}
 			mu.Lock()
 			games = append(games, g)
+			detectedCount++
+			if progress != nil {
+				progress(dirsExamined, int(detectedCount), "detect")
+			}
 			mu.Unlock()
 		}(dir, tg.size)
 	}
@@ -176,8 +194,9 @@ func ScanFiltered(root string, skipPaths map[string]bool) ([]DetectedGame, error
 }
 
 // ScanSingle detects the engine for a single directory without walking.
-func ScanSingle(dir string) (DetectedGame, error) {
-	return analyzeDir(filepath.Clean(dir), ""), nil
+// Returns a DetectedGame with engine, title, version, size, and exe path.
+func ScanSingle(dir string) DetectedGame {
+	return analyzeDir(filepath.Clean(dir), "")
 }
 
 // analyzeDir runs engine detection and computes size for a directory.

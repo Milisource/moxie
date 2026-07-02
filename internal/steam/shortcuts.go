@@ -7,8 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-
-	vdf "github.com/wakeful-cloud/vdf"
+	"time"
 )
 
 // shortcutKnownKeys is the set of VDF keys explicitly handled by ShortcutEntry.
@@ -36,9 +35,14 @@ func ReadShortcuts(path string) ([]ShortcutEntry, error) {
 		return nil, fmt.Errorf("steam: cannot read shortcuts.vdf: %w", err)
 	}
 
-	m, err := vdf.ReadVdf(data)
+	m, err := readVdf(data)
 	if err != nil {
 		return nil, fmt.Errorf("steam: cannot parse shortcuts.vdf: %w", err)
+	}
+
+	// Validate VDF structure after parsing.
+	if err := validateShortcutsVDF(m); err != nil {
+		return nil, fmt.Errorf("steam: invalid shortcuts.vdf structure: %w", err)
 	}
 
 	return parseShortcutsMap(m), nil
@@ -56,9 +60,11 @@ func WriteShortcuts(path string, shortcuts []ShortcutEntry) error {
 	}
 
 	// Backup existing file before overwriting.
-	// Uses a fixed name so only one backup is kept; avoids unbounded accumulation.
+	// Uses a timestamped name so multiple backups are preserved, providing
+	// a history of changes rather than a single overwritten file.
 	if _, err := os.Stat(path); err == nil {
-		backup := path + ".backup"
+		ts := time.Now().UTC().Format("20060102-150405")
+		backup := path + "." + ts + ".backup"
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("steam: cannot backup shortcuts.vdf: %w", err)
@@ -70,7 +76,7 @@ func WriteShortcuts(path string, shortcuts []ShortcutEntry) error {
 
 	// Serialize to binary VDF.
 	m := buildShortcutsMap(shortcuts)
-	data, err := vdf.WriteVdf(m)
+	data, err := writeVdf(m)
 	if err != nil {
 		return fmt.Errorf("steam: cannot encode shortcuts.vdf: %w", err)
 	}
@@ -181,9 +187,9 @@ func FindGameByAppID(shortcuts []ShortcutEntry, appID uint32) *ShortcutEntry {
 // Binary VDF conversion helpers
 // ---------------------------------------------------------------------------
 
-// parseShortcutsMap converts a vdf.Map into a []ShortcutEntry slice.
-func parseShortcutsMap(m vdf.Map) []ShortcutEntry {
-	shortcuts, ok := m["shortcuts"].(vdf.Map)
+// parseShortcutsMap converts a vdfMap into a []ShortcutEntry slice.
+func parseShortcutsMap(m vdfMap) []ShortcutEntry {
+	shortcuts, ok := m["shortcuts"].(vdfMap)
 	if !ok {
 		return nil
 	}
@@ -199,15 +205,15 @@ func parseShortcutsMap(m vdf.Map) []ShortcutEntry {
 	sort.Ints(keys)
 	for _, idx := range keys {
 		key := strconv.Itoa(idx)
-		if sm, ok := shortcuts[key].(vdf.Map); ok {
+		if sm, ok := shortcuts[key].(vdfMap); ok {
 			entries = append(entries, parseShortcutEntry(sm))
 		}
 	}
 	return entries
 }
 
-// parseShortcutEntry converts a single vdf.Map into a ShortcutEntry.
-func parseShortcutEntry(m vdf.Map) ShortcutEntry {
+// parseShortcutEntry converts a single vdfMap into a ShortcutEntry.
+func parseShortcutEntry(m vdfMap) ShortcutEntry {
 	se := ShortcutEntry{
 		AppID:              getUint32(m, "appid"),
 		AppName:            getString(m, "AppName"),
@@ -239,12 +245,12 @@ func parseShortcutEntry(m vdf.Map) ShortcutEntry {
 	return se
 }
 
-// buildShortcutsMap converts a []ShortcutEntry into the vdf.Map format
-// expected by vdf.WriteVdf.
-func buildShortcutsMap(shortcuts []ShortcutEntry) vdf.Map {
-	shortcutsMap := vdf.Map{}
+// buildShortcutsMap converts a []ShortcutEntry into the vdfMap format
+// expected by writeVdf.
+func buildShortcutsMap(shortcuts []ShortcutEntry) vdfMap {
+	shortcutsMap := make(vdfMap)
 	for i, s := range shortcuts {
-		sm := vdf.Map{
+		sm := vdfMap{
 			"appid":              s.AppID,
 			"AppName":            s.AppName,
 			"exe":                quotePath(s.Exe),
@@ -264,13 +270,13 @@ func buildShortcutsMap(shortcuts []ShortcutEntry) vdf.Map {
 		mergeRawFields(sm, s.RawFields)
 		shortcutsMap[fmt.Sprintf("%d", i)] = sm
 	}
-	return vdf.Map{"shortcuts": shortcutsMap}
+	return vdfMap{"shortcuts": shortcutsMap}
 }
 
-func buildTagsMap(tags []string) vdf.Map {
-	tm := vdf.Map{}
+func buildTagsMap(tags []string) vdfMap {
+	tm := make(vdfMap)
 	for i, t := range tags {
-		tm[fmt.Sprintf("%d", i)] = vdf.Map{
+		tm[fmt.Sprintf("%d", i)] = vdfMap{
 			fmt.Sprintf("%d", i): t,
 		}
 	}
@@ -279,7 +285,7 @@ func buildTagsMap(tags []string) vdf.Map {
 
 // mergeRawFields copies any preserved unknown fields from RawFields into the
 // output map, overriding nothing that's already set.
-func mergeRawFields(m vdf.Map, raw map[string]interface{}) {
+func mergeRawFields(m vdfMap, raw map[string]interface{}) {
 	for k, v := range raw {
 		if _, exists := m[k]; !exists {
 			m[k] = v
@@ -287,8 +293,8 @@ func mergeRawFields(m vdf.Map, raw map[string]interface{}) {
 	}
 }
 
-func parseTags(m vdf.Map) []string {
-	tags, ok := m["tags"].(vdf.Map)
+func parseTags(m vdfMap) []string {
+	tags, ok := m["tags"].(vdfMap)
 	if !ok {
 		return nil
 	}
@@ -302,7 +308,7 @@ func parseTags(m vdf.Map) []string {
 	sort.Ints(tagKeys)
 	for _, idx := range tagKeys {
 		key := strconv.Itoa(idx)
-		item, ok := tags[key].(vdf.Map)
+		item, ok := tags[key].(vdfMap)
 		if !ok {
 			continue
 		}
@@ -317,14 +323,14 @@ func parseTags(m vdf.Map) []string {
 // Low-level VDF helpers
 // ---------------------------------------------------------------------------
 
-func getString(m vdf.Map, key string) string {
+func getString(m vdfMap, key string) string {
 	if s, ok := m[key].(string); ok {
 		return s
 	}
 	return ""
 }
 
-func getUint32(m vdf.Map, key string) uint32 {
+func getUint32(m vdfMap, key string) uint32 {
 	switch v := m[key].(type) {
 	case uint32:
 		return v
@@ -340,7 +346,7 @@ func getUint32(m vdf.Map, key string) uint32 {
 	return 0
 }
 
-func getBool(m vdf.Map, key string) bool {
+func getBool(m vdfMap, key string) bool {
 	return getUint32(m, key) != 0
 }
 

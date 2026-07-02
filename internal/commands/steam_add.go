@@ -72,7 +72,7 @@ func SteamAdd(args []string) {
 	meta, _ := database.GetScrapedMeta(game.ID)
 
 	// 3. Resolve executable.
-	exe := ResolveExecutable(*game)
+	exe := resolveGameExe(game)
 	if exe == "" {
 		fmt.Fprintf(os.Stderr, "No executable found for %q. Scan or set one first.\n", game.Title)
 		os.Exit(1)

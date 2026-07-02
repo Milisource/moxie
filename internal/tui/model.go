@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -68,7 +69,7 @@ func (s SortField) Indicator() string {
 // ─── Custom Messages ───────────────────────────────────────────────────────
 
 type gamesLoadedMsg struct {
-	games []db.Game
+	games []db.GameSummary
 }
 
 type metaLoadedMsg struct {
@@ -77,7 +78,7 @@ type metaLoadedMsg struct {
 
 type gameDeletedMsg struct {
 	err   error
-	games []db.Game
+	games []db.GameSummary
 }
 
 type errMsg struct {
@@ -94,6 +95,10 @@ type detailGameLoadedMsg struct {
 }
 
 type filterTickMsg struct{}
+
+type collectionsLoadedMsg struct {
+	collections []db.Collection
+}
 
 type downloadProgressMsg struct {
 	gameID   int64
@@ -129,8 +134,8 @@ type model struct {
 	table       table.Model
 	filterInput textinput.Model
 
-	allGames     []db.Game
-	filtered     []db.Game
+	allGames     []db.GameSummary
+	filtered     []db.GameSummary
 	viewMode     ViewMode
 	selectedID   int64
 	filterText   string
@@ -169,11 +174,32 @@ type model struct {
 	f95Cookie string
 
 	// filters
-	engineFilter string
-	statusFilter string
+	engineFilter      string
+	statusFilter      string
+	collectionFilter  int64  // 0 = no filter
+	collectionName    string // name of the currently selected collection
+	collections       []db.Collection
 
 	// active downloads
-	activeDownloads map[int64]*activeDownload
+	activeDownloadsMu *sync.Mutex
+	activeDownloads   map[int64]*activeDownload
+
+	// startup tip (auto-dismissed)
+	showStartupTip bool
+
+	// spinner for background operations
+	spinner        spinner.Model
+	spinnerActive  bool
+}
+
+// startupTipExpiredMsg is sent when the startup tip timer completes.
+type startupTipExpiredMsg struct{}
+
+// dismissStartupTip returns a tea.Cmd that sends startupTipExpiredMsg after 6 seconds.
+func dismissStartupTip() tea.Cmd {
+	return tea.Tick(6000*1000000, func(t time.Time) tea.Msg {
+		return startupTipExpiredMsg{}
+	})
 }
 
 // initialModel creates the root model with default Bubble Tea components.
@@ -213,22 +239,29 @@ func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) m
 	fi.PromptStyle = lipgloss.NewStyle().Foreground(purple)
 	fi.PlaceholderStyle = lipgloss.NewStyle().Foreground(subtle)
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(purple)
+
 	return model{
-		db:              database,
-		table:           t,
-		filterInput:     fi,
-		sortBy:          SortID,
-		scraperClient:   sc,
-		f95Cookie:       f95Cookie,
-		activeDownloads: make(map[int64]*activeDownload),
-		detailViewport:  viewport.New(0, 0),
+		db:                database,
+		table:             t,
+		filterInput:       fi,
+		sortBy:            SortID,
+		scraperClient:     sc,
+		f95Cookie:         f95Cookie,
+		activeDownloadsMu: &sync.Mutex{},
+		activeDownloads:    make(map[int64]*activeDownload),
+		detailViewport:     viewport.New(0, 0),
+		showStartupTip:     true,
+		spinner:            sp,
 	}
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────────
 
 func (m model) Init() tea.Cmd {
-	return m.loadGames()
+	return tea.Batch(m.loadGames(), dismissStartupTip())
 }
 
 // ─── View ──────────────────────────────────────────────────────────────────

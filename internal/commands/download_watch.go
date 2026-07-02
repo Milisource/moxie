@@ -72,7 +72,7 @@ func resolveBestLink(database *db.Database, game db.Game, cookie, targetPlatform
 // downloadAllOpen finds all games with pending updates, opens their download
 // links in the browser, and optionally watches for the downloaded archives.
 func downloadAllOpen(database *db.Database, cookie, targetPlatform, watchDir string, extract, doWatch bool) {
-	games, err := database.ListActiveGames("", "")
+	games, err := database.GamesNeedingUpdate()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error listing games: %v\n", err)
 		os.Exit(1)
@@ -80,13 +80,11 @@ func downloadAllOpen(database *db.Database, cookie, targetPlatform, watchDir str
 
 	var watched []watchedGame
 	for _, g := range games {
-		if g.LatestVersion != "" && g.Version != "" && g.Version != g.LatestVersion {
-			if wg := resolveBestLink(database, g, cookie, targetPlatform); wg != nil {
-				watched = append(watched, *wg)
-				fmt.Fprintf(os.Stderr, "  %s: %s → %s  [%s]\n", g.Title, g.Version, g.LatestVersion, wg.LinkName)
-			} else {
-				fmt.Fprintf(os.Stderr, "  %s: %s → %s  (no download link)\n", g.Title, g.Version, g.LatestVersion)
-			}
+		if wg := resolveBestLink(database, g, cookie, targetPlatform); wg != nil {
+			watched = append(watched, *wg)
+			fmt.Fprintf(os.Stderr, "  %s: %s → %s  [%s]\n", g.Title, g.Version, g.LatestVersion, wg.LinkName)
+		} else {
+			fmt.Fprintf(os.Stderr, "  %s: %s → %s  (no download link)\n", g.Title, g.Version, g.LatestVersion)
 		}
 	}
 

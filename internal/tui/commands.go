@@ -16,14 +16,32 @@ import (
 	"github.com/mili/moxie/internal/updater"
 )
 
-// loadGames fetches all games from the database.
+// loadGames fetches game summaries from the database, optionally filtered by
+// the current collection.
 func (m model) loadGames() tea.Cmd {
 	return func() tea.Msg {
-		games, err := m.db.ListActiveGames("", "")
+		var games []db.GameSummary
+		var err error
+		if m.collectionFilter != 0 {
+			games, err = m.db.ListGameSummariesInCollection(m.collectionFilter)
+		} else {
+			games, err = m.db.ListGameSummaries("", "")
+		}
 		if err != nil {
 			return errMsg{err}
 		}
 		return gamesLoadedMsg{games}
+	}
+}
+
+// loadCollections fetches all collections from the database.
+func (m model) loadCollections() tea.Cmd {
+	return func() tea.Msg {
+		collections, err := m.db.ListCollections()
+		if err != nil {
+			return errMsg{err}
+		}
+		return collectionsLoadedMsg{collections}
 	}
 }
 
@@ -49,13 +67,13 @@ func (m model) loadMeta(id int64) tea.Cmd {
 	}
 }
 
-// deleteGame deletes a game and reloads the full list.
+// deleteGame deletes a game and reloads the game list.
 func (m model) deleteGame(id int64) tea.Cmd {
 	return func() tea.Msg {
 		if err := m.db.DeleteGame(id); err != nil {
 			return gameDeletedMsg{err: err}
 		}
-		games, err := m.db.ListActiveGames("", "")
+		games, err := m.db.ListGameSummaries("", "")
 		if err != nil {
 			return gameDeletedMsg{err: err}
 		}
@@ -117,7 +135,9 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 		status:  db.DownloadStatusDownloading,
 		stepMsg: "Finding suitable host...",
 	}
+	m.activeDownloadsMu.Lock()
 	m.activeDownloads[gameID] = ad
+	m.activeDownloadsMu.Unlock()
 
 	go func() {
 		var lastErr error
@@ -266,6 +286,8 @@ func (m model) pollDownloads() tea.Cmd {
 
 // hasActiveDownloads checks if any downloads are in progress.
 func (m model) hasActiveDownloads() bool {
+	m.activeDownloadsMu.Lock()
+	defer m.activeDownloadsMu.Unlock()
 	for _, ad := range m.activeDownloads {
 		ad.mu.Lock()
 		status := ad.status
@@ -279,7 +301,9 @@ func (m model) hasActiveDownloads() bool {
 
 // getDownloadProgress returns a snapshot of a download's progress.
 func (m model) getDownloadProgress(gameID int64) (downloader.Progress, db.DownloadStatus, string, string) {
+	m.activeDownloadsMu.Lock()
 	ad, ok := m.activeDownloads[gameID]
+	m.activeDownloadsMu.Unlock()
 	if !ok {
 		return downloader.Progress{}, "", "", ""
 	}

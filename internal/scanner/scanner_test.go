@@ -325,10 +325,7 @@ func TestScanSingle(t *testing.T) {
 	os.MkdirAll(filepath.Join(gameDir, "Game_Data"), 0755)
 	os.WriteFile(filepath.Join(gameDir, "Game.exe"), []byte("exe"), 0644)
 
-	g, err := ScanSingle(gameDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g := ScanSingle(gameDir)
 	if g.Engine != engine.Unity {
 		t.Errorf("expected Unity, got %s", g.Engine)
 	}
@@ -352,10 +349,7 @@ func TestScanSingleNestedGame(t *testing.T) {
 	os.MkdirAll(filepath.Join(gameDir, "www"), 0755)
 	os.WriteFile(filepath.Join(gameDir, "Game.exe"), []byte("exe"), 0644)
 
-	g, err := ScanSingle(gameDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g := ScanSingle(gameDir)
 	if g.Version != "2.5.1" {
 		t.Errorf("expected version 2.5.1 from parent dir, got %q", g.Version)
 	}
@@ -378,10 +372,7 @@ func TestExtractVersionFromExeFallback(t *testing.T) {
 	// Unity _Data dir to trigger Unity engine detection.
 	os.MkdirAll(filepath.Join(gameDir, "[Full]EmberDoors_v0.1.7_Linux_Data"), 0755)
 
-	g, err := ScanSingle(gameDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g := ScanSingle(gameDir)
 	if g.Version != "0.1.7" {
 		t.Errorf("expected version 0.1.7 from exe filename, got %q", g.Version)
 	}
@@ -411,9 +402,9 @@ func TestScanNonexistentDir(t *testing.T) {
 }
 
 func TestScanSingleNonexistentDir(t *testing.T) {
-	_, err := ScanSingle("/nonexistent/path/12345")
-	if err != nil {
-		t.Fatal("ScanSingle should not error on nonexistent dir — it uses engine.Detect which handles it")
+	g := ScanSingle("/nonexistent/path/12345")
+	if g.Engine == "" {
+		t.Error("expected non-empty engine even for nonexistent dir")
 	}
 }
 

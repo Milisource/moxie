@@ -110,6 +110,11 @@ func SaveAssociationCache() error {
 		return err
 	}
 
+	// Restrict permissions — cache contains game/thread associations.
+	if err := os.Chmod(globalCache.path, 0600); err != nil {
+		return err
+	}
+
 	globalCache.dirty = false
 	return nil
 }

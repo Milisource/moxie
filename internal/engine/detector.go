@@ -1,11 +1,15 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/mili/moxie/internal/config"
+	"github.com/mili/moxie/internal/log"
 )
 
 // Engine represents a detected game engine. Values match the canonical
@@ -37,6 +41,127 @@ type Result struct {
 	MatchedBy  string `json:"matched_by"`  // which rule matched
 }
 
+// CustomProfile represents a user-defined engine detection rule loaded from a
+// JSON file in the engines config directory. At least one detection criterion
+// (Subdirs, Filenames, or Extensions) must be specified, and Confidence must
+// be between 0 and 100 (stored as 0-100 in JSON, converted to 0.0-1.0 internally).
+type CustomProfile struct {
+	Name       string   `json:"name"`
+	Engine     Engine   `json:"engine"`
+	Confidence float64  `json:"confidence"`
+	Subdirs    []string `json:"subdirs,omitempty"`
+	Filenames  []string `json:"filenames,omitempty"`
+	Extensions []string `json:"extensions,omitempty"`
+}
+
+// Validate checks that a custom profile has all required fields and valid
+// values. Returns a descriptive error if validation fails.
+func (cp *CustomProfile) Validate() error {
+	if cp.Name == "" {
+		return fmt.Errorf("profile name is required")
+	}
+	if cp.Engine == "" {
+		return fmt.Errorf("profile %q: engine is required", cp.Name)
+	}
+	if cp.Confidence < 0 || cp.Confidence > 100 {
+		return fmt.Errorf("profile %q: confidence must be between 0 and 100, got %f", cp.Name, cp.Confidence)
+	}
+	if len(cp.Subdirs) == 0 && len(cp.Filenames) == 0 && len(cp.Extensions) == 0 {
+		return fmt.Errorf("profile %q: at least one detection criterion (subdirs, filenames, or extensions) is required", cp.Name)
+	}
+	return nil
+}
+
+// toProfile converts a CustomProfile to an internal profile for matching.
+func (cp *CustomProfile) toProfile() profile {
+	return profile{
+		engine:     cp.Engine,
+		confidence: cp.Confidence / 100.0,
+		subdirs:    cp.Subdirs,
+		files:      cp.Filenames,
+		extensions: cp.Extensions,
+		name:       cp.Name,
+	}
+}
+
+// loadCustomProfiles reads all .json files from the engine profiles directory
+// and returns validated custom profiles. Invalid files are logged and skipped.
+func loadCustomProfiles() ([]profile, error) {
+	dir := config.EngineProfilesDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read engine profiles dir: %w", err)
+	}
+
+	var custom []profile
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			continue
+		}
+
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			log.Warn("skipping unreadable engine profile", "file", entry.Name(), "error", err)
+			continue
+		}
+
+		var cp CustomProfile
+		if err := json.Unmarshal(data, &cp); err != nil {
+			log.Warn("skipping invalid engine profile JSON", "file", entry.Name(), "error", err)
+			continue
+		}
+
+		if err := cp.Validate(); err != nil {
+			log.Warn("skipping invalid engine profile", "file", entry.Name(), "error", err)
+			continue
+		}
+
+		custom = append(custom, cp.toProfile())
+	}
+
+	return custom, nil
+}
+
+// mergeProfiles merges custom profiles into the built-in profile list.
+// Profiles with a name matching a built-in profile replace it (overriding).
+// Profiles with new names are appended after all built-in profiles.
+func mergeProfiles(builtin, custom []profile) []profile {
+	if len(custom) == 0 {
+		return builtin
+	}
+
+	// Build a set of custom profile names for quick lookup.
+	customByName := make(map[string]profile, len(custom))
+	for _, cp := range custom {
+		customByName[cp.name] = cp
+	}
+
+	merged := make([]profile, 0, len(builtin)+len(custom))
+	seen := make(map[string]bool)
+
+	// Walk built-in profiles, replacing any that have a custom override.
+	for _, bp := range builtin {
+		if cp, ok := customByName[bp.name]; ok {
+			merged = append(merged, cp)
+			seen[bp.name] = true
+		} else {
+			merged = append(merged, bp)
+		}
+	}
+
+	// Append any custom profiles that didn't match a built-in name.
+	for _, cp := range custom {
+		if !seen[cp.name] {
+			merged = append(merged, cp)
+		}
+	}
+
+	return merged
+}
+
 // profile defines a single detection rule.
 type profile struct {
 	engine     Engine
@@ -47,8 +172,10 @@ type profile struct {
 	name       string   // human-readable name for the rule
 }
 
-// profiles is ordered by priority — first match wins.
-var profiles = []profile{
+// builtinProfiles is the built-in detection profile list, ordered by priority
+// — first match wins. Custom profiles (from EngineProfilesDir) are merged into
+// this list by getProfiles() before detection.
+var builtinProfiles = []profile{
 	// --- Highest confidence signals ---
 
 	{
@@ -227,6 +354,17 @@ var profiles = []profile{
 	},
 }
 
+// getProfiles returns the full profile list with custom profiles merged in.
+// The result is cached after first load.
+func getProfiles() []profile {
+	custom, err := loadCustomProfiles()
+	if err != nil {
+		log.Warn("failed to load custom engine profiles", "error", err)
+		return builtinProfiles
+	}
+	return mergeProfiles(builtinProfiles, custom)
+}
+
 // Detect scans the given directory and returns the most likely engine match.
 // It reads the directory listing once and checks it against all profiles.
 func Detect(dir string) Result {
@@ -260,7 +398,8 @@ func Detect(dir string) Result {
 	}
 
 	// Check engine profiles in priority order.
-	for _, p := range profiles {
+	allProfiles := getProfiles()
+	for _, p := range allProfiles {
 		if !matchesProfile(p, entrySet, dirSet, extSet, dir) {
 			continue
 		}
@@ -431,7 +570,7 @@ func (e Engine) String() string { return string(e) }
 // AllEngines returns all known engine names sorted.
 func AllEngines() []Engine {
 	seen := make(map[Engine]bool)
-	for _, p := range profiles {
+	for _, p := range getProfiles() {
 		if !seen[p.engine] {
 			seen[p.engine] = true
 			// Don't include Others from profiles.

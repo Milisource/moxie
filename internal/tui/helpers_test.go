@@ -236,7 +236,7 @@ func TestEngineColor(t *testing.T) {
 
 func TestFilterAndSort_NoFilters(t *testing.T) {
 	t.Parallel()
-	games := []db.Game{
+	games := []db.GameSummary{
 		{ID: 3, Title: "Charlie", Engine: "Unity", Status: "active"},
 		{ID: 1, Title: "Alpha", Engine: "RenPy", Status: "completed"},
 		{ID: 2, Title: "Bravo", Engine: "Unity", Status: "active"},
@@ -252,12 +252,11 @@ func TestFilterAndSort_NoFilters(t *testing.T) {
 
 func TestFilterAndSort_TitleFilter(t *testing.T) {
 	t.Parallel()
-	games := []db.Game{
+	games := []db.GameSummary{
 		{ID: 1, Title: "Alpha", Engine: "Unity"},
 		{ID: 2, Title: "Bravo", Engine: "RenPy"},
 		{ID: 3, Title: "Champion", Engine: "Unity"},
 	}
-	// Case-insensitive substring filter
 	result := filterAndSort(games, "ch", "", "", SortID)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(result))
@@ -269,7 +268,7 @@ func TestFilterAndSort_TitleFilter(t *testing.T) {
 
 func TestFilterAndSort_EngineFilter(t *testing.T) {
 	t.Parallel()
-	games := []db.Game{
+	games := []db.GameSummary{
 		{ID: 1, Title: "A", Engine: "Unity"},
 		{ID: 2, Title: "B", Engine: "RenPy"},
 		{ID: 3, Title: "C", Engine: "Unity"},
@@ -287,7 +286,7 @@ func TestFilterAndSort_EngineFilter(t *testing.T) {
 
 func TestFilterAndSort_StatusFilter(t *testing.T) {
 	t.Parallel()
-	games := []db.Game{
+	games := []db.GameSummary{
 		{ID: 1, Title: "A", Status: "active"},
 		{ID: 2, Title: "B", Status: "completed"},
 		{ID: 3, Title: "C", Status: "active"},
@@ -303,7 +302,7 @@ func TestFilterAndSort_StatusFilter(t *testing.T) {
 
 func TestFilterAndSort_TitleSort(t *testing.T) {
 	t.Parallel()
-	games := []db.Game{
+	games := []db.GameSummary{
 		{ID: 3, Title: "Charlie"},
 		{ID: 1, Title: "Alpha"},
 		{ID: 2, Title: "Bravo"},
@@ -316,7 +315,7 @@ func TestFilterAndSort_TitleSort(t *testing.T) {
 
 func TestFilterAndSort_EngineSort(t *testing.T) {
 	t.Parallel()
-	games := []db.Game{
+	games := []db.GameSummary{
 		{ID: 1, Title: "A", Engine: "RenPy"},
 		{ID: 2, Title: "B", Engine: "Unity"},
 		{ID: 3, Title: "C", Engine: "RenPy"},
@@ -334,7 +333,7 @@ func TestFilterAndSort_EngineSort(t *testing.T) {
 
 func TestFilterAndSort_VersionSort(t *testing.T) {
 	t.Parallel()
-	games := []db.Game{
+	games := []db.GameSummary{
 		{ID: 1, Title: "A", Version: "0.5"},
 		{ID: 2, Title: "B", Version: "1.0"},
 		{ID: 3, Title: "C", Version: "0.5"},

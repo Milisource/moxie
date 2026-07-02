@@ -87,17 +87,10 @@ func Download(args []string) {
 
 // downloadAll downloads all games with pending version updates.
 func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform string, extract bool) {
-	games, err := database.ListActiveGames("", "")
+	queue, err := database.GamesNeedingUpdate()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error listing games: %v\n", err)
 		os.Exit(1)
-	}
-
-	var queue []db.Game
-	for _, g := range games {
-		if g.LatestVersion != "" && g.Version != "" && g.Version != g.LatestVersion {
-			queue = append(queue, g)
-		}
 	}
 
 	if len(queue) == 0 {

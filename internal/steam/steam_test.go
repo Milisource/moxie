@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	vdf "github.com/wakeful-cloud/vdf"
 )
 
 // ---------------------------------------------------------------------------
@@ -20,7 +18,7 @@ import (
 func testShortcutsVDF(t *testing.T, entries []ShortcutEntry) []byte {
 	t.Helper()
 	m := buildShortcutsMap(entries)
-	data, err := vdf.WriteVdf(m)
+	data, err := writeVdf(m)
 	if err != nil {
 		t.Fatalf("vdf.WriteVdf: %v", err)
 	}
@@ -343,7 +341,7 @@ func TestAddGame_Duplicate(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 8. Round-trip: buildShortcutsMap -> vdf.WriteVdf -> vdf.ReadVdf -> parseShortcutsMap
+// 8. Round-trip: buildShortcutsMap -> vdf.WriteVdf -> readVdf -> parseShortcutsMap
 // ---------------------------------------------------------------------------
 
 func TestParseShortcutsMap_RoundTrip(t *testing.T) {
@@ -388,9 +386,9 @@ func TestParseShortcutsMap_RoundTrip(t *testing.T) {
 	data := testShortcutsVDF(t, original)
 
 	// Deserialize.
-	m, err := vdf.ReadVdf(data)
+	m, err := readVdf(data)
 	if err != nil {
-		t.Fatalf("vdf.ReadVdf: %v", err)
+		t.Fatalf("readVdf: %v", err)
 	}
 	parsed := parseShortcutsMap(m)
 
@@ -462,28 +460,28 @@ func TestParseShortcutsMap_RoundTrip(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseShortcutsMap_GappedIndices(t *testing.T) {
-	shortcuts := vdf.Map{
-		"shortcuts": vdf.Map{
-			"0": vdf.Map{
+	shortcuts := vdfMap{
+		"shortcuts": vdfMap{
+			"0": vdfMap{
 				"appid":    uint32(1001),
 				"AppName":  "Game A",
 				"exe":      `"/a.exe"`,
 				"StartDir": `"/a"`,
-				"tags":     vdf.Map{},
+				"tags":     vdfMap{},
 			},
-			"2": vdf.Map{
+			"2": vdfMap{
 				"appid":    uint32(1002),
 				"AppName":  "Game B",
 				"exe":      `"/b.exe"`,
 				"StartDir": `"/b"`,
-				"tags":     vdf.Map{},
+				"tags":     vdfMap{},
 			},
-			"3": vdf.Map{
+			"3": vdfMap{
 				"appid":    uint32(1003),
 				"AppName":  "Game C",
 				"exe":      `"/c.exe"`,
 				"StartDir": `"/c"`,
-				"tags":     vdf.Map{},
+				"tags":     vdfMap{},
 			},
 		},
 	}
@@ -511,13 +509,13 @@ func TestParseShortcutsMap_GappedIndices(t *testing.T) {
 	}
 
 	// Empty shortcuts map.
-	empty := parseShortcutsMap(vdf.Map{})
+	empty := parseShortcutsMap(vdfMap{})
 	if empty != nil {
 		t.Errorf("expected nil for empty map, got %v", empty)
 	}
 
 	// Missing "shortcuts" key.
-	noKey := parseShortcutsMap(vdf.Map{"other": vdf.Map{}})
+	noKey := parseShortcutsMap(vdfMap{"other": vdfMap{}})
 	if noKey != nil {
 		t.Errorf("expected nil for map without 'shortcuts' key, got %v", noKey)
 	}
@@ -542,12 +540,12 @@ func TestGetUint32_Types(t *testing.T) {
 		{"string (unsupported)", "hello", 0},
 		{"nil", nil, 0},
 		{"bool (unsupported)", true, 0},
-		{"vdf.Map (unsupported)", vdf.Map{}, 0},
+		{"vdfMap (unsupported)", vdfMap{}, 0},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m := vdf.Map{"key": tc.value}
+			m := vdfMap{"key": tc.value}
 			got := getUint32(m, "key")
 			if got != tc.want {
 				t.Errorf("getUint32(%T(%v)) = %d, want %d",
@@ -557,7 +555,7 @@ func TestGetUint32_Types(t *testing.T) {
 	}
 
 	// Missing key returns 0.
-	if got := getUint32(vdf.Map{}, "nonexistent"); got != 0 {
+	if got := getUint32(vdfMap{}, "nonexistent"); got != 0 {
 		t.Errorf("getUint32(missing) = %d, want 0", got)
 	}
 }
@@ -573,7 +571,7 @@ func TestBuildTagsMap_ParseTags(t *testing.T) {
 	tm := buildTagsMap(original)
 
 	// Parse tags back from a parent map.
-	parent := vdf.Map{"tags": tm}
+	parent := vdfMap{"tags": tm}
 	parsed := parseTags(parent)
 
 	if len(parsed) != len(original) {
@@ -586,27 +584,27 @@ func TestBuildTagsMap_ParseTags(t *testing.T) {
 	}
 
 	// Empty tag list.
-	parsedEmpty := parseTags(vdf.Map{})
+	parsedEmpty := parseTags(vdfMap{})
 	if len(parsedEmpty) != 0 {
 		t.Errorf("expected 0 tags for empty input, got %d: %v", len(parsedEmpty), parsedEmpty)
 	}
 
 	// Nil tags field in map.
-	noTags := vdf.Map{"tags": nil}
+	noTags := vdfMap{"tags": nil}
 	if got := parseTags(noTags); got != nil {
 		t.Errorf("expected nil for nil tags field, got %v", got)
 	}
 
 	// Single tag.
 	single := buildTagsMap([]string{"solo"})
-	parsedSingle := parseTags(vdf.Map{"tags": single})
+	parsedSingle := parseTags(vdfMap{"tags": single})
 	if len(parsedSingle) != 1 || parsedSingle[0] != "solo" {
 		t.Errorf("single tag round-trip: got %v, want [solo]", parsedSingle)
 	}
 
 	// Multiple tags (4).
 	fourTags := buildTagsMap([]string{"a", "b", "c", "d"})
-	parsedFour := parseTags(vdf.Map{"tags": fourTags})
+	parsedFour := parseTags(vdfMap{"tags": fourTags})
 	if len(parsedFour) != 4 {
 		t.Errorf("expected 4 tags, got %d: %v", len(parsedFour), parsedFour)
 	}
@@ -902,14 +900,14 @@ func TestIsNumeric(t *testing.T) {
 
 func TestParseShortcutsMap_RawFieldsPreserved(t *testing.T) {
 	// Build a shortcuts map with extra unknown fields.
-	shortcuts := vdf.Map{
-		"shortcuts": vdf.Map{
-			"0": vdf.Map{
+	shortcuts := vdfMap{
+		"shortcuts": vdfMap{
+			"0": vdfMap{
 				"appid":        uint32(42),
 				"AppName":      "RawFields Test",
 				"exe":          `"/test"`,
 				"StartDir":     `"/test"`,
-				"tags":         vdf.Map{},
+				"tags":         vdfMap{},
 				"unknown_key":  "preserved_value",
 				"another_key":  uint32(99),
 			},

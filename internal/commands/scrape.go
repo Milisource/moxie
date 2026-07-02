@@ -305,5 +305,16 @@ func ResolveCookie(explicit, file string) string {
 func ScrapeAutoWrapper(cookie string, unsafe bool) {
 	database := OpenDB()
 	defer database.Close()
-	RunScrapeAuto(database, cookie, unsafe, false)
+
+	var client *scraper.Client
+	if unsafe {
+		client = scraper.NewUnsafeClient(cookie)
+	} else {
+		client = scraper.NewClient(cookie)
+	}
+
+	if err := RunScrapeAuto(database, client, false, 1); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 }

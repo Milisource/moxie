@@ -28,6 +28,13 @@ func (m model) libraryView() string {
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, title, strings.Repeat(" ", gap), helpHint))
 	b.WriteString("\n")
 
+	// ── Startup tip (auto-dismiss) ─────────────────────────────
+	if m.showStartupTip {
+		tip := noticeStyle.Render("  💡 Press / to search  •  s to sort  •  Ctrl+E/S to filter  •  Enter for details  •  ? for help  ")
+		b.WriteString(tip)
+		b.WriteString("\n")
+	}
+
 	// ── Separator ─────────────────────────────────────────────────
 	sep := max(0, w-4)
 	b.WriteString(separatorStyle.Render(strings.Repeat("━", sep)))
@@ -48,6 +55,11 @@ func (m model) libraryView() string {
 		statusInfo = "All"
 	}
 
+	collectionInfo := m.collectionName
+	if collectionInfo == "" {
+		collectionInfo = "All"
+	}
+
 	filterIndicator := subtleStyle.Render("—")
 	if m.filterText != "" {
 		filterIndicator = filterActiveStyle.Render(fmt.Sprintf("%q", m.filterText))
@@ -55,6 +67,7 @@ func (m model) libraryView() string {
 
 	// Count active downloads
 	dlCount := 0
+	m.activeDownloadsMu.Lock()
 	for _, ad := range m.activeDownloads {
 		ad.mu.Lock()
 		if ad.status == db.DownloadStatusDownloading || ad.status == db.DownloadStatusPending {
@@ -62,20 +75,28 @@ func (m model) libraryView() string {
 		}
 		ad.mu.Unlock()
 	}
+	m.activeDownloadsMu.Unlock()
 
 	downloadInfo := ""
 	if dlCount > 0 {
-		downloadInfo = fmt.Sprintf("  │  %s ", greenStyle.Render(fmt.Sprintf("↓ %d downloading", dlCount)))
+		downloadInfo = fmt.Sprintf("  ⬇ %d", dlCount)
+	}
+
+	spinnerView := ""
+	if m.spinnerActive {
+		spinnerView = " " + m.spinner.View()
 	}
 
 	stat := statusBarStyle.Render(fmt.Sprintf(
-		"  %s  │  Engine: %s  │  Status: %s  │  Sort: %s  │  Filter: %s%s ",
+		"  %s  │  Engine: %s  │  Status: %s  │  Coll: %s  │  Sort: %s  │  Filter: %s%s%s",
 		matchInfo,
 		engineInfo,
 		statusInfo,
+		collectionInfo,
 		m.sortBy.Indicator(),
 		filterIndicator,
 		downloadInfo,
+		spinnerView,
 	))
 	b.WriteString(stat)
 	b.WriteString("\n")
@@ -110,9 +131,23 @@ func (m model) libraryView() string {
 
 	// ── Footer / key hints ────────────────────────────────────────
 	b.WriteString("\n")
-	footer := subtleStyle.Render(
-		"  ↑↓/jk navigate  Enter details  / filter  s sort  d delete  ? help  ",
-	)
+	var footerParts []string
+	footerParts = append(footerParts, "↑↓/jk navigate")
+	footerParts = append(footerParts, "Enter details")
+	if m.filterInput.Focused() || m.filterText != "" {
+		footerParts = append(footerParts, "/ filter active")
+	} else {
+		footerParts = append(footerParts, "/ filter")
+	}
+	if m.engineFilter != "" {
+		footerParts = append(footerParts, "Ctrl+E engine:"+m.engineFilter)
+	}
+	if m.statusFilter != "" {
+		footerParts = append(footerParts, "Ctrl+S status:"+m.statusFilter)
+	}
+	footerParts = append(footerParts, "s sort")
+	footerParts = append(footerParts, "? help")
+	footer := subtleStyle.Render("  " + strings.Join(footerParts, "  •  ") + "  ")
 	b.WriteString(footer)
 
 	// ── Status / error message ────────────────────────────────────

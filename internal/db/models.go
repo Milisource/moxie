@@ -5,6 +5,19 @@ import (
 	"time"
 )
 
+// GameSummary is a lightweight view of a game used for table/list rendering.
+// It contains only the columns needed for display and filtering, avoiding the
+// overhead of loading all 20+ columns for every row.
+type GameSummary struct {
+	ID            int64  `json:"id"`
+	Title         string `json:"title"`
+	Engine        string `json:"engine"`
+	Version       string `json:"version,omitempty"`
+	LatestVersion string `json:"latest_version,omitempty"`
+	Status        string `json:"status"`
+	Path          string `json:"path"`
+}
+
 // Game represents a game in the user's local library.
 type Game struct {
 	ID          int64             `json:"id"`
@@ -25,8 +38,47 @@ type Game struct {
 	VersionCheckedAt time.Time    `json:"version_checked_at,omitempty"`
 	LastScannedAt time.Time       `json:"last_scanned_at,omitempty"`
 	DirMTime     time.Time        `json:"dir_mtime,omitempty"`
+	SeriesID    *int64            `json:"series_id,omitempty"` // nullable FK to game_series
+	SeriesOrder int               `json:"series_order,omitempty"`
+	DeletedAt   time.Time         `json:"deleted_at,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
+}
+
+// PlayHistory records when a game was played.
+type PlayHistory struct {
+	ID        int64     `json:"id"`
+	GameID    int64     `json:"game_id"`
+	PlayedAt  time.Time `json:"played_at"`
+	DurationS int       `json:"duration_s,omitempty"`
+	Platform  string    `json:"platform,omitempty"`
+}
+
+// PlayHistoryWithGame joins PlayHistory with the game's title.
+type PlayHistoryWithGame struct {
+	PlayHistory
+	GameTitle string `json:"game_title"`
+}
+
+// GameSeries represents a series that groups related games.
+type GameSeries struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// Collection represents a named user-defined collection of games.
+type Collection struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+}
+
+// GameCollectionSummary joins a game with its collection membership.
+type GameCollectionSummary struct {
+	GameID       int64  `json:"game_id"`
+	CollectionID int64  `json:"collection_id"`
+	GameTitle    string `json:"game_title"`
+	ColName      string `json:"collection_name"`
 }
 
 // ScrapedMeta holds F95Zone scraped metadata.
@@ -68,6 +120,13 @@ type Download struct {
 	StartedAt        time.Time      `json:"started_at,omitempty"`
 	CompletedAt      time.Time      `json:"completed_at,omitempty"`
 	CreatedAt        time.Time      `json:"created_at"`
+}
+
+// DownloadLinkWithGame pairs a DownloadLink with its parent game's title and path.
+type DownloadLinkWithGame struct {
+	DownloadLink
+	GameTitle string
+	GamePath  string
 }
 
 // Platform represents the target operating system for a download.

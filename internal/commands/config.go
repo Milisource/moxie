@@ -15,6 +15,7 @@ func Config(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "Usage: moxie config <set|get|show|set-thread> [args...]\n")
 		fmt.Fprintf(os.Stderr, "       moxie config set steamgriddb-key <key>\n")
+		fmt.Fprintf(os.Stderr, "       moxie config set scan-paths /path1,/path2\n")
 		fmt.Fprintf(os.Stderr, "       moxie config get steamgriddb-key\n")
 		fmt.Fprintf(os.Stderr, "       moxie config show\n")
 		fmt.Fprintf(os.Stderr, "       moxie config set-thread <game-id> <thread-id>\n")
@@ -86,9 +87,17 @@ func ConfigSetThread(args []string) {
 }
 
 // ConfigSet sets a configuration value.
+// Special keys with typed struct fields:
+//   scan_paths          comma-separated list of paths (stored as []string)
+//   default_download_dir  download directory path
+//   rate_limit_delay    delay between requests in seconds
+// All other keys are stored as raw string values.
 func ConfigSet(args []string) {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: moxie config set <key> <value>\n")
+		fmt.Fprintf(os.Stderr, "Examples:\n")
+		fmt.Fprintf(os.Stderr, "  moxie config set steamgriddb-key <key>\n")
+		fmt.Fprintf(os.Stderr, "  moxie config set scan-paths /path1,/path2\n")
 		os.Exit(1)
 	}
 	key := args[0]
@@ -99,7 +108,7 @@ func ConfigSet(args []string) {
 		fmt.Fprintf(os.Stderr, "Error reading config: %v\n", err)
 		os.Exit(1)
 	}
-	cfg[key] = value
+	cfg.Set(key, value)
 	if err := config.WriteConfig(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 		os.Exit(1)
@@ -118,8 +127,8 @@ func ConfigGet(args []string) {
 		fmt.Fprintf(os.Stderr, "Error reading config: %v\n", err)
 		os.Exit(1)
 	}
-	value, ok := cfg[args[0]]
-	if !ok || value == "" {
+	value := cfg.Get(args[0])
+	if value == "" {
 		fmt.Fprintf(os.Stderr, "(not set)\n")
 		return
 	}
@@ -133,11 +142,13 @@ func ConfigShow() {
 		fmt.Fprintf(os.Stderr, "Error reading config: %v\n", err)
 		os.Exit(1)
 	}
-	if len(cfg) == 0 {
+	keys := cfg.Keys()
+	if len(keys) == 0 {
 		fmt.Println("No configuration values set.")
 		return
 	}
-	for k, v := range cfg {
+	for _, k := range keys {
+		v := cfg.Get(k)
 		masked := v
 		if strings.Contains(strings.ToLower(k), "key") && len(v) > 4 {
 			masked = v[:4] + strings.Repeat("*", len(v)-4)

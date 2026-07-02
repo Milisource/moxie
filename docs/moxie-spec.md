@@ -156,21 +156,43 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Incremental scan by default — `moxie scan <dir>` skips known, unchanged directories; `--force` for full rescan
 - [x] `.old` directory exclusion — scanner skips updater backup dirs; `ListActiveGames()` filters them from all commands (list, sync, rename, download, tui, etc.)
 - [x] Help text reorganization — commands grouped into Core, F95Zone, Downloads, Steam, Admin sections
-- [ ] FTS5 full-text search (current: `LIKE '%query%'` only)
-- [ ] Cover image download and local caching
+- [x] FTS5 full-text search — virtual table over title/tags/developer/overview with ranked results
+- [x] Export/import library — `moxie export [--output file.json]` and `moxie import <file.json>`
+- [x] Play history tracking — `moxie history [count]` shows recently played games
+- [x] Game series support — `game_series` table and `series_id`/`series_order` on games
+- [x] Game collections — `moxie collection add/list/add-game` with TUI `[c]` filter
+- [x] Soft delete — `moxie remove` sets `deleted_at`; `moxie restore`/`moxie purge`; `list --deleted`
+- [x] Batch status management — `moxie set-status --engine/--all <status>`
+- [x] Parallel scraping — `moxie sync --parallel N` for concurrent auto-association
+- [x] Post-scan action hooks — `moxie scan --sync` / `moxie scan --scrape`
+- [x] Custom engine detection profiles — JSON drop-in files in `~/.config/moxie/engines/`
+- [x] Shared launcher package — `internal/launcher/` unifies CLI + TUI game launching
+- [x] Global `--verbose`/`-v` flag on all commands
+- [x] Commands testability — `RunPlay`, `RunScan`, `RunSync` logic functions extracted
+- [x] Version-gated safe migrations — `PRAGMA user_version` with per-step transactions
+- [x] Lightweight `ListGameSummaries` for TUI table view (7 columns instead of 22)
+- [x] Targeted column updates — `UpdateGameTitle/Status/F95URL/ExePath` (one column per query)
+- [x] TUI keyboard shortcut discoverability — grouped help overlay, startup tip, dynamic footer
+- [x] Progress feedback — live `\r` scan progress, ETA in sync, TUI spinner during downloads
+- [x] TUI detail view information density — sectioned layout, direct status selector
+- [x] TUI/UX audit completed — 18 specific improvements documented
+- [x] Download size limits — 50 GB Content-Length cap, 6h timeout, `io.LimitReader`
+- [x] Content-Type validation — rejects `text/html` downloads before body write
+- [x] Log file security — `0600` permissions, URL query redaction, 30-day rotation
+- [x] VDF dependency replaced — vendored binary VDF parser, timestamped backups
+- [x] Association cache permissions — `0600` on `associations.json`
+- [x] Cover image download and local caching
 - [ ] Directory watcher (auto-scan on file changes)
-- [ ] Export/import library (JSON backup)
 - [ ] Wails desktop GUI
 
 ### Known Limitations
 
 - **Mega downloads not supported** — Mega's proprietary encrypted protocol cannot be handled via HTTP. Mega links are deprioritized to -200 in host scoring; the downloader auto-fallbacks to the next-best link. Only when all links fail is the user informed. A native SDK/integration is planned.
 - **Download feature is BETA** — Most file hosts use anti-bot protection (Cloudflare, CAPTCHAs, JS challenges) that HTTP clients cannot bypass. Only Pixeldrain (via API) has reliable support. Other hosts may fail intermittently. The fallback loop tries all available links and shows detailed per-host errors. When all links fail, use `moxie install <id> <path>` with a manually downloaded archive.
-- **No FTS5** — uses `LIKE '%query%'` on title only
+- **Testability** — 130+ `os.Exit(1)` calls remain in CLI wrappers; `RunPlay`, `RunScan`, `RunSync` extracted as testable logic functions; other commands still need extraction
 - **False positives** — tool/editor directories and generic folder names may be misdetected as games
 - **No archive scanning** — `.zip`/`.rar`/`.7z` at scan roots are not inspected (but can be extracted after download)
 - **No content-based dedup** — same game in multiple paths creates duplicate records
 - **No cover caching** — cover URLs are stored but images are not downloaded
 - **Non-UTF-8 filenames** — Latin1/Shift-JIS display incorrectly in the TUI
-- **Commands package** — 100+ `os.Exit(1)` calls in CLI wrappers make the I/O layer untestable; domain logic has been extracted from commands into proper packages (engine, scraper, steam, downloader); remaining handlers are thin orchestrators
-- **No Wine detection** — `play` command tries `wine` on PATH and CrossOver on macOS, but doesn't auto-detect Wine installations or offer to install it
+- **Commands package** — 130+ `os.Exit(1)` calls in CLI wrappers make the full I/O layer untestable; `RunPlay`, `RunScan`, `RunSync` extracted with remaining handlers following the same pattern

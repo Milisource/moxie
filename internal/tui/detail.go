@@ -3,12 +3,52 @@ package tui
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
 )
+
+// availableStatuses lists all valid game statuses for the TUI status selector.
+var availableStatuses = []string{"active", "completed", "abandoned", "on_hold", "unknown"}
+
+// statusKeyHints returns a string showing the key bindings for each status.
+// Example: "[a] active  [c] completed  [b] abandoned  [h] on_hold  [u] unknown"
+func statusKeyHints(current string) string {
+	var parts []string
+	for _, s := range availableStatuses {
+		key := string(s[0])
+		// For "on_hold" use "h" instead of "o"
+		if s == "on_hold" {
+			key = "h"
+		}
+		styled := fmt.Sprintf("[%s] %s", key, s)
+		if s == current {
+			styled = accentStyle.Render(styled)
+		}
+		parts = append(parts, styled)
+	}
+	return strings.Join(parts, "  ")
+}
+
+// statusKeyForRune maps a rune keypress to the corresponding status string.
+func statusKeyForRune(r rune) string {
+	switch r {
+	case 'a':
+		return "active"
+	case 'c':
+		return "completed"
+	case 'b':
+		return "abandoned"
+	case 'h':
+		return "on_hold"
+	case 'u':
+		return "unknown"
+	}
+	return ""
+}
 
 func (m model) loadingView() string {
 	var b strings.Builder
@@ -46,7 +86,7 @@ func (m model) buildDetailContent() string {
 
 	// ── Header ────────────────────────────────────────────────────
 	back := titleStyle.Render("◂  Back to Library  ")
-	hint := subtleStyle.Render("[Esc] back  [e] edit  [s] status  [x] exe  [d] delete  [o] path  [u] url  [p] play  [g] download")
+	hint := subtleStyle.Render("[Esc] back  [s] status  [e] edit  [x] exe  [u] url  [p] play  [g] dl  [d] delete  [?] help")
 	gap := max(0, w-lipgloss.Width(back)-lipgloss.Width(hint)-4)
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, back, strings.Repeat(" ", gap), hint))
 	b.WriteString("\n")
@@ -54,7 +94,10 @@ func (m model) buildDetailContent() string {
 	b.WriteString(separatorStyle.Render(strings.Repeat("━", sep)))
 	b.WriteString("\n\n")
 
-	// ── Game info ─────────────────────────────────────────────────
+	// ── Section: Core Info ─────────────────────────────────────────
+	b.WriteString(sectionHeaderStyle.Render("  Core Info  "))
+	b.WriteString("\n")
+
 	ver := game.Version
 	if ver == "" {
 		if game.LatestVersion != "" {
@@ -63,49 +106,95 @@ func (m model) buildDetailContent() string {
 			ver = "unknown"
 		}
 	}
-	tags := renderTags(game.Tags)
-	added := game.CreatedAt.Format("2006-01-02")
-	updated := game.UpdatedAt.Format("2006-01-02")
 
-	var info []string
-	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Title:"), valueStyle.Render(game.Title)))
-	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Engine:"), valueStyle.Render(game.Engine)))
+	writeField(&b, labelStyle, "Title:", game.Title, valueStyle)
 	if game.LatestVersion != "" && game.Version != "" && game.LatestVersion != game.Version {
 		latestStr := fmt.Sprintf(" (latest: %s 🆕)", game.LatestVersion)
-		info = append(info, fmt.Sprintf("%s  %s%s", labelStyle.Render("Version:"), valueStyle.Render(ver), updateAvailableStyle.Render(latestStr)))
+		writeField(&b, labelStyle, "Version:", ver, valueStyle, updateAvailableStyle.Render(latestStr))
 	} else {
-		info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Version:"), valueStyle.Render(ver)))
+		writeField(&b, labelStyle, "Version:", ver, valueStyle)
 	}
-	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Status:"),
-		valueStyle.Copy().Foreground(statusColor(game.Status)).Render(game.Status)))
-	info = append(info, "")
-	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Path:"), valueStyle.Render(game.Path)))
-	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Exe:"), valueStyle.Render(orDash(game.ExePath))))
-	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Size:"), valueStyle.Render(formatSize(game.SizeBytes))))
-	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Added:"), valueStyle.Render(added)))
-	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Updated:"), valueStyle.Render(updated)))
-	info = append(info, "")
-	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("F95Zone:"), valueStyle.Render(orDash(game.F95URL))))
-	info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Tags:"), valueStyle.Render(tags)))
+	writeField(&b, labelStyle, "Engine:", game.Engine, engineStyle(game.Engine))
+	writeField(&b, labelStyle, "Status:", game.Status,
+		valueStyle.Copy().Foreground(statusColor(game.Status)))
+
+	// ── Status selector (always shown) ─────────────────────────
+	b.WriteString("\n")
+	b.WriteString(subtleStyle.Render("  Status: "))
+	b.WriteString(statusKeyHints(game.Status))
+	b.WriteString("\n")
+
+	// ── Section: F95Zone ──────────────────────────────────────────
+	b.WriteString(sectionHeaderStyle.Render("  F95Zone  "))
+	b.WriteString("\n")
+
+	if game.F95URL != "" {
+		writeField(&b, labelStyle, "URL:", game.F95URL, valueStyle)
+		b.WriteString(copyHintStyle.Render("  (Press Enter on URL line to open in browser)"))
+		b.WriteString("\n")
+	} else {
+		writeField(&b, labelStyle, "URL:", "not set — press [u] to add", subtleStyle)
+	}
 
 	if m.scrapedMeta != nil {
 		if m.scrapedMeta.Developer != "" {
-			info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Developer:"), valueStyle.Render(m.scrapedMeta.Developer)))
+			writeField(&b, labelStyle, "Developer:", m.scrapedMeta.Developer, valueStyle)
 		}
-		if m.scrapedMeta.Overview != "" {
-			ov := truncate(m.scrapedMeta.Overview, 70)
-			info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Overview:"), valueStyle.Render(ov)))
+		if m.scrapedMeta.CoverURL != "" {
+			writeField(&b, labelStyle, "Cover:", m.scrapedMeta.CoverURL, subtleStyle)
+			b.WriteString(copyHintStyle.Render("  (Press Enter on Cover line to open)"))
+			b.WriteString("\n")
 		}
-		info = append(info, fmt.Sprintf("%s  %s", labelStyle.Render("Scraped:"), valueStyle.Render(m.scrapedMeta.LastScraped.Format("2006-01-02"))))
 	}
 
-	boxContent := strings.Join(info, "\n")
-	b.WriteString(boxStyle.Width(max(0, w-6)).Render(boxContent))
+	// Version info from F95Zone
+	if game.LatestVersion != "" && game.LatestVersion != game.Version {
+		writeField(&b, labelStyle, "Latest:", game.LatestVersion, updateAvailableStyle)
+	}
+
+	// Tags — show each tag individually styled
+	if len(game.Tags) > 0 {
+		writeField(&b, labelStyle, "Tags:", "", valueStyle)
+		sort.Strings(game.Tags)
+		var tagParts []string
+		for _, t := range game.Tags {
+			if t != "" {
+				tagParts = append(tagParts, tagStyle.Render(t))
+			}
+		}
+		b.WriteString("  " + strings.Join(tagParts, " ") + "\n")
+	} else {
+		writeField(&b, labelStyle, "Tags:", "none", subtleStyle)
+	}
+
+	if m.scrapedMeta != nil {
+		if m.scrapedMeta.Overview != "" {
+			ov := truncate(m.scrapedMeta.Overview, w/3)
+			if ov != "" {
+				b.WriteString("\n")
+				b.WriteString(subtleStyle.Render("  Overview:"))
+				b.WriteString("\n")
+				b.WriteString("  " + valueStyle.Render(ov))
+				b.WriteString("\n")
+			}
+		}
+		writeField(&b, labelStyle, "Scraped:", m.scrapedMeta.LastScraped.Format("2006-01-02"), subtleStyle)
+	}
+
+	// ── Section: Metadata ──────────────────────────────────────────
+	b.WriteString(sectionHeaderStyle.Render("  Metadata  "))
 	b.WriteString("\n")
+
+	writeField(&b, labelStyle, "Path:", game.Path, valueStyle)
+	writeField(&b, labelStyle, "Exe:", orDash(game.ExePath), valueStyle)
+	writeField(&b, labelStyle, "Size:", formatSize(game.SizeBytes), valueStyle)
+	writeField(&b, labelStyle, "Added:", game.CreatedAt.Format("2006-01-02"), subtleStyle)
+	writeField(&b, labelStyle, "Updated:", game.UpdatedAt.Format("2006-01-02"), subtleStyle)
 
 	// ── Download section ──────────────────────────────────────────
 	progress, status, errStr, stepMsg := m.getDownloadProgress(game.ID)
 	if status != "" {
+		b.WriteString("\n")
 		b.WriteString(accentStyle.Render("  Download"))
 		b.WriteString("\n")
 		b.WriteString(downloadSection(game.ID, progress, status, errStr, stepMsg, w))
@@ -113,8 +202,9 @@ func (m model) buildDetailContent() string {
 
 	// ── Action buttons ────────────────────────────────────────────
 	actions := subtleStyle.Render(
-		"  [e] Edit Title  [s] Cycle Status  [x] Edit Exe  [d] Delete  [o] Show Path  [u] Set URL  [p] Play  [g] Download  [Esc] Back  ",
+		"  [e] Edit  [s] Status  [x] Exe  [u] URL  [o] Path  [p] Play  [g] Download  [d] Delete  [Esc] Back  ",
 	)
+	b.WriteString("\n\n")
 	b.WriteString(actions)
 
 	m.renderMessage(&b)
@@ -175,6 +265,33 @@ func (m model) buildDetailContent() string {
 	}
 
 	return b.String()
+}
+
+// writeField formats a label+value pair for the detail view.
+// If an extra string is provided, it is appended after the value.
+// If valueStyle is nil, only the label is rendered.
+func writeField(b *strings.Builder, label lipgloss.Style, labelText string, value interface{}, valueStyle lipgloss.Style, extra ...string) {
+	valStr := fmt.Sprintf("%v", value)
+	b.WriteString(label.Render(labelText))
+	b.WriteString("  ")
+	if valStr != "" {
+		b.WriteString(valueStyle.Render(valStr))
+	}
+	for _, e := range extra {
+		b.WriteString(" ")
+		b.WriteString(e)
+	}
+	b.WriteString("\n")
+}
+
+// writeLabelField renders just a label without a value (for multi-line sections).
+func writeLabelField(b *strings.Builder, label lipgloss.Style, labelText string, rest ...string) {
+	b.WriteString(label.Render(labelText))
+	for _, r := range rest {
+		b.WriteString("  ")
+		b.WriteString(r)
+	}
+	b.WriteString("\n")
 }
 
 // downloadSection renders download progress or status for a game.

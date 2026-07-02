@@ -20,7 +20,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+)
+
+const (
+	logRetentionDays = 30
 )
 
 // Logger is the package-level structured logger. By default writes to stderr
@@ -35,13 +40,50 @@ func Init(dir string) {
 	os.MkdirAll(dir, 0755)
 	date := time.Now().Format("2006-01-02")
 	logPath := filepath.Join(dir, "moxie-"+date+".log")
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		// Can't open log file — keep stderr-only, this is non-fatal.
 		Warn("cannot open log file", "path", logPath, "error", err)
 		return
 	}
 	Logger = slog.New(slog.NewTextHandler(f, nil))
+	// Clean up old log files after opening today's. Non-fatal if it fails.
+	rotateOldLogs(dir)
+}
+
+// rotateOldLogs removes log files older than logRetentionDays from the log directory.
+// Only removes files matching the moxie-YYYY-MM-DD.log pattern.
+func rotateOldLogs(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		Debug("cannot read log directory for rotation", "dir", dir, "error", err)
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -logRetentionDays)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		// Match moxie-YYYY-MM-DD.log pattern
+		if len(entry.Name()) != len("moxie-2006-01-02.log") {
+			continue
+		}
+		if !strings.HasPrefix(entry.Name(), "moxie-") || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		// Extract date portion: "moxie-" + "2006-01-02" + ".log"
+		dateStr := entry.Name()[6 : 6+10] // "2006-01-02" is 10 chars
+		logDate, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			continue
+		}
+		if logDate.Before(cutoff) {
+			fullPath := filepath.Join(dir, entry.Name())
+			if err := os.Remove(fullPath); err != nil {
+				Debug("cannot remove old log file", "path", fullPath, "error", err)
+			}
+		}
+	}
 }
 
 // SetLevel adjusts the log level at runtime (stderr-only; overrides Init).
