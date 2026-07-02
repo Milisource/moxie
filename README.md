@@ -2,7 +2,7 @@
 
 [![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/mili/moxie)](https://github.com/mili/moxie/releases)
+[![Release](https://img.shields.io/github/v/release/mili/moxie)](https://github.com/Milisource/moxie/releases)
 
 **Scan, catalog, enrich, and launch your local game library — from the terminal.**
 
@@ -89,14 +89,14 @@ Before using moxie, ensure you have:
 #### macOS / Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/milisource/moxie/main/scripts/install.sh | bash
 ```
 
 The script downloads the latest pre-built binary for your platform to `~/.local/bin/` and adds it to your shell config. Restart your terminal or run `source ~/.bashrc` for PATH changes to take effect.
 
 **To pin a specific version:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh | bash -s -- --version v0.3.3-alpha
+curl -fsSL https://raw.githubusercontent.com/milisource/moxie/main/scripts/install.sh | bash -s -- --version v0.3.3-alpha
 ```
 
 **Install from a local build:**
@@ -111,7 +111,7 @@ curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh 
 Open **PowerShell** (not Command Prompt) and run:
 
 ```powershell
-irm https://raw.githubusercontent.com/mili/moxie/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/milisource/moxie/main/scripts/install.ps1 | iex
 ```
 
 The script downloads `moxie.exe` to `%LOCALAPPDATA%\moxie\bin\` and adds it to your user PATH.
@@ -122,7 +122,7 @@ The script downloads `moxie.exe` to `%LOCALAPPDATA%\moxie\bin\` and adds it to y
 
 ```bash
 # Quick build for current platform
-git clone https://github.com/mili/moxie.git
+git clone https://github.com/milisource/moxie.git
 cd moxie
 make build                    # produces dist/moxie
 sudo make install             # copies to /usr/local/bin/moxie
@@ -356,7 +356,7 @@ You can safely delete `games.db` to reset your library — it will be recreated 
 
 ## How to get help
 
-- **Bug reports & feature requests** — Open an [issue on GitHub](https://github.com/mili/moxie/issues)
+- **Bug reports & feature requests** — Open an [issue on GitHub](https://github.com/milisource/moxie/issues)
 - **Documentation** — See the [docs/](docs/) directory for detailed component documentation
 - **Quick reference** — Run `moxie` without arguments for the full command reference
 
