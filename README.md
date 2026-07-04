@@ -2,7 +2,7 @@
 
 [![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/mili/moxie)](https://github.com/Milisource/moxie/releases)
+[![Release](https://img.shields.io/github/v/release/Milisource/moxie)](https://github.com/Milisource/moxie/releases)
 
 **Scan, catalog, enrich, and launch your local game library — from the terminal.**
 
