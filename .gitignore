@@ -13,5 +13,6 @@ scripts/release.sh
 
 # Desktop (Wails) build artifacts
 desktop/build/bin/
+desktop/build/dist/
 desktop/frontend/dist/
 desktop/frontend/node_modules/

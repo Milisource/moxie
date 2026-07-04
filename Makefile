@@ -26,11 +26,25 @@ install: build
 	cp -f dist/$(APP_NAME) /usr/local/bin/$(APP_NAME)
 
 # ── Desktop (Wails) ──────────────────────────────────────────────
-.PHONY: desktop desktop-dev
+.PHONY: desktop desktop-dev install-desktop
 
-# Build desktop application with Wails (requires Wails CLI and webview2gtk 4.1 on Linux)
-desktop:
-	cd desktop && wails build -tags webkit2_41 -o ../dist/moxie-desktop
+DESKTOP_BINARY := moxie-desktop
+
+# Build desktop application with Wails (requires Wails CLI and webkit2gtk 4.1 on Linux).
+# Wails outputs to desktop/build/dist/ — copy to central dist/ after build.
+desktop: dist/$(DESKTOP_BINARY)
+
+dist/$(DESKTOP_BINARY): desktop/build/dist/moxie-desktop
+	mkdir -p dist
+	cp -f desktop/build/dist/moxie-desktop dist/$(DESKTOP_BINARY)
+	@echo "  -> dist/$(DESKTOP_BINARY)"
+
+desktop/build/dist/moxie-desktop: desktop/frontend/src/**/* desktop/app.go desktop/main.go
+	cd desktop && wails build -tags webkit2_41
+
+# Install desktop application with per-platform app integration
+install-desktop: dist/$(DESKTOP_BINARY)
+	./scripts/install-desktop.sh
 
 # Run desktop in development mode with hot-reload
 desktop-dev:
