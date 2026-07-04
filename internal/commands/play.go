@@ -47,6 +47,10 @@ func Play(args []string) {
 func RunPlay(database *db.Database, game *db.Game) error {
 	exe := launcher.ResolveExecutable(game.Path, game.ExePath)
 	if exe == "" {
+		// Check if it's a virtual game (added via browser, not downloaded yet).
+		if strings.HasPrefix(game.Path, "/virtual/") {
+			return fmt.Errorf("%q was added from F95Zone but not yet downloaded. Use 'moxie download %d' to install it", game.Title, game.ID)
+		}
 		return fmt.Errorf("no executable found for %q (path: %s)", game.Title, game.Path)
 	}
 

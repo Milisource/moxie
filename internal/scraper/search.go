@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
@@ -14,10 +15,11 @@ import (
 
 // SearchResult represents a single search result from F95Zone.
 type SearchResult struct {
-	Title        string `json:"title"`
-	URL          string `json:"url"`
-	Snippet      string `json:"snippet,omitempty"`
-	ThumbnailURL string `json:"thumbnailUrl,omitempty"`
+	Title        string  `json:"title"`
+	URL          string  `json:"url"`
+	Snippet      string  `json:"snippet,omitempty"`
+	ThumbnailURL string  `json:"thumbnailUrl,omitempty"`
+	Score        float64 `json:"score"`
 }
 
 // SearchF95Zone searches F95Zone for game threads matching the query.
@@ -91,7 +93,7 @@ func (c *Client) xfSearchPOST(ctx context.Context, query, token string) ([]Searc
 		return nil, err
 	}
 
-	return parseSearchResults(body), nil
+	return parseSearchResults(body, query), nil
 }
 
 // googleSiteSearch searches F95Zone via Google's site: operator.
@@ -111,12 +113,13 @@ func (c *Client) googleSiteSearch(ctx context.Context, query string) ([]SearchRe
 		return nil, fmt.Errorf("scraper: Google search failed: %w", err)
 	}
 
-	return parseGoogleResults(body), nil
+	return parseGoogleResults(body, query), nil
 }
 
 // parseSearchResults parses the XenForo 2.x search results HTML.
 // It iterates over each .contentRow and extracts the title, URL, and snippet.
-func parseSearchResults(html string) []SearchResult {
+// Results are scored against the query, sorted by relevance, and trimmed to 5.
+func parseSearchResults(html string, query string) []SearchResult {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
 		return nil
@@ -124,7 +127,7 @@ func parseSearchResults(html string) []SearchResult {
 
 	var results []SearchResult
 	doc.Find(".contentRow").Each(func(i int, row *goquery.Selection) {
-		if i >= 5 {
+		if i >= 20 {
 			return
 		}
 
@@ -169,6 +172,13 @@ func parseSearchResults(html string) []SearchResult {
 		})
 	})
 
+	// Score results by relevance to the query and sort descending.
+	for i := range results {
+		results[i].Score = ComputeMatchScore(query, results[i].Title)
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
 	if len(results) > 5 {
 		results = results[:5]
 	}
@@ -179,7 +189,8 @@ func parseSearchResults(html string) []SearchResult {
 // parseGoogleResults parses Google search results HTML for F95Zone links.
 // Selectors target the current Google SERP structure for site: queries.
 // This is best-effort and may need updating if Google changes its markup.
-func parseGoogleResults(html string) []SearchResult {
+// Results are scored against the query, sorted by relevance, and trimmed to 5.
+func parseGoogleResults(html string, query string) []SearchResult {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
 		return nil
@@ -190,7 +201,7 @@ func parseGoogleResults(html string) []SearchResult {
 	// Google search result containers use various selectors depending on
 	// SERP layout version. Try multiple strategies.
 	doc.Find("a[href*='f95zone.to']").Each(func(i int, a *goquery.Selection) {
-		if i >= 10 {
+		if i >= 20 {
 			return
 		}
 
@@ -233,12 +244,36 @@ func parseGoogleResults(html string) []SearchResult {
 			}
 		}
 
+		// Extract thumbnail from Google SERP result.
+		var thumbURL string
+		container := a.Closest("div.g, div[jscontroller]")
+		if container.Length() == 0 {
+			container = a.ParentsFiltered("div").First()
+		}
+		if img := container.Find("img").First(); img.Length() > 0 {
+			if src, ok := img.Attr("src"); ok && src != "" {
+				if !strings.HasPrefix(src, "data:image") {
+					thumbURL = src
+				}
+			} else if src, ok := img.Attr("data-src"); ok && src != "" {
+				thumbURL = src
+			}
+		}
+
 		results = append(results, SearchResult{
-			Title: title,
-			URL:   actualURL,
+			Title:        title,
+			URL:          actualURL,
+			ThumbnailURL: thumbURL,
 		})
 	})
 
+	// Score results by relevance to the query and sort descending.
+	for i := range results {
+		results[i].Score = ComputeMatchScore(query, results[i].Title)
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
 	if len(results) > 5 {
 		results = results[:5]
 	}

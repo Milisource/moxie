@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"os"
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -100,6 +102,12 @@ type collectionsLoadedMsg struct {
 	collections []db.Collection
 }
 
+type scanCompletedMsg struct {
+	saved   int
+	updated int
+	total   int
+}
+
 type downloadProgressMsg struct {
 	gameID   int64
 	progress downloader.Progress
@@ -190,6 +198,10 @@ type model struct {
 	// spinner for background operations
 	spinner        spinner.Model
 	spinnerActive  bool
+
+	// file picker mode
+	showFilePicker bool
+	filePicker     filepicker.Model
 }
 
 // startupTipExpiredMsg is sent when the startup tip timer completes.
@@ -204,6 +216,8 @@ func dismissStartupTip() tea.Cmd {
 
 // initialModel creates the root model with default Bubble Tea components.
 func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) model {
+	initStyles()
+
 	cols := []table.Column{
 		{Title: "ID", Width: 5},
 		{Title: "Title", Width: 48},
@@ -243,6 +257,27 @@ func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) m
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(purple)
 
+	fp := filepicker.New()
+	fp.AllowedTypes = []string{}
+	fp.DirAllowed = true
+	fp.FileAllowed = false
+	fp.CurrentDirectory = os.Getenv("HOME")
+	fp.Height = 15
+	fp.AutoHeight = false
+	fp.Styles = filepicker.Styles{
+		File:             lipgloss.NewStyle().Foreground(white),
+		DisabledFile:     lipgloss.NewStyle().Foreground(subtle),
+		Directory:        lipgloss.NewStyle().Foreground(purple).Bold(true),
+		Symlink:          lipgloss.NewStyle().Foreground(cyan),
+		Selected:         lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(purpleBg).Bold(true),
+		Cursor:           lipgloss.NewStyle().Foreground(purple),
+		DisabledCursor:   lipgloss.NewStyle().Foreground(subtle),
+		DisabledSelected: lipgloss.NewStyle().Foreground(subtle),
+		Permission:       lipgloss.NewStyle().Foreground(subtle),
+		FileSize:         subtleStyle.Copy(),
+		EmptyDirectory:   lipgloss.NewStyle().Foreground(subtle).PaddingLeft(2).SetString("  No directories found."),
+	}
+
 	return model{
 		db:                database,
 		table:             t,
@@ -255,6 +290,8 @@ func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) m
 		detailViewport:     viewport.New(0, 0),
 		showStartupTip:     true,
 		spinner:            sp,
+		showFilePicker:     false,
+		filePicker:         fp,
 	}
 }
 
@@ -270,6 +307,8 @@ func (m model) View() string {
 	switch {
 	case m.showHelp:
 		return m.helpView()
+	case m.showFilePicker:
+		return m.filePickerView()
 	case m.viewMode == DetailView:
 		return m.detailView()
 	default:

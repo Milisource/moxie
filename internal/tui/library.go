@@ -146,6 +146,7 @@ func (m model) libraryView() string {
 		footerParts = append(footerParts, "Ctrl+S status:"+m.statusFilter)
 	}
 	footerParts = append(footerParts, "s sort")
+	footerParts = append(footerParts, "b browse dirs")
 	footerParts = append(footerParts, "? help")
 	footer := subtleStyle.Render("  " + strings.Join(footerParts, "  •  ") + "  ")
 	b.WriteString(footer)
@@ -177,6 +178,40 @@ func (m model) renderMessage(b *strings.Builder) {
 		b.WriteString("\n")
 		b.WriteString(errorStyle.Render(fmt.Sprintf("  ✗ %s  ", msg)))
 	}
+}
+
+// ── File picker view ─────────────────────────────────────────────────
+
+func (m model) filePickerView() string {
+	var b strings.Builder
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+
+	// Header
+	title := titleStyle.Render("◆  Browse Game Directory  ")
+	hint := subtleStyle.Render("[Esc] cancel")
+	gap := w - lipgloss.Width(title) - lipgloss.Width(hint) - 4
+	if gap < 1 {
+		gap = 1
+	}
+	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, title, strings.Repeat(" ", gap), hint))
+	b.WriteString("\n")
+
+	// Separator
+	sep := max(0, w-4)
+	b.WriteString(separatorStyle.Render(strings.Repeat("━", sep)))
+	b.WriteString("\n\n")
+
+	// File picker
+	b.WriteString(m.filePicker.View())
+	b.WriteString("\n")
+
+	// Footer
+	b.WriteString(subtleStyle.Render("  ↑/↓ navigate  •  Enter select directory  •  Esc cancel"))
+
+	return appStyle.Render(b.String())
 }
 
 // renderDeletePrompt returns a styled delete confirmation widget.

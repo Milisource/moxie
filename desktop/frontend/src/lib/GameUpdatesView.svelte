@@ -1,28 +1,89 @@
 <script>
-  import {onMount} from 'svelte'
+  import {onMount, onDestroy} from 'svelte'
+  import {EventsOn} from '../../wailsjs/runtime/runtime'
   import {
     GetUpdatableGames,
-    SyncSingleGame,
-    CheckForUpdate,
     GetVersion,
+    CheckForUpdate,
+    DownloadGameUpdate,
+    DownloadAllUpdates,
   } from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
 
-  let {onNavigate = () => {}} = $props()
+  let {onNavigate = () => {}, onUpdateCompleted = () => {}} = $props()
 
-  // ── State ──────────────────────────────────────────────────
-  let games = $state([])
+  // ── Game List State ──────────────────────────────────────────
+  let games = $state([])           // DesktopGameSummary[]
   let loading = $state(true)
-  let updating = $state(new Set())     // set of game IDs currently being synced
-  let updateAllRunning = $state(false)
   let error = $state('')
 
-  // App update state (optional compact section)
+  // ── Per-Game State Machine ───────────────────────────────────
+  // Phase: idle | syncing | selecting-link | downloading | extracting | merging | updating-db | done | error
+  // Each entry: { phase, percent, speed, bytesDownloaded, totalBytes, filesExtracted, totalFiles, currentFile, error, oldVersion, newVersion }
+  /** @type {Record<number, {phase:string,percent:number,speed:number,bytesDownloaded:number,totalBytes:number,filesExtracted:number,totalFiles:number,currentFile:string,error:string,oldVersion:string,newVersion:string}>} */
+  let gameStates = $state({})
+
+  // ── Batch State ──────────────────────────────────────────────
+  /** @type {{running:boolean,current:number,total:number,currentGameTitle:string,results:Array,error:string}|null} */
+  let batchState = $state(null)
+
+  // ── App Update State ─────────────────────────────────────────
   let appVersion = $state('')
   let appUpdateInfo = $state(null)
   let appChecking = $state(false)
   let appError = $state('')
 
+  // ── Unsubscribe functions ────────────────────────────────────
+  let unsubPhase = null
+  let unsubDownload = null
+  let unsubExtract = null
+  let unsubError = null
+  let unsubComplete = null
+  let unsubBatchStart = null
+  let unsubBatchProgress = null
+  let unsubGameDone = null
+  let unsubBatchComplete = null
+
+  // ── Utility Formatting ───────────────────────────────────────
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 B'
+    const units = ['B', 'KB', 'MB', 'GB']
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+    const val = (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)
+    return `${val} ${units[i]}`
+  }
+
+  function formatSpeed(bps) {
+    if (!bps || bps === 0) return ''
+    const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
+    const i = Math.min(Math.floor(Math.log(bps) / Math.log(1024)), units.length - 1)
+    const val = (bps / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)
+    return `${val} ${units[i]}`
+  }
+
+  function getGS(gameId) {
+    return gameStates[gameId] || {phase: 'idle'}
+  }
+
+  function phaseLabel(gs) {
+    switch (gs.phase) {
+      case 'syncing':        return 'Checking…'
+      case 'selecting-link': return 'Selecting link…'
+      case 'downloading':    return 'Downloading…'
+      case 'extracting':     return gs.totalFiles
+        ? `Extracting… (${gs.filesExtracted}/${gs.totalFiles})`
+        : 'Extracting…'
+      case 'merging':        return 'Applying update…'
+      case 'updating-db':    return 'Finalizing…'
+      case 'done':           return gs.oldVersion && gs.newVersion
+        ? `Updated ${gs.oldVersion} → ${gs.newVersion}`
+        : 'Update complete'
+      case 'error':          return 'Update failed'
+      default:               return ''
+    }
+  }
+
+  // ── Data Loading ─────────────────────────────────────────────
   async function loadGames() {
     loading = true
     error = ''
@@ -35,44 +96,68 @@
     loading = false
   }
 
-  async function handleUpdateGame(id) {
-    if (updating.has(id)) return
-    updating = new Set([...updating, id])
+  // ── Update Actions ───────────────────────────────────────────
+  function initGameState(gameId) {
+    gameStates = {
+      ...gameStates,
+      [gameId]: {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', oldVersion: '', newVersion: ''},
+    }
+  }
+
+  async function handleUpdateGame(gameId) {
+    const gs = getGS(gameId)
+    if (gs.phase !== 'idle' && gs.phase !== 'error') return
+    initGameState(gameId)
     try {
-      await SyncSingleGame(id)
-      // Reload to reflect any version changes
-      await loadGames()
+      await DownloadGameUpdate(gameId)
     } catch (e) {
-      console.error('Update failed for game', id, e)
-    } finally {
-      const next = new Set(updating)
-      next.delete(id)
-      updating = next
+      gameStates = {
+        ...gameStates,
+        [gameId]: {...(gameStates[gameId] || {}), phase: 'error', error: String(e)},
+      }
+    }
+  }
+
+  async function handleRetry(gameId) {
+    initGameState(gameId)
+    try {
+      await DownloadGameUpdate(gameId)
+    } catch (e) {
+      gameStates = {
+        ...gameStates,
+        [gameId]: {...(gameStates[gameId] || {}), phase: 'error', error: String(e)},
+      }
     }
   }
 
   async function handleUpdateAll() {
-    if (updateAllRunning || games.length === 0) return
-    updateAllRunning = true
-    error = ''
+    if (batchState?.running) return
+
+    // Initialize all games as syncing
+    const newStates = {...gameStates}
+    for (const game of games) {
+      newStates[game.id] = {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', oldVersion: '', newVersion: ''}
+    }
+    gameStates = newStates
+    batchState = {running: true, current: 0, total: games.length, currentGameTitle: '', results: [], error: ''}
+
     try {
-      for (const game of games) {
-        updating = new Set([...updating, game.id])
-        try {
-          await SyncSingleGame(game.id)
-        } catch (e) {
-          console.error('Update failed for', game.title, e)
-        }
-        const next = new Set(updating)
-        next.delete(game.id)
-        updating = next
-      }
-      await loadGames()
-    } finally {
-      updateAllRunning = false
+      await DownloadAllUpdates()
+    } catch (e) {
+      batchState = {...batchState, running: false, error: String(e)}
     }
   }
 
+  function handleRetryFailed() {
+    const failed = (batchState?.results || []).filter(r => !r.success)
+    if (failed.length === 0) return
+    batchState = null
+    for (const f of failed) {
+      handleUpdateGame(f.gameID)
+    }
+  }
+
+  // ── App Update ───────────────────────────────────────────────
   async function handleCheckAppUpdate() {
     appChecking = true
     appError = ''
@@ -85,21 +170,142 @@
     appChecking = false
   }
 
+  // ── Event Setup ──────────────────────────────────────────────
+  function setupEvents() {
+    unsubPhase = EventsOn('game-update:phase', (data) => {
+      gameStates = {
+        ...gameStates,
+        [data.gameID]: {...(gameStates[data.gameID] || {}), phase: data.phase},
+      }
+    })
+
+    unsubDownload = EventsOn('game-update:download-progress', (data) => {
+      gameStates = {
+        ...gameStates,
+        [data.gameID]: {
+          ...(gameStates[data.gameID] || {}),
+          percent: Math.min(data.percent ?? 0, 100),
+          speed: data.speedBytesPerSec ?? 0,
+          bytesDownloaded: data.bytesDownloaded ?? 0,
+          totalBytes: data.totalBytes ?? 0,
+        },
+      }
+    })
+
+    unsubExtract = EventsOn('game-update:extract-progress', (data) => {
+      gameStates = {
+        ...gameStates,
+        [data.gameID]: {
+          ...(gameStates[data.gameID] || {}),
+          filesExtracted: data.filesExtracted ?? 0,
+          totalFiles: data.totalFiles ?? 0,
+          currentFile: data.currentFile ?? '',
+        },
+      }
+    })
+
+    unsubError = EventsOn('game-update:error', (data) => {
+      gameStates = {
+        ...gameStates,
+        [data.gameID]: {
+          ...(gameStates[data.gameID] || {}),
+          phase: 'error',
+          error: data.message || 'Unknown error',
+        },
+      }
+    })
+
+    unsubComplete = EventsOn('game-update:complete', (data) => {
+      gameStates = {
+        ...gameStates,
+        [data.gameID]: {
+          ...(gameStates[data.gameID] || {}),
+          phase: 'done',
+          oldVersion: data.oldVersion || '',
+          newVersion: data.newVersion || '',
+        },
+      }
+      onUpdateCompleted()
+    })
+
+    unsubBatchStart = EventsOn('game-update:batch-start', (data) => {
+      batchState = {
+        running: true,
+        current: 0,
+        total: data.total || 0,
+        currentGameTitle: '',
+        results: [],
+        error: '',
+      }
+    })
+
+    unsubBatchProgress = EventsOn('game-update:batch-progress', (data) => {
+      if (batchState) {
+        batchState = {...batchState, current: data.current ?? 0, currentGameTitle: data.currentGameTitle || ''}
+      }
+    })
+
+    unsubGameDone = EventsOn('game-update:game-done', (data) => {
+      if (batchState) {
+        batchState = {
+          ...batchState,
+          results: [...batchState.results, {
+            gameID: data.gameID,
+            title: data.title || '',
+            success: !!data.success,
+            error: data.error || '',
+          }],
+        }
+      }
+    })
+
+    unsubBatchComplete = EventsOn('game-update:batch-complete', (data) => {
+      if (batchState) {
+        batchState = {
+          ...batchState,
+          running: false,
+          succeeded: data.succeeded ?? 0,
+          failed: data.failed ?? 0,
+        }
+      }
+    })
+  }
+
   onMount(async () => {
+    // Set up event listeners FIRST (before calling update functions)
+    setupEvents()
+
+    // Load version
     try {
       appVersion = await GetVersion()
-    } catch (e) {
-      /* ignore */
-    }
+    } catch (e) { /* ignore */ }
+
+    // Load updatable games
     await loadGames()
   })
 
-  // ── Derived ─────────────────────────────────────────────────
-  let isUpdatingAny = $derived(updating.size > 0 || updateAllRunning)
-  let count = $derived(games.length)
+  onDestroy(() => {
+    if (unsubPhase) unsubPhase()
+    if (unsubDownload) unsubDownload()
+    if (unsubExtract) unsubExtract()
+    if (unsubError) unsubError()
+    if (unsubComplete) unsubComplete()
+    if (unsubBatchStart) unsubBatchStart()
+    if (unsubBatchProgress) unsubBatchProgress()
+    if (unsubGameDone) unsubGameDone()
+    if (unsubBatchComplete) unsubBatchComplete()
+  })
 
-  // ── Engine colors — imported from shared module ───────────────
-  // See engineColors.js for the canonical palette matching TUI styles
+  // ── Derived ──────────────────────────────────────────────────
+  let isUpdatingAny = $derived(
+    Object.values(gameStates).some(s => s && s.phase && s.phase !== 'idle' && s.phase !== 'done' && s.phase !== 'error')
+  )
+
+  let count = $derived(games.length)
+  let doneCount = $derived(
+    Object.values(gameStates).filter(s => s && s.phase === 'done').length
+  )
+  let allDone = $derived(count > 0 && doneCount === count)
 </script>
 
 <div class="updates-view">
@@ -126,60 +332,132 @@
       <p class="status-text">Loading games with updates…</p>
     </div>
   {:else}
+    <!-- ── All Done Message ────────────────────────────────── -->
+    {#if count > 0 && allDone}
+      <div class="status-section status-success">
+        <span class="status-icon">✓</span>
+        <div class="status-body">
+          <p class="status-title">All games updated!</p>
+          <p class="status-detail">
+            {doneCount} game{doneCount !== 1 ? 's' : ''} updated successfully.
+          </p>
+        </div>
+      </div>
+    {/if}
+
+    <!-- ── Batch Progress ──────────────────────────────────── -->
+    {#if batchState && batchState.total > 0}
+      <div class="batch-progress-section">
+        <!-- Running indicator -->
+        {#if batchState.running}
+          <div class="batch-progress-bar-bg">
+            <div
+              class="batch-progress-bar-fill"
+              style="width: {batchState.total > 0
+                ? Math.round((batchState.current / batchState.total) * 100)
+                : 0}%"
+            ></div>
+          </div>
+          <p class="batch-progress-label">
+            Updating {batchState.current} of {batchState.total} games
+          </p>
+          {#if batchState.currentGameTitle}
+            <p class="batch-current-game">
+              <span class="spinner spinner-sm"></span>
+              Currently: {batchState.currentGameTitle}
+            </p>
+          {/if}
+        {/if}
+
+        <!-- Per-game results -->
+        {#if batchState.results.length > 0}
+          <div class="batch-results">
+            {#each batchState.results as result}
+              <span
+                class="batch-result-item"
+                class:batch-result-success={result.success}
+                class:batch-result-fail={!result.success}
+              >
+                {result.success ? '✓' : '✗'} {result.title}
+              </span>
+            {/each}
+          </div>
+        {/if}
+
+        <!-- Batch complete summary -->
+        {#if !batchState.running && batchState.results.length > 0}
+          <div class="batch-summary">
+            <span class="batch-summary-text">
+              <span class="batch-summary-ok">{batchState.succeeded} complete</span>
+              {#if batchState.failed > 0}
+                , <span class="batch-summary-fail">{batchState.failed} failed</span>
+              {/if}
+            </span>
+            {#if batchState.failed > 0}
+              <button
+                class="btn btn-sm btn-warning"
+                onclick={handleRetryFailed}
+              >
+                Retry Failed ({batchState.failed})
+              </button>
+            {/if}
+          </div>
+        {/if}
+
+        {#if batchState.error}
+          <div class="batch-error">
+            Batch error: {batchState.error}
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     <!-- ── Action Bar ────────────────────────────────────────── -->
-    {#if count > 0}
+    {#if count > 0 && !allDone}
       <div class="action-bar">
         <button
           class="btn btn-primary"
           onclick={handleUpdateAll}
-          disabled={isUpdatingAny}
+          disabled={isUpdatingAny || batchState?.running}
         >
-          {#if updateAllRunning}
-            Updating all…
+          {#if batchState?.running}
+            Updating…
           {:else}
-            Update All ({count})
+            Update All ({count - doneCount})
           {/if}
         </button>
         <button
           class="btn btn-outline"
           onclick={() => onNavigate('sync')}
-          disabled={isUpdatingAny}
+          disabled={isUpdatingAny || batchState?.running}
         >
           Sync Now
         </button>
       </div>
     {/if}
 
-    <!-- ── Update Progress Summary ────────────────────────── -->
-    {#if isUpdatingAny}
-      <div class="progress-section">
-        <div class="progress-bar-bg">
-          <div
-            class="progress-bar-fill"
-            style="width: {Math.round(
-              (updating.size / Math.max(count, 1)) * 100
-            )}%"
-          ></div>
-        </div>
-        <p class="progress-label">
-          Updating {updating.size} of {count} game{count !== 1 ? 's' : ''}…
-        </p>
-      </div>
-    {/if}
-
     <!-- ── Game List ─────────────────────────────────────────── -->
-    {#if count > 0}
+    {#if count > 0 && !allDone}
       <div class="table-header">
         <span class="col-title">Title</span>
         <span class="col-engine">Engine</span>
         <span class="col-version">Version</span>
-        <span class="col-action">Action</span>
+        <span class="col-action">Status / Action</span>
       </div>
 
       <div class="table-body">
         {#each games as game (game.id)}
-          <div class="table-row" class:row-updating={updating.has(game.id)}>
-            <span class="col-title game-title">{game.title}</span>
+          {@const gs = getGS(game.id)}
+          {@const phase = gs.phase || 'idle'}
+          <div
+            class="table-row"
+            class:row-done={phase === 'done'}
+            class:row-error={phase === 'error'}
+            class:row-active={phase !== 'idle' && phase !== 'done' && phase !== 'error'}
+          >
+            <span class="col-title game-title" title={game.title}>
+              {game.title}
+            </span>
 
             <span class="col-engine">
               {#if game.engine}
@@ -192,28 +470,112 @@
             </span>
 
             <span class="col-version">
-              <span class="version-current">{game.version || '?'}</span>
-              <span class="version-arrow">→</span>
-              <span class="version-latest">{game.latestVersion}</span>
+              {#if phase === 'done'}
+                {#if gs.oldVersion && gs.newVersion}
+                  <span class="version-old">{gs.oldVersion}</span>
+                  <span class="version-arrow">→</span>
+                  <span class="version-new-done">{gs.newVersion}</span>
+                {:else}
+                  <span class="version-new-done">{game.latestVersion}</span>
+                {/if}
+              {:else if phase === 'error'}
+                <span class="version-current">{game.version || '?'}</span>
+                <span class="version-arrow">→</span>
+                <span class="version-latest">{game.latestVersion}</span>
+              {:else}
+                <span class="version-current">{game.version || '?'}</span>
+                <span class="version-arrow">→</span>
+                <span class="version-latest">{game.latestVersion}</span>
+              {/if}
             </span>
 
             <span class="col-action">
-              {#if updating.has(game.id)}
-                <span class="updating-label">Updating…</span>
-              {:else}
+              {#if phase === 'idle'}
                 <button
                   class="btn btn-sm btn-accent"
                   onclick={() => handleUpdateGame(game.id)}
-                  disabled={isUpdatingAny}
+                  disabled={isUpdatingAny || batchState?.running}
                 >
                   Update
                 </button>
+
+              {:else if phase === 'downloading'}
+                <div class="cell-download-progress">
+                  <div class="cell-progress-bg">
+                    <div
+                      class="cell-progress-fill"
+                      style="width: {gs.percent || 0}%"
+                    ></div>
+                  </div>
+                  <span class="cell-progress-text">
+                    {gs.percent || 0}%
+                    {#if gs.speed}
+                      <span class="cell-speed">— {formatSpeed(gs.speed)}</span>
+                    {/if}
+                  </span>
+                </div>
+
+              {:else if phase === 'extracting'}
+                <div class="cell-status-row">
+                  <span class="spinner spinner-sm"></span>
+                  <span class="cell-status-text">
+                    {#if gs.totalFiles}
+                      Extracting… ({gs.filesExtracted}/{gs.totalFiles})
+                    {:else}
+                      Extracting…
+                    {/if}
+                  </span>
+                </div>
+
+              {:else if phase === 'syncing' || phase === 'selecting-link'}
+                <div class="cell-status-row">
+                  <span class="spinner spinner-sm"></span>
+                  <span class="cell-status-text">{phaseLabel(gs)}</span>
+                </div>
+
+              {:else if phase === 'merging'}
+                <div class="cell-status-row">
+                  <span class="spinner spinner-sm"></span>
+                  <span class="cell-status-text">Applying update…</span>
+                </div>
+
+              {:else if phase === 'updating-db'}
+                <div class="cell-status-row">
+                  <span class="spinner spinner-sm"></span>
+                  <span class="cell-status-text">Finalizing…</span>
+                </div>
+
+              {:else if phase === 'done'}
+                <div class="cell-status-row cell-status-done">
+                  <span class="cell-done-icon">✓</span>
+                  <span class="cell-status-text">
+                    {#if gs.oldVersion && gs.newVersion}
+                      Updated {gs.oldVersion} → {gs.newVersion}
+                    {:else}
+                      Update complete
+                    {/if}
+                  </span>
+                </div>
+
+              {:else if phase === 'error'}
+                <div class="cell-error-column">
+                  <span class="cell-error-text" title={gs.error}>
+                    {gs.error ? (gs.error.length > 60 ? gs.error.slice(0, 60) + '…' : gs.error) : 'Error'}
+                  </span>
+                  <button
+                    class="btn btn-sm btn-warning"
+                    onclick={() => handleRetry(game.id)}
+                    disabled={isUpdatingAny || batchState?.running}
+                  >
+                    Retry
+                  </button>
+                </div>
               {/if}
             </span>
           </div>
         {/each}
       </div>
-    {:else}
+    {:else if count === 0}
       <!-- ── Up-to-Date State ───────────────────────────────── -->
       <div class="status-section status-success">
         <span class="status-icon">✓</span>
@@ -332,6 +694,7 @@
     gap: 8px;
     margin-bottom: 16px;
     flex-wrap: wrap;
+    align-items: center;
   }
 
   /* ── Shared Status Sections ────────── */
@@ -395,43 +758,102 @@
     animation: spin 0.6s linear infinite;
     flex-shrink: 0;
   }
+  .spinner-sm {
+    width: 12px;
+    height: 12px;
+    border-width: 1.5px;
+  }
   @keyframes spin {
     to {
       transform: rotate(360deg);
     }
   }
 
-  /* ── Progress ──────────────────────── */
-  .progress-section {
+  /* ── Batch Progress ─────────────────── */
+  .batch-progress-section {
     margin: 0 0 16px;
-    padding: 12px 16px;
+    padding: 14px 16px;
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--bg-secondary);
   }
-  .progress-bar-bg {
+  .batch-progress-bar-bg {
     height: 6px;
     border-radius: 3px;
     background: var(--bg-tertiary);
     overflow: hidden;
     margin-bottom: 8px;
   }
-  .progress-bar-fill {
+  .batch-progress-bar-fill {
     height: 100%;
     border-radius: 3px;
     background: var(--accent);
     transition: width 0.3s ease;
   }
-  .progress-label {
+  .batch-progress-label {
     font-size: 12px;
     color: var(--text-secondary);
-    margin: 0;
+    margin: 0 0 6px;
+    font-weight: 600;
+  }
+  .batch-current-game {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--accent);
+    margin: 0 0 8px;
+  }
+  .batch-results {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    margin: 8px 0;
+  }
+  .batch-result-item {
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+  }
+  .batch-result-success {
+    color: var(--success);
+  }
+  .batch-result-fail {
+    color: var(--danger);
+  }
+  .batch-summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  .batch-summary-text {
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .batch-summary-ok {
+    color: var(--success);
+  }
+  .batch-summary-fail {
+    color: var(--danger);
+  }
+  .batch-error {
+    font-size: 12px;
+    color: var(--danger);
+    margin-top: 8px;
+    padding: 6px 8px;
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+    border-radius: 4px;
   }
 
   /* ── Table ──────────────────────────── */
   .table-header {
     display: grid;
-    grid-template-columns: 1fr 110px 150px 110px;
+    grid-template-columns: 1fr 110px 150px 1fr;
     gap: 8px;
     padding: 6px 12px;
     font-size: 11px;
@@ -451,7 +873,7 @@
 
   .table-row {
     display: grid;
-    grid-template-columns: 1fr 110px 150px 110px;
+    grid-template-columns: 1fr 110px 150px 1fr;
     gap: 8px;
     padding: 10px 12px;
     font-size: 13px;
@@ -462,8 +884,17 @@
   .table-row:hover {
     background: var(--bg-hover);
   }
-  .table-row.row-updating {
-    opacity: 0.6;
+  .table-row.row-done {
+    opacity: 0.55;
+  }
+  .table-row.row-done:hover {
+    background: transparent;
+  }
+  .table-row.row-error {
+    background: color-mix(in srgb, var(--danger) 5%, transparent);
+  }
+  .table-row.row-active {
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
   }
 
   .game-title {
@@ -502,6 +933,14 @@
     color: var(--warning);
     font-weight: 600;
   }
+  .version-new-done {
+    color: var(--success);
+    font-weight: 600;
+  }
+  .version-old {
+    color: var(--text-muted);
+    text-decoration: line-through;
+  }
 
   .text-muted {
     color: var(--text-muted);
@@ -512,12 +951,79 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    min-width: 0;
+    gap: 6px;
   }
 
-  .updating-label {
+  /* ── Cell: Download progress ─────────── */
+  .cell-download-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    min-width: 120px;
+  }
+  .cell-progress-bg {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+  }
+  .cell-progress-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent);
+    transition: width 0.25s ease;
+  }
+  .cell-progress-text {
     font-size: 11px;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+  }
+  .cell-speed {
     color: var(--text-muted);
-    font-style: italic;
+  }
+
+  /* ── Cell: Status row (spinner + text) ─ */
+  .cell-status-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .cell-status-text {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .cell-status-done {
+    gap: 4px;
+  }
+  .cell-done-icon {
+    color: var(--success);
+    font-weight: 700;
+    font-size: 14px;
+  }
+
+  /* ── Cell: Error ─────────────────────── */
+  .cell-error-column {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    max-width: 100%;
+  }
+  .cell-error-text {
+    font-size: 11px;
+    color: var(--danger);
+    font-family: var(--font-mono);
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+    white-space: nowrap;
   }
 
   /* ── Buttons ────────────────────────── */
@@ -563,6 +1069,14 @@
   }
   .btn-accent:hover:not(:disabled) {
     background: var(--accent-hover);
+  }
+
+  .btn-warning {
+    background: var(--warning);
+    color: #000;
+  }
+  .btn-warning:hover:not(:disabled) {
+    filter: brightness(1.1);
   }
 
   /* ── Error ───────────────────────────── */

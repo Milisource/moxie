@@ -191,7 +191,7 @@ func TestParseSearchResults_Success(t *testing.T) {
 </body>
 </html>`
 
-	results := parseSearchResults(searchHTML)
+	results := parseSearchResults(searchHTML, "")
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(results))
 	}
@@ -249,7 +249,7 @@ func TestParseSearchResults_EmptyResults(t *testing.T) {
 </body>
 </html>`
 
-	results := parseSearchResults(emptyHTML)
+	results := parseSearchResults(emptyHTML, "")
 	if len(results) != 0 {
 		t.Fatalf("expected 0 results, got %d", len(results))
 	}
@@ -271,7 +271,7 @@ func TestParseSearchResults_RelativeURLs(t *testing.T) {
 </body>
 </html>`
 
-	results := parseSearchResults(html)
+	results := parseSearchResults(html, "")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -293,7 +293,7 @@ func TestParseSearchResults_MaxFiveResults(t *testing.T) {
 	}
 	buf.WriteString(`</div></body></html>`)
 
-	results := parseSearchResults(buf.String())
+	results := parseSearchResults(buf.String(), "")
 	if len(results) > 5 {
 		t.Fatalf("expected at most 5 results, got %d", len(results))
 	}
@@ -316,7 +316,7 @@ func TestParseSearchResults_MissingHref(t *testing.T) {
 </body>
 </html>`
 
-	results := parseSearchResults(html)
+	results := parseSearchResults(html, "")
 	if len(results) != 0 {
 		t.Fatalf("expected 0 results for missing href, got %d", len(results))
 	}
@@ -325,7 +325,7 @@ func TestParseSearchResults_MissingHref(t *testing.T) {
 func TestParseSearchResults_InvalidHTML(t *testing.T) {
 	t.Parallel()
 
-	results := parseSearchResults("<<<invalid html>>>")
+	results := parseSearchResults("<<<invalid html>>>", "")
 	if results != nil {
 		t.Fatalf("expected nil for invalid HTML, got %v", results)
 	}
@@ -345,7 +345,7 @@ func TestParseSearchResults_NoSnippetField(t *testing.T) {
 </body>
 </html>`
 
-	results := parseSearchResults(html)
+	results := parseSearchResults(html, "")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}

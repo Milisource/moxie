@@ -37,6 +37,17 @@ var Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 // stderr is intentionally excluded to avoid corrupting the TUI.
 // Safe to call multiple times; the log file is reopened on each call.
 func Init(dir string) {
+	initLogger(dir, false)
+}
+
+// InitWithConsole creates the log directory and writes to BOTH a per-day log
+// file AND stderr. Use this for desktop GUI apps where there's no TUI to
+// corrupt. Safe to call multiple times; the log file is reopened on each call.
+func InitWithConsole(dir string) {
+	initLogger(dir, true)
+}
+
+func initLogger(dir string, alsoStderr bool) {
 	os.MkdirAll(dir, 0755)
 	date := time.Now().Format("2006-01-02")
 	logPath := filepath.Join(dir, "moxie-"+date+".log")
@@ -46,7 +57,11 @@ func Init(dir string) {
 		Warn("cannot open log file", "path", logPath, "error", err)
 		return
 	}
-	Logger = slog.New(slog.NewTextHandler(f, nil))
+	var writer io.Writer = f
+	if alsoStderr {
+		writer = io.MultiWriter(f, os.Stderr)
+	}
+	Logger = slog.New(slog.NewTextHandler(writer, nil))
 	// Clean up old log files after opening today's. Non-fatal if it fails.
 	rotateOldLogs(dir)
 }

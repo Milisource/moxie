@@ -34,6 +34,14 @@ export function DetectGame(arg1) {
   return window['go']['main']['App']['DetectGame'](arg1);
 }
 
+export function DownloadAllUpdates() {
+  return window['go']['main']['App']['DownloadAllUpdates']();
+}
+
+export function DownloadGameUpdate(arg1) {
+  return window['go']['main']['App']['DownloadGameUpdate'](arg1);
+}
+
 export function DownloadUpdate() {
   return window['go']['main']['App']['DownloadUpdate']();
 }
@@ -88,6 +96,10 @@ export function GetGameDetail(arg1) {
 
 export function GetGameDownloadLinks(arg1) {
   return window['go']['main']['App']['GetGameDownloadLinks'](arg1);
+}
+
+export function GetGameDownloadLinksForUpdate(arg1) {
+  return window['go']['main']['App']['GetGameDownloadLinksForUpdate'](arg1);
 }
 
 export function GetGames() {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,6 +14,7 @@ import (
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/log"
+	"github.com/mili/moxie/internal/scanner"
 	"github.com/mili/moxie/internal/updater"
 )
 
@@ -31,6 +33,48 @@ func (m model) loadGames() tea.Cmd {
 			return errMsg{err}
 		}
 		return gamesLoadedMsg{games}
+	}
+}
+
+// scanDirectory runs scanner.Scan on a directory and saves/updates games in the database.
+func (m model) scanDirectory(dir string) tea.Cmd {
+	return func() tea.Msg {
+		games, err := scanner.Scan(dir)
+		if err != nil {
+			return errMsg{fmt.Errorf("scanning %s: %w", dir, err)}
+		}
+
+		var saved, updated int
+		for _, g := range games {
+			existing, err := m.db.GetGameByPath(g.Path)
+			if err == nil && existing != nil {
+				existing.Title = g.Title
+				existing.Engine = string(g.Engine)
+				existing.Version = orDefault(existing.Version, g.Version)
+				existing.SizeBytes = g.SizeBytes
+				if g.ExePath != "" {
+					existing.ExePath = g.ExePath
+				}
+				if err := m.db.UpdateGame(existing); err == nil {
+					updated++
+				}
+			} else if g.Path != "" {
+				game := &db.Game{
+					Title:     strings.TrimSpace(g.Title),
+					Engine:    string(g.Engine),
+					Path:      g.Path,
+					ExePath:   g.ExePath,
+					Version:   g.Version,
+					SizeBytes: g.SizeBytes,
+					Status:    "unknown",
+				}
+				if _, err := m.db.InsertGame(game); err == nil {
+					saved++
+				}
+			}
+		}
+
+		return scanCompletedMsg{saved: saved, updated: updated, total: len(games)}
 	}
 }
 
@@ -68,17 +112,23 @@ func (m model) loadMeta(id int64) tea.Cmd {
 }
 
 // deleteGame deletes a game and reloads the game list.
+// Uses tea.Sequence to ensure delete completes before reload.
 func (m model) deleteGame(id int64) tea.Cmd {
-	return func() tea.Msg {
-		if err := m.db.DeleteGame(id); err != nil {
-			return gameDeletedMsg{err: err}
-		}
-		games, err := m.db.ListGameSummaries("", "")
-		if err != nil {
-			return gameDeletedMsg{err: err}
-		}
-		return gameDeletedMsg{games: games}
-	}
+	return tea.Sequence(
+		func() tea.Msg {
+			if err := m.db.DeleteGame(id); err != nil {
+				return gameDeletedMsg{err: err}
+			}
+			return gameDeletedMsg{}
+		},
+		func() tea.Msg {
+			games, err := m.db.ListGameSummaries("", "")
+			if err != nil {
+				return errMsg{err}
+			}
+			return gamesLoadedMsg{games}
+		},
+	)
 }
 
 // scrapeMeta scrapes an F95Zone URL for metadata and saves it.

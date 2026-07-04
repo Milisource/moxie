@@ -210,14 +210,19 @@ install_windows() {
     chmod +x "$bin_path"
     success "Binary: ${bin_path}"
 
-    warn "Start Menu shortcut creation not yet implemented."
-    warn "Add ${bin_dir} to your PATH to launch from terminal."
-
-    # TODO: Create Start Menu shortcut via PowerShell:
-    #   $WshShell = New-Object -ComObject WScript.Shell
-    #   $Shortcut = $WshShell.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Moxie.lnk")
-    #   $Shortcut.TargetPath = "$bin_path"
-    #   $Shortcut.Save()
+    # Create Start Menu shortcut via PowerShell.
+    # This creates a .lnk in the Start Menu so the app appears in search/start.
+    if command -v powershell.exe &>/dev/null; then
+        powershell.exe -Command "
+            \$WshShell = New-Object -ComObject WScript.Shell
+            \$Shortcut = \$WshShell.CreateShortcut(\"$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Moxie.lnk\")
+            \$Shortcut.TargetPath = \"$bin_path\"
+            \$Shortcut.Save()
+        " && success "Start Menu shortcut created" || warn "Failed to create Start Menu shortcut (non-fatal)"
+    else
+        warn "PowerShell not found. Start Menu shortcut not created."
+        warn "Add ${bin_dir} to your PATH to launch from terminal."
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════

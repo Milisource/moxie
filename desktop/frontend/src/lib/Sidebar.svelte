@@ -1,7 +1,7 @@
 <script>
   import {GetUpdatableCount} from '../../wailsjs/go/main/App'
 
-  let {version = '', activeView = $bindable('library'), onNavigate} = $props()
+  let {version = '', activeView = $bindable('library'), onNavigate, lastUpdate = 0} = $props()
 
   let updateCount = $state(null)   // null = not loaded, 0+ = loaded
 
@@ -16,7 +16,7 @@
   // Load on mount and re-fetch every time the user navigates
   // (in case updates were applied elsewhere).
   $effect(() => {
-    if (activeView) loadCount()
+    if (activeView || lastUpdate) loadCount()
   })
 
   let sections = $derived.by(() => [

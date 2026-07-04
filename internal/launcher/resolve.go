@@ -16,6 +16,11 @@ import (
 // It checks the known exePath first, then searches the game directory.
 // On macOS it also inspects .app bundles and native Mach-O binaries.
 func ResolveExecutable(gameDir, exePath string) string {
+	// Virtual paths (browser-added games not downloaded yet) have no executable.
+	if strings.HasPrefix(gameDir, "/virtual/") {
+		return ""
+	}
+
 	// If we know the exe and it exists, use it.
 	if exePath != "" {
 		if _, err := os.Stat(exePath); err == nil {

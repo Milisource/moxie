@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -109,7 +110,14 @@ func (m *model) updateTableRows() {
 		engineStyled := engineStyle(g.Engine).Render(g.Engine)
 
 		// Determine if this game has a known path on disk.
-		hasPath := g.Path != ""
+		// First, reject empty paths and virtual paths.
+		hasPath := g.Path != "" && !strings.HasPrefix(g.Path, "/virtual/")
+		// For non-virtual paths, verify the directory actually exists.
+		if hasPath {
+			if info, err := os.Stat(g.Path); err != nil || !info.IsDir() {
+				hasPath = false
+			}
+		}
 
 		// ── Title column ───────────────────────────────────────────
 		title := truncate(g.Title, 72)
@@ -197,6 +205,14 @@ func formatSize(bytes int64) string {
 func orDash(s string) string {
 	if s == "" {
 		return "-"
+	}
+	return s
+}
+
+// orDefault returns s if non-empty, otherwise returns def.
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
 	}
 	return s
 }

@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,11 +26,13 @@ import (
 	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
+	"github.com/mili/moxie/internal/extractor"
 	"github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/scanner"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/steam"
+	"github.com/mili/moxie/internal/updater"
 )
 
 // App is the main application struct for the Wails desktop GUI.
@@ -47,7 +52,7 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
-	log.Init(config.LogDir())
+	log.InitWithConsole(config.LogDir())
 	slog.Info("moxie desktop starting")
 
 	if err := os.MkdirAll(config.ConfigDir(), 0755); err != nil {
@@ -666,6 +671,264 @@ func (a *App) GetAllDownloadLinks() ([]DesktopDownloadLinkWithGame, error) {
 		})
 	}
 	return result, nil
+}
+
+// ---------------------------------------------------------------------------
+// Game update download
+// ---------------------------------------------------------------------------
+
+// downloadGameFile downloads a game update archive from a download link,
+// emitting progress events to the frontend. Returns the path to the
+// downloaded temp file. The caller is responsible for cleaning up the
+// returned temp file (typically an umbrella temp directory).
+//
+// The ctx parameter supports cancellation; the download is aborted if the
+// context is cancelled. The function retries up to 3 times on transient
+// network errors with a 2-second backoff between attempts.
+func (a *App) downloadGameFile(ctx context.Context, gameID int64, link db.DownloadLink) (string, error) {
+	if a.db == nil {
+		return "", fmt.Errorf("database not initialized")
+	}
+	if a.ctx == nil {
+		return "", fmt.Errorf("application context not initialized")
+	}
+
+	// Obtain the F95Zone cookie for masked URL resolution.
+	cookie, err := browser.GetF95Cookies()
+	if err != nil || cookie == "" {
+		errMsg := "F95Zone cookies not available. Log into F95Zone in your browser first"
+		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    "cookie",
+			"message": errMsg,
+		})
+		return "", fmt.Errorf("%s", errMsg)
+	}
+
+	// Create a temp directory to hold the downloaded file.
+	// Using MkdirTemp so each download gets its own isolated directory.
+	tempDir, err := os.MkdirTemp(os.TempDir(), fmt.Sprintf("moxie-update-%d-*", gameID))
+	if err != nil {
+		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    "temp",
+			"message": fmt.Sprintf("Failed to create temp directory: %v", err),
+		})
+		return "", fmt.Errorf("create temp dir: %w", err)
+	}
+
+	// Progress callback — throttled to ~200ms to avoid flooding the frontend.
+	var lastProgress time.Time
+	progressCb := func(p downloader.Progress) {
+		now := time.Now()
+		if now.Sub(lastProgress) < 200*time.Millisecond && p.Percent < 100 {
+			return
+		}
+		lastProgress = now
+		runtime.EventsEmit(a.ctx, "game-update:download-progress", map[string]interface{}{
+			"gameID":           gameID,
+			"bytesDownloaded":  p.BytesDownloaded,
+			"totalBytes":       p.TotalBytes,
+			"speedBytesPerSec": p.SpeedBytesPerSec,
+			"percent":          p.Percent,
+		})
+	}
+
+	// Download with retry for transient network errors.
+	const maxRetries = 3
+	const retryDelay = 2 * time.Second
+
+	var lastErr error
+	downloaded := false
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// Check for cancellation before each attempt.
+		select {
+		case <-ctx.Done():
+			os.RemoveAll(tempDir)
+			return "", ctx.Err()
+		default:
+		}
+
+		if attempt > 1 {
+			slog.Info("retrying game update download",
+				"gameID", gameID,
+				"attempt", attempt,
+				"maxRetries", maxRetries,
+				"host", link.Host,
+			)
+
+			// Backoff before retry.
+			select {
+			case <-ctx.Done():
+				os.RemoveAll(tempDir)
+				return "", ctx.Err()
+			case <-time.After(retryDelay):
+			}
+
+			// Recreate temp dir on retry to avoid partial-file conflicts.
+			os.RemoveAll(tempDir)
+			tempDir, err = os.MkdirTemp(os.TempDir(), fmt.Sprintf("moxie-update-%d-*", gameID))
+			if err != nil {
+				return "", fmt.Errorf("create temp dir: %w", err)
+			}
+		}
+
+		err = downloader.DownloadWithHost(
+			link.URL,
+			link.Host,
+			tempDir,
+			0, // expectedTotal unknown; Content-Length from response is used
+			progressCb,
+			cookie,
+		)
+		if err == nil {
+			downloaded = true
+			break
+		}
+
+		lastErr = err
+		if !isTransientDownloadError(err) {
+			break
+		}
+	}
+
+	if !downloaded {
+		errMsg := fmt.Sprintf("Download failed after %d attempts: %v", maxRetries, lastErr)
+		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    "download",
+			"message": errMsg,
+		})
+		os.RemoveAll(tempDir)
+		return "", fmt.Errorf("download after %d attempts: %w", maxRetries, lastErr)
+	}
+
+	// Find the downloaded file in the temp directory.
+	entries, err := os.ReadDir(tempDir)
+	if err != nil || len(entries) == 0 {
+		os.RemoveAll(tempDir)
+		return "", fmt.Errorf("no file found after download in %s", tempDir)
+	}
+
+	// Pick the non-directory entry with the largest file size
+	// (there should be exactly one, but be defensive).
+	var bestFile string
+	var bestSize int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.Size() > bestSize {
+			bestSize = info.Size()
+			bestFile = filepath.Join(tempDir, e.Name())
+		}
+	}
+
+	if bestFile == "" {
+		os.RemoveAll(tempDir)
+		return "", fmt.Errorf("no downloadable file found in temp directory")
+	}
+
+	slog.Info("game update download complete",
+		"gameID", gameID,
+		"file", filepath.Base(bestFile),
+		"size", bestSize,
+	)
+
+	// Emit completion event (caller is responsible for cleanup).
+	runtime.EventsEmit(a.ctx, "game-update:download-complete", map[string]interface{}{
+		"gameID": gameID,
+		"path":   bestFile,
+		"size":   bestSize,
+	})
+
+	return bestFile, nil
+}
+
+// selectDownloadLink selects the best non-dead download link matching the
+// user's current platform. It uses platform priority scoring (native > Wine >
+// cross-platform > unknown) combined with host reliability scoring.
+// Returns an error if no compatible link is found.
+func selectDownloadLink(links []DesktopDownloadLink) (*DesktopDownloadLink, error) {
+	if len(links) == 0 {
+		return nil, fmt.Errorf("no download links provided")
+	}
+
+	currentPlatform := downloader.CurrentPlatform()
+
+	type scoredLink struct {
+		link  DesktopDownloadLink
+		score int
+	}
+
+	var candidates []scoredLink
+	for _, link := range links {
+		// Skip dead links.
+		if link.IsDead {
+			continue
+		}
+
+		// Skip online-only / browser-playable links.
+		if downloader.IsOnlineOnly(link.Name, link.URL) {
+			continue
+		}
+
+		// Filter by platform compatibility.
+		dlPlatform := downloader.Platform(link.Platform)
+		if !downloader.PlatformMatches(dlPlatform, currentPlatform) {
+			continue
+		}
+
+		// Composite score: platform priority + host reliability.
+		score := downloader.PlatformPriority(dlPlatform, currentPlatform) +
+			downloader.ScoreLinkHost(link.Host)
+		candidates = append(candidates, scoredLink{link: link, score: score})
+	}
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no compatible download link found for platform %s (have %d links total)",
+			currentPlatform, len(links))
+	}
+
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.score > best.score {
+			best = c
+		}
+	}
+
+	return &best.link, nil
+}
+
+// isTransientDownloadError returns true if the error is likely a transient
+// network issue that can be retried (timeouts, connection resets, HTTP 5xx).
+func isTransientDownloadError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check for network-level transient errors (timeout, temporary failure).
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() || netErr.Temporary() {
+			return true
+		}
+	}
+
+	// Check for HTTP 5xx errors that the downloader surfaces as "HTTP 5xx".
+	errStr := err.Error()
+	for _, code := range []string{"HTTP 5", "HTTP 502", "HTTP 503", "HTTP 504"} {
+		if strings.Contains(errStr, code) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -2101,6 +2364,385 @@ func (a *App) SyncSingleGame(id int64) error {
 		}
 	}
 
-	slog.Info("game sync complete", "id", id, "title", data.Title, "version", data.Version)
+	// Refresh download links from the scraped thread data.
+	// Stale links (pointing to old version files) are replaced with fresh ones.
+	if len(data.DownloadLinks) > 0 {
+		slog.Info("refreshing download links", "game", game.Title, "count", len(data.DownloadLinks))
+		if err := a.db.DeleteDownloadLinksByGameID(game.ID); err != nil {
+			slog.Warn("failed to clear old download links", "game", game.Title, "error", err)
+		} else {
+			for _, dl := range data.DownloadLinks {
+				p := downloader.DetectPlatformFromLink(dl.Name, dl.URL)
+				link := &db.DownloadLink{
+					GameID:   game.ID,
+					URL:      dl.URL,
+					Host:     dl.Host,
+					Name:     dl.Name,
+					Platform: db.Platform(p),
+					IsDead:   false,
+				}
+				if _, err := a.db.CreateDownloadLink(link); err != nil {
+					slog.Warn("failed to save download link", "game", game.Title, "error", err)
+				}
+			}
+		}
+	}
+
+	slog.Info("game sync complete", "id", id, "title", data.Title, "version", data.Version,
+		"downloadLinks", len(data.DownloadLinks))
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Game update pipeline
+// ---------------------------------------------------------------------------
+
+// GetGameDownloadLinksForUpdate retrieves the best download link for updating
+// a game. It wraps GetGameDownloadLinks with selectDownloadLink and converts
+// the result to db.DownloadLink for use with downloadGameFile.
+func (a *App) GetGameDownloadLinksForUpdate(gameID int64) (*db.DownloadLink, error) {
+	links, err := a.GetGameDownloadLinks(gameID)
+	if err != nil {
+		return nil, fmt.Errorf("get download links: %w", err)
+	}
+
+	best, err := selectDownloadLink(links)
+	if err != nil {
+		return nil, fmt.Errorf("select download link: %w", err)
+	}
+
+	return &db.DownloadLink{
+		ID:       best.ID,
+		URL:      best.URL,
+		Host:     best.Host,
+		Name:     best.Name,
+		Platform: db.Platform(best.Platform),
+		IsDead:   best.IsDead,
+	}, nil
+}
+
+// runSingleGameUpdate executes the full update pipeline for a single game.
+// It is designed to be called from a goroutine. Errors are communicated both
+// via Wails events (game-update:error) and as the return value.
+func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) error {
+	title := ""
+	game := &db.Game{}
+
+	slog.Info("game update: starting pipeline", "gameID", gameID)
+
+	// Track temp dirs for deferred cleanup on error.
+	var downloadTempDir, extractDir string
+	var needsCleanup bool
+	defer func() {
+		if needsCleanup {
+			if downloadTempDir != "" {
+				os.RemoveAll(downloadTempDir)
+			}
+			if extractDir != "" {
+				os.RemoveAll(extractDir)
+			}
+		}
+	}()
+
+	// Mark cleanup needed; set to false on success.
+	needsCleanup = true
+
+	// Phase: syncing
+	slog.Info("game update: syncing", "gameID", gameID)
+	runtime.EventsEmit(a.ctx, "game-update:phase", map[string]interface{}{
+		"gameID": gameID,
+		"phase":  "syncing",
+	})
+
+	if err := a.SyncSingleGame(gameID); err != nil {
+		slog.Error("game update: sync failed", "gameID", gameID, "error", err)
+		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    "sync",
+			"message": err.Error(),
+		})
+		return fmt.Errorf("sync single game: %w", err)
+	}
+
+	// Get the refreshed game record.
+	var err error
+	game, err = a.db.GetGame(gameID)
+	if err != nil {
+		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    "lookup",
+			"message": err.Error(),
+		})
+		return fmt.Errorf("get game: %w", err)
+	}
+	if game == nil {
+		err = fmt.Errorf("game with id %d not found", gameID)
+		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    "lookup",
+			"message": err.Error(),
+		})
+		return err
+	}
+
+	title = game.Title
+
+	// Check whether an update is actually needed.
+	if game.LatestVersion == "" || game.LatestVersion == game.Version {
+		err = fmt.Errorf("no update available (current version: %s)", game.Version)
+		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    "check",
+			"message": err.Error(),
+		})
+		return err
+	}
+
+	oldVersion := game.Version
+
+	// Phase: selecting-link
+	slog.Info("game update: selecting link", "gameID", gameID)
+	runtime.EventsEmit(a.ctx, "game-update:phase", map[string]interface{}{
+		"gameID": gameID,
+		"phase":  "selecting-link",
+	})
+
+	selectedLink, err := a.GetGameDownloadLinksForUpdate(gameID)
+	if err != nil {
+		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    "select-link",
+			"message": err.Error(),
+		})
+		return fmt.Errorf("select download link: %w", err)
+	}
+
+	// Phase: downloading
+	slog.Info("game update: downloading", "gameID", gameID, "host", selectedLink.Host)
+	runtime.EventsEmit(a.ctx, "game-update:phase", map[string]interface{}{
+		"gameID": gameID,
+		"phase":  "downloading",
+	})
+
+	archivePath, err := a.downloadGameFile(ctx, gameID, *selectedLink)
+	if err != nil {
+		// downloadGameFile already emits its own error events.
+		return fmt.Errorf("download game file: %w", err)
+	}
+	downloadTempDir = filepath.Dir(archivePath)
+
+	// Phase: extracting
+	slog.Info("game update: extracting", "gameID", gameID, "archive", archivePath)
+	runtime.EventsEmit(a.ctx, "game-update:phase", map[string]interface{}{
+		"gameID": gameID,
+		"phase":  "extracting",
+	})
+
+	extractDir, err = os.MkdirTemp(os.TempDir(), fmt.Sprintf("moxie-extract-%d-*", gameID))
+	if err != nil {
+		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    "extract",
+			"message": fmt.Sprintf("Failed to create extraction temp directory: %v", err),
+		})
+		return fmt.Errorf("create extract temp dir: %w", err)
+	}
+
+	extractProgressCb := func(p extractor.Progress) {
+		runtime.EventsEmit(a.ctx, "game-update:extract-progress", map[string]interface{}{
+			"gameID":         gameID,
+			"filesExtracted": p.FilesExtracted,
+			"totalFiles":     p.TotalFiles,
+			"currentFile":    p.CurrentFile,
+		})
+	}
+
+	extractedRoot, err := extractor.Extract(ctx, archivePath, extractDir, extractProgressCb)
+	if err != nil {
+		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    "extract",
+			"message": fmt.Sprintf("Extraction failed: %v", err),
+		})
+		return fmt.Errorf("extract archive: %w", err)
+	}
+
+	// Phase: merging
+	slog.Info("game update: merging", "gameID", gameID, "gamePath", game.Path, "engine", game.Engine)
+	runtime.EventsEmit(a.ctx, "game-update:phase", map[string]interface{}{
+		"gameID": gameID,
+		"phase":  "merging",
+	})
+
+	mergeResult, err := updater.Merge(game.Path, game.Engine, extractedRoot, true)
+	if err != nil {
+		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    "merge",
+			"message": fmt.Sprintf("Merge failed: %v", err),
+		})
+		return fmt.Errorf("merge update: %w", err)
+	}
+
+	slog.Info("game update merged", "game", title, "copied", mergeResult.FilesCopied,
+		"preserved", mergeResult.FilesPreserved)
+
+	// Phase: updating-db
+	slog.Info("game update: updating db", "gameID", gameID,
+		"newVersion", game.LatestVersion,
+		"oldVersion", game.Version)
+	runtime.EventsEmit(a.ctx, "game-update:phase", map[string]interface{}{
+		"gameID": gameID,
+		"phase":  "updating-db",
+	})
+
+	game.Version = game.LatestVersion
+	game.SizeBytes = updateDirSize(game.Path)
+	game.LastScannedAt = time.Now()
+
+	if err := a.db.UpdateGame(game); err != nil {
+		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    "update-db",
+			"message": fmt.Sprintf("Database update failed: %v", err),
+		})
+		return fmt.Errorf("update game in db: %w", err)
+	}
+
+	// Clean up temp files on success.
+	os.RemoveAll(downloadTempDir)
+	os.RemoveAll(extractDir)
+	needsCleanup = false
+
+	// Emit completion.
+	runtime.EventsEmit(a.ctx, "game-update:complete", map[string]interface{}{
+		"gameID":     gameID,
+		"title":      title,
+		"oldVersion": oldVersion,
+		"newVersion": game.Version,
+	})
+
+	slog.Info("game update complete", "game", title, "old", oldVersion, "new", game.Version)
+	return nil
+}
+
+// DownloadGameUpdate downloads and applies an update for a single game.
+// This is a Wails-bound method that runs the full update pipeline in a
+// background goroutine to avoid blocking the Wails event loop.
+//
+// The function returns immediately; the frontend listens for Wails events
+// to track progress:
+//
+//	game-update:phase       { gameID, phase }
+//	game-update:download-progress { gameID, bytesDownloaded, totalBytes, speedBytesPerSec, percent }
+//	game-update:extract-progress  { gameID, filesExtracted, totalFiles, currentFile }
+//	game-update:error       { gameID, step, message }
+//	game-update:complete    { gameID, title, oldVersion, newVersion }
+func (a *App) DownloadGameUpdate(gameID int64) error {
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if a.ctx == nil {
+		return fmt.Errorf("application context not initialized")
+	}
+
+	go a.runSingleGameUpdate(context.Background(), gameID)
+	return nil
+}
+
+// DownloadAllUpdates downloads and applies updates for all games that have
+// updates available. This is a Wails-bound method that runs the batch update
+// pipeline in a background goroutine. Games are updated sequentially.
+//
+// The function returns immediately; the frontend listens for Wails events
+// to track progress:
+//
+//	game-update:batch-start     { total }
+//	game-update:batch-progress  { current, total, currentGameTitle }
+//	game-update:game-done       { gameID, title, success, error }
+//	game-update:batch-complete  { succeeded, failed, total }
+//	game-update:error           { gameID, step, message }
+func (a *App) DownloadAllUpdates() error {
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if a.ctx == nil {
+		return fmt.Errorf("application context not initialized")
+	}
+
+	go func() {
+		games, err := a.GetUpdatableGames()
+		if err != nil {
+			runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+				"gameID":  0,
+				"step":    "list-updatable",
+				"message": err.Error(),
+			})
+			return
+		}
+
+		runtime.EventsEmit(a.ctx, "game-update:batch-start", map[string]interface{}{
+			"total": len(games),
+		})
+
+		succeeded := 0
+		failed := 0
+
+		for i, g := range games {
+			runtime.EventsEmit(a.ctx, "game-update:batch-progress", map[string]interface{}{
+				"current":          i + 1,
+				"total":            len(games),
+				"currentGameTitle": g.Title,
+			})
+
+			err := a.runSingleGameUpdate(context.Background(), g.ID)
+			if err != nil {
+				failed++
+				runtime.EventsEmit(a.ctx, "game-update:game-done", map[string]interface{}{
+					"gameID":  g.ID,
+					"title":   g.Title,
+					"success": false,
+					"error":   err.Error(),
+				})
+			} else {
+				succeeded++
+				runtime.EventsEmit(a.ctx, "game-update:game-done", map[string]interface{}{
+					"gameID":  g.ID,
+					"title":   g.Title,
+					"success": true,
+				})
+			}
+		}
+
+		runtime.EventsEmit(a.ctx, "game-update:batch-complete", map[string]interface{}{
+			"succeeded": succeeded,
+			"failed":    failed,
+			"total":     len(games),
+		})
+
+		slog.Info("batch update complete", "succeeded", succeeded, "failed", failed, "total", len(games))
+	}()
+
+	return nil
+}
+
+// updateDirSize calculates the total size of a directory and all its contents
+// recursively. It silently skips any files that cannot be read.
+func updateDirSize(dir string) int64 {
+	var total int64
+	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip inaccessible entries
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total
 }

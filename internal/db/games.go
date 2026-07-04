@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+// VirtualPathPrefix is the prefix for games that aren't locally installed.
+// These are placeholders created by the desktop app's AddGameFromF95Zone.
+const VirtualPathPrefix = "/virtual/"
+
 // ---------------------------------------------------------------------------
 // Helper: scan a single row into a Game
 // ---------------------------------------------------------------------------
@@ -717,6 +721,10 @@ func (db *Database) AllGamePaths() ([]GamePathEntry, error) {
 		var dirMTimeStr sql.NullString
 		if err := rows.Scan(&e.Path, &dirMTimeStr); err != nil {
 			return nil, err
+		}
+		// Skip virtual paths (browser-added games not downloaded yet).
+		if strings.HasPrefix(e.Path, VirtualPathPrefix) {
+			continue
 		}
 		if dirMTimeStr.Valid {
 			e.DirMTime = parseTime(dirMTimeStr.String)

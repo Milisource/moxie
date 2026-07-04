@@ -18,6 +18,7 @@
   let games = $state([])
   let statusMsg = $state('Ready')
   let activeView = $state('library')
+  let lastUpdate = $state(0)
   let selectedGameId = $state(null)
   let loading = $state(true)
   let deletedGames = $state([])
@@ -84,7 +85,7 @@
 </script>
 
 <div class="shell">
-  <Sidebar {version} bind:activeView onNavigate={(id) => activeView = id}/>
+  <Sidebar {version} bind:activeView onNavigate={(id) => activeView = id} {lastUpdate}/>
 
   <main class="main">
     {#if activeView === 'detail' && selectedGameId !== null}
@@ -99,7 +100,13 @@
         <p>Configuration coming in a future update.</p>
       </div>
     {:else if activeView === 'updates'}
-      <GameUpdatesView onNavigate={(id) => activeView = id}/>
+      <GameUpdatesView
+        onNavigate={(id) => activeView = id}
+        onUpdateCompleted={() => {
+          refreshGames()
+          lastUpdate++
+        }}
+      />
     {:else if activeView === 'downloads'}
       <DownloadsView />
     {:else if activeView === 'add'}

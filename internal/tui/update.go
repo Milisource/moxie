@@ -34,6 +34,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.detailViewport, _ = m.detailViewport.Update(msg)
 			return m, nil
 		}
+		// Forward mouse events to table in library view for click-to-select and scroll
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
+		return m, cmd
 
 	case tea.KeyMsg:
 		key := msg.String()
@@ -78,6 +82,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleFilterInput(msg, key)
 		}
 
+		// File picker mode — forward all events to the picker.
+		// We intercept esc here so it cleanly cancels the picker without
+		// also triggering the filepicker's own "go up directory" Back binding.
+		if m.showFilePicker {
+			if msg.String() == "esc" {
+				m.showFilePicker = false
+				return m, nil
+			}
+
+			var fpCmd tea.Cmd
+			m.filePicker, fpCmd = m.filePicker.Update(msg)
+
+			// When a directory is selected (enter on a directory)
+			if didSelect, _ := m.filePicker.DidSelectFile(msg); didSelect {
+				selectedPath := m.filePicker.Path
+				m.showFilePicker = false
+				return m, m.scanDirectory(selectedPath)
+			}
+
+			return m, fpCmd
+		}
+
 		switch key {
 		case "q":
 			return m, tea.Quit
@@ -102,6 +128,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.cycleCollectionFilter()
 			return m, tea.Batch(m.loadGames(), m.loadCollections())
+		case "b":
+			m.showFilePicker = true
+			m.filePicker.CurrentDirectory = os.Getenv("HOME")
+			return m, m.filePicker.Init()
 		case "d":
 			cursor := m.table.Cursor()
 			if cursor >= 0 && cursor < len(m.filtered) {
@@ -162,8 +192,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = fmt.Errorf("delete failed: %w", msg.err)
 		} else {
-			m.allGames = msg.games
-			m.rebuildFiltered()
+			// Games will be reloaded by the Sequence continuation
 			m.err = nil
 		}
 		return m, nil
@@ -192,6 +221,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.collections = msg.collections
 		m.cycleCollectionFilter()
 		return m, tea.Batch(m.loadGames())
+
+	case scanCompletedMsg:
+		m.notice = fmt.Sprintf("Scan complete: %d new, %d updated, %d total", msg.saved, msg.updated, msg.total)
+		return m, m.loadGames()
 
 	case startupTipExpiredMsg:
 		m.showStartupTip = false
