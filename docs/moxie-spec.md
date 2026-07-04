@@ -30,6 +30,7 @@ A local game library manager for adult games. Scans directories, detects engines
 | **Browser** | [browser.md](browser.md) | Cross-browser cookie extraction with kooky + SQLite fallback |
 | **Steam** | [steam-package-design.md](steam-package-design.md) | Steam shortcut management, Proton config, artwork, SteamGridDB |
 | **Desktop** | [architecture.md](architecture.md) | Wails v2 + Svelte 5 desktop GUI architecture, component tree, build workflow |
+| **F95Zone Browser** | [f95zone-browser-design.md](f95zone-browser-design.md) | F95Zone latest_alpha page analysis, UX patterns, data model, recommendations for F95Browser.svelte |
 
 ---
 
