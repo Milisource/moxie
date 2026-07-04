@@ -1,0 +1,20 @@
+{
+  "fixed": {
+    "file_version": "0.4.0.0",
+    "product_version": "0.4.0.0",
+    "file_version_number": [0, 4, 0, 0],
+    "product_version_number": [0, 4, 0, 0],
+    "original_filename": "moxie.exe",
+    "internal_name": "moxie",
+    "product_name": "Moxie",
+    "description": "F95Zone Game Library Manager"
+  },
+  "info": {
+    "lang": "en-US",
+    "charset": "UTF-8",
+    "company": "Mili",
+    "copyright": "Copyright (c) 2026",
+    "trademark": "",
+    "comments": ""
+  }
+}
