@@ -201,8 +201,9 @@ A local game library manager for adult games. Scans directories, detects engines
   - [x] Duplicate game detection and resolution
   - [x] Game rename, status change, notes, exe path editing
   - [x] Trash view with restore/purge
-  - [x] Wails production build: `make desktop` (4.6s)
+  - [x] Wails production build: `make desktop` → `dist/moxie-desktop` (4.6s)
   - [x] Wails dev: `make desktop-dev` (hot-reload)
+  - [x] Desktop installer: `make install-desktop` → per-platform app registration (Linux .desktop, macOS .app)
 - [ ] Directory watcher (auto-scan on file changes)
 
 ### Known Limitations
@@ -216,3 +217,5 @@ A local game library manager for adult games. Scans directories, detects engines
 - **Games added via F95Zone browser are virtual** — no local filesystem path until downloaded
 - **Non-UTF-8 filenames** — Latin1/Shift-JIS display incorrectly in the TUI
 - **Commands package** — 130+ `os.Exit(1)` calls in CLI wrappers make the full I/O layer untestable; `RunPlay`, `RunScan`, `RunSync` extracted with remaining handlers following the same pattern
+- **F95Zone browser check blocks old User-Agents** — `/sam/latest_alpha` rejects outdated browsers with a wall; Our scraper and Playwright tests need modern UA strings
+- **Desktop install scripts** — Windows Start Menu shortcut not yet implemented; macOS .app bundle untested on real hardware

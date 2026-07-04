@@ -138,9 +138,10 @@ desktop/
   build/                       Platform build assets (icon, macOS plists, Windows manifests)
 ```
 
-**Build:**
+**Build & Install:**
 ```bash
-make desktop                          # production build
+make desktop                          # production build → dist/moxie-desktop
+make install-desktop                  # register in system app launcher
 cd desktop && wails dev -tags webkit2_41  # hot-reload development
 ```
 
