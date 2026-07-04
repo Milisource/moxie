@@ -313,7 +313,7 @@ func ScrapeAutoWrapper(cookie string, unsafe bool) {
 		client = scraper.NewClient(cookie)
 	}
 
-	if err := RunScrapeAuto(database, client, false, 1); err != nil {
+	if err := RunScrapeAuto(database, client, false, 3); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

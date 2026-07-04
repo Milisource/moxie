@@ -25,5 +25,19 @@ build-windows:
 install: build
 	cp -f dist/$(APP_NAME) /usr/local/bin/$(APP_NAME)
 
+# ── Desktop (Wails) ──────────────────────────────────────────────
+.PHONY: desktop desktop-dev
+
+# Build desktop application with Wails (requires Wails CLI and webview2gtk 4.1 on Linux)
+desktop:
+	cd desktop && wails build -tags webkit2_41 -o ../dist/moxie-desktop
+
+# Run desktop in development mode with hot-reload
+desktop-dev:
+	cd desktop && wails dev -tags webkit2_41
+
 clean:
 	rm -rf dist/
+	rm -rf desktop/build/bin/
+	rm -rf desktop/frontend/dist/
+	rm -rf desktop/frontend/node_modules/

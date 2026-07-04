@@ -280,7 +280,7 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 		if cfg.DoSync {
 			// Phase 1: Auto-associate.
 			fmt.Fprintln(os.Stderr, "\n=== Post-scan: Auto-associating games with F95Zone threads ===")
-			if err := RunScrapeAuto(database, client, false, 1); err != nil {
+			if err := RunScrapeAuto(database, client, false, 3); err != nil {
 				return fmt.Errorf("auto-association: %w", err)
 			}
 
@@ -297,7 +297,7 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 		} else {
 			// Scrape only (no update check).
 			fmt.Fprintln(os.Stderr, "\n=== Post-scan: Auto-associating games with F95Zone threads ===")
-			if err := RunScrapeAuto(database, client, false, 1); err != nil {
+			if err := RunScrapeAuto(database, client, false, 3); err != nil {
 				return fmt.Errorf("auto-association: %w", err)
 			}
 		}

@@ -105,4 +105,4 @@ Download links are classified against 40+ F95Zone-approved file hosts. Links fro
 
 **Structured metadata block parsing over full-text regex** — The structured block (key: value pairs in the Overview section) is more reliable than regex-scraping the entire post body. Release thread authors maintain this section; parsing it with known key normalization gives higher quality version and developer extraction. Full-text regex is the fallback for threads without a structured block.
 
-**Conservative rate limiting** — A full `scrape --auto` run of 80 games takes ~8 minutes. This is intentional. F95Zone runs behind Cloudflare and aggressive scraping gets you blocked. Slow is safe.
+**Conservative rate limiting** — a single `scrape --auto` run of 80 games takes ~8 minutes sequentially. With the `--parallel N` flag in `moxie sync`, multiple workers run concurrently (each with its own rate-limited client), reducing wall-clock time proportionally. Default is sequential (parallel=1); `--parallel 3` typically runs ~3× faster. F95Zone runs behind Cloudflare and aggressive scraping gets you blocked — rate limiting per-worker is still enforced even in parallel mode.

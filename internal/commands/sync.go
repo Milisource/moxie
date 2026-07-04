@@ -189,7 +189,7 @@ func Sync(args []string) {
 	cookieFile := fs.String("cookie-file", "", "Cookie file")
 	unsafe := fs.Bool("unsafe", false, "⚠ Skip rate limiting")
 	force := fs.Bool("force", false, "Force re-check even if checked within 24h")
-	parallel := fs.Int("parallel", 1, "Number of concurrent scrapers (default 1 = sequential)")
+	parallel := fs.Int("parallel", 3, "Number of concurrent scrapers (default 3)")
 	fs.Parse(args)
 
 	cookie := ResolveCookie(*cookieStr, *cookieFile)
@@ -278,10 +278,10 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 		"workers", workers,
 	)
 
-	// Estimate: each game = 1 search + maybe 1 thread read.
-	estSeconds := total * 8
+	// Estimate: each game = 1 search + 1 thread read (~6s average with new delays).
+	estSeconds := total * 6
 	if workers > 1 {
-		estSeconds = total * 8 / workers // parallel throughput
+		estSeconds = total * 6 / workers // parallel throughput
 	}
 	estDuration := time.Duration(estSeconds) * time.Second
 	fmt.Fprintf(os.Stderr, "\n=== Auto-Associating %d games (%s) ===\n", total, mode)

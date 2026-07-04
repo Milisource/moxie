@@ -20,14 +20,14 @@ const (
 	// Since we read cookies from Firefox via kooky, use a Firefox UA.
 	// NOTE: platformUserAgent() provides a platform-appropriate Firefox UA;
 	// do not use a constant string here.
-	defaultTimeout   = 10 * time.Second
-	minDelay         = 3 * time.Second      // minimum between requests
-	maxJitter        = 2 * time.Second      // random extra delay
-	searchMinDelay   = 5 * time.Second      // search is more expensive, be gentler
-	cooldownInterval = 25                   // pause longer every N requests
-	cooldownDuration = 15 * time.Second     // length of cooldown pause
-	backoffMultiplier = 2                   // multiply delay on rate limit
-	maxBackoff       = 2 * time.Minute      // cap exponential backoff
+	defaultTimeout    = 10 * time.Second
+	minDelay          = 1500 * time.Millisecond // minimum between thread requests
+	maxJitter         = 1500 * time.Millisecond // random extra delay
+	searchMinDelay    = 3 * time.Second         // search is more expensive, be gentler
+	cooldownInterval  = 35                      // pause longer every N requests
+	cooldownDuration  = 10 * time.Second        // length of cooldown pause
+	backoffMultiplier = 2                       // multiply delay on rate limit
+	maxBackoff        = 2 * time.Minute         // cap exponential backoff
 )
 
 // platformUserAgent returns a Firefox User-Agent string appropriate for the
@@ -61,6 +61,13 @@ type Client struct {
 	lastRequest time.Time
 	delay       time.Duration // current delay between requests (adapts)
 	reqCount    int           // requests since last cooldown
+	csrfToken   string        // _xfToken extracted from xf_csrf cookie
+}
+
+// xfCSRFToken returns the XenForo CSRF token for authenticated POST requests.
+// Returns empty string if no xf_csrf cookie was found in the client config.
+func (c *Client) xfCSRFToken() string {
+	return c.csrfToken
 }
 
 // NewClient creates a scraper client with the given cookie string.
@@ -97,7 +104,8 @@ func NewClientWithHTTP(cookieStr string, httpClient *http.Client) *Client {
 			CheckRedirect: httpClient.CheckRedirect,
 			Jar:           httpClient.Jar,
 		},
-		delay: delay,
+		delay:     delay,
+		csrfToken: extractCSRFToken(cookieStr),
 	}
 }
 
@@ -114,8 +122,45 @@ func newClient(cookieStr string, unsafe bool) *Client {
 				cookieValue: strings.TrimSpace(cookieStr),
 			},
 		},
-		delay: delay,
+		delay:     delay,
+		csrfToken: extractCSRFToken(cookieStr),
 	}
+}
+
+// extractCSRFToken parses xf_csrf from a cookie string.
+// Supports both Netscape cookie file format (tab-separated) and
+// HTTP Cookie header format (semicolon-separated key=value pairs).
+func extractCSRFToken(cookieStr string) string {
+	s := strings.TrimSpace(cookieStr)
+	if s == "" {
+		return ""
+	}
+
+	// Try Netscape format: tab-separated lines with 7 fields.
+	// Field 6 (0-indexed) is the cookie value, field 5 is the name.
+	// Example:
+	//   f95zone.to	FALSE	/	TRUE	0	xf_csrf	RHqlFZ43aEN40ocI
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) >= 7 && fields[5] == "xf_csrf" {
+			return strings.TrimSpace(fields[6])
+		}
+	}
+
+	// Fall back to Cookie header format: semicolon-separated key=value pairs.
+	for _, pair := range strings.Split(s, ";") {
+		pair = strings.TrimSpace(pair)
+		if strings.HasPrefix(pair, "xf_csrf=") {
+			val := strings.TrimPrefix(pair, "xf_csrf=")
+			return strings.TrimSpace(val)
+		}
+	}
+
+	return ""
 }
 
 // Delay returns the current inter-request delay.

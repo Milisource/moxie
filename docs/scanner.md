@@ -2,7 +2,7 @@
 
 ## What
 
-The scanner walks a directory tree, identifies which subdirectories are games, detects the engine for each one, and computes total size and executable path. It lives in `internal/scanner/scanner.go` (one file, ~245 lines) and calls into `internal/engine/detector.go` for engine identification.
+The scanner walks a directory tree, identifies which subdirectories are games, detects the engine for each one, and computes total size and executable path. It lives in `internal/scanner/scanner.go` (one file, ~250 lines) and calls into `internal/engine/detector.go` for engine identification.
 
 ## How
 
@@ -19,6 +19,25 @@ The scanner walks a directory tree, identifies which subdirectories are games, d
 4. **Check if it's a game root** — `looksLikeGameRoot(path)` via `hasGameMarkers(dir)` checks for the presence of executables (`.exe`, `.sh`, `.AppImage`, `.x86_64`, `.x86`) or engine markers (`renpy/`, `www/`, `_Data/`, `package.json`, `.rpyc`, `.rpa`, `Game.rgss*`).
 
 5. **Check for category directories** — if the directory name matches a known engine (`Unity`, `Ren'Py`, `RPGM`, `HTML`, etc.) **and** it contains subdirectories that look like games, it's treated as a category folder (not a game itself). The walk continues into its children.
+
+### Engine Detection
+
+On the detected game directory, `engine.Detect(dir)` is called. It reads the directory listing once and checks profiles in priority order. The profiles are a combination of:
+- **Built-in profiles** — 14 canonical engines + 3 community engines (see engine table below)
+- **Custom profiles** — loaded from `~/.config/moxie/engines/*.json` drop-in files, allowing users to add patterns for niche engines or override built-in profiles by name
+
+Custom profiles are loaded from `config.EngineProfilesDir()` (which returns `~/.config/moxie/engines/`). Each JSON file defines:
+```json
+{
+  "name": "MyEngine",
+  "engine": "Unity",         // maps to one of the 15 canonical engine values
+  "confidence": 80,           // 0-100, divided by 100 for internal usage
+  "subdirs": ["game"],        // required subdirectories
+  "filenames": ["game.exe"],  // required files
+  "extensions": [".exe"]      // required extensions
+}
+```
+At least one detection criterion is required. Custom profiles can override built-in profiles by name (e.g., providing a higher-confidence Unity detection pattern).
 
 ### Version Extraction
 
@@ -47,9 +66,14 @@ When the directory name yields no version, the scanner escalates through additio
 - Trailing build letters are kept in the extracted version (`v0.7.7i` → `"0.7.7i"`)
 - No semver parsing — `NormalizeVersion()` in the sync code handles comparison
 
-### Engine Detection
+### Progress Reporting
 
-On the detected game directory, `engine.Detect(dir)` is called. It reads the directory listing once and checks 20+ profiles in priority order (see table below). Each profile specifies files, subdirectories, or extensions that must be present. First match wins.
+`ScanFiltered(root, skipPaths, progressFn)` accepts an optional `ScanProgressFunc` callback:
+```go
+type ScanProgressFunc func(dirsExamined, gamesFound int)
+```
+
+The CLI calls this to display live progress on stderr using `\r` (carriage return) for in-place updates, showing directories examined and games found so far.
 
 ### Size Calculation
 
@@ -103,6 +127,10 @@ PE/ELF binary scanning would be more precise but is 10x more complex. Pattern ma
 | Others | Godot | `.pck` files | 0.85 |
 | | Electron / nw.js | `resources.pak` + `package.json` | 0.80 |
 | | M.U.G.E.N. | 3+ of `{chars, data, stages, font, sound}` dirs | 0.92 |
+
+### Custom Profiles
+
+Users can add custom engine detection patterns by placing JSON files in `~/.config/moxie/engines/`. Each file can define new profiles or override built-in ones. Custom profiles are validated on load (name required, at least one detection criterion, confidence 0-100).
 
 ### Known Limitations
 

@@ -56,6 +56,12 @@ func EngineProfilesDir() string {
 	return filepath.Join(ConfigDir(), "engines")
 }
 
+// CoverDir returns the directory where cover art images are cached on disk.
+// Cached cover files are named by gameID (no extension) and stored here.
+func CoverDir() string {
+	return filepath.Join(ConfigDir(), "covers")
+}
+
 // Config holds typed configuration values alongside a generic key-value store
 // for backward compatibility with arbitrary string-based keys.
 type Config struct {

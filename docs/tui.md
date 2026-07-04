@@ -2,7 +2,7 @@
 
 ## What
 
-The TUI is an interactive terminal application for browsing, filtering, and managing your game library. Built with Bubble Tea (Go port of the Elm architecture), it presents a sortable table of games with a detail view, engine/status filters, inline editing, and keyboard-only navigation.
+The TUI is an interactive terminal application for browsing, filtering, and managing your game library. Built with Bubble Tea (Go port of the Elm architecture), it presents a sortable table of games with a detail view, engine/status/collection filters, inline editing, download progress, and keyboard-only navigation.
 
 ## How
 
@@ -16,43 +16,67 @@ Model ←─── Update ←─── View
   └───── messages ──────┘
 ```
 
-- **Model** — holds all state: the game list, table component, filter inputs, cursor position, view mode, and scraped metadata cache
-- **Update** — receives `tea.Msg` (key presses, async results, window resize events) and returns a new model plus optional commands
+- **Model** — holds all state: the game list, table component, filter inputs, cursor position, view mode, scraped metadata cache, active download tracking, and collection filter state
+- **Update** — receives `tea.Msg` (key presses, async results, window resize events, spinner ticks) and returns a new model plus optional commands
 - **View** — renders the model as a styled string for terminal output
 
-### File Structure (9 files)
+### File Structure (12 files)
 
 | File | Responsibility |
 |---|---|
 | `tui.go` | Entry point — opens DB, creates `tea.NewProgram` with alt screen |
-| `model.go` | Model struct, Bubble Tea columns, sort fields, Init method, active download tracking |
-| `update.go` | Message handler, key bindings, filter/sort cycling, CRUD delegation |
-| `library.go` | Library list view rendering (title bar, status line, table, footer) |
-| `detail.go` | Game detail view rendering (info box, actions, edit/url overlays, download progress) |
-| `help.go` | Help overlay with keyboard shortcut reference |
-| `styles.go` | Lip Gloss style palette, engine color map, status color map |
-| `helpers.go` | Filter/sort logic, executable finder, `launchExe`, size formatting |
-| `commands.go` | Tea commands for async DB operations (loadGames, loadMeta, startDownload, pollDownloads) |
+| `model.go` | Model struct, Bubble Tea columns, sort fields, Init method, active download tracking, collection filter state, startup tip state, spinner |
+| `update.go` | Message handler, key bindings, filter/sort/collection cycling, CRUD delegation, spinner ticks |
+| `library.go` | Library list view rendering (title bar, status line with spinner, dynamic footer with hints) |
+| `detail.go` | Game detail view rendering (sectioned layout, status selector, download progress, edit/url/exe overlays) |
+| `help.go` | Help overlay with grouped keyboard shortcut reference |
+| `styles.go` | Lip Gloss style palette, engine color map, status color map, section header styles, tag styles |
+| `helpers.go` | Filter/sort logic, table row building, size formatting, delegates to `internal/launcher/` for executable listing |
+| `commands.go` | Tea commands for async DB operations (loadGames, loadMeta, startDownload, pollDownloads, loadCollections) |
+| `keys.go` | Structured key binding definitions with help text |
 
 ### Views
 
-The TUI has three visual modes, switched via the `viewMode` field in the model:
+The TUI has four visual modes, switched via the `viewMode` field in the model:
 
-1. **Library view** — the default. Shows a sortable table of all games with a status bar (`12/82 games | Engine: All | Status: Active | Sort: Title ↑ | Filter: —`), a filter input overlay (`/` to activate), and a footer with key hints.
+1. **Library view** — the default. Shows a sortable table of all games with a startup tip (auto-dismisses after 6s), a status bar (`12/82 games | Unity | Active | ID ↑ | Filter: — | Collections: RPG`), a filter input overlay (`/` to activate), and a dynamic footer with key hints.
 
-2. **Detail view** — shows full game info when you press Enter on a row: title, engine, version (with update indicator if a newer version exists), status, path, size, dates, F95Zone URL, tags, developer, overview excerpt, and last-scraped date. Action keys are displayed in the header.
+2. **Detail view** — shows full game info when you press Enter on a row. Organized in sections:
+   - **Core Info**: Title, Version (with `🆕` update indicator if newer version exists), Engine (color-coded), Status (with interactive selector showing all 5 statuses as `[a] active [c] completed ...`)
+   - **F95Zone**: URL (with copy hint), Developer, Cover URL (with copy hint), Tags (rendered as styled chips), Overview (expanded text), Last Scraped date
+   - **Metadata**: Path, Exe, Size, Created/Updated dates
+   Action keys are displayed in the header.
 
-3. **Help overlay** — a centered box listing all keyboard shortcuts, dismissed with any key.
+3. **Help overlay** — a centered box listing all keyboard shortcuts grouped by category (Library Navigation, Global, Detail Actions), dismissed with any key.
+
+4. **Startup tip** — a brief one-line tip that auto-dismisses after 6 seconds on first launch.
 
 ### Filtering and Sorting
 
 - **Title filter** — `/` activates a real-time text input. Games are filtered by substring match on each keystroke (no Enter needed). `Esc` clears and exits.
 - **Engine filter** — `Ctrl+E` cycles through a 15-element array: `""` (all) → Unity → RenPy → RPGM → ... → WolfRPG.
 - **Status filter** — `Ctrl+S` cycles through: `""` (all) → active → completed → abandoned → on_hold → unknown.
+- **Collection filter** — `c` cycles through the user's collections (loaded from DB). Status bar shows active collection name.
 - **Sort cycling** — `s` cycles ID → Title → Engine → Version (desc). The active sort field and direction appear in the status bar as `Title ↑` or `Version ↓`.
+- **Reverse sort** — `r` reverses the current sort direction.
 - **Engine colors** — each engine type has a distinct Lip Gloss color (Unity = cyan, RenPy = magenta, RPGM = green, etc.). Applied per-row via `engineColor(e)`.
 - **Update indicators** — a `🔄` marker appears next to game titles where both `latest_version` and `version` are known and differ. If the local version is empty (no version found in the directory name), no indicator is shown — an unknown local version cannot confirm an update.
-- **Unknown versions** — games without a detected version show the scraped `LatestVersion` from F95Zone when available, falling back to `"unknown"` only when neither source has a version. This applies in the library table, detail view, and `moxie list` output.
+- **Unknown versions** — games without a detected version show the scraped `LatestVersion` from F95Zone when available, falling back to `"unknown"` only when neither source has a version.
+
+### Detail View Actions
+
+| Key | Action |
+|-----|--------|
+| `Esc` / `←` / `⌫` | Back to library |
+| `e` | Edit title (shows text input pre-filled with current title) |
+| `x` | Edit executable path |
+| `s` | Cycle status (unknown → active → completed → abandoned → on_hold) |
+| `a` / `c` / `b` / `h` / `u` | Direct status selection (active / completed / abandoned / on_hold / unknown) |
+| `d` | Delete game (with confirmation) |
+| `o` | Show game path |
+| `g` | Start download flow |
+| `Ctrl+u` | Edit F95Zone URL |
+| `p` | Launch game |
 
 ### Downloads
 
@@ -86,7 +110,7 @@ The `activeDownload` struct carries a `stepMsg` string that provides real-time s
 | **Merging** | `"Merging into game directory..."` (accent) |
 | **All failed** | `"✗ All links failed"` (red) with per-host error summary and `moxie install` hint |
 
-The TUI polls every 500ms (`pollDownloads()`) to check active download progress and trigger re-renders. This is implemented via `tea.Tick` and the `downloadProgressMsg` message type.
+The TUI polls every 500ms (`pollDownloads()`) to check active download progress and trigger re-renders. A spinner animates in the status bar while downloads are active.
 
 #### Post-Download Pipeline
 
@@ -100,18 +124,27 @@ All steps are reported via `stepMsg` updates visible in the detail view.
 
 ### Overlays
 
-The detail view supports four overlay modes:
+The detail view supports overlay modes for editing. Each has a dedicated handler:
 
 - **Delete confirmation** — `d` shows `Delete 'Summer's Gone'? (y/N)` with red border styling
 - **Title editing** — `e` shows a text input pre-filled with the current title
-- **URL assignment** — `u` shows a text input for the F95Zone thread URL
+- **Executable editing** — `x` shows a text input for the exe path
+- **URL assignment** — `Ctrl+u` shows a text input for the F95Zone thread URL
 - **Play hint** — `p` shows the game path if no executable is found, or launches the game
 
-Overlays stack on top of the current view. Each has a dedicated handler (`handleDeleteConfirm`, `handleEditKey`, `handleUrlInput`).
+Overlays stack on top of the current view. Each has a dedicated handler (`handleDeleteConfirm`, `handleEditKey`, `handleExeKey`, `handleUrlInput`).
 
 ### Executable Launching
 
-The TUI's `p` key calls `findPlayableExe()` (same logic as the `play` CLI command but in-package). On Linux: prefers AppImage → native binaries (`.x86_64`, `.sh`) → `.exe` via Wine. The largest executable wins (game engines produce bigger binaries than launcher utilities).
+The TUI's `p` key calls into `internal/launcher/` — the same shared package used by the `moxie play` CLI command. This guarantees identical launch behavior from both entry points:
+- macOS: `.app` bundle detection + Mach-O native binary detection
+- Linux: prefers AppImage → native binaries (`.x86_64`, `.sh`) → `.exe` via Wine
+- CrossOver path detection on macOS
+- Scoring-based executable selection (skips runtime engines, launchers, crash handlers)
+
+### Spinner
+
+A Bubble Tea spinner (Dot style, purple) appears in the library view status bar when downloads are in progress. Controlled by `spinnerActive` / `spinnerInactive` model fields.
 
 ## Why
 

@@ -29,6 +29,7 @@ A local game library manager for adult games. Scans directories, detects engines
 | **Database** | [database.md](database.md) | SQLite schema, version tracking, migration strategy |
 | **Browser** | [browser.md](browser.md) | Cross-browser cookie extraction with kooky + SQLite fallback |
 | **Steam** | [steam-package-design.md](steam-package-design.md) | Steam shortcut management, Proton config, artwork, SteamGridDB |
+| **Desktop** | [architecture.md](architecture.md) | Wails v2 + Svelte 5 desktop GUI architecture, component tree, build workflow |
 
 ---
 
@@ -182,8 +183,26 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] VDF dependency replaced — vendored binary VDF parser, timestamped backups
 - [x] Association cache permissions — `0600` on `associations.json`
 - [x] Cover image download and local caching
+- [x] Wails Desktop App — Alpha (F95-1132)
+  - [x] Wails v2 + Svelte 5 scaffold (desktop/ + frontend/)
+  - [x] App struct binding layer wrapping all internal/ packages
+  - [x] Game list view with search, engine/status filters, sortable columns, context menu
+  - [x] Game detail view with cover art, metadata, inline editing, sync, download links
+  - [x] Scan directory dialog with saved paths and live Wails event progress
+  - [x] F95Zone sync dialog with per-game progress and completion summary
+  - [x] Dark/light mode (system preference auto-detect)
+  - [x] Cover art thumbnails in game list (lazy-loaded, local caching via data URIs)
+  - [x] Game version update view with per-game and batch update
+  - [x] F95Zone game browser with search, preview panel, add-to-library
+  - [x] Download management view with expandable game cards, open-in-browser
+  - [x] App self-update checker with download and apply
+  - [x] Manual add game dialog with engine detection
+  - [x] Duplicate game detection and resolution
+  - [x] Game rename, status change, notes, exe path editing
+  - [x] Trash view with restore/purge
+  - [x] Wails production build: `make desktop` (4.6s)
+  - [x] Wails dev: `make desktop-dev` (hot-reload)
 - [ ] Directory watcher (auto-scan on file changes)
-- [ ] Wails desktop GUI
 
 ### Known Limitations
 
@@ -193,6 +212,6 @@ A local game library manager for adult games. Scans directories, detects engines
 - **False positives** — tool/editor directories and generic folder names may be misdetected as games
 - **No archive scanning** — `.zip`/`.rar`/`.7z` at scan roots are not inspected (but can be extracted after download)
 - **No content-based dedup** — same game in multiple paths creates duplicate records
-- **No cover caching** — cover URLs are stored but images are not downloaded
+- **Games added via F95Zone browser are virtual** — no local filesystem path until downloaded
 - **Non-UTF-8 filenames** — Latin1/Shift-JIS display incorrectly in the TUI
 - **Commands package** — 130+ `os.Exit(1)` calls in CLI wrappers make the full I/O layer untestable; `RunPlay`, `RunScan`, `RunSync` extracted with remaining handlers following the same pattern

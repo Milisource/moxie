@@ -188,10 +188,10 @@ func IsSteamRunning() (bool, error)
 
 ### 1.4 `shortcuts.go` — shortcuts.vdf Management
 
+Binary VDF parsing is **vendored** in `vdf.go` (replacing the unmaintained `github.com/wakeful-cloud/vdf`). The vendored code uses a custom binary VDF reader/writer (`readVdf`, `writeVdf`, `vdfMap` type) providing the same functionality without external dependency risk.
+
 ```go
 package steam
-
-import "github.com/wakeful-cloud/vdf"
 
 // ReadShortcuts reads and parses the binary VDF shortcuts file at the given path.
 // Returns a parsed ShortcutFile or an error if the file is missing, corrupt,
@@ -572,7 +572,7 @@ func extractSteamAppID(storeLink string) (int, bool) {
 
 | Module | Version | Purpose | File |
 |---|---|---|---|
-| `github.com/wakeful-cloud/vdf` | latest stable | Binary VDF read/write for shortcuts.vdf | `shortcuts.go` |
+| `github.com/wakeful-cloud/vdf` ~~latest stable~~ **VENDORED** | Binary VDF read/write for shortcuts.vdf — replaced with vendored `internal/steam/vdf.go` due to unmaintained dependency (zero tagged releases since 2021) | `vdf.go` (vendored) |
 | `github.com/andygrunwald/vdf` | latest stable | Text VDF parse/write for config.vdf (Proton) | `proton.go` |
 | `golang.org/x/image` | latest | High-quality image resizing (CatmullRom scaler) | `grid.go` |
 

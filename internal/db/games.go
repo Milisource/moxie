@@ -515,6 +515,38 @@ func (db *Database) ListGameSummaries(engine, status string) ([]GameSummary, err
 	return summaries, rows.Err()
 }
 
+// ListDuplicateCandidates returns minimal game data for duplicate detection.
+// Only fetches the 8 columns needed — avoids the 22-column full scan.
+func (db *Database) ListDuplicateCandidates() ([]GameDupSummary, error) {
+	rows, err := db.conn.Query(`
+		SELECT id, title, engine, path, exe_path, version, status, size_bytes
+		FROM games
+		WHERE path NOT LIKE '%.old'
+		  AND deleted_at IS NULL
+		ORDER BY title COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []GameDupSummary
+	for rows.Next() {
+		var s GameDupSummary
+		var exePath, version sql.NullString
+		if err := rows.Scan(&s.ID, &s.Title, &s.Engine, &s.Path, &exePath, &version, &s.Status, &s.SizeBytes); err != nil {
+			return nil, err
+		}
+		if exePath.Valid {
+			s.ExePath = exePath.String
+		}
+		if version.Valid {
+			s.Version = version.String
+		}
+		results = append(results, s)
+	}
+	return results, rows.Err()
+}
+
 // ---------------------------------------------------------------------------
 // Dedicated query methods
 // ---------------------------------------------------------------------------

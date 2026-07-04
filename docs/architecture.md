@@ -16,10 +16,11 @@ moxie is a local game library manager. It scans directories for installed games,
 ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
 │ scanner  │ │ engine   │ │ db       │ │ scraper  │ │ tui      │ │ steam    │
 │ WalkDir  │ │ detect   │ │ SQLite   │ │ HTTP     │ │ Bubble   │ │ shortcuts│
-│ size     │ │ profiles │ │ CRUD     │ │ parse    │ │ Tea      │ │ VDF      │
-│ find exe │ │ tags     │ │ 6 files  │ │ apply    │ │          │ │ SGDB API │
-│ ver extr │ │ match    │ │ migrate  │ │ search   │ │          │ │ appid    │
-└────┬─────┘ └────┬─────┘ └──────────┘ └────┬─────┘ └──────────┘ │ artwork  │
+│ size     │ │ profiles │ │ CRUD     │ │ parse    │ │ Tea      │ │ vendored │
+│ find exe │ │ tags     │ │ 8 files  │ │ apply    │ │ 12 files │ │ appid    │
+│ ver extr │ │ match    │ │ FTS5     │ │ search   │ │ spinner  │ │ artwork  │
+│ progress │ │ custom   │ │ soft del │ │ nongame  │ │ launcher │ │ proton   │
+└────┬─────┘ └────┬─────┘ └──────────┘ └────┬─────┘ └──────────┘ └──────────┘
      │            │                          │                    └──────────┘
      └─────┬──────┘                          │
            │                                 │
@@ -38,25 +39,30 @@ package main          internal/util/          internal/commands/
                 sync_check.go    (RunUpdateCheck, CheckUpdates)
                 sync_game.go     (SyncGameLogic)
                 cleanup.go       (engine mismatch, refresh-versions)
-                play.go          (resolveExecutable, launch, fuzzy name search)
-                install.go       (install from archive → extract → merge → DB update)
-                steam.go         (Steam dispatcher)
-                                                steam_add.go     (steam add)
-                                                steam_remove.go  (steam remove)
-                                                steam_list.go    (steam list, proton-list)
-                                                steam_proton.go  (proton-set)
-                                                steam_artwork.go (fix-artwork, SGDB helpers)
-                                                download.go      (download)
-                                                download_links.go(link selection, dead-link check)
-                                                download_ui.go   (progress bars, formatting)
-                                                rename.go        (rename, FilesystemSafe)
-                                                config.go        (config get/set/show)
-                                                install.go       (install from archive)
-                                                update.go        (self-update)
-                                                dbutil.go        (OpenDB)
+                 play.go          (RunPlay, launch, fuzzy name search)
+                 install.go       (install from archive → extract → merge → DB update)
+                 steam.go         (Steam dispatcher)
+                                                 steam_add.go     (steam add)
+                                                 steam_remove.go  (steam remove)
+                                                 steam_list.go    (steam list, proton-list)
+                                                 steam_proton.go  (proton-set)
+                                                 steam_artwork.go (fix-artwork, SGDB helpers)
+                                                 download.go      (download)
+                                                 download_links.go(link selection, dead-link check)
+                                                 download_ui.go   (progress bars, formatting)
+                                                 rename.go        (rename, FilesystemSafe)
+                                                 config.go        (config get/set/show)
+                                                 install.go       (install from archive)
+                                                 update.go        (self-update)
+                                                 dbutil.go        (OpenDB)
+                                                 collections.go   (collections add/list/add-game)
+                                                 set_status.go    (set-status --engine/--all)
+                                                 export.go        (export --output file.json)
+                                                 import.go        (import <file.json>)
+                                                 history.go       (history [count])
 ```
 
-`config.json` is stored in the platform-standard config directory — `~/.config/moxie/` on Linux. `internal/util/` provides config I/O and shared formatters; `internal/commands/` contains all CLI command handlers across 22 domain-grouped files.
+`config.json` is stored in the platform-standard config directory — `~/.config/moxie/` on Linux. `internal/util/` provides config I/O and shared formatters; `internal/commands/` contains all CLI command handlers across 27 domain-grouped files.
 
 Additional shared packages:
 
@@ -64,9 +70,11 @@ Additional shared packages:
 
 - **`internal/updater/`** — `Merge()` copies files from a downloaded+extracted archive into the game directory, preserving user saves, mods, and configs based on engine-aware glob patterns (14 engines + default fallback). Supports optional `.old` backup with automatic restore of preserved files.
 
+- **`internal/launcher/`** — Shared game launching logic used by both the CLI (`moxie play`) and the TUI (`p` key). Contains `ResolveExecutable()` (scoring-based exe selection with macOS .app/Mach-O detection), `Launch()` (platform-aware process spawning with Wine/CrossOver), and `detect.go` (platform detection helpers). Extracted from duplicated code that previously lived separately in `commands/play.go` and `tui/helpers.go`.
+
 ### Data Flow Through the System
 
-1. **Scan** — `scanner.Scan()` walks a directory tree using `filepath.WalkDir`. For each directory that looks like a game root (has executables or engine markers), it calls into `engine.Detect()` which checks 20+ detection profiles in priority order. Results: `DetectedGame` structs with title, path, engine, exe, and byte size.
+1. **Scan** — `scanner.Scan()` walks a directory tree using `filepath.WalkDir`. For each directory that looks like a game root (has executables or engine markers), it calls into `engine.Detect()` which checks built-in + custom profiles (loaded from `~/.config/moxie/engines/*.json`) in priority order. Results: `DetectedGame` structs with title, path, engine, exe, and byte size. Live progress is reported via `ScanProgressFunc` callback.
 
 2. **Store** — `db.InsertGame()` writes a `Game` row to SQLite. The game's path is unique (duplicate paths are skipped on subsequent scans). Title is sanitized via `scraper.SanitizeTitle()` before saving.
 
@@ -100,6 +108,40 @@ File/folder patterns (`UnityPlayer.dll`, `renpy/`, `Game.ini`) are 95%+ reliable
 
 The DB is SQLite — single file, no server process. The tool opens it, reads/writes, and closes. No background sync, no auto-watcher, no daemon lifecycle. This keeps the binary small, the startup instant, and the mental model simple.
 
-## Future
+## Desktop GUI (Wails)
 
-The planned Wails desktop path keeps all `internal/` packages unchanged. A new `internal/desktop/` entry point and a Svelte/React `frontend/` directory would add cover image display, native dialogs, system tray, and NSFW blur — all on top of the same scan/scrape/store pipeline.
+A Wails v2 + Svelte 5 desktop GUI ships alongside the CLI, sharing the same `internal/` packages and `games.db`.
+
+```
+main.go                        CLI entry point (unchanged)
+desktop/
+  main.go                      Wails entry: wails.Run() with 1200×800 window
+  app.go                       App struct with 45+ methods bound to frontend (Go ~2100 LOC)
+  wails.json                   Wails project configuration
+  frontend/                    Svelte 5 app (Vite 6, embedded via //go:embed)
+    src/
+      App.svelte               Root layout with view routing
+      lib/
+        Sidebar.svelte         Navigation sidebar (Library, Media, Management)
+        GameList.svelte        Sortable game table with search/engine/status filters, cover thumbnails, context menu
+        GameDetail.svelte      Cover art, metadata, overview, inline editing, sync, download links
+        GameUpdatesView.svelte Game version updates list with per-game and batch update
+        F95Browser.svelte      F95Zone game browser with search, preview panel, add-to-library
+        DownloadsView.svelte   Download management with expandable game cards, open-in-browser
+        ScanDialog.svelte      Saved paths, scan with live progress from Wails Events
+        SyncDialog.svelte      F95Zone sync with per-game progress, association, update check
+        UpdateDialog.svelte    App self-update checker with download and apply
+        AddGameDialog.svelte   Manual add game with directory picker, engine detection, fields
+        DedupDialog.svelte     Duplicate game detection and resolution
+        StatusBar.svelte       Game count + status messages
+      app.css                  CSS custom properties with dark/light auto-detection
+  build/                       Platform build assets (icon, macOS plists, Windows manifests)
+```
+
+**Build:**
+```bash
+make desktop                          # production build
+cd desktop && wails dev -tags webkit2_41  # hot-reload development
+```
+
+**Key design:** Every bound Go method delegates to an existing `internal/` package. The frontend is purely a view layer — all business logic stays in the shared Go backend. The Svelte frontend communicates with Go exclusively through auto-generated `wailsjs/` bindings (no REST, no IPC).

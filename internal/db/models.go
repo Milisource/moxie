@@ -18,6 +18,19 @@ type GameSummary struct {
 	Path          string `json:"path"`
 }
 
+// GameDupSummary is a lightweight row for duplicate detection.
+// Only includes fields needed to identify and display duplicates.
+type GameDupSummary struct {
+	ID        int64  `json:"id"`
+	Title     string `json:"title"`
+	Engine    string `json:"engine"`
+	Path      string `json:"path"`
+	ExePath   string `json:"exe_path,omitempty"`
+	Version   string `json:"version,omitempty"`
+	Status    string `json:"status"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
 // Game represents a game in the user's local library.
 type Game struct {
 	ID          int64             `json:"id"`
