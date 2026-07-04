@@ -1,6 +1,7 @@
 <script>
   import {onMount} from 'svelte'
   import {FindDuplicateGames, RemoveGame, RestoreGame, GetGames} from '../../wailsjs/go/main/App'
+  import {engineColor} from './engineColors.js'
 
   let {
     onDedupDone = () => {},
@@ -69,18 +70,8 @@
     resolving = {...resolving, ...clean}
   }
 
-  function engineColor(engine) {
-    const map = {
-      "ren'py": '#ff6b9d', 'unity': '#6b9dff', 'rpg maker': '#9d6bff',
-      'rpgmakermv': '#9d6bff', 'rpgmakermz': '#9d6bff',
-      'html': '#ff9d6b', 'wolf rpg': '#6bff9d', 'flash': '#ff6b6b',
-      'unreal': '#6bfffb', 'godot': '#9dff6b',
-    }
-    for (const [key, c] of Object.entries(map)) {
-      if (engine?.toLowerCase().includes(key)) return c
-    }
-    return '#9090a0'
-  }
+  // ── Engine colors — imported from shared module ───────────────
+  // See engineColors.js for the canonical palette matching TUI styles
 
   function statusLabel(s) {
     const labels = {active: 'Active', completed: 'Completed', abandoned: 'Abandoned', on_hold: 'On Hold', unknown: 'Unknown'}

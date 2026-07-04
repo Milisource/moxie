@@ -1,5 +1,6 @@
 <script>
   import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCachedCover} from '../../wailsjs/go/main/App'
+  import {engineColor} from './engineColors.js'
 
   let {
     games = [],
@@ -142,28 +143,8 @@
     debounceTimer = setTimeout(() => doSearch(searchQuery), 300)
   }
 
-  // ── Engine colors (matches TUI) ───────────────────────────────
-  function engineColor(engine) {
-    const map = {
-      'ren\'py': '#ff6b9d',
-      'unity': '#6b9dff',
-      'rpg maker': '#9d6bff',
-      'rpgmakermv': '#9d6bff',
-      'rpgmakermz': '#9d6bff',
-      'rpgmakervxace': '#9d6bff',
-      'html': '#ff9d6b',
-      'wolf rpg': '#6bff9d',
-      'flash': '#ff6b6b',
-      'unreal': '#6bfffb',
-      'godot': '#9dff6b',
-      'electron': '#6bc9ff',
-      'nw.js': '#6bc9ff',
-    }
-    for (const [key, color] of Object.entries(map)) {
-      if (engine?.toLowerCase().includes(key)) return color
-    }
-    return '#9090a0'
-  }
+  // ── Engine colors — imported from shared module ───────────────
+  // See engineColors.js for the canonical palette matching TUI styles
 
   function statusLabel(s) {
     const labels = {

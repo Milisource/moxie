@@ -1,6 +1,7 @@
 <script>
   import {onMount} from 'svelte'
   import {GetGameDetail, RemoveGame, SetGameStatus, RenameGame, SyncSingleGame, EditGame} from '../../wailsjs/go/main/App'
+  import {engineColor} from './engineColors.js'
 
   let {gameId = null, onBack = () => {}, onUpdate = () => {}} = $props()
 
@@ -39,18 +40,8 @@
     return labels[s] || s || 'Unknown'
   }
 
-  function engineColor(engine) {
-    const map = {
-      "ren'py": '#ff6b9d', 'unity': '#6b9dff', 'rpg maker': '#9d6bff',
-      'rpgmakermv': '#9d6bff', 'rpgmakermz': '#9d6bff',
-      'html': '#ff9d6b', 'wolf rpg': '#6bff9d', 'flash': '#ff6b6b',
-      'unreal': '#6bfffb', 'godot': '#9dff6b',
-    }
-    for (const [key, c] of Object.entries(map)) {
-      if (engine?.toLowerCase().includes(key)) return c
-    }
-    return '#9090a0'
-  }
+  // ── Engine colors — imported from shared module ───────────────
+  // See engineColors.js for the canonical palette matching TUI styles
 
   function formatDuration(s) {
     if (!s) return ''

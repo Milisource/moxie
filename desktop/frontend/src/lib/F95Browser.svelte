@@ -6,6 +6,7 @@
     GetThreadPreview,
     AddGameFromF95Zone,
   } from '../../wailsjs/go/main/App'
+  import {engineColor, engineStyle} from './engineColors.js'
 
   // ── State ──────────────────────────────────────────────────
   let query = $state('')
@@ -42,8 +43,7 @@
   // ── Derived ─────────────────────────────────────────────────
   let canSearch = $derived(query.trim().length >= 2 && cookieStatus === 'available' && !loading)
 
-  // Engine display colors (matches existing patterns in the app)
-  // (see getEngineStyle() function below)
+  // Engine display colors — imported from engineColors.js
 
   // ── Search with debounce ───────────────────────────────────
   function handleSearchInput(e) {
@@ -131,29 +131,8 @@
     return text.slice(0, maxLen) + '…'
   }
 
-  function getEngineStyle(prefix) {
-    const colors = {
-      'Unity': { bg: 'var(--accent-dim, #4a6cf7)', text: '#fff' },
-      'RenPy': { bg: '#e74c8b', text: '#fff' },
-      'RPGM': { bg: '#27ae60', text: '#fff' },
-      'HTML': { bg: '#e67e22', text: '#fff' },
-      'Flash': { bg: '#9b59b6', text: '#fff' },
-      'Java': { bg: '#f39c12', text: '#fff' },
-      'UnrealEngine': { bg: '#3498db', text: '#fff' },
-      'WebGL': { bg: '#1abc9c', text: '#fff' },
-      'WolfRPG': { bg: '#e84393', text: '#fff' },
-      'ADRIFT': { bg: '#6c5ce7', text: '#fff' },
-      'QSP': { bg: '#fd79a8', text: '#fff' },
-      'RAGS': { bg: '#00cec9', text: '#fff' },
-      'Tads': { bg: '#fab1a0', text: '#2d3436' },
-    }
-    for (const [name, style] of Object.entries(colors)) {
-      if (name.toLowerCase() === prefix.toLowerCase()) {
-        return `background: ${style.bg}; color: ${style.text}`
-      }
-    }
-    return ''
-  }
+  // ── Engine styles — imported from shared module ───────────────
+  // See engineColors.js for the canonical palette matching TUI styles
 </script>
 
 <div class="f95-browser">
@@ -260,7 +239,7 @@
                   {#if result.prefix}
                     <span
                       class="engine-badge"
-                      style={getEngineStyle(result.prefix)}
+                      style={engineStyle(result.prefix)}
                     >
                       {result.prefix}
                     </span>
@@ -311,7 +290,7 @@
               {#if preview.prefix}
                 <span
                   class="engine-badge"
-                  style={getEngineStyle(preview.prefix)}
+                  style={engineStyle(preview.prefix)}
                 >
                   {preview.prefix}
                 </span>
