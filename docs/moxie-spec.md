@@ -221,4 +221,4 @@ A local game library manager for adult games. Scans directories, detects engines
 - **Non-UTF-8 filenames** — Latin1/Shift-JIS display incorrectly in the TUI
 - **Commands package** — 130+ `os.Exit(1)` calls in CLI wrappers make the full I/O layer untestable; `RunPlay`, `RunScan`, `RunSync` extracted with remaining handlers following the same pattern
 - **F95Zone browser check blocks old User-Agents** — `/sam/latest_alpha` rejects outdated browsers with a wall; Our scraper and Playwright tests need modern UA strings
-- **Desktop install scripts** — Windows Start Menu shortcut not yet implemented; macOS .app bundle untested on real hardware
+- **Desktop install scripts** — Windows Start Menu shortcut implemented via PowerShell; macOS `.app` bundle auto-generated with `.icns` but not yet tested on real hardware

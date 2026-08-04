@@ -145,6 +145,18 @@ make install-desktop                  # register in system app launcher
 cd desktop && wails dev -tags webkit2_41  # hot-reload development
 ```
 
+**Per-platform install behavior** (`scripts/install-desktop.sh`):
+- **Linux** → copies to `~/.local/bin`, writes a `.desktop` entry + icon, refreshes the desktop database.
+- **macOS** → builds `/Applications/Moxie.app` with a generated `.icns` icon and `Info.plist`. Verify on real hardware with:
+  ```bash
+  ./scripts/install-desktop.sh
+  open /Applications/Moxie.app
+  # If Gatekeeper blocks it:  xattr -dr com.apple.quarantine /Applications/Moxie.app
+  plutil -lint /Applications/Moxie.app/Contents/Info.plist
+  ls /Applications/Moxie.app/Contents/Resources/AppIcon.icns
+  ```
+- **Windows** → copies to `%APPDATA%\moxie\bin` and creates a Start Menu shortcut via PowerShell (`[Environment]::GetFolderPath('Programs')`, icon points at the installed exe).
+
 **Key design:** Every bound Go method delegates to an existing `internal/` package. The frontend is purely a view layer — all business logic stays in the shared Go backend. The Svelte frontend communicates with Go exclusively through auto-generated `wailsjs/` bindings (no REST, no IPC).
 
 **Browser design reference:** See [`docs/f95zone-browser-design.md`](f95zone-browser-design.md) for a detailed analysis of F95Zone's `latest_alpha` page structure and UX patterns, used as inspiration for the `F95Browser.svelte` component.

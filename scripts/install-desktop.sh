@@ -10,8 +10,8 @@
 #
 # Platform targets:
 #   Linux   → ~/.local/bin/moxie-desktop + ~/.local/share/applications/moxie.desktop
-#   macOS   → /Applications/moxie.app (TODO: .app bundle generation)
-#   Windows → %APPDATA%/moxie/bin/moxie-desktop.exe (TODO: Start Menu shortcut)
+#   macOS   → /Applications/moxie.app (auto-generated .app bundle with .icns icon)
+#   Windows → %APPDATA%/moxie/bin/moxie-desktop.exe + Start Menu shortcut
 #
 # License: MIT
 # ──────────────────────────────────────────────────────────────────────────────
@@ -144,6 +144,8 @@ install_macos() {
     local contents_dir="${app_path}/Contents"
     local macos_dir="${contents_dir}/MacOS"
     local resources_dir="${contents_dir}/Resources"
+    local icon_src="${SCRIPT_DIR}/desktop/build/appicon.png"
+    local icon_name=""
 
     info "Installing to /Applications (macOS)"
 
@@ -157,6 +159,31 @@ install_macos() {
     # Copy binary into the bundle
     cp -f "$BINARY_PATH" "${macos_dir}/${HUMAN_NAME}"
     chmod +x "${macos_dir}/${HUMAN_NAME}"
+
+    # ── Icon ───────────────────────────────────────────────────────────────
+    # macOS bundles want a .icns. Generate one from the appicon.png using the
+    # built-in sips/iconutil tools when available; otherwise fall back to a
+    # plain PNG copy (unused by Finder but harmless).
+    if [ -f "$icon_src" ] && command -v sips &>/dev/null && command -v iconutil &>/dev/null; then
+        local iconset="${resources_dir}/AppIcon.iconset"
+        mkdir -p "$iconset"
+        sips -z 16 16    "$icon_src" --out "${iconset}/icon_16x16.png"      >/dev/null 2>&1 || true
+        sips -z 32 32    "$icon_src" --out "${iconset}/icon_16x16@2x.png"   >/dev/null 2>&1 || true
+        sips -z 32 32    "$icon_src" --out "${iconset}/icon_32x32.png"      >/dev/null 2>&1 || true
+        sips -z 64 64    "$icon_src" --out "${iconset}/icon_32x32@2x.png"   >/dev/null 2>&1 || true
+        sips -z 128 128  "$icon_src" --out "${iconset}/icon_128x128.png"    >/dev/null 2>&1 || true
+        sips -z 256 256  "$icon_src" --out "${iconset}/icon_128x128@2x.png" >/dev/null 2>&1 || true
+        sips -z 256 256  "$icon_src" --out "${iconset}/icon_256x256.png"    >/dev/null 2>&1 || true
+        sips -z 512 512  "$icon_src" --out "${iconset}/icon_256x256@2x.png" >/dev/null 2>&1 || true
+        sips -z 512 512  "$icon_src" --out "${iconset}/icon_512x512.png"    >/dev/null 2>&1 || true
+        sips -z 1024 1024 "$icon_src" --out "${iconset}/icon_512x512@2x.png" >/dev/null 2>&1 || true
+        if iconutil -c icns -o "${resources_dir}/AppIcon.icns" "$iconset" 2>/dev/null; then
+            icon_name="AppIcon"
+        fi
+        rm -rf "$iconset"
+    else
+        cp -f "$icon_src" "${resources_dir}/appicon.png" 2>/dev/null || true
+    fi
 
     # ── Info.plist ─────────────────────────────────────────────────────────
     cat > "${contents_dir}/Info.plist" <<PLIST
@@ -182,15 +209,11 @@ install_macos() {
     <string>11.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>CFBundleIconFile</key>
+    <string>${icon_name}</string>
 </dict>
 </plist>
 PLIST
-
-    # ── Icon ───────────────────────────────────────────────────────────────
-    local icon_src="${SCRIPT_DIR}/desktop/build/appicon.png"
-    if [ -f "$icon_src" ]; then
-        cp -f "$icon_src" "${resources_dir}/appicon.png"
-    fi
 
     success "App bundle: ${app_path}"
     warn "You may need to run: xattr -dr com.apple.quarantine '${app_path}'"
@@ -210,13 +233,19 @@ install_windows() {
     chmod +x "$bin_path"
     success "Binary: ${bin_path}"
 
-    # Create Start Menu shortcut via PowerShell.
-    # This creates a .lnk in the Start Menu so the app appears in search/start.
+    # Create a Start Menu shortcut via PowerShell so the app appears in
+    # Start/search. The PowerShell variables are escaped (\$) so bash does not
+    # expand them; paths injected from bash use single quotes.
     if command -v powershell.exe &>/dev/null; then
-        powershell.exe -Command "
+        # shellcheck disable=SC2016
+        powershell.exe -NoProfile -Command "
             \$WshShell = New-Object -ComObject WScript.Shell
-            \$Shortcut = \$WshShell.CreateShortcut(\"$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Moxie.lnk\")
-            \$Shortcut.TargetPath = \"$bin_path\"
+            \$startMenu = [Environment]::GetFolderPath('Programs')
+            \$Shortcut = \$WshShell.CreateShortcut((Join-Path \$startMenu 'Moxie.lnk'))
+            \$Shortcut.TargetPath = '$bin_path'
+            \$Shortcut.WorkingDirectory = '$bin_dir'
+            \$Shortcut.IconLocation = '$bin_path,0'
+            \$Shortcut.Description = '$DESCRIPTION'
             \$Shortcut.Save()
         " && success "Start Menu shortcut created" || warn "Failed to create Start Menu shortcut (non-fatal)"
     else
