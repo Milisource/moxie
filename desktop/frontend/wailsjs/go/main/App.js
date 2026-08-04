@@ -190,6 +190,10 @@ export function SetGameStatus(arg1, arg2) {
   return window['go']['main']['App']['SetGameStatus'](arg1, arg2);
 }
 
+export function SetGameWinePrefix(arg1, arg2) {
+  return window['go']['main']['App']['SetGameWinePrefix'](arg1, arg2);
+}
+
 export function SyncAllGames(arg1) {
   return window['go']['main']['App']['SyncAllGames'](arg1);
 }

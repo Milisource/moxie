@@ -159,6 +159,7 @@ export namespace main {
 	    notes: string;
 	    storeLinks: Record<string, string>;
 	    steamAppId: number;
+	    winePrefix: string;
 	    downloadLinks: DesktopDownloadLink[];
 	    playHistory: DesktopPlayEntry[];
 	
@@ -189,6 +190,7 @@ export namespace main {
 	        this.notes = source["notes"];
 	        this.storeLinks = source["storeLinks"];
 	        this.steamAppId = source["steamAppId"];
+	        this.winePrefix = source["winePrefix"];
 	        this.downloadLinks = this.convertValues(source["downloadLinks"], DesktopDownloadLink);
 	        this.playHistory = this.convertValues(source["playHistory"], DesktopPlayEntry);
 	    }

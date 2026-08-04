@@ -1,6 +1,6 @@
 <script>
   import {onMount} from 'svelte'
-  import {GetGameDetail, PlayGame, RemoveGame, SetGameStatus, RenameGame, SyncSingleGame, EditGame} from '../../wailsjs/go/main/App'
+  import {GetGameDetail, PlayGame, RemoveGame, SetGameStatus, RenameGame, SetGameWinePrefix, SyncSingleGame, EditGame} from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
 
   let {gameId = null, onBack = () => {}, onUpdate = () => {}} = $props()
@@ -19,6 +19,7 @@
   let editExePath = $state({active: false, value: ''})
   let editVersion = $state({active: false, value: ''})
   let editNotes = $state({active: false, value: ''})
+  let editWinePrefix = $state({active: false, value: ''})
 
   // ── Toggle sections ─────────────────────────────
   let showDownloads = $state(false)
@@ -114,6 +115,21 @@
       console.error('Failed to save exe path:', err)
     }
     editExePath = {active: false, value: ''}
+  }
+
+  function startWinePrefixEdit() {
+    editWinePrefix = {active: true, value: detail.winePrefix || ''}
+  }
+
+  async function saveWinePrefix() {
+    try {
+      await SetGameWinePrefix(gameId, editWinePrefix.value)
+      await loadDetail()
+      onUpdate()
+    } catch (err) {
+      console.error('Failed to save wine prefix:', err)
+    }
+    editWinePrefix = {active: false, value: ''}
   }
 
   function startVersionEdit() {
@@ -326,6 +342,30 @@
                 {:else}
                   <span class="editable-field mono" onclick={startExePathEdit} title="Click to edit">
                     {detail.exePath || '—'}
+                  </span>
+                {/if}
+              </span>
+            </div>
+          {/if}
+
+          {#if detail.winePrefix !== undefined}
+            <div class="meta-row">
+              <span class="meta-label">Wine Prefix</span>
+              <span class="meta-value">
+                {#if editWinePrefix.active}
+                  <input
+                    class="inline-edit-input"
+                    type="text"
+                    bind:value={editWinePrefix.value}
+                    placeholder="/path/to/wineprefix"
+                    title="Leave empty to clear"
+                    onkeydown={(e) => { if (e.key === 'Enter') saveWinePrefix(); if (e.key === 'Escape') editWinePrefix = {active: false, value: ''}; }}
+                  />
+                  <button class="btn btn-xs btn-primary" onclick={saveWinePrefix}>Save</button>
+                  <button class="btn btn-xs" onclick={() => editWinePrefix = {active: false, value: ''}}>Cancel</button>
+                {:else}
+                  <span class="editable-field mono" onclick={startWinePrefixEdit} title="Click to edit">
+                    {detail.winePrefix || '— (system default)'}
                   </span>
                 {/if}
               </span>

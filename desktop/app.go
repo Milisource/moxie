@@ -139,6 +139,7 @@ type DesktopGameDetail struct {
 	Notes       string                `json:"notes"`
 	StoreLinks  map[string]string     `json:"storeLinks"`
 	SteamAppID  int64                 `json:"steamAppId"`
+	WinePrefix  string                `json:"winePrefix"`
 	DownloadLinks []DesktopDownloadLink `json:"downloadLinks"`
 	PlayHistory []DesktopPlayEntry    `json:"playHistory"`
 }
@@ -313,6 +314,7 @@ func (a *App) GetGameDetail(id int64) (*DesktopGameDetail, error) {
 		Notes:              game.Notes,
 		StoreLinks:         game.StoreLinks,
 		SteamAppID:         game.SteamAppID,
+		WinePrefix:         game.WinePrefix,
 	}
 
 	// Scraped metadata
@@ -389,6 +391,23 @@ func (a *App) PlayGame(id int64) (string, error) {
 	}
 
 	return fmt.Sprintf("Launching %s", filepath.Base(exe)), nil
+}
+
+// SetGameWinePrefix updates the Wine prefix for a game. An empty string
+// clears the stored prefix so launches fall back to the system default.
+func (a *App) SetGameWinePrefix(id int64, prefix string) error {
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	game, err := a.db.GetGame(id)
+	if err != nil || game == nil {
+		return fmt.Errorf("game with id %d not found", id)
+	}
+	if err := a.db.UpdateGameWinePrefix(id, strings.TrimSpace(prefix)); err != nil {
+		return fmt.Errorf("failed to update wine prefix: %w", err)
+	}
+	slog.Info("wine prefix updated", "game_id", id, "title", game.Title)
+	return nil
 }
 
 // ---------------------------------------------------------------------------

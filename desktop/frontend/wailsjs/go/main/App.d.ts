@@ -97,6 +97,8 @@ export function SearchGames(arg1:string):Promise<Array<main.DesktopGameSummary>>
 
 export function SetGameStatus(arg1:number,arg2:string):Promise<void>;
 
+export function SetGameWinePrefix(arg1:number,arg2:string):Promise<void>;
+
 export function SyncAllGames(arg1:string):Promise<void>;
 
 export function SyncSingleGame(arg1:number):Promise<void>;
