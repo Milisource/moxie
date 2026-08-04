@@ -1,6 +1,6 @@
 <script>
   import {onMount} from 'svelte'
-  import {GetGameDetail, RemoveGame, SetGameStatus, RenameGame, SyncSingleGame, EditGame} from '../../wailsjs/go/main/App'
+  import {GetGameDetail, PlayGame, RemoveGame, SetGameStatus, RenameGame, SyncSingleGame, EditGame} from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
 
   let {gameId = null, onBack = () => {}, onUpdate = () => {}} = $props()
@@ -9,6 +9,7 @@
   let loading = $state(true)
   let error = $state('')
   let showFullOverview = $state(false)
+  let launchStatus = $state({msg: '', error: ''})
 
   // ── Inline rename ───────────────────────────────
   let showRenameInput = $state(false)
@@ -163,6 +164,18 @@
       onUpdate()
     } catch (err) {
       console.error('Failed to sync:', err)
+    }
+  }
+
+  async function handlePlay() {
+    launchStatus = {msg: '', error: ''}
+    try {
+      const msg = await PlayGame(gameId)
+      launchStatus = {msg, error: ''}
+      await loadDetail()
+      onUpdate()
+    } catch (err) {
+      launchStatus = {msg: '', error: String(err).replace(/^Error:\s*/, '')}
     }
   }
 
@@ -476,6 +489,13 @@
 
       <!-- Action Buttons -->
       <div class="action-section">
+        {#if launchStatus.msg}
+          <div class="launch-notice launch-ok">{launchStatus.msg}</div>
+        {/if}
+        {#if launchStatus.error}
+          <div class="launch-notice launch-error">{launchStatus.error}</div>
+        {/if}
+        <button class="btn btn-primary btn-play" onclick={handlePlay}>▶ Play</button>
         {#if detail.f95Url}
           <button class="btn btn-primary" onclick={handleSync}>Sync from F95Zone</button>
         {/if}
@@ -967,5 +987,27 @@
     padding-top: 16px;
     border-top: 1px solid var(--border);
     flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .btn-play {
+    font-weight: 600;
+  }
+
+  .launch-notice {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  .launch-ok {
+    color: #2ecc71;
+    background: color-mix(in srgb, #2ecc71 12%, transparent);
+    border: 1px solid color-mix(in srgb, #2ecc71 35%, transparent);
+  }
+  .launch-error {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
   }
 </style>

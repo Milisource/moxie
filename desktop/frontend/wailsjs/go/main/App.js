@@ -150,6 +150,10 @@ export function PickDirectory() {
   return window['go']['main']['App']['PickDirectory']();
 }
 
+export function PlayGame(arg1) {
+  return window['go']['main']['App']['PlayGame'](arg1);
+}
+
 export function PurgeDeleted() {
   return window['go']['main']['App']['PurgeDeleted']();
 }

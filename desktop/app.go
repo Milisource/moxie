@@ -28,6 +28,7 @@ import (
 	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/extractor"
 	"github.com/mili/moxie/internal/engine"
+	"github.com/mili/moxie/internal/launcher"
 	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/scanner"
 	"github.com/mili/moxie/internal/scraper"
@@ -354,6 +355,40 @@ func (a *App) GetGameDetail(id int64) (*DesktopGameDetail, error) {
 	}
 
 	return detail, nil
+}
+
+// PlayGame resolves a game's executable and launches it, using the
+// DB-stored Wine prefix when set, and records a play history entry.
+// It returns a short human-readable message for the frontend.
+func (a *App) PlayGame(id int64) (string, error) {
+	if a.db == nil {
+		return "", fmt.Errorf("database not initialized")
+	}
+
+	game, err := a.db.GetGame(id)
+	if err != nil || game == nil {
+		return "", fmt.Errorf("game with id %d not found", id)
+	}
+
+	exe := launcher.ResolveExecutable(game.Path, game.ExePath)
+	if exe == "" {
+		// Virtual game added from F95Zone but not yet downloaded.
+		if strings.HasPrefix(game.Path, db.VirtualPathPrefix) {
+			return "", fmt.Errorf("%q was added from F95Zone but not yet downloaded. Use the Downloads view to install it.", game.Title)
+		}
+		return "", fmt.Errorf("no executable found for %q", game.Title)
+	}
+
+	if err := launcher.Launch(exe, game.Path, game.WinePrefix); err != nil {
+		return "", fmt.Errorf("cannot launch %q: %w", exe, err)
+	}
+
+	// Record play history — non-fatal if it fails.
+	if err := a.db.RecordPlay(game.ID, goruntime.GOOS); err != nil {
+		slog.Warn("failed to record play history", "game_id", game.ID, "error", err)
+	}
+
+	return fmt.Sprintf("Launching %s", filepath.Base(exe)), nil
 }
 
 // ---------------------------------------------------------------------------

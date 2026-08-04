@@ -77,6 +77,8 @@ export function OpenDownloadURL(arg1:number):Promise<void>;
 
 export function PickDirectory():Promise<string>;
 
+export function PlayGame(arg1:number):Promise<string>;
+
 export function PurgeDeleted():Promise<number>;
 
 export function RemoveGame(arg1:number,arg2:boolean):Promise<void>;
