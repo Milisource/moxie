@@ -17,3 +17,11 @@ desktop/build/dist/
 desktop/frontend/dist/
 desktop/frontend/node_modules/
 desktop/desktop
+
+# Echoes memory vault + opencode local tooling state
+EchoesVault/
+.opencode/commands/
+.opencode/echoes-state.json
+.opencode/skills/echoes-append-to-daily-log/
+.opencode/skills/echoes-create-or-update-page/
+.opencode/skills/echoes-search-vault-pages/
