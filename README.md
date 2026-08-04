@@ -6,7 +6,7 @@
 
 **Scan, catalog, enrich, and launch your local game library — from the terminal.**
 
-moxie recursively scans your game directories, detects engines (Unity, Ren'Py, RPG Maker, and 11 more), stores everything in a local SQLite database, and optionally scrapes F95Zone threads for version info, developer names, tags, and cover art. It can push games straight into your Steam library with artwork and Proton configuration — no GUI needed.
+moxie is an engine-aware game library manager. It recursively scans directories, detects 14 game engines (Unity, Ren'Py, RPG Maker, Godot, and more), stores metadata in a local SQLite database, and optionally enriches entries with version info, tags, and cover art from community threads. Games can be added directly to Steam with artwork and Proton configuration — no GUI needed.
 
 ---
 
@@ -29,14 +29,14 @@ moxie recursively scans your game directories, detects engines (Unity, Ren'Py, R
 
 ## Project description
 
-With moxie you can **scan** local game directories, **enrich** them with metadata from F95Zone, **track** version updates, and **launch** games directly — all from a terminal UI or CLI.
+With moxie you can **scan** local game directories, **enrich** them with metadata from community threads, **track** version updates, and **launch** games directly — all from a terminal UI or CLI.
 
-Unlike manually organizing game folders and checking F95Zone threads one by one, moxie automates the entire pipeline:
+Unlike manually organizing game folders and checking announcement threads one by one, moxie automates the entire pipeline:
 
 ```
 ┌──────────┐     ┌──────────────┐     ┌───────────────┐     ┌──────────┐
 │  Scan    │────▶│  Scrape      │────▶│  Sync +       │────▶│  TUI /   │
-│  ~/Games │     │  F95Zone     │     │  Check Updates│     │  CLI     │
+│  ~/Games │     │  Web Thread  │     │  Check Updates│     │  CLI     │
 └──────────┘     └──────────────┘     └───────┬───────┘     └──────────┘
                                                │
                                                ▼
@@ -50,7 +50,7 @@ Key capabilities:
 
 - **Engine-aware scanning** — Detects 14 canonical engines (Unity, Ren'Py, RPG Maker, Godot, Unreal, HTML, Flash, WolfRPG, etc.) plus a fallback for Others. Reports byte-exact sizes and finds executables.
 - **Incremental by default** — `moxie scan <dir>` skips directories whose modification time hasn't changed since the last scan. Use `--force` for a full re-detection.
-- **F95Zone enrichment** — Cookie-based scraping pulls version, developer, tags, overview, cover art, and store links from thread pages. Auto-association scores search results and picks the best match.
+- **Metadata enrichment** — Cookie-based scraping pulls version, developer, tags, overview, cover art, and store links from community game threads. Auto-association scores search results and picks the best match.
 - **Steam integration** — Add non-Steam games with deterministic AppIDs, grid artwork (F95Zone cover or SteamGridDB), and Proton version configuration. Safe VDF read/write with automatic backups.
 - **Bubble Tea TUI** — Interactive terminal UI with list/detail views, engine/status filters, sortable columns, real-time search, and engine-colored rows.
 - **Version tracking** — Check all associated games for newer versions on F95Zone. Supports `--force` to bypass 24h cooldown.
@@ -64,7 +64,7 @@ Key capabilities:
 This project is intended for **gamers and collectors** who:
 
 - Have a local directory of game installs and want them organized and searchable
-- Follow games on F95Zone and want automatic version update tracking
+- Follow community game threads and want automatic version update tracking
 - Want to add non-Steam games to their Steam library with proper artwork and Proton support (Linux)
 - Prefer a terminal workflow over a GUI
 - Manage large collections (hundreds of games) across multiple directories
@@ -142,9 +142,9 @@ moxie --version
 
 ### Configure moxie
 
-#### F95Zone cookie (for scraping)
+#### Source site cookie (for scraping)
 
-moxie automatically detects cookies from Firefox. If you use another browser:
+moxie automatically detects site cookies from Firefox. If you use another browser:
 
 ```bash
 # Export cookies manually:
@@ -191,7 +191,7 @@ moxie steam add 42
 moxie scan ~/Downloads           # scan new downloads (incremental)
 moxie rename --dry-run           # preview clean directory names
 moxie rename                     # apply renames
-moxie sync                       # auto-associate + check updates
+moxie sync                       # enrich with metadata + check updates
 moxie tui                        # browse and manage your library
 ```
 </details>
@@ -250,7 +250,7 @@ moxie list --warnings                # quick scan for engine/exe issues
 </details>
 
 <details>
-<summary><strong>F95Zone commands</strong></summary>
+<summary><strong>Metadata enrichment commands</strong></summary>
 
 | Command | What it does |
 |---------|-------------|
@@ -264,7 +264,7 @@ moxie list --warnings                # quick scan for engine/exe issues
 
 | Command | What it does |
 |---------|-------------|
-| `download <id>` | Download a game from F95Zone links. Auto-fallbacks through host priority. |
+| `download <id>` | Download a game from community thread links. Auto-fallbacks through host priority. |
 | `install <id> <archive>` | Install a downloaded archive into the game directory (extract + merge). |
 | `downloads` | List download history. |
 | `check-links` | Validate all stored download links (detect dead/broken URLs). |
@@ -301,7 +301,7 @@ moxie list --warnings                # quick scan for engine/exe issues
 |-------|----------|
 | **"No cover artwork URL found"** | The game's F95Zone thread lacks a downloadable cover. Run `moxie sync <id>` to refresh metadata, or configure a SteamGridDB API key. |
 | **Games don't appear in Steam after `steam add`** | Steam must be fully closed before adding games, and restarted afterward. |
-| **"Cookie required" when scraping** | Log into F95Zone in Firefox, or use `--cookie "header"` with a cookie string from browser DevTools. |
+| **"Cookie required" when scraping** | Log into the source site in Firefox, or use `--cookie "header"` with a cookie string from browser DevTools. |
 | **Scan finds no games** | Ensure the directory contains game engine files (.exe, .sh, .x86_64, etc.) or engine markers (renpy/, www/, _Data folders, .pck files, etc.). |
 | **How do I reset my library?** | Delete `~/.config/moxie/games.db`. It will be recreated on the next scan. |
 | **How do I set a specific Proton version?** | `moxie steam proton-list` to see available versions, then `moxie steam proton-set <id> --version GE-Proton9-7`. |
