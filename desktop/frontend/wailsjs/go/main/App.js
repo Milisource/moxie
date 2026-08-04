@@ -170,6 +170,10 @@ export function RenameGame(arg1, arg2) {
   return window['go']['main']['App']['RenameGame'](arg1, arg2);
 }
 
+export function RescanDirectory(arg1) {
+  return window['go']['main']['App']['RescanDirectory'](arg1);
+}
+
 export function RestoreGame(arg1) {
   return window['go']['main']['App']['RestoreGame'](arg1);
 }

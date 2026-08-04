@@ -1,5 +1,6 @@
 <script>
   import {onMount} from 'svelte'
+  import {EventsOn} from '../wailsjs/runtime/runtime'
   import {GetGames, GetVersion, ListDeletedGames, RestoreGame, PurgeDeleted} from '../wailsjs/go/main/App'
   import Sidebar from './lib/Sidebar.svelte'
   import GameList from './lib/GameList.svelte'
@@ -81,7 +82,27 @@
     } catch (e) { statusMsg = `Error: ${e}` }
   }
 
-  onMount(init)
+  let unsubAutoScan
+  onMount(() => {
+    init()
+    // Live library refresh when the directory watcher finishes an auto-scan.
+    unsubAutoScan = EventsOn('scan:auto-complete', (r) => {
+      if (r) {
+        const parts = []
+        if (r.inserted) parts.push(`${r.inserted} new`)
+        if (r.updated) parts.push(`${r.updated} updated`)
+        if (r.removed) parts.push(`${r.removed} removed`)
+        statusMsg = parts.length
+          ? `Auto-scan: ${parts.join(', ')}`
+          : 'Auto-scan: no changes'
+      }
+      refreshGames()
+    })
+    EventsOn('scan:auto-error', (r) => {
+      statusMsg = `Auto-scan error: ${r?.error || 'unknown'}`
+    })
+    return () => { if (unsubAutoScan) unsubAutoScan() }
+  })
 </script>
 
 <div class="shell">

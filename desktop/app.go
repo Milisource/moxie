@@ -41,6 +41,7 @@ import (
 type App struct {
 	ctx        context.Context
 	db         *db.Database
+	watcher    *DirectoryWatcher
 	startupErr string // non-empty if startup failed; exposed to frontend
 }
 
@@ -70,10 +71,41 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.db = database
 	slog.Info("database opened successfully")
+
+	a.startWatcher()
+}
+
+// startWatcher begins watching configured scan paths for filesystem changes.
+func (a *App) startWatcher() {
+	paths := a.GetScanPaths()
+	if len(paths) == 0 {
+		return
+	}
+	a.watcher = NewDirectoryWatcher(a)
+	if err := a.watcher.Start(paths); err != nil {
+		slog.Warn("failed to start directory watcher", "error", err)
+		a.watcher = nil
+		return
+	}
+	slog.Info("directory watcher started", "paths", paths)
+}
+
+// restartWatcher stops and restarts the directory watcher to pick up
+// changes to the configured scan paths.
+func (a *App) restartWatcher() {
+	if a.watcher != nil {
+		_ = a.watcher.Stop()
+		a.watcher = nil
+	}
+	a.startWatcher()
 }
 
 // shutdown is called when the application is closing.
 func (a *App) shutdown(ctx context.Context) {
+	if a.watcher != nil {
+		_ = a.watcher.Stop()
+		a.watcher = nil
+	}
 	if a.db != nil {
 		if err := a.db.Close(); err != nil {
 			slog.Error("error closing database", "error", err)
@@ -575,7 +607,11 @@ func (a *App) AddScanPath(path string) error {
 	}
 
 	cfg.ScanPaths = append(cfg.ScanPaths, path)
-	return config.WriteConfig(cfg)
+	if err := config.WriteConfig(cfg); err != nil {
+		return err
+	}
+	a.restartWatcher()
+	return nil
 }
 
 // RemoveScanPath removes a directory from the scan paths config.
@@ -592,7 +628,11 @@ func (a *App) RemoveScanPath(path string) error {
 		}
 	}
 	cfg.ScanPaths = filtered
-	return config.WriteConfig(cfg)
+	if err := config.WriteConfig(cfg); err != nil {
+		return err
+	}
+	a.restartWatcher()
+	return nil
 }
 
 // Greet is a test method to verify Wails binding is working.

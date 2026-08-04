@@ -87,6 +87,8 @@ export function RemoveScanPath(arg1:string):Promise<void>;
 
 export function RenameGame(arg1:number,arg2:string):Promise<void>;
 
+export function RescanDirectory(arg1:string):Promise<void>;
+
 export function RestoreGame(arg1:number):Promise<void>;
 
 export function ScanDirectory(arg1:string):Promise<void>;
