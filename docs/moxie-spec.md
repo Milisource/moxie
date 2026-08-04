@@ -205,6 +205,8 @@ A local game library manager for adult games. Scans directories, detects engines
   - [x] Wails production build: `make desktop` → `dist/moxie-desktop` (4.6s)
   - [x] Wails dev: `make desktop-dev` (hot-reload)
   - [x] Desktop installer: `make install-desktop` → per-platform app registration (Linux .desktop, macOS .app)
+  - [x] Launch games from the desktop app — Play button in detail view, play history recording, launch errors surfaced in UI
+  - [x] Wine prefix support in desktop app — editable per-game prefix, `PlayGame` honors the DB-stored prefix
 - [ ] Directory watcher (auto-scan on file changes)
 
 ### Known Limitations
