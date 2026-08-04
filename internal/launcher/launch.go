@@ -13,8 +13,8 @@ import (
 // It handles platform-specific launchers (Wine on Linux, CrossOver on macOS)
 // and sets the working directory so relative asset paths resolve.
 // The process is detached — Wait() runs in a background goroutine.
-func Launch(exe, gameDir string) error {
-	cmd, err := buildCommand(exe, gameDir)
+func Launch(exe, gameDir, winePrefix string) error {
+	cmd, err := buildCommand(exe, gameDir, winePrefix)
 	if err != nil {
 		return err
 	}
@@ -29,11 +29,20 @@ func Launch(exe, gameDir string) error {
 // buildCommand constructs the appropriate *exec.Cmd for the given executable,
 // setting the working directory to gameDir. It detects the file type and
 // selects the appropriate launcher (wine for .exe on non-Windows, etc.).
-func buildCommand(exe, gameDir string) (*exec.Cmd, error) {
+func buildCommand(exe, gameDir, winePrefix string) (*exec.Cmd, error) {
 	ext := strings.ToLower(filepath.Ext(exe))
 
 	setDir := func(cmd *exec.Cmd) *exec.Cmd {
 		cmd.Dir = gameDir
+		return cmd
+	}
+
+	// Configure wine/proton env vars for a wine command.
+	configureWine := func(cmd *exec.Cmd) *exec.Cmd {
+		cmd.Dir = gameDir
+		if winePrefix != "" {
+			cmd.Env = append(cmd.Env, "WINEPREFIX="+winePrefix)
+		}
 		return cmd
 	}
 
@@ -50,12 +59,12 @@ func buildCommand(exe, gameDir string) (*exec.Cmd, error) {
 		}
 		// Check for wine availability.
 		if winePath, err := exec.LookPath("wine"); err == nil {
-			return setDir(exec.Command(winePath, exe)), nil
+			return configureWine(exec.Command(winePath, exe)), nil
 		}
 		// macOS: try CrossOver as fallback.
 		if runtime.GOOS == "darwin" {
 			if crossover, err := findCrossOver(); err == nil {
-				return setDir(exec.Command(crossover, exe)), nil
+				return configureWine(exec.Command(crossover, exe)), nil
 			}
 		}
 		return nil, fmt.Errorf("wine not found — cannot launch .exe files on %s", runtime.GOOS)

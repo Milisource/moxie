@@ -17,7 +17,7 @@ const VirtualPathPrefix = "/virtual/"
 
 func scanGame(s scanner) (*Game, error) {
 	var g Game
-	var exePath, version, f95URL, createdAtStr, updatedAtStr, latestVer, verCheckedAt, storeLinksStr sql.NullString
+	var exePath, version, f95URL, createdAtStr, updatedAtStr, latestVer, verCheckedAt, storeLinksStr, winePrefix sql.NullString
 	var f95ThreadID, steamAppID sql.NullInt64
 	var lastScannedAtStr, dirMTimeStr sql.NullString
 	var seriesID, seriesOrder sql.NullInt64
@@ -29,7 +29,7 @@ func scanGame(s scanner) (*Game, error) {
 		&exePath, &version, &g.SizeBytes,
 		&f95URL, &f95ThreadID, &tagsStr,
 		&g.Status, &latestVer, &verCheckedAt, &g.Notes,
-		&storeLinksStr, &steamAppID,
+		&storeLinksStr, &steamAppID, &winePrefix,
 		&lastScannedAtStr, &dirMTimeStr,
 		&seriesID, &seriesOrder,
 		&deletedAtStr,
@@ -58,6 +58,9 @@ func scanGame(s scanner) (*Game, error) {
 	}
 	if steamAppID.Valid {
 		g.SteamAppID = steamAppID.Int64
+	}
+	if winePrefix.Valid {
+		g.WinePrefix = winePrefix.String
 	}
 	if seriesID.Valid {
 		g.SeriesID = &seriesID.Int64
@@ -128,15 +131,15 @@ func (db *Database) InsertGame(g *Game) (int64, error) {
 	res, err := db.conn.Exec(`
 		INSERT INTO games (title, engine, path, exe_path, version, size_bytes,
 		                   f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		                   store_links, steam_app_id, last_scanned_at, dir_mtime,
+		                   store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime,
 		                   series_id, series_order, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-		        ?, ?, ?, ?)`,
+		        ?, ?, ?, ?, ?)`,
 		g.Title, g.Engine, g.Path,
 		nullableString(g.ExePath), nullableString(g.Version), g.SizeBytes,
 		nullableString(g.F95URL), nullableInt64(g.F95ThreadID), tagsStr,
 		g.Status, nullableString(g.LatestVersion), nullableTime(g.VersionCheckedAt), g.Notes,
-		storeLinksStr, nullableInt64(g.SteamAppID),
+		storeLinksStr, nullableInt64(g.SteamAppID), nullableString(g.WinePrefix),
 		nullableTime(g.LastScannedAt), nullableTime(g.DirMTime),
 		nullableInt64Ptr(g.SeriesID), g.SeriesOrder,
 		now, now,
@@ -155,7 +158,7 @@ func (db *Database) GetGame(id int64) (*Game, error) {
 	row := db.conn.QueryRow(`
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, last_scanned_at, dir_mtime, series_id, series_order,
+		store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
 		       deleted_at, created_at, updated_at
 		FROM games WHERE id = ?`, id)
 
@@ -175,7 +178,7 @@ func (db *Database) GetGameByPath(path string) (*Game, error) {
 	row := db.conn.QueryRow(`
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, last_scanned_at, dir_mtime, series_id, series_order,
+		       		store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
 		       deleted_at, created_at, updated_at
 		FROM games WHERE path = ?`, path)
 
@@ -210,7 +213,7 @@ func (db *Database) listGamesFiltered(engine, status string, excludeBackups bool
 	query := `
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, last_scanned_at, dir_mtime, series_id, series_order,
+		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
 		       deleted_at, created_at, updated_at
 		FROM games`
 
@@ -270,7 +273,7 @@ func (db *Database) SearchGames(query string) ([]Game, error) {
 		rows, err := db.conn.Query(`
 			SELECT id, title, engine, path, exe_path, version, size_bytes,
 			       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-			       store_links, steam_app_id, last_scanned_at, dir_mtime, series_id, series_order,
+			       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
 			       deleted_at, created_at, updated_at
 			FROM games
 			WHERE deleted_at IS NULL
@@ -295,7 +298,7 @@ func (db *Database) SearchGames(query string) ([]Game, error) {
 	rows, err := db.conn.Query(`
 		SELECT g.id, g.title, g.engine, g.path, g.exe_path, g.version, g.size_bytes,
 		       g.f95_url, g.f95_thread_id, g.tags, g.status, g.latest_version, g.version_checked_at, g.notes,
-		       g.store_links, g.steam_app_id, g.last_scanned_at, g.dir_mtime,
+		g.store_links, g.steam_app_id, g.wine_prefix, g.last_scanned_at, g.dir_mtime,
 	           g.series_id, g.series_order, g.deleted_at, g.created_at, g.updated_at
 		FROM games g
 		JOIN games_fts fts ON g.id = fts.rowid
@@ -324,7 +327,7 @@ func (db *Database) SearchGames(query string) ([]Game, error) {
 	rows, err = db.conn.Query(`
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, last_scanned_at, dir_mtime, series_id, series_order,
+		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
 		       deleted_at, created_at, updated_at
 		FROM games
 		WHERE deleted_at IS NULL
@@ -423,6 +426,13 @@ func (db *Database) UpdateGameExePath(id int64, path string) error {
 	return err
 }
 
+// UpdateGameWinePrefix updates only the wine_prefix column and updated_at.
+func (db *Database) UpdateGameWinePrefix(id int64, prefix string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.conn.Exec("UPDATE games SET wine_prefix = ?, updated_at = ? WHERE id = ?", nullableString(prefix), now, id)
+	return err
+}
+
 // UpdateGame updates all columns of the given game. It sets UpdatedAt to the
 // current UTC time before writing.
 func (db *Database) UpdateGame(g *Game) error {
@@ -449,7 +459,7 @@ func (db *Database) UpdateGame(g *Game) error {
 		UPDATE games
 		SET title=?, engine=?, path=?, exe_path=?, version=?, size_bytes=?,
 		    f95_url=?, f95_thread_id=?, tags=?, status=?, notes=?,
-		    store_links=?, steam_app_id=?,
+	store_links=?, steam_app_id=?, wine_prefix=?,
 		    latest_version=?, version_checked_at=?,
 		    last_scanned_at=?, dir_mtime=?,
 		    series_id=?, series_order=?, updated_at=?
@@ -458,7 +468,7 @@ func (db *Database) UpdateGame(g *Game) error {
 		nullableString(g.ExePath), nullableString(g.Version), g.SizeBytes,
 		nullableString(g.F95URL), nullableInt64(g.F95ThreadID), tagsStr,
 		g.Status, g.Notes,
-		storeLinksStr, nullableInt64(g.SteamAppID),
+		storeLinksStr, nullableInt64(g.SteamAppID), nullableString(g.WinePrefix),
 		nullableString(g.LatestVersion), nullableTime(g.VersionCheckedAt),
 		nullableTime(g.LastScannedAt), nullableTime(g.DirMTime),
 		nullableInt64Ptr(g.SeriesID), g.SeriesOrder,
@@ -561,7 +571,7 @@ func (db *Database) GamesNeedingUpdate() ([]Game, error) {
 	rows, err := db.conn.Query(`
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, last_scanned_at, dir_mtime, series_id, series_order,
+		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
 		       deleted_at, created_at, updated_at
 		FROM games
 		WHERE path NOT LIKE '%.old'
@@ -591,7 +601,7 @@ func (db *Database) GamesWithF95URL() ([]Game, error) {
 	rows, err := db.conn.Query(`
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, last_scanned_at, dir_mtime, series_id, series_order,
+		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
 		       deleted_at, created_at, updated_at
 		FROM games
 		WHERE path NOT LIKE '%.old'
@@ -620,7 +630,7 @@ func (db *Database) GamesWithoutF95URL() ([]Game, error) {
 	rows, err := db.conn.Query(`
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, last_scanned_at, dir_mtime, series_id, series_order,
+		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
 		       deleted_at, created_at, updated_at
 		FROM games
 		WHERE path NOT LIKE '%.old'
@@ -649,7 +659,7 @@ func (db *Database) GamesByStatus(status string) ([]Game, error) {
 	rows, err := db.conn.Query(`
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, last_scanned_at, dir_mtime, series_id, series_order,
+		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
 		       deleted_at, created_at, updated_at
 		FROM games
 		WHERE path NOT LIKE '%.old'
@@ -678,7 +688,7 @@ func (db *Database) GamesByEngine(engine string) ([]Game, error) {
 	rows, err := db.conn.Query(`
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, last_scanned_at, dir_mtime, series_id, series_order,
+		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
 		       deleted_at, created_at, updated_at
 		FROM games
 		WHERE path NOT LIKE '%.old'
@@ -779,7 +789,7 @@ func (db *Database) ListDeletedGames() ([]Game, error) {
 	rows, err := db.conn.Query(`
 		SELECT id, title, engine, path, exe_path, version, size_bytes,
 		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, last_scanned_at, dir_mtime, series_id, series_order,
+		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
 		       deleted_at, created_at, updated_at
 		FROM games
 		WHERE deleted_at IS NOT NULL

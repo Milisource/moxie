@@ -38,7 +38,7 @@ A local game library manager for adult games. Scans directories, detects engines
 
 ### Completed (MVP)
 
-- [x] 28 CLI entry points: all previous + `cleanup`, `refresh-versions`, `scrape-batch`, `set-path`, `set-exe`
+- [x] 29 CLI entry points: all previous + `cleanup`, `refresh-versions`, `scrape-batch`, `set-path`, `set-exe`, `set-wine-prefix`
 - [x] Recursive directory scanning with smart `SkipDir` on game roots
 - [x] Engine detection for 14 canonical engines + NW.js (RPG Maker MV/MZ) detection
 - [x] SQLite database with WAL mode, foreign keys, CHECK constraints, LatestVersion tracking
@@ -161,6 +161,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] FTS5 full-text search — virtual table over title/tags/developer/overview with ranked results
 - [x] Export/import library — `moxie export [--output file.json]` and `moxie import <file.json>`
 - [x] Play history tracking — `moxie history [count]` shows recently played games
+- [x] Per-game Wine prefix support — `moxie set-wine-prefix <id> <path>` to persist, `--wine-prefix` flag on `play` to override, TUI launch respects DB-stored prefix
 - [x] Game series support — `game_series` table and `series_id`/`series_order` on games
 - [x] Game collections — `moxie collection add/list/add-game` with TUI `[c]` filter
 - [x] Soft delete — `moxie remove` sets `deleted_at`; `moxie restore`/`moxie purge`; `list --deleted`

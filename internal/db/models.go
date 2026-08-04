@@ -47,6 +47,7 @@ type Game struct {
 	Notes       string            `json:"notes,omitempty"`
 	StoreLinks  map[string]string `json:"store_links,omitempty"` // stored as JSON in SQLite
 	SteamAppID  int64             `json:"steam_app_id,omitempty"`
+	WinePrefix  string            `json:"wine_prefix,omitempty"`
 	LatestVersion  string         `json:"latest_version,omitempty"`
 	VersionCheckedAt time.Time    `json:"version_checked_at,omitempty"`
 	LastScannedAt time.Time       `json:"last_scanned_at,omitempty"`

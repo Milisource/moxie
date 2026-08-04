@@ -76,14 +76,15 @@ func (db *Database) Close() error {
 // Version history:
 //  1. Core tables (games, scraped_meta, downloads, download_links) with all
 //     current columns including latest_version, version_checked_at,
-//     store_links, steam_app_id, last_scanned_at, dir_mtime.
+//     store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime.
 //  2. FTS5 virtual table (games_fts) for full-text search across title, tags,
 //     developer, and overview, with content sync triggers and initial population.
 //  3. Play history (play_history table) and game series (game_series table)
 //     with series_id and series_order on games.
 //  4. Soft delete support: deleted_at TEXT column on games (NULL = active).
 //  5. Game collections: collections table + game_collections join table.
-const currentSchemaVersion = 6
+//  7. Per-game wine prefix: wine_prefix TEXT on games table.
+const currentSchemaVersion = 7
 
 // fts5Setup creates the FTS5 virtual table, content sync triggers, and populates
 // existing games. Safe to run multiple times via IF NOT EXISTS and idempotent
@@ -158,6 +159,7 @@ func migrate(conn *sql.DB) error {
 			version_checked_at TEXT,
 			store_links TEXT DEFAULT '{}',
 			steam_app_id INTEGER,
+			wine_prefix TEXT,
 			last_scanned_at TEXT,
 			dir_mtime TEXT,
 			series_id    INTEGER REFERENCES game_series(id),
@@ -402,6 +404,12 @@ func migrateVersionStep(conn *sql.DB, version int) error {
 		if !columnExists(tx, "games", "deleted_at") {
 			if _, err := tx.Exec("ALTER TABLE games ADD COLUMN deleted_at TEXT"); err != nil {
 				return fmt.Errorf("add deleted_at: %w", err)
+			}
+		}
+	case 7:
+		if !columnExists(tx, "games", "wine_prefix") {
+			if _, err := tx.Exec("ALTER TABLE games ADD COLUMN wine_prefix TEXT"); err != nil {
+				return fmt.Errorf("add wine_prefix: %w", err)
 			}
 		}
 	default:

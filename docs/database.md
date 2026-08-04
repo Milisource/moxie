@@ -49,6 +49,7 @@ games (
     version_checked_at TEXT,             -- last check-updates timestamp
     store_links TEXT DEFAULT '{}',       -- store URLs as JSON map: {"steam":"https://...","itch":"https://..."}
     steam_app_id INTEGER,                -- Steam App ID extracted from store_links["steam"]
+    wine_prefix  TEXT,                    -- custom Wine prefix path (WINEPREFIX)
     last_scanned_at TEXT,                -- last incremental scan time
     dir_mtime TEXT,                      -- directory modification time for incremental scan
     series_id    INTEGER REFERENCES game_series(id),  -- FK to game series
@@ -167,7 +168,7 @@ This means `latest_version` is the "last known F95Zone version," distinct from `
 Migrations use version-gated steps via `PRAGMA user_version`:
 
 ```go
-const currentSchemaVersion = 6
+const currentSchemaVersion = 7
 
 // Query current version
 var userVersion int
@@ -192,6 +193,7 @@ Each `migrateVersionStep` handles a specific version:
 - **v4**: Soft delete (`deleted_at` column)
 - **v5**: Game collections (collections + game_collections tables)
 - **v6**: Repair step — ensures all schema columns exist (handles old DBs that bumped past migration steps)
+- **v7**: Per-game Wine prefix (`wine_prefix TEXT` column on games)
 
 This replaces the earlier approach of running bare `ALTER TABLE` statements that ignored errors. All migration steps are idempotent (use `columnExists` checks for ALTER TABLE, `CREATE TABLE IF NOT EXISTS` for new tables).
 

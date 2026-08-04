@@ -97,6 +97,8 @@ func main() {
 			commands.SetPath(args[1:])
 		case "set-exe":
 			commands.SetExe(args[1:])
+		case "set-wine-prefix":
+			commands.SetWinePrefix(args[1:])
 		case "list":
 			commands.List(args[1:])
 		case "remove":
@@ -165,7 +167,8 @@ CORE
   list [flags]                List all games in library
   tui                         Launch interactive terminal UI
   info <id|name>              Show detailed game info
-  play <id|name>              Launch a game
+  play <id|name>              Launch a game (use --wine-prefix for custom prefix)
+  set-wine-prefix <id> <path>  Set a default Wine prefix for a game
   history [count]             Show recently played games
   add <path> [flags]          Manually add a game to library
   remove <id|name>            Remove a game from library (soft delete)

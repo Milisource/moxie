@@ -478,7 +478,7 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("No executable found in %s", game.Path)
 			return m, nil
 		}
-		if err := launcher.Launch(exe, game.Path); err != nil {
+		if err := launcher.Launch(exe, game.Path, game.WinePrefix); err != nil {
 			m.err = fmt.Errorf("Failed to launch: %v", err)
 		} else {
 			m.notice = fmt.Sprintf("Launching: %s", filepath.Base(exe))
