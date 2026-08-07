@@ -41,7 +41,10 @@ func buildCommand(exe, gameDir, winePrefix string) (*exec.Cmd, error) {
 	configureWine := func(cmd *exec.Cmd) *exec.Cmd {
 		cmd.Dir = gameDir
 		if winePrefix != "" {
-			cmd.Env = append(cmd.Env, "WINEPREFIX="+winePrefix)
+			// cmd.Env == nil means "inherit os.Environ()"; once we set it we
+			// must carry the parent environment ourselves, or wine loses
+			// HOME/PATH/DISPLAY/XDG_RUNTIME_DIR and cannot start.
+			cmd.Env = append(os.Environ(), "WINEPREFIX="+winePrefix)
 		}
 		return cmd
 	}
