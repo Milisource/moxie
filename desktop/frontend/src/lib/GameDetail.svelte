@@ -1,6 +1,10 @@
 <script>
   import {onMount} from 'svelte'
-  import {GetGameDetail, PlayGame, RemoveGame, SetGameStatus, RenameGame, SetGameWinePrefix, SyncSingleGame, EditGame} from '../../wailsjs/go/main/App'
+  import {
+    GetGameDetail, PlayGame, RemoveGame, SetGameStatus, RenameGame,
+    SetGameWinePrefix, SyncSingleGame, EditGame,
+    GetCollections, GetGameCollections, AddGameToCollection, RemoveGameFromCollection,
+  } from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
 
   let {gameId = null, onBack = () => {}, onUpdate = () => {}} = $props()
@@ -24,6 +28,55 @@
   // ── Toggle sections ─────────────────────────────
   let showDownloads = $state(false)
   let showPlayHistory = $state(false)
+
+  // ── Collections ─────────────────────────────────
+  let gameCollections = $state([])   // collections this game belongs to
+  let allCollections = $state([])
+  let collError = $state('')
+
+  // Only offer collections the game is not already in.
+  let availableCollections = $derived.by(() => {
+    const member = new Set(gameCollections.map(c => c.id))
+    return allCollections.filter(c => !member.has(c.id))
+  })
+
+  async function loadCollections() {
+    if (!gameId) return
+    try {
+      const [mine, all] = await Promise.all([
+        GetGameCollections(gameId),
+        GetCollections(),
+      ])
+      gameCollections = mine || []
+      allCollections = all || []
+      collError = ''
+    } catch (e) {
+      collError = String(e)
+    }
+  }
+
+  async function addToCollection(e) {
+    const id = Number(e.target.value)
+    e.target.value = ''
+    if (!id) return
+    try {
+      await AddGameToCollection(gameId, id)
+      await loadCollections()
+      onUpdate()
+    } catch (err) {
+      collError = String(err)
+    }
+  }
+
+  async function removeFromCollection(collectionId) {
+    try {
+      await RemoveGameFromCollection(gameId, collectionId)
+      await loadCollections()
+      onUpdate()
+    } catch (err) {
+      collError = String(err)
+    }
+  }
 
   async function loadDetail() {
     if (!gameId) return
@@ -195,7 +248,10 @@
     }
   }
 
-  onMount(loadDetail)
+  onMount(() => {
+    loadDetail()
+    loadCollections()
+  })
 </script>
 
 <div class="detail">
@@ -396,6 +452,38 @@
               </span>
             </div>
           {/if}
+
+          <div class="meta-row">
+            <span class="meta-label">Collections</span>
+            <span class="meta-value">
+              <div class="coll-chips">
+                {#each gameCollections as c}
+                  <span class="coll-chip">
+                    {c.name}
+                    <button
+                      class="coll-chip-x"
+                      title="Remove from {c.name}"
+                      onclick={() => removeFromCollection(c.id)}
+                    >✕</button>
+                  </span>
+                {/each}
+                {#if gameCollections.length === 0}
+                  <span class="text-muted">None</span>
+                {/if}
+              </div>
+              {#if availableCollections.length > 0}
+                <select class="coll-select" value="" onchange={addToCollection}>
+                  <option value="" disabled selected>Add to collection…</option>
+                  {#each availableCollections as c}
+                    <option value={c.id}>{c.name}</option>
+                  {/each}
+                </select>
+              {/if}
+              {#if collError}
+                <span class="coll-error">{collError}</span>
+              {/if}
+            </span>
+          </div>
 
           {#if detail.tags && detail.tags.length}
             <div class="meta-row">
@@ -697,6 +785,54 @@
     background: var(--bg-tertiary);
     font-size: 11px;
     color: var(--text-secondary);
+  }
+
+  /* ── Collections ────────────────────────── */
+  .coll-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-items: center;
+  }
+  .coll-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 4px 2px 8px;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .coll-chip-x {
+    border: none;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 10px;
+    line-height: 1;
+    padding: 2px 3px;
+    border-radius: 50%;
+    opacity: 0.7;
+  }
+  .coll-chip-x:hover { opacity: 1; background: color-mix(in srgb, var(--danger) 25%, transparent); }
+
+  .coll-select {
+    margin-top: 6px;
+    padding: 3px 8px;
+    font-size: 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .coll-error {
+    display: block;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--danger);
   }
 
   /* ── Overview ───────────────────────────── */

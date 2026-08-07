@@ -2193,6 +2193,136 @@ func (a *App) EditGame(id int64, fields EditGameFields) error {
 }
 
 // ---------------------------------------------------------------------------
+// Collections
+// ---------------------------------------------------------------------------
+
+// DesktopCollection is a collection with its active-game count.
+type DesktopCollection struct {
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	GameCount int    `json:"gameCount"`
+}
+
+// GetCollections returns all collections with their active-game counts.
+func (a *App) GetCollections() ([]DesktopCollection, error) {
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	collections, err := a.db.ListCollections()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list collections: %w", err)
+	}
+	counts, err := a.db.CountGamesPerCollection()
+	if err != nil {
+		return nil, fmt.Errorf("failed to count collection members: %w", err)
+	}
+
+	result := make([]DesktopCollection, 0, len(collections))
+	for _, c := range collections {
+		result = append(result, DesktopCollection{
+			ID:        c.ID,
+			Name:      c.Name,
+			GameCount: counts[c.ID],
+		})
+	}
+	return result, nil
+}
+
+// CreateCollection creates a collection and returns its ID.
+func (a *App) CreateCollection(name string) (int64, error) {
+	if a.db == nil {
+		return 0, fmt.Errorf("database not initialized")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, fmt.Errorf("collection name must not be empty")
+	}
+
+	c, err := a.db.CreateCollection(name)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create collection: %w", err)
+	}
+	slog.Info("collection created", "id", c.ID, "name", c.Name)
+	return c.ID, nil
+}
+
+// DeleteCollection removes a collection. Member games are unaffected; only the
+// membership rows go away (ON DELETE CASCADE).
+func (a *App) DeleteCollection(id int64) error {
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if err := a.db.DeleteCollection(id); err != nil {
+		return fmt.Errorf("failed to delete collection: %w", err)
+	}
+	slog.Info("collection deleted", "id", id)
+	return nil
+}
+
+// GetCollectionGames returns the active games in a collection.
+func (a *App) GetCollectionGames(collectionID int64) ([]DesktopGameSummary, error) {
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	games, err := a.db.GetGamesInCollection(collectionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list collection games: %w", err)
+	}
+
+	result := make([]DesktopGameSummary, 0, len(games))
+	for _, g := range games {
+		if g == nil || !g.DeletedAt.IsZero() {
+			continue
+		}
+		result = append(result, gameToSummary(g))
+	}
+	return result, nil
+}
+
+// GetGameCollections returns the collections a game belongs to.
+func (a *App) GetGameCollections(gameID int64) ([]DesktopCollection, error) {
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	collections, err := a.db.GetCollectionsForGame(gameID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list collections for game: %w", err)
+	}
+
+	result := make([]DesktopCollection, 0, len(collections))
+	for _, c := range collections {
+		result = append(result, DesktopCollection{ID: c.ID, Name: c.Name})
+	}
+	return result, nil
+}
+
+// AddGameToCollection adds a game to a collection. Adding a game that is
+// already a member is not an error.
+func (a *App) AddGameToCollection(gameID, collectionID int64) error {
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if err := a.db.AddGameToCollection(gameID, collectionID); err != nil {
+		return fmt.Errorf("failed to add game to collection: %w", err)
+	}
+	return nil
+}
+
+// RemoveGameFromCollection removes a game from a collection.
+func (a *App) RemoveGameFromCollection(gameID, collectionID int64) error {
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if err := a.db.RemoveGameFromCollection(gameID, collectionID); err != nil {
+		return fmt.Errorf("failed to remove game from collection: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // Duplicate detection
 // ---------------------------------------------------------------------------
 

@@ -13,6 +13,7 @@
   import SyncDialog from './lib/SyncDialog.svelte'
   import F95Browser from './lib/F95Browser.svelte'
   import DedupDialog from './lib/DedupDialog.svelte'
+  import CollectionsView from './lib/CollectionsView.svelte'
   import SettingsView from './lib/SettingsView.svelte'
   import StatusBar from './lib/StatusBar.svelte'
 
@@ -169,6 +170,11 @@
       <SyncDialog />
     {:else if activeView === 'browser'}
       <F95Browser />
+    {:else if activeView === 'collections'}
+      <CollectionsView
+        onOpenDetail={openDetail}
+        onCollectionsChanged={() => lastUpdate++}
+      />
     {:else if activeView === 'duplicates'}
       <DedupDialog onDedupDone={refreshGames}/>
     {:else if activeView === 'trash'}

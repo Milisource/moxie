@@ -7,6 +7,8 @@ export function AddGame(arg1:string,arg2:string,arg3:string,arg4:string):Promise
 
 export function AddGameFromF95Zone(arg1:string,arg2:string,arg3:string):Promise<number>;
 
+export function AddGameToCollection(arg1:number,arg2:number):Promise<void>;
+
 export function AddScanPath(arg1:string):Promise<void>;
 
 export function ApplyUpdate():Promise<void>;
@@ -16,6 +18,10 @@ export function CancelGameUpdate():Promise<boolean>;
 export function CheckDependencies():Promise<Array<main.DependencyStatus>>;
 
 export function CheckForUpdate():Promise<main.UpdateInfo>;
+
+export function CreateCollection(arg1:string):Promise<number>;
+
+export function DeleteCollection(arg1:number):Promise<void>;
 
 export function DetectGame(arg1:string):Promise<main.DetectionResult>;
 
@@ -33,11 +39,17 @@ export function GetAllDownloadLinks():Promise<Array<main.DesktopDownloadLinkWith
 
 export function GetCachedCovers(arg1:Array<number>):Promise<Record<number, string>>;
 
+export function GetCollectionGames(arg1:number):Promise<Array<main.DesktopGameSummary>>;
+
+export function GetCollections():Promise<Array<main.DesktopCollection>>;
+
 export function GetConfigDir():Promise<string>;
 
 export function GetCookieStatus():Promise<string>;
 
 export function GetDbPath():Promise<string>;
+
+export function GetGameCollections(arg1:number):Promise<Array<main.DesktopCollection>>;
 
 export function GetGameCount():Promise<number>;
 
@@ -76,6 +88,8 @@ export function PlayGame(arg1:number):Promise<string>;
 export function PurgeDeleted():Promise<number>;
 
 export function RemoveGame(arg1:number,arg2:boolean):Promise<void>;
+
+export function RemoveGameFromCollection(arg1:number,arg2:number):Promise<void>;
 
 export function RemoveScanPath(arg1:string):Promise<void>;
 

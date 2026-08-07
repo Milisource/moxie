@@ -49,6 +49,34 @@ func (db *Database) ListCollections() ([]Collection, error) {
 	return collections, rows.Err()
 }
 
+// CountGamesPerCollection returns collection ID -> number of active games in
+// it. Collections with no active games are absent from the map. One grouped
+// query so a list of N collections does not cost N queries.
+func (db *Database) CountGamesPerCollection() (map[int64]int, error) {
+	rows, err := db.conn.Query(`
+		SELECT gc.collection_id, COUNT(*)
+		FROM game_collections gc
+		JOIN games g ON g.id = gc.game_id
+		WHERE g.deleted_at IS NULL
+		  AND g.path NOT LIKE '%.old'
+		GROUP BY gc.collection_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[int64]int)
+	for rows.Next() {
+		var id int64
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		counts[id] = n
+	}
+	return counts, rows.Err()
+}
+
 // GetCollection retrieves a collection by ID. Returns nil, nil when no
 // matching row exists.
 func (db *Database) GetCollection(id int64) (*Collection, error) {

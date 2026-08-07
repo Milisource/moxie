@@ -126,3 +126,56 @@ func TestPlaysForGameIsScopedToOneGame(t *testing.T) {
 		t.Errorf("limit 2 returned %d rows", len(limited))
 	}
 }
+
+func TestCountGamesPerCollection(t *testing.T) {
+	db := setupTestDB(t)
+
+	favs, err := db.CreateCollection("Favorites")
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	empty, err := db.CreateCollection("Empty")
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+
+	a := insertTestGame(t, db, "A", "/games/a", "active")
+	b := insertTestGame(t, db, "B", "/games/b", "active")
+	trashed := insertTestGame(t, db, "Trashed", "/games/c", "active")
+
+	for _, id := range []int64{a, b, trashed} {
+		if err := db.AddGameToCollection(id, favs.ID); err != nil {
+			t.Fatalf("AddGameToCollection: %v", err)
+		}
+	}
+	if err := db.DeleteGame(trashed); err != nil {
+		t.Fatalf("DeleteGame: %v", err)
+	}
+
+	counts, err := db.CountGamesPerCollection()
+	if err != nil {
+		t.Fatalf("CountGamesPerCollection: %v", err)
+	}
+
+	if counts[favs.ID] != 2 {
+		t.Errorf("Favorites = %d, want 2 (soft-deleted members must not count)", counts[favs.ID])
+	}
+	if n, ok := counts[empty.ID]; ok {
+		t.Errorf("empty collection present with count %d; want absent", n)
+	}
+
+	// The count must agree with the list the UI renders.
+	games, err := db.GetGamesInCollection(favs.ID)
+	if err != nil {
+		t.Fatalf("GetGamesInCollection: %v", err)
+	}
+	active := 0
+	for _, g := range games {
+		if g != nil && g.DeletedAt.IsZero() {
+			active++
+		}
+	}
+	if active != counts[favs.ID] {
+		t.Errorf("count %d disagrees with %d active games in the list", counts[favs.ID], active)
+	}
+}

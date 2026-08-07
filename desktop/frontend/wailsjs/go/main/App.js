@@ -10,6 +10,10 @@ export function AddGameFromF95Zone(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddGameFromF95Zone'](arg1, arg2, arg3);
 }
 
+export function AddGameToCollection(arg1, arg2) {
+  return window['go']['main']['App']['AddGameToCollection'](arg1, arg2);
+}
+
 export function AddScanPath(arg1) {
   return window['go']['main']['App']['AddScanPath'](arg1);
 }
@@ -28,6 +32,14 @@ export function CheckDependencies() {
 
 export function CheckForUpdate() {
   return window['go']['main']['App']['CheckForUpdate']();
+}
+
+export function CreateCollection(arg1) {
+  return window['go']['main']['App']['CreateCollection'](arg1);
+}
+
+export function DeleteCollection(arg1) {
+  return window['go']['main']['App']['DeleteCollection'](arg1);
 }
 
 export function DetectGame(arg1) {
@@ -62,6 +74,14 @@ export function GetCachedCovers(arg1) {
   return window['go']['main']['App']['GetCachedCovers'](arg1);
 }
 
+export function GetCollectionGames(arg1) {
+  return window['go']['main']['App']['GetCollectionGames'](arg1);
+}
+
+export function GetCollections() {
+  return window['go']['main']['App']['GetCollections']();
+}
+
 export function GetConfigDir() {
   return window['go']['main']['App']['GetConfigDir']();
 }
@@ -72,6 +92,10 @@ export function GetCookieStatus() {
 
 export function GetDbPath() {
   return window['go']['main']['App']['GetDbPath']();
+}
+
+export function GetGameCollections(arg1) {
+  return window['go']['main']['App']['GetGameCollections'](arg1);
 }
 
 export function GetGameCount() {
@@ -148,6 +172,10 @@ export function PurgeDeleted() {
 
 export function RemoveGame(arg1, arg2) {
   return window['go']['main']['App']['RemoveGame'](arg1, arg2);
+}
+
+export function RemoveGameFromCollection(arg1, arg2) {
+  return window['go']['main']['App']['RemoveGameFromCollection'](arg1, arg2);
 }
 
 export function RemoveScanPath(arg1) {

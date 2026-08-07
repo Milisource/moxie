@@ -1,15 +1,21 @@
 <script>
-  import {GetUpdatableCount} from '../../wailsjs/go/main/App'
+  import {GetUpdatableCount, GetCollections} from '../../wailsjs/go/main/App'
 
   let {version = '', activeView = $bindable('library'), onNavigate, lastUpdate = 0} = $props()
 
-  let updateCount = $state(null)   // null = not loaded, 0+ = loaded
+  let updateCount = $state(null)      // null = not loaded, 0+ = loaded
+  let collectionCount = $state(null)
 
   async function loadCount() {
     try {
       updateCount = await GetUpdatableCount()
     } catch (e) {
       updateCount = 0
+    }
+    try {
+      collectionCount = ((await GetCollections()) || []).length
+    } catch (e) {
+      collectionCount = 0
     }
   }
 
@@ -40,6 +46,7 @@
     {
       label: 'Management',
       items: [
+        {id: 'collections', label: 'Collections', icon: '⊞', badge: collectionCount},
         {id: 'duplicates', label: 'Duplicates', icon: '◎'},
         {id: 'trash', label: 'Trash', icon: '🗑'},
         {id: 'settings', label: 'Settings', icon: '⚙'},
