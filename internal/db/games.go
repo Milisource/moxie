@@ -887,6 +887,75 @@ func (db *Database) RecentPlays(limit int) ([]PlayHistoryWithGame, error) {
 	return entries, rows.Err()
 }
 
+// PlaysForGame returns the most recent play history entries for one game.
+// Prefer this over filtering RecentPlays in the caller — that pulls the whole
+// table across every game just to keep one game's rows.
+func (db *Database) PlaysForGame(gameID int64, limit int) ([]PlayHistoryWithGame, error) {
+	rows, err := db.conn.Query(`
+		SELECT ph.id, ph.game_id, ph.played_at, ph.duration_s, ph.platform, g.title
+		FROM play_history ph
+		JOIN games g ON g.id = ph.game_id
+		WHERE ph.game_id = ?
+		ORDER BY ph.played_at DESC
+		LIMIT ?`, gameID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []PlayHistoryWithGame
+	for rows.Next() {
+		var e PlayHistoryWithGame
+		var playedAtStr string
+		if err := rows.Scan(&e.ID, &e.GameID, &playedAtStr, &e.DurationS, &e.Platform, &e.GameTitle); err != nil {
+			return nil, err
+		}
+		e.PlayedAt, _ = time.Parse(time.RFC3339, playedAtStr)
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// CountGamesByStatus returns the number of active games per status. Games with
+// no status recorded are grouped under "unknown".
+func (db *Database) CountGamesByStatus() (map[string]int, error) {
+	rows, err := db.conn.Query(`
+		SELECT COALESCE(NULLIF(status, ''), 'unknown') AS s, COUNT(*)
+		FROM games
+		WHERE deleted_at IS NULL
+		  AND path NOT LIKE '%.old'
+		GROUP BY s`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		counts[status] = n
+	}
+	return counts, rows.Err()
+}
+
+// CountGamesNeedingUpdate returns how many games GamesNeedingUpdate would
+// return, without materialising the rows.
+func (db *Database) CountGamesNeedingUpdate() (int, error) {
+	var n int
+	err := db.conn.QueryRow(`
+		SELECT COUNT(*)
+		FROM games
+		WHERE path NOT LIKE '%.old'
+		  AND deleted_at IS NULL
+		  AND latest_version IS NOT NULL
+		  AND latest_version != version`).Scan(&n)
+	return n, err
+}
+
 // CreateSeries creates a new game series and returns it.
 func (db *Database) CreateSeries(name string) (*GameSeries, error) {
 	res, err := db.conn.Exec("INSERT INTO game_series (name) VALUES (?)", name)

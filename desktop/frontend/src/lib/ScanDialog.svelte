@@ -24,7 +24,7 @@
   let showProgress = $state(false)
 
   // Results
-  let lastResult = $state(null)   // { gamesFound, games, errors } or null
+  let lastResult = $state(null)   // { gamesFound, inserted, updated, errors } or null
   let scanError = $state('')
 
   // Unsubscribe fns
@@ -191,6 +191,9 @@
     <div class="result-section">
       <h3 class="result-title">
         Found {lastResult.gamesFound} game{lastResult.gamesFound !== 1 ? 's' : ''}
+        <span class="result-breakdown">
+          ({lastResult.inserted} new, {lastResult.updated} updated)
+        </span>
       </h3>
       {#if lastResult.errors?.length > 0}
         <div class="result-errors">
@@ -369,6 +372,11 @@
     font-weight: 600;
     color: var(--success);
     margin: 0 0 8px;
+  }
+  .result-breakdown {
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--text-secondary);
   }
   .result-errors { margin-top: 8px; }
 

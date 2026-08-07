@@ -11,7 +11,7 @@ export function AddScanPath(arg1:string):Promise<void>;
 
 export function ApplyUpdate():Promise<void>;
 
-export function CacheCover(arg1:number,arg2:string):Promise<string>;
+export function CancelGameUpdate():Promise<boolean>;
 
 export function CheckDependencies():Promise<Array<main.DependencyStatus>>;
 
@@ -31,15 +31,11 @@ export function FindDuplicateGames():Promise<Array<main.DuplicateGroup>>;
 
 export function GetAllDownloadLinks():Promise<Array<main.DesktopDownloadLinkWithGame>>;
 
-export function GetCachedCover(arg1:number):Promise<string>;
-
 export function GetCachedCovers(arg1:Array<number>):Promise<Record<number, string>>;
 
 export function GetConfigDir():Promise<string>;
 
 export function GetCookieStatus():Promise<string>;
-
-export function GetCoverPath(arg1:number):Promise<string>;
 
 export function GetDbPath():Promise<string>;
 
@@ -101,6 +97,6 @@ export function SetGameStatus(arg1:number,arg2:string):Promise<void>;
 
 export function SetGameWinePrefix(arg1:number,arg2:string):Promise<void>;
 
-export function SyncAllGames(arg1:string):Promise<void>;
+export function SyncAllGames():Promise<void>;
 
 export function SyncSingleGame(arg1:number):Promise<void>;

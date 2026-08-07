@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -28,11 +31,14 @@ const watchSweepInterval = 500 * time.Millisecond
 // and triggers incremental rescans so the library stays in sync without
 // manual intervention.
 type DirectoryWatcher struct {
-	app     *App
-	watcher *fsnotify.Watcher
-	stopCh  chan struct{}
-	mu      sync.Mutex
-	pending map[string]time.Time // scan root -> last event time
+	app      *App
+	watcher  *fsnotify.Watcher
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
+	roots    []string // absolute, cleaned scan roots — snapshot taken at Start
+	mu       sync.Mutex
+	pending  map[string]time.Time // scan root -> last event time
 }
 
 // NewDirectoryWatcher creates a watcher bound to the given App.
@@ -53,28 +59,42 @@ func (w *DirectoryWatcher) Start(paths []string) error {
 	}
 	w.watcher = watcher
 
+	// Snapshot the roots in absolute, cleaned form. Events arrive as absolute
+	// paths, so the roots we match them against must be absolute too —
+	// otherwise filepath.Rel errors and every event is silently dropped.
 	for _, p := range paths {
 		abs, err := filepath.Abs(p)
 		if err != nil {
+			slog.Warn("watch: could not resolve scan path", "path", p, "error", err)
 			continue
 		}
+		w.roots = append(w.roots, abs)
 		if err := w.addRecursive(abs); err != nil {
 			slog.Warn("watch: could not watch scan path", "path", abs, "error", err)
 		}
 	}
 
+	w.wg.Add(2)
 	go w.eventLoop()
 	go w.sweepLoop()
 	return nil
 }
 
-// Stop stops watching and releases the underlying resources.
+// Stop stops watching, waits for any in-flight scan to finish, and releases
+// the underlying resources. It is safe to call concurrently and more than once.
 func (w *DirectoryWatcher) Stop() error {
-	close(w.stopCh)
-	if w.watcher != nil {
-		return w.watcher.Close()
-	}
-	return nil
+	var err error
+	w.stopOnce.Do(func() {
+		close(w.stopCh)
+		// Join the loops before closing the fsnotify watcher so an in-flight
+		// RescanDirectory finishes its database writes first — the caller
+		// closes the database right after this returns.
+		w.wg.Wait()
+		if w.watcher != nil {
+			err = w.watcher.Close()
+		}
+	})
+	return err
 }
 
 // addRecursive registers an inotify watcher for root and every subdirectory
@@ -84,11 +104,18 @@ func (w *DirectoryWatcher) addRecursive(root string) error {
 		if err != nil || !d.IsDir() {
 			return nil
 		}
-		return w.watcher.Add(path)
+		// Log and keep walking rather than aborting the subtree — a single
+		// failure (typically fs.inotify.max_user_watches) must not leave the
+		// rest of the library silently unwatched.
+		if aerr := w.watcher.Add(path); aerr != nil {
+			slog.Warn("watch: could not add directory", "path", path, "error", aerr)
+		}
+		return nil
 	})
 }
 
 func (w *DirectoryWatcher) eventLoop() {
+	defer w.wg.Done()
 	for {
 		select {
 		case <-w.stopCh:
@@ -116,7 +143,7 @@ func (w *DirectoryWatcher) eventLoop() {
 // queueScan records that the scan root containing path changed, deferring the
 // actual rescan until the debounce window passes.
 func (w *DirectoryWatcher) queueScan(path string) {
-	root := w.app.matchScanRoot(path)
+	root := w.matchRoot(path)
 	if root == "" {
 		return
 	}
@@ -127,6 +154,7 @@ func (w *DirectoryWatcher) queueScan(path string) {
 
 // sweepLoop periodically fires due rescans after the debounce window.
 func (w *DirectoryWatcher) sweepLoop() {
+	defer w.wg.Done()
 	ticker := time.NewTicker(watchSweepInterval)
 	defer ticker.Stop()
 	for {
@@ -162,6 +190,17 @@ func (a *App) RescanDirectory(root string) {
 	if err != nil {
 		return
 	}
+
+	// This runs on the watcher's sweep goroutine — a panic in the scanner or
+	// database layer would otherwise take down the whole desktop app.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("auto-scan panic", "root", abs, "recover", r)
+			runtime.EventsEmit(a.ctx, "scan:auto-error", map[string]string{
+				"error": fmt.Sprintf("internal error: %v", r),
+			})
+		}
+	}()
 
 	runtime.EventsEmit(a.ctx, "scan:auto", "started")
 
@@ -273,11 +312,21 @@ func (a *App) removeMissingUnder(root string) int {
 		if !isPathUnder(root, e.Path) {
 			continue
 		}
-		if _, err := os.Stat(e.Path); err == nil {
+		// Only a definitive "not there" justifies deleting. Any other stat
+		// failure — an unmounted drive, EACCES on a parent, EMFILE — means we
+		// do not know, and guessing "gone" would trash the whole library on
+		// the next sweep.
+		if _, serr := os.Stat(e.Path); !errors.Is(serr, fs.ErrNotExist) {
 			continue
 		}
 		game, gerr := a.db.GetGameByPath(e.Path)
 		if gerr != nil || game == nil {
+			continue
+		}
+		// Already in the trash — re-deleting would reset deleted_at on every
+		// sweep, so the 30-day auto-purge would never come due, and the UI
+		// would report a phantom removal each time.
+		if !game.DeletedAt.IsZero() {
 			continue
 		}
 		if derr := a.db.DeleteGame(game.ID); derr == nil {
@@ -287,12 +336,13 @@ func (a *App) removeMissingUnder(root string) int {
 	return removed
 }
 
-// matchScanRoot returns the configured scan root that path lives under, or an
-// empty string if none match.
-func (a *App) matchScanRoot(path string) string {
-	for _, p := range a.GetScanPaths() {
-		if isPathUnder(p, path) {
-			return p
+// matchRoot returns the watched scan root that path lives under, or an empty
+// string if none match. It reads the snapshot taken at Start — matching runs
+// once per filesystem event, so it must not touch the config file on disk.
+func (w *DirectoryWatcher) matchRoot(path string) string {
+	for _, root := range w.roots {
+		if isPathUnder(root, path) {
+			return root
 		}
 	}
 	return ""
@@ -323,7 +373,10 @@ func mtimeMatches(dir string, stored time.Time) bool {
 	stored = stored.UTC().Truncate(time.Second)
 	current := dirModTime(dir)
 	if current.IsZero() {
-		return true // can't stat, treat as unchanged
+		// Can't stat: skip re-detecting it. If it is genuinely gone,
+		// removeMissingUnder handles the deletion; if it is merely
+		// unreachable, skipping is the non-destructive choice.
+		return true
 	}
 	return current.Equal(stored)
 }

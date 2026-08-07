@@ -149,8 +149,6 @@ export namespace main {
 	    sizeBytes: number;
 	    sizeLabel: string;
 	    hasCover: boolean;
-	    lastPlayedAt: string;
-	    coverUrl?: string;
 	    developer: string;
 	    overview: string;
 	    coverUrl: string;
@@ -180,8 +178,6 @@ export namespace main {
 	        this.sizeBytes = source["sizeBytes"];
 	        this.sizeLabel = source["sizeLabel"];
 	        this.hasCover = source["hasCover"];
-	        this.lastPlayedAt = source["lastPlayedAt"];
-	        this.coverUrl = source["coverUrl"];
 	        this.developer = source["developer"];
 	        this.overview = source["overview"];
 	        this.coverUrl = source["coverUrl"];
@@ -225,8 +221,6 @@ export namespace main {
 	    sizeBytes: number;
 	    sizeLabel: string;
 	    hasCover: boolean;
-	    lastPlayedAt: string;
-	    coverUrl?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new DesktopGameSummary(source);
@@ -245,8 +239,6 @@ export namespace main {
 	        this.sizeBytes = source["sizeBytes"];
 	        this.sizeLabel = source["sizeLabel"];
 	        this.hasCover = source["hasCover"];
-	        this.lastPlayedAt = source["lastPlayedAt"];
-	        this.coverUrl = source["coverUrl"];
 	    }
 	}
 	

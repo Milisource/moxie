@@ -83,25 +83,37 @@
   }
 
   let unsubAutoScan
+  let unsubAutoScanError
   onMount(() => {
     init()
     // Live library refresh when the directory watcher finishes an auto-scan.
-    unsubAutoScan = EventsOn('scan:auto-complete', (r) => {
+    unsubAutoScan = EventsOn('scan:auto-complete', async (r) => {
+      let msg = ''
       if (r) {
         const parts = []
         if (r.inserted) parts.push(`${r.inserted} new`)
         if (r.updated) parts.push(`${r.updated} updated`)
         if (r.removed) parts.push(`${r.removed} removed`)
-        statusMsg = parts.length
+        msg = parts.length
           ? `Auto-scan: ${parts.join(', ')}`
           : 'Auto-scan: no changes'
       }
-      refreshGames()
+      try {
+        await refreshGames()
+        // refreshGames sets its own "N games loaded" message — restore the
+        // auto-scan result afterwards so the user actually sees it.
+        if (msg) statusMsg = msg
+      } catch (e) {
+        statusMsg = `Error: ${e}`
+      }
     })
-    EventsOn('scan:auto-error', (r) => {
+    unsubAutoScanError = EventsOn('scan:auto-error', (r) => {
       statusMsg = `Auto-scan error: ${r?.error || 'unknown'}`
     })
-    return () => { if (unsubAutoScan) unsubAutoScan() }
+    return () => {
+      if (unsubAutoScan) unsubAutoScan()
+      if (unsubAutoScanError) unsubAutoScanError()
+    }
   })
 </script>
 

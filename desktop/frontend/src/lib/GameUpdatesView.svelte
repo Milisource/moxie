@@ -7,6 +7,7 @@
     CheckForUpdate,
     DownloadGameUpdate,
     DownloadAllUpdates,
+    CancelGameUpdate,
   } from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
 
@@ -43,6 +44,8 @@
   let unsubBatchProgress = null
   let unsubGameDone = null
   let unsubBatchComplete = null
+  let unsubCancelled = null
+  let unsubIdle = null
 
   // ── Utility Formatting ───────────────────────────────────────
   function formatBytes(bytes) {
@@ -148,14 +151,32 @@
     }
   }
 
+  // The backend runs at most one update at a time, so retries are queued and
+  // pumped one-by-one as each finishes rather than fired off together.
+  let retryQueue = $state([])
+
   function handleRetryFailed() {
     const failed = (batchState?.results || []).filter(r => !r.success)
     if (failed.length === 0) return
     batchState = null
-    for (const f of failed) {
-      handleUpdateGame(f.gameID)
-    }
+    retryQueue = failed.map(f => f.gameID)
+    pumpRetryQueue()
   }
+
+  function pumpRetryQueue() {
+    if (retryQueue.length === 0) return
+    const [next, ...rest] = retryQueue
+    retryQueue = rest
+    handleUpdateGame(next)
+  }
+
+  async function handleCancel() {
+    try {
+      retryQueue = []
+      await CancelGameUpdate()
+    } catch (e) { /* nothing running */ }
+  }
+
 
   // ── App Update ───────────────────────────────────────────────
   async function handleCheckAppUpdate() {
@@ -213,6 +234,22 @@
           error: data.message || 'Unknown error',
         },
       }
+    })
+
+    // The backend releases its single-run lock just before this fires, so
+    // it is the only safe point to start the next queued retry.
+    unsubIdle = EventsOn('game-update:idle', () => {
+      pumpRetryQueue()
+    })
+
+    unsubCancelled = EventsOn('game-update:cancelled', () => {
+      const busy = ['syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
+      const next = {...gameStates}
+      for (const [id, gs] of Object.entries(next)) {
+        if (busy.includes(gs.phase)) next[id] = {...gs, phase: 'error', error: 'Cancelled'}
+      }
+      gameStates = next
+      if (batchState?.running) batchState = {...batchState, running: false, error: 'Cancelled'}
     })
 
     unsubComplete = EventsOn('game-update:complete', (data) => {
@@ -294,12 +331,17 @@
     if (unsubBatchProgress) unsubBatchProgress()
     if (unsubGameDone) unsubGameDone()
     if (unsubBatchComplete) unsubBatchComplete()
+    if (unsubCancelled) unsubCancelled()
+    if (unsubIdle) unsubIdle()
   })
 
   // ── Derived ──────────────────────────────────────────────────
   let isUpdatingAny = $derived(
     Object.values(gameStates).some(s => s && s.phase && s.phase !== 'idle' && s.phase !== 'done' && s.phase !== 'error')
   )
+
+  // The backend holds a single-run lock for the whole pipeline.
+  let updateInFlight = $derived(isUpdatingAny || !!batchState?.running)
 
   let count = $derived(games.length)
   let doneCount = $derived(
@@ -433,6 +475,11 @@
         >
           Sync Now
         </button>
+        {#if updateInFlight}
+          <button class="btn btn-outline btn-cancel" onclick={handleCancel}>
+            Cancel
+          </button>
+        {/if}
       </div>
     {/if}
 
@@ -1056,6 +1103,14 @@
   }
   .btn-outline:hover:not(:disabled) {
     background: var(--bg-hover);
+  }
+
+  .btn-cancel {
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  }
+  .btn-cancel:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
   }
 
   .btn-sm {

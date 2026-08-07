@@ -1,5 +1,5 @@
 <script>
-  import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCachedCover} from '../../wailsjs/go/main/App'
+  import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCachedCovers} from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
 
   let {
@@ -12,31 +12,33 @@
   let coverCache = $state(new Map())   // gameId → data URI string
   let coverLoading = $state(new Set()) // gameIds currently loading
 
-  async function loadCover(gameId) {
-    if (coverCache.has(gameId) || coverLoading.has(gameId)) return
-    coverLoading.add(gameId)
+  // One IPC round-trip for the whole visible batch. Fetching per-row meant 50
+  // sequential calls, each carrying a base64-encoded image.
+  async function loadCovers(list) {
+    const need = list
+      .filter(g => g.hasCover && !coverCache.has(g.id) && !coverLoading.has(g.id))
+      .map(g => g.id)
+    if (need.length === 0) return
+
+    for (const id of need) coverLoading.add(id)
     try {
-      const uri = await GetCachedCover(gameId)
-      if (uri) {
-        coverCache.set(gameId, uri)
-        // Trigger reactivity by reassigning
-        coverCache = new Map(coverCache)
+      const covers = await GetCachedCovers(need)
+      const next = new Map(coverCache)
+      // Go returns map[int64]string, so the keys arrive as strings.
+      for (const [id, uri] of Object.entries(covers ?? {})) {
+        if (uri) next.set(Number(id), uri)
       }
+      coverCache = next
     } catch (e) {
-      console.error('Failed to load cover for', gameId, e)
+      console.error('Failed to load covers', e)
     } finally {
-      coverLoading.delete(gameId)
+      for (const id of need) coverLoading.delete(id)
     }
   }
 
-  // Watch the displayed list and trigger cover loading for visible items
+  // Watch the displayed list and load covers for the visible rows.
   $effect(() => {
-    const list = displayed
-    // Load covers for the first batch (visible rows)
-    const batch = list.slice(0, 50)
-    for (const g of batch) {
-      if (g.hasCover) loadCover(g.id)
-    }
+    loadCovers(displayed.slice(0, 50))
   })
 
   // ── Search & Filters ──────────────────────────────────────────
