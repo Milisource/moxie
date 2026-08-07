@@ -126,6 +126,10 @@ export function GetGamesWithDownloadLinks() {
   return window['go']['main']['App']['GetGamesWithDownloadLinks']();
 }
 
+export function GetInstallTargets() {
+  return window['go']['main']['App']['GetInstallTargets']();
+}
+
 export function GetScanPaths() {
   return window['go']['main']['App']['GetScanPaths']();
 }
@@ -148,6 +152,10 @@ export function GetUpdatableGames() {
 
 export function GetVersion() {
   return window['go']['main']['App']['GetVersion']();
+}
+
+export function InstallGame(arg1, arg2) {
+  return window['go']['main']['App']['InstallGame'](arg1, arg2);
 }
 
 export function ListDeletedGames() {

@@ -71,6 +71,20 @@ export namespace main {
 	        this.details = source["details"];
 	    }
 	}
+	export class InstallTarget {
+	    path: string;
+	    available: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new InstallTarget(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.available = source["available"];
+	    }
+	}
 	export class DesktopCollection {
 	    id: number;
 	    name: string;

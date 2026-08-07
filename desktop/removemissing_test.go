@@ -125,3 +125,34 @@ func TestRemoveMissingUnderIgnoresOtherRoots(t *testing.T) {
 		t.Error("game outside the swept root must be untouched")
 	}
 }
+
+func TestInstallableTitle(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Simple Game", "Simple Game"},
+		{"Path/With/Slashes", "Path-With-Slashes"},
+		{"Back\\Slash", "Back-Slash"},
+		{"Colon: Subtitle", "Colon- Subtitle"},
+		// Quotes and question marks are dropped; asterisks become a dash.
+		{"Quote\"Star*Question?", "QuoteStar-Question"},
+		{"Pipe|And<Angle>", "Pipe-AndAngle"},
+		{"  padded  ", "padded"},
+		{"...", "game"},
+		{"", "game"},
+	}
+	for _, c := range cases {
+		if got := installableTitle(c.in); got != c.want {
+			t.Errorf("installableTitle(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// A title must never escape the chosen install directory.
+func TestInstallableTitleStaysInsideParent(t *testing.T) {
+	parent := t.TempDir()
+	for _, evil := range []string{"../escape", "..", "../../etc", "a/../../b"} {
+		got := filepath.Join(parent, installableTitle(evil))
+		if !isPathUnder(parent, got) {
+			t.Errorf("installableTitle(%q) produced %q, which escapes %q", evil, got, parent)
+		}
+	}
+}

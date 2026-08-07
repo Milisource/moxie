@@ -483,7 +483,7 @@ func (a *App) PlayGame(id int64) (string, error) {
 	if exe == "" {
 		// Virtual game added from F95Zone but not yet downloaded.
 		if strings.HasPrefix(game.Path, db.VirtualPathPrefix) {
-			return "", fmt.Errorf("%q was added from F95Zone but not yet downloaded. Use the Downloads view to install it.", game.Title)
+			return "", fmt.Errorf("%q was added from F95Zone but not yet downloaded. Use Install on its detail page to download it.", game.Title)
 		}
 		return "", fmt.Errorf("no executable found for %q", game.Title)
 	}
@@ -831,7 +831,7 @@ func (a *App) GetAllDownloadLinks() ([]DesktopDownloadLinkWithGame, error) {
 // The ctx parameter supports cancellation; the download is aborted if the
 // context is cancelled. The function retries up to 3 times on transient
 // network errors with a 2-second backoff between attempts.
-func (a *App) downloadGameFile(ctx context.Context, gameID int64, link db.DownloadLink) (string, error) {
+func (a *App) downloadGameFile(ctx context.Context, evPrefix string, gameID int64, link db.DownloadLink) (string, error) {
 	if a.db == nil {
 		return "", fmt.Errorf("database not initialized")
 	}
@@ -843,7 +843,7 @@ func (a *App) downloadGameFile(ctx context.Context, gameID int64, link db.Downlo
 	cookie, err := browser.GetF95Cookies()
 	if err != nil || cookie == "" {
 		errMsg := "F95Zone cookies not available. Log into F95Zone in your browser first"
-		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+		runtime.EventsEmit(a.ctx, evPrefix+":error", map[string]interface{}{
 			"gameID":  gameID,
 			"step":    "cookie",
 			"message": errMsg,
@@ -855,7 +855,7 @@ func (a *App) downloadGameFile(ctx context.Context, gameID int64, link db.Downlo
 	// Using MkdirTemp so each download gets its own isolated directory.
 	tempDir, err := os.MkdirTemp(os.TempDir(), fmt.Sprintf("moxie-update-%d-*", gameID))
 	if err != nil {
-		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+		runtime.EventsEmit(a.ctx, evPrefix+":error", map[string]interface{}{
 			"gameID":  gameID,
 			"step":    "temp",
 			"message": fmt.Sprintf("Failed to create temp directory: %v", err),
@@ -871,7 +871,7 @@ func (a *App) downloadGameFile(ctx context.Context, gameID int64, link db.Downlo
 			return
 		}
 		lastProgress = now
-		runtime.EventsEmit(a.ctx, "game-update:download-progress", map[string]interface{}{
+		runtime.EventsEmit(a.ctx, evPrefix+":download-progress", map[string]interface{}{
 			"gameID":           gameID,
 			"bytesDownloaded":  p.BytesDownloaded,
 			"totalBytes":       p.TotalBytes,
@@ -941,7 +941,7 @@ func (a *App) downloadGameFile(ctx context.Context, gameID int64, link db.Downlo
 
 	if !downloaded {
 		errMsg := fmt.Sprintf("Download failed after %d attempts: %v", maxRetries, lastErr)
-		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+		runtime.EventsEmit(a.ctx, evPrefix+":error", map[string]interface{}{
 			"gameID":  gameID,
 			"step":    "download",
 			"message": errMsg,
@@ -987,7 +987,7 @@ func (a *App) downloadGameFile(ctx context.Context, gameID int64, link db.Downlo
 	)
 
 	// Emit completion event (caller is responsible for cleanup).
-	runtime.EventsEmit(a.ctx, "game-update:download-complete", map[string]interface{}{
+	runtime.EventsEmit(a.ctx, evPrefix+":download-complete", map[string]interface{}{
 		"gameID": gameID,
 		"path":   bestFile,
 		"size":   bestSize,
@@ -2889,7 +2889,7 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) error {
 		"phase":  "downloading",
 	})
 
-	archivePath, err := a.downloadGameFile(ctx, gameID, *selectedLink)
+	archivePath, err := a.downloadGameFile(ctx, "game-update", gameID, *selectedLink)
 	if err != nil {
 		// downloadGameFile already emits its own error events.
 		return fmt.Errorf("download game file: %w", err)
@@ -3168,6 +3168,216 @@ func (a *App) DownloadAllUpdates() error {
 		slog.Info("batch update complete", "succeeded", succeeded, "failed", failed, "total", len(games))
 	})
 
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Fresh install pipeline
+// ---------------------------------------------------------------------------
+
+// InstallTarget describes where a game can be installed to.
+type InstallTarget struct {
+	Path      string `json:"path"`
+	Available bool   `json:"available"`
+}
+
+// GetInstallTargets returns the configured scan paths that currently exist on
+// disk, for use as install destinations. Installing into a scan path means the
+// directory watcher picks the game up immediately.
+func (a *App) GetInstallTargets() []InstallTarget {
+	paths := a.GetScanPaths()
+	targets := make([]InstallTarget, 0, len(paths))
+	for _, p := range paths {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		info, serr := os.Stat(abs)
+		targets = append(targets, InstallTarget{
+			Path:      abs,
+			Available: serr == nil && info.IsDir(),
+		})
+	}
+	return targets
+}
+
+// installableTitle turns a game title into a directory name that is safe on
+// every supported platform.
+func installableTitle(title string) string {
+	replacer := strings.NewReplacer(
+		"/", "-", "\\", "-", ":", "-", "*", "-", "?", "",
+		"\"", "", "<", "", ">", "", "|", "-",
+	)
+	cleaned := strings.TrimSpace(replacer.Replace(title))
+	cleaned = strings.Trim(cleaned, ".")
+	if cleaned == "" {
+		cleaned = "game"
+	}
+	return cleaned
+}
+
+// runGameInstall downloads a game and installs it into destParent, then
+// rewrites the game record to point at the real directory. It is the path that
+// turns a browser-added /virtual/ entry into an installed game.
+func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent string) error {
+	emitErr := func(step string, err error) error {
+		runtime.EventsEmit(a.ctx, "game-install:error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    step,
+			"message": err.Error(),
+		})
+		return err
+	}
+	phase := func(name string) {
+		runtime.EventsEmit(a.ctx, "game-install:phase", map[string]interface{}{
+			"gameID": gameID,
+			"phase":  name,
+		})
+	}
+
+	game, err := a.db.GetGame(gameID)
+	if err != nil {
+		return emitErr("lookup", fmt.Errorf("get game: %w", err))
+	}
+	if game == nil {
+		return emitErr("lookup", fmt.Errorf("game with id %d not found", gameID))
+	}
+
+	// Refuse to install over an existing installation — that is what the
+	// update pipeline is for, and it knows how to preserve saves.
+	if !strings.HasPrefix(game.Path, db.VirtualPathPrefix) {
+		if _, serr := os.Stat(game.Path); serr == nil {
+			return emitErr("check", fmt.Errorf("%q is already installed at %s — use Update to upgrade it", game.Title, game.Path))
+		}
+	}
+
+	destParent = strings.TrimSpace(destParent)
+	if destParent == "" {
+		return emitErr("check", fmt.Errorf("no install directory chosen"))
+	}
+	destParent, err = filepath.Abs(destParent)
+	if err != nil {
+		return emitErr("check", fmt.Errorf("resolving install directory: %w", err))
+	}
+	if info, serr := os.Stat(destParent); serr != nil || !info.IsDir() {
+		return emitErr("check", fmt.Errorf("install directory is not available: %s", destParent))
+	}
+
+	targetDir := filepath.Join(destParent, installableTitle(game.Title))
+	if _, serr := os.Stat(targetDir); serr == nil {
+		return emitErr("check", fmt.Errorf("target directory already exists: %s", targetDir))
+	}
+
+	// Track temp dirs for cleanup; targetDir is removed only if we created it
+	// and then failed, so a partial install never lingers.
+	var downloadTempDir, extractDir string
+	createdTarget := false
+	success := false
+	defer func() {
+		if downloadTempDir != "" {
+			os.RemoveAll(downloadTempDir)
+		}
+		if extractDir != "" {
+			os.RemoveAll(extractDir)
+		}
+		if !success && createdTarget {
+			os.RemoveAll(targetDir)
+		}
+	}()
+
+	phase("selecting-link")
+	selectedLink, err := a.GetGameDownloadLinksForUpdate(gameID)
+	if err != nil {
+		return emitErr("select-link", err)
+	}
+
+	phase("downloading")
+	archivePath, err := a.downloadGameFile(ctx, "game-install", gameID, *selectedLink)
+	if err != nil {
+		// downloadGameFile emits its own error events.
+		return fmt.Errorf("download game file: %w", err)
+	}
+	downloadTempDir = filepath.Dir(archivePath)
+
+	phase("extracting")
+	extractDir, err = os.MkdirTemp(os.TempDir(), fmt.Sprintf("moxie-install-%d-*", gameID))
+	if err != nil {
+		return emitErr("extract", fmt.Errorf("create extract temp dir: %w", err))
+	}
+	extractedRoot, err := extractor.Extract(ctx, archivePath, extractDir, func(p extractor.Progress) {
+		runtime.EventsEmit(a.ctx, "game-install:extract-progress", map[string]interface{}{
+			"gameID":         gameID,
+			"filesExtracted": p.FilesExtracted,
+			"totalFiles":     p.TotalFiles,
+			"currentFile":    p.CurrentFile,
+		})
+	})
+	if err != nil {
+		return emitErr("extract", fmt.Errorf("extract archive: %w", err))
+	}
+
+	phase("installing")
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return emitErr("install", fmt.Errorf("create target directory: %w", err))
+	}
+	createdTarget = true
+
+	// Reuse the updater's copy logic. backup=false because the target is a
+	// directory we just created — there is nothing to preserve.
+	if _, err := updater.Merge(targetDir, game.Engine, extractedRoot, false); err != nil {
+		return emitErr("install", fmt.Errorf("install files: %w", err))
+	}
+
+	phase("updating-db")
+	game.Path = targetDir
+	game.ExePath = launcher.ResolveExecutable(targetDir, "")
+	game.SizeBytes = updateDirSize(targetDir)
+	game.LastScannedAt = time.Now().UTC()
+	game.DirMTime = dirModTime(targetDir)
+	if game.LatestVersion != "" {
+		game.Version = game.LatestVersion
+	}
+	if err := a.db.UpdateGame(game); err != nil {
+		return emitErr("update-db", fmt.Errorf("update game in db: %w", err))
+	}
+
+	success = true
+	runtime.EventsEmit(a.ctx, "game-install:complete", map[string]interface{}{
+		"gameID":  gameID,
+		"title":   game.Title,
+		"path":    targetDir,
+		"version": game.Version,
+	})
+	slog.Info("game installed", "gameID", gameID, "title", game.Title, "path", targetDir)
+	return nil
+}
+
+// InstallGame downloads a game and installs it into destParent, which must be
+// one of the configured scan paths. It returns immediately; progress arrives
+// as game-install:* events mirroring the game-update:* set.
+func (a *App) InstallGame(gameID int64, destParent string) error {
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if a.ctx == nil {
+		return fmt.Errorf("application context not initialized")
+	}
+
+	// Shares the update lock: both pipelines download, extract and write into
+	// game directories, and running them together is asking for trouble.
+	if !a.updateRunning.CompareAndSwap(false, true) {
+		return fmt.Errorf("an update or install is already in progress")
+	}
+
+	a.goBackground("game-install", func(ctx context.Context) {
+		defer func() {
+			a.updateRunning.Store(false)
+			runtime.EventsEmit(a.ctx, "game-update:idle", map[string]interface{}{})
+		}()
+		ctx = a.beginCancellableUpdate(ctx)
+		defer a.endCancellableUpdate()
+		a.runGameInstall(ctx, gameID, destParent)
+	})
 	return nil
 }
 

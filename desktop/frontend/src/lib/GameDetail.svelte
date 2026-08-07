@@ -1,9 +1,11 @@
 <script>
-  import {onMount} from 'svelte'
+  import {onMount, onDestroy} from 'svelte'
+  import {EventsOn} from '../../wailsjs/runtime/runtime'
   import {
     GetGameDetail, PlayGame, RemoveGame, SetGameStatus, RenameGame,
     SetGameWinePrefix, SyncSingleGame, EditGame,
     GetCollections, GetGameCollections, AddGameToCollection, RemoveGameFromCollection,
+    GetInstallTargets, InstallGame,
   } from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
 
@@ -28,6 +30,52 @@
   // ── Toggle sections ─────────────────────────────
   let showDownloads = $state(false)
   let showPlayHistory = $state(false)
+
+  // ── Install (browser-added games with no local copy) ──
+  let installTargets = $state([])
+  let installDest = $state('')
+  let installing = $state(false)
+  let installPhase = $state('')
+  let installProgress = $state(0)
+  let installError = $state('')
+
+  // A /virtual/ path means the game exists only as an F95Zone reference.
+  let needsInstall = $derived(!!detail?.path?.startsWith('/virtual/'))
+
+  let installPhaseLabel = $derived.by(() => {
+    switch (installPhase) {
+      case 'selecting-link': return 'Finding link…'
+      case 'downloading':    return 'Downloading…'
+      case 'extracting':     return 'Extracting…'
+      case 'installing':     return 'Installing…'
+      case 'updating-db':    return 'Finalizing…'
+      default:               return 'Working…'
+    }
+  })
+
+  async function loadInstallTargets() {
+    try {
+      installTargets = (await GetInstallTargets()) || []
+      const firstAvailable = installTargets.find(t => t.available)
+      if (firstAvailable && !installDest) installDest = firstAvailable.path
+    } catch (e) {
+      installTargets = []
+    }
+  }
+
+  async function handleInstall() {
+    if (!installDest || installing) return
+    installing = true
+    installError = ''
+    installPhase = 'selecting-link'
+    installProgress = 0
+    try {
+      await InstallGame(gameId, installDest)
+    } catch (e) {
+      installError = String(e)
+      installing = false
+    }
+  }
 
   // ── Collections ─────────────────────────────────
   let gameCollections = $state([])   // collections this game belongs to
@@ -248,9 +296,41 @@
     }
   }
 
+  let unsubInstall = []
+
   onMount(() => {
     loadDetail()
     loadCollections()
+    loadInstallTargets()
+
+    // Only react to events for the game currently on screen — the install
+    // pipeline is app-wide and could be running for a different game.
+    const mine = (data) => Number(data?.gameID) === Number(gameId)
+
+    unsubInstall = [
+      EventsOn('game-install:phase', (d) => {
+        if (mine(d)) installPhase = d.phase || ''
+      }),
+      EventsOn('game-install:download-progress', (d) => {
+        if (mine(d)) installProgress = Math.round(d.percent || 0)
+      }),
+      EventsOn('game-install:error', (d) => {
+        if (!mine(d)) return
+        installError = d.message || 'Install failed'
+        installing = false
+      }),
+      EventsOn('game-install:complete', async (d) => {
+        if (!mine(d)) return
+        installing = false
+        installProgress = 100
+        await loadDetail()
+        onUpdate()
+      }),
+    ]
+  })
+
+  onDestroy(() => {
+    for (const un of unsubInstall) if (un) un()
   })
 </script>
 
@@ -623,7 +703,47 @@
         {#if launchStatus.error}
           <div class="launch-notice launch-error">{launchStatus.error}</div>
         {/if}
-        <button class="btn btn-primary btn-play" onclick={handlePlay}>▶ Play</button>
+        {#if needsInstall}
+          <div class="install-box">
+            <p class="install-hint">
+              Added from F95Zone but not downloaded yet. Choose where to install it.
+            </p>
+            {#if installTargets.length === 0}
+              <p class="install-warn">
+                No scan paths configured. Add one in Settings first.
+              </p>
+            {:else}
+              <div class="install-row">
+                <select class="install-select" bind:value={installDest} disabled={installing}>
+                  {#each installTargets as t}
+                    <option value={t.path} disabled={!t.available}>
+                      {t.path}{t.available ? '' : ' (unavailable)'}
+                    </option>
+                  {/each}
+                </select>
+                <button
+                  class="btn btn-primary"
+                  onclick={handleInstall}
+                  disabled={installing || !installDest}
+                >
+                  {installing ? installPhaseLabel : '↓ Install'}
+                </button>
+              </div>
+              {#if installing && installProgress}
+                <div class="install-progress">
+                  <div class="install-bar-bg">
+                    <div class="install-bar-fill" style="width: {installProgress}%"></div>
+                  </div>
+                </div>
+              {/if}
+            {/if}
+            {#if installError}
+              <p class="install-warn">{installError}</p>
+            {/if}
+          </div>
+        {:else}
+          <button class="btn btn-primary btn-play" onclick={handlePlay}>▶ Play</button>
+        {/if}
         {#if detail.f95Url}
           <button class="btn btn-primary" onclick={handleSync}>Sync from F95Zone</button>
         {/if}
@@ -785,6 +905,42 @@
     background: var(--bg-tertiary);
     font-size: 11px;
     color: var(--text-secondary);
+  }
+
+  /* ── Install ────────────────────────────── */
+  .install-box {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    margin-bottom: 8px;
+  }
+  .install-hint { margin: 0 0 8px; font-size: 12px; color: var(--text-secondary); }
+  .install-warn { margin: 8px 0 0; font-size: 12px; color: var(--warning); }
+  .install-row { display: flex; gap: 8px; align-items: center; }
+  .install-select {
+    flex: 1;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .install-progress { margin-top: 8px; }
+  .install-bar-bg {
+    height: 5px;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+  }
+  .install-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent);
+    transition: width 0.2s ease;
   }
 
   /* ── Collections ────────────────────────── */

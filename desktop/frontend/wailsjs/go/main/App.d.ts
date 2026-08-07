@@ -65,6 +65,8 @@ export function GetGames():Promise<Array<main.DesktopGameSummary>>;
 
 export function GetGamesWithDownloadLinks():Promise<Array<main.DesktopGameSummary>>;
 
+export function GetInstallTargets():Promise<Array<main.InstallTarget>>;
+
 export function GetScanPaths():Promise<Array<string>>;
 
 export function GetStartupError():Promise<string>;
@@ -76,6 +78,8 @@ export function GetUpdatableCount():Promise<number>;
 export function GetUpdatableGames():Promise<Array<main.DesktopGameSummary>>;
 
 export function GetVersion():Promise<string>;
+
+export function InstallGame(arg1:number,arg2:string):Promise<void>;
 
 export function ListDeletedGames():Promise<Array<main.DesktopGameSummary>>;
 
