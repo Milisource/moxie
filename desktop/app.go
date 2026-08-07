@@ -692,11 +692,6 @@ func (a *App) RemoveScanPath(path string) error {
 	return nil
 }
 
-// Greet is a test method to verify Wails binding is working.
-func (a *App) Greet(name string) string {
-	return fmt.Sprintf("Hello %s! Moxie desktop is running.", name)
-}
-
 // PickDirectory opens a native directory picker dialog via Wails runtime.
 // Returns the selected directory path, or empty string if cancelled.
 func (a *App) PickDirectory() string {

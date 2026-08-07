@@ -35,7 +35,6 @@
       label: 'Media',
       items: [
         {id: 'downloads', label: 'Downloads', icon: '↓'},
-        {id: 'steam', label: 'Steam', icon: '◈'},
       ],
     },
     {

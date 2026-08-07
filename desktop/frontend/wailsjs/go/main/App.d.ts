@@ -65,8 +65,6 @@ export function GetUpdatableGames():Promise<Array<main.DesktopGameSummary>>;
 
 export function GetVersion():Promise<string>;
 
-export function Greet(arg1:string):Promise<string>;
-
 export function ListDeletedGames():Promise<Array<main.DesktopGameSummary>>;
 
 export function OpenDownloadURL(arg1:number):Promise<void>;

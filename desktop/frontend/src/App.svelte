@@ -1,7 +1,7 @@
 <script>
   import {onMount} from 'svelte'
   import {EventsOn} from '../wailsjs/runtime/runtime'
-  import {GetGames, GetVersion, ListDeletedGames, RestoreGame, PurgeDeleted} from '../wailsjs/go/main/App'
+  import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted} from '../wailsjs/go/main/App'
   import Sidebar from './lib/Sidebar.svelte'
   import GameList from './lib/GameList.svelte'
   import GameDetail from './lib/GameDetail.svelte'
@@ -13,6 +13,7 @@
   import SyncDialog from './lib/SyncDialog.svelte'
   import F95Browser from './lib/F95Browser.svelte'
   import DedupDialog from './lib/DedupDialog.svelte'
+  import SettingsView from './lib/SettingsView.svelte'
   import StatusBar from './lib/StatusBar.svelte'
 
   let version = $state('')
@@ -23,6 +24,10 @@
   let selectedGameId = $state(null)
   let loading = $state(true)
   let deletedGames = $state([])
+  // Non-empty when the backend failed to start (usually the database). Without
+  // this every bound call just answers "database not initialized" and the user
+  // sees an empty library with no explanation.
+  let startupError = $state('')
 
   async function loadGames() {
     loading = true
@@ -37,6 +42,16 @@
 
   async function init() {
     try { version = await GetVersion() } catch (e) { version = '?' }
+
+    // Check before loading games — if startup failed, every data call will
+    // fail too, and the banner explains why rather than a bare status message.
+    try { startupError = await GetStartupError() } catch (e) { startupError = '' }
+    if (startupError) {
+      statusMsg = 'Startup failed'
+      loading = false
+      return
+    }
+
     await loadGames()
   }
 
@@ -121,17 +136,23 @@
   <Sidebar {version} bind:activeView onNavigate={(id) => activeView = id} {lastUpdate}/>
 
   <main class="main">
-    {#if activeView === 'detail' && selectedGameId !== null}
+    {#if startupError}
+      <div class="startup-error">
+        <h2>Moxie could not start</h2>
+        <p class="startup-error-msg">{startupError}</p>
+        <p class="startup-error-hint">
+          The library is unavailable until this is resolved. Check that the config
+          directory is writable and that no other copy of Moxie is running.
+        </p>
+      </div>
+    {:else if activeView === 'detail' && selectedGameId !== null}
       <GameDetail gameId={selectedGameId} onBack={closeDetail} onUpdate={refreshGames}/>
     {:else if activeView === 'library'}
       <GameList {games} onOpenDetail={openDetail} onUpdate={refreshGames}/>
     {:else if activeView === 'scan'}
       <ScanDialog onGamesUpdated={refreshGames}/>
     {:else if activeView === 'settings'}
-      <div class="placeholder-view">
-        <h2>Settings</h2>
-        <p>Configuration coming in a future update.</p>
-      </div>
+      <SettingsView />
     {:else if activeView === 'updates'}
       <GameUpdatesView
         onNavigate={(id) => activeView = id}
@@ -210,6 +231,31 @@
   }
   .placeholder-view h2 { font-size: 18px; font-weight: 600; }
   .placeholder-view p  { font-size: 14px; }
+
+  .startup-error {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 32px;
+    text-align: center;
+  }
+  .startup-error h2 { font-size: 18px; font-weight: 700; color: var(--danger); margin: 0; }
+  .startup-error-msg {
+    font-size: 13px;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    max-width: 560px;
+    margin: 0;
+  }
+  .startup-error-hint {
+    font-size: 13px;
+    color: var(--text-secondary);
+    max-width: 560px;
+    margin: 0;
+  }
 
   .trash-view { flex: 1; overflow: auto; padding: 32px; max-width: 720px; margin: 0 auto; width: 100%; }
   .trash-view h2 { font-size: 20px; font-weight: 700; margin: 0 0 16px; }
