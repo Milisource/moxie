@@ -75,6 +75,10 @@ type PlayHistoryWithGame struct {
 }
 
 // GameSeries represents a series that groups related games.
+//
+// Unused: it describes the game_series table, which exists in the schema but
+// has no read or write path. See the note above the removed series helpers in
+// games.go for why the table and columns are kept.
 type GameSeries struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`

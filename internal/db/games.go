@@ -11,6 +11,39 @@ import (
 // These are placeholders created by the desktop app's AddGameFromF95Zone.
 const VirtualPathPrefix = "/virtual/"
 
+// gameColumnNames is the games column list scanGame reads, in scan order.
+//
+// Every query feeding scanGame must select exactly these, in this order. It
+// used to be spelled out in twelve places; when wine_prefix was added, one
+// copy was missed and that query failed at runtime with a Scan destination
+// count mismatch. Deriving the list from here makes that class of drift
+// impossible — add a column once, and every query picks it up.
+var gameColumnNames = []string{
+	"id", "title", "engine", "path",
+	"exe_path", "version", "size_bytes",
+	"f95_url", "f95_thread_id", "tags",
+	"status", "latest_version", "version_checked_at", "notes",
+	"store_links", "steam_app_id", "wine_prefix",
+	"last_scanned_at", "dir_mtime",
+	"series_id", "series_order",
+	"deleted_at",
+	"created_at", "updated_at",
+}
+
+// gameColumns is gameColumnNames ready to drop into a SELECT on the games
+// table with no alias.
+var gameColumns = strings.Join(gameColumnNames, ", ")
+
+// gameColumnsAs is gameColumns with every name qualified by a table alias, for
+// queries that join games against another table.
+func gameColumnsAs(alias string) string {
+	qualified := make([]string, len(gameColumnNames))
+	for i, c := range gameColumnNames {
+		qualified[i] = alias + "." + c
+	}
+	return strings.Join(qualified, ", ")
+}
+
 // ---------------------------------------------------------------------------
 // Helper: scan a single row into a Game
 // ---------------------------------------------------------------------------
@@ -156,10 +189,7 @@ func (db *Database) InsertGame(g *Game) (int64, error) {
 // matching row exists.
 func (db *Database) GetGame(id int64) (*Game, error) {
 	row := db.conn.QueryRow(`
-		SELECT id, title, engine, path, exe_path, version, size_bytes,
-		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
-		       deleted_at, created_at, updated_at
+		SELECT `+gameColumns+`
 		FROM games WHERE id = ?`, id)
 
 	g, err := scanGame(row)
@@ -176,10 +206,7 @@ func (db *Database) GetGame(id int64) (*Game, error) {
 // no matching row exists.
 func (db *Database) GetGameByPath(path string) (*Game, error) {
 	row := db.conn.QueryRow(`
-		SELECT id, title, engine, path, exe_path, version, size_bytes,
-		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       		store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
-		       deleted_at, created_at, updated_at
+		SELECT `+gameColumns+`
 		FROM games WHERE path = ?`, path)
 
 	g, err := scanGame(row)
@@ -211,10 +238,7 @@ func (db *Database) ListActiveGames(engine, status string) ([]Game, error) {
 // are excluded from results.
 func (db *Database) listGamesFiltered(engine, status string, excludeBackups bool) ([]Game, error) {
 	query := `
-		SELECT id, title, engine, path, exe_path, version, size_bytes,
-		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
-		       deleted_at, created_at, updated_at
+		SELECT ` + gameColumns + `
 		FROM games`
 
 	var conditions []string
@@ -271,10 +295,7 @@ func (db *Database) SearchGames(query string) ([]Game, error) {
 	if query == "" {
 		// Empty query: return all games ordered by title.
 		rows, err := db.conn.Query(`
-			SELECT id, title, engine, path, exe_path, version, size_bytes,
-			       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-			       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
-			       deleted_at, created_at, updated_at
+			SELECT ` + gameColumns + `
 			FROM games
 			WHERE deleted_at IS NULL
 			ORDER BY title COLLATE NOCASE`)
@@ -296,10 +317,7 @@ func (db *Database) SearchGames(query string) ([]Game, error) {
 	ftsQuery := buildFTSQuery(query)
 
 	rows, err := db.conn.Query(`
-		SELECT g.id, g.title, g.engine, g.path, g.exe_path, g.version, g.size_bytes,
-		       g.f95_url, g.f95_thread_id, g.tags, g.status, g.latest_version, g.version_checked_at, g.notes,
-		g.store_links, g.steam_app_id, g.wine_prefix, g.last_scanned_at, g.dir_mtime,
-	           g.series_id, g.series_order, g.deleted_at, g.created_at, g.updated_at
+		SELECT `+gameColumnsAs("g")+`
 		FROM games g
 		JOIN games_fts fts ON g.id = fts.rowid
 		WHERE games_fts MATCH ?
@@ -325,10 +343,7 @@ func (db *Database) SearchGames(query string) ([]Game, error) {
 	// FTS5 returned no results — fall back to LIKE-based substring matching
 	// for backward compatibility (e.g., "itch" matching "Witcher").
 	rows, err = db.conn.Query(`
-		SELECT id, title, engine, path, exe_path, version, size_bytes,
-		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
-		       deleted_at, created_at, updated_at
+		SELECT `+gameColumns+`
 		FROM games
 		WHERE deleted_at IS NULL
 		  AND title LIKE '%' || ? || '%' COLLATE NOCASE
@@ -569,10 +584,7 @@ func (db *Database) ListDuplicateCandidates() ([]GameDupSummary, error) {
 // update is available). Excludes backup directories (.old paths).
 func (db *Database) GamesNeedingUpdate() ([]Game, error) {
 	rows, err := db.conn.Query(`
-		SELECT id, title, engine, path, exe_path, version, size_bytes,
-		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
-		       deleted_at, created_at, updated_at
+		SELECT ` + gameColumns + `
 		FROM games
 		WHERE path NOT LIKE '%.old'
 		  AND deleted_at IS NULL
@@ -599,10 +611,7 @@ func (db *Database) GamesNeedingUpdate() ([]Game, error) {
 // Excludes backup directories (.old paths).
 func (db *Database) GamesWithF95URL() ([]Game, error) {
 	rows, err := db.conn.Query(`
-		SELECT id, title, engine, path, exe_path, version, size_bytes,
-		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
-		       deleted_at, created_at, updated_at
+		SELECT ` + gameColumns + `
 		FROM games
 		WHERE path NOT LIKE '%.old'
 		  AND deleted_at IS NULL
@@ -628,10 +637,7 @@ func (db *Database) GamesWithF95URL() ([]Game, error) {
 // are unassociated). Excludes backup directories (.old paths).
 func (db *Database) GamesWithoutF95URL() ([]Game, error) {
 	rows, err := db.conn.Query(`
-		SELECT id, title, engine, path, exe_path, version, size_bytes,
-		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
-		       deleted_at, created_at, updated_at
+		SELECT ` + gameColumns + `
 		FROM games
 		WHERE path NOT LIKE '%.old'
 		  AND deleted_at IS NULL
@@ -657,10 +663,7 @@ func (db *Database) GamesWithoutF95URL() ([]Game, error) {
 // directories (.old paths).
 func (db *Database) GamesByStatus(status string) ([]Game, error) {
 	rows, err := db.conn.Query(`
-		SELECT id, title, engine, path, exe_path, version, size_bytes,
-		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
-		       deleted_at, created_at, updated_at
+		SELECT `+gameColumns+`
 		FROM games
 		WHERE path NOT LIKE '%.old'
 		  AND deleted_at IS NULL
@@ -686,10 +689,7 @@ func (db *Database) GamesByStatus(status string) ([]Game, error) {
 // directories (.old paths).
 func (db *Database) GamesByEngine(engine string) ([]Game, error) {
 	rows, err := db.conn.Query(`
-		SELECT id, title, engine, path, exe_path, version, size_bytes,
-		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
-		       deleted_at, created_at, updated_at
+		SELECT `+gameColumns+`
 		FROM games
 		WHERE path NOT LIKE '%.old'
 		  AND deleted_at IS NULL
@@ -714,7 +714,7 @@ func (db *Database) GamesByEngine(engine string) ([]Game, error) {
 // AllGamePaths returns all game paths and their directory mtimes.
 // Used by --new-only scan to skip already-known directories.
 type GamePathEntry struct {
-	Path    string
+	Path     string
 	DirMTime time.Time
 }
 
@@ -787,10 +787,7 @@ func (db *Database) RestoreGame(id int64) error {
 // ListDeletedGames returns all soft-deleted games.
 func (db *Database) ListDeletedGames() ([]Game, error) {
 	rows, err := db.conn.Query(`
-		SELECT id, title, engine, path, exe_path, version, size_bytes,
-		       f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
-		       store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime, series_id, series_order,
-		       deleted_at, created_at, updated_at
+		SELECT ` + gameColumns + `
 		FROM games
 		WHERE deleted_at IS NOT NULL
 		ORDER BY deleted_at DESC`)
@@ -956,23 +953,21 @@ func (db *Database) CountGamesNeedingUpdate() (int, error) {
 	return n, err
 }
 
-// CreateSeries creates a new game series and returns it.
-func (db *Database) CreateSeries(name string) (*GameSeries, error) {
-	res, err := db.conn.Exec("INSERT INTO game_series (name) VALUES (?)", name)
-	if err != nil {
-		return nil, err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return nil, err
-	}
-	return &GameSeries{ID: id, Name: name}, nil
-}
-
-// SetGameSeries sets or removes the series association for a game.
-func (db *Database) SetGameSeries(gameID int64, seriesID *int64, order int) error {
-	_, err := db.conn.Exec(
-		"UPDATE games SET series_id = ?, series_order = ?, updated_at = ? WHERE id = ?",
-		nullableInt64Ptr(seriesID), order, time.Now().UTC().Format(time.RFC3339), gameID)
-		return err
-}
+// Game series is deliberately not implemented.
+//
+// The schema carries it — the game_series table plus games.series_id and
+// games.series_order, added in migration v3 — but nothing ever wrote to it.
+// CreateSeries and SetGameSeries existed here with no callers anywhere in the
+// CLI, TUI or desktop app, and there was no way to list series or query games
+// by one. They have been removed rather than left as an API implying a feature
+// that does not exist.
+//
+// The columns stay. Dropping them would need a full table rebuild on every
+// user's library: SQLite cannot DROP COLUMN a column carrying a REFERENCES
+// constraint, so it would mean create-copy-drop-rename against live data for
+// no functional gain. They now cost nothing to carry, since every query
+// derives its column list from gameColumnNames instead of repeating it.
+//
+// Import still round-trips SeriesID and SeriesOrder (see internal/commands/
+// import.go) so exports from any future version that does implement series are
+// not silently discarded.

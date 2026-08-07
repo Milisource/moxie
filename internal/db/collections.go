@@ -160,10 +160,7 @@ func (db *Database) GetCollectionsForGame(gameID int64) ([]Collection, error) {
 // ordered by title.
 func (db *Database) GetGamesInCollection(collectionID int64) ([]*Game, error) {
 	rows, err := db.conn.Query(`
-		SELECT g.id, g.title, g.engine, g.path, g.exe_path, g.version, g.size_bytes,
-		       g.f95_url, g.f95_thread_id, g.tags, g.status, g.latest_version, g.version_checked_at, g.notes,
-		       g.store_links, g.steam_app_id, g.wine_prefix, g.last_scanned_at, g.dir_mtime, g.series_id, g.series_order,
-		       g.deleted_at, g.created_at, g.updated_at
+		SELECT `+gameColumnsAs("g")+`
 		FROM games g
 		JOIN game_collections gc ON gc.game_id = g.id
 		WHERE gc.collection_id = ?
