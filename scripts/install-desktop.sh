@@ -71,7 +71,12 @@ if [ ! -x "$BINARY_PATH" ]; then
 fi
 
 # ── Version ────────────────────────────────────────────────────────────────────
-VERSION="$("${BINARY_PATH}" --version 2>/dev/null || echo "dev")"
+# macOS bundles embed the version in Info.plist. The Wails binary ignores
+# --version and launches the GUI, so probe only on macOS and with a timeout.
+VERSION="dev"
+if [ "$PLATFORM" = "macos" ] && command -v timeout >/dev/null 2>&1; then
+    VERSION="$(timeout 5 "${BINARY_PATH}" --version 2>/dev/null || echo "dev")"
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Linux Install
