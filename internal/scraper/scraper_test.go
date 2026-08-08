@@ -621,6 +621,99 @@ func TestParseThreadHTML(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Version source precedence
+// ---------------------------------------------------------------------------
+
+// threadHTMLWith builds a minimal XenForo thread page with the given title
+// and first-post body.
+func threadHTMLWith(title, body string) string {
+	return `<html><body>
+<h1 class="p-title-value">` + title + `</h1>
+<article class="message-content"><div class="bbWrapper">` + body + `</div></article>
+</body></html>`
+}
+
+// A changelog lists every past release. The title bracket is the version
+// F95Zone's posting rules mandate, so it must win over a body scan that
+// would otherwise return the longest string in the changelog.
+func TestParseThreadHTML_TitleBracketBeatsChangelog(t *testing.T) {
+	t.Parallel()
+
+	body := `Overview
+A game about things.
+
+Developer: Some Studio
+
+Changelog:
+v0.4.10 - added the barn
+v0.4.9 - fixed the barn`
+
+	td, err := parseThreadHTML(threadHTMLWith("Barn Game [v0.9] [Some Studio]", body), "https://f95zone.to/threads/barn.999/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML returned error: %v", err)
+	}
+	if td.Version != "0.9" {
+		t.Errorf("Version = %q, want %q (title bracket must outrank changelog entries)", td.Version, "0.9")
+	}
+}
+
+// The structured metadata block still outranks the title bracket.
+func TestParseThreadHTML_MetaBeatsTitleBracket(t *testing.T) {
+	t.Parallel()
+
+	body := `Overview
+A game about things.
+
+Version: 1.2.3
+Developer: Some Studio`
+
+	td, err := parseThreadHTML(threadHTMLWith("Barn Game [v0.9] [Some Studio]", body), "https://f95zone.to/threads/barn.999/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML returned error: %v", err)
+	}
+	if td.Version != "1.2.3" {
+		t.Errorf("Version = %q, want %q", td.Version, "1.2.3")
+	}
+}
+
+func TestExtractVersionFromBody(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "ignores changelog entries after the heading",
+			body: "Updated to v0.9 today.\n\nChangelog:\nv0.4.10 - old\nv0.3.12 - older",
+			want: "0.9",
+		},
+		{
+			name: "ignores engine strings listed under Installation",
+			body: "Now at version 0.9.\n\nInstallation: built with Unity 2019.4.31",
+			want: "0.9",
+		},
+		{
+			name: "falls back to full text when the lead region has none",
+			body: "Grab it below.\n\nDownload: PC - v1.4.2 here",
+			want: "1.4.2",
+		},
+		{
+			name: "no version anywhere",
+			body: "Just some prose with no numbers.",
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractVersionFromBody(tt.body); got != tt.want {
+				t.Errorf("extractVersionFromBody() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // stripBracketed
 // ---------------------------------------------------------------------------
 

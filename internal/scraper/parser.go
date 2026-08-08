@@ -84,11 +84,18 @@ func parseThreadHTML(html string, threadURL string) (*ThreadData, error) {
 	// structured block is absent or incomplete.
 	meta := extractMetadata(bodyText)
 
-	td.Version = extractVersionFromMeta(meta, bodyText)
-	// Fallback: if version wasn't found in the post body, try bracketed
-	// tags in the raw thread title (e.g., "Game [v1.31]").
+	// Version sources, in descending order of reliability:
+	//   1. the structured metadata block, maintained by the thread author;
+	//   2. the bracketed tag in the thread title, the form F95Zone's
+	//      posting rules mandate ("Game Name [v1.31] [Dev]");
+	//   3. a regex scan of the post body — last resort, because changelogs
+	//      and engine strings in the body also look like version numbers.
+	td.Version = extractVersionFromMetaOnly(meta)
 	if td.Version == "" {
 		td.Version = extractVersionFromBrackets(rawTitle)
+	}
+	if td.Version == "" {
+		td.Version = extractVersionFromBody(bodyText)
 	}
 	td.Developer = extractDeveloperFromMeta(meta, bodyText)
 	td.Overview = extractOverviewText(bodyText)

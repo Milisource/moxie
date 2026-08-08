@@ -11,6 +11,7 @@ import (
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/steam"
 	"github.com/mili/moxie/internal/util"
+	"github.com/mili/moxie/internal/version"
 )
 
 // SyncGameLogic performs the core sync logic for a single game and returns
@@ -196,8 +197,21 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 
 		latest := data.Version
 		knownVer := game.Version
+		if knownVer == "" {
+			knownVer = game.LatestVersion
+		}
 		result.OldVersion = knownVer
 		result.NewVersion = latest
+
+		// Status and tags are scraped here too; persist them so status
+		// transitions are recorded on the update path, not just on
+		// association (where ApplyThreadData handles them).
+		if data.Status != "" {
+			game.Status = data.Status
+		}
+		if len(data.Tags) > 0 {
+			game.Tags = data.Tags
+		}
 
 		game.LatestVersion = latest
 		game.VersionCheckedAt = time.Now()
@@ -234,8 +248,11 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 			}
 		}
 
-		if latest != "" && knownVer != "" && NormalizeVersion(latest) != NormalizeVersion(knownVer) {
-			result.VersionUpdated = true
+		if latest != "" && knownVer != "" {
+			switch version.Compare(latest, knownVer) {
+			case version.Newer, version.Changed:
+				result.VersionUpdated = true
+			}
 		}
 	}
 

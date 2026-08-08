@@ -54,18 +54,53 @@ func extractVersion(text string) string {
 // Structured metadata extraction (Overview block)
 // ---------------------------------------------------------------------------
 
-// extractVersionFromMeta tries to obtain the version number from the
-// structured metadata block first.  If the metadata doesn't contain a
-// version (or the value is empty/non-parseable) it falls back to the
-// full-text regex scan.
-func extractVersionFromMeta(meta map[string]string, fullText string) string {
+// extractVersionFromMetaOnly obtains the version number from the structured
+// metadata block, with no fallback.  This is the highest-confidence source:
+// thread authors maintain the block explicitly.
+func extractVersionFromMetaOnly(meta map[string]string) string {
 	if v, ok := meta["version"]; ok && v != "" {
 		// Prepend "Version: " so the existing regex patterns match.
 		if ver := extractVersion("Version: " + v); ver != "" {
 			return ver
 		}
 	}
+	return ""
+}
+
+// extractVersionFromMeta tries to obtain the version number from the
+// structured metadata block first.  If the metadata doesn't contain a
+// version (or the value is empty/non-parseable) it falls back to the
+// full-text regex scan.
+func extractVersionFromMeta(meta map[string]string, fullText string) string {
+	if v := extractVersionFromMetaOnly(meta); v != "" {
+		return v
+	}
 	return extractVersion(fullText)
+}
+
+// extractVersionFromBody scans the post body for a version, preferring the
+// region before the first Changelog/Download/Installation heading.  A
+// changelog lists every past release, and extractVersion's longest-match
+// rule would happily return one of those older entries (or an engine
+// string like "Unity 2019.4.31") over the current version.  If nothing is
+// found in that leading region, the full body is scanned as before so no
+// recall is lost on threads that head their post with a download section.
+func extractVersionFromBody(bodyText string) string {
+	if head := truncateAtSectionHeader(bodyText); len(head) < len(bodyText) {
+		if v := extractVersion(head); v != "" {
+			return v
+		}
+	}
+	return extractVersion(bodyText)
+}
+
+// truncateAtSectionHeader returns the text preceding the first known
+// section heading, or the whole text when no heading is present.
+func truncateAtSectionHeader(text string) string {
+	if m := sectionHeaderRe.FindStringIndex(text); m != nil {
+		return text[:m[0]]
+	}
+	return text
 }
 
 // extractVersionFromBrackets tries to find a version inside bracketed

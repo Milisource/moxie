@@ -70,6 +70,8 @@ Additional shared packages:
 
 - **`internal/updater/`** — `Merge()` copies files from a downloaded+extracted archive into the game directory, preserving user saves, mods, and configs based on engine-aware glob patterns (14 engines + default fallback). Supports optional `.old` backup with automatic restore of preserved files.
 
+- **`internal/version/`** — Compares F95Zone game version strings against locally-known ones. `Compare()` returns `Same`/`Newer`/`Older`/`Changed` rather than a boolean, because game versions are not semver: real values include `v0.12.0`, `0.8.1b`, `Ch.4 Free`, `2018-07-18` (the date form used when a game has no version number), and `Final`. `Normalize()` folds case, strips a leading `v`, collapses digit separators (`0_8_1` → `0.8.1`) and trailing `.0` segments. Only `Newer` is an unambiguous update; `Older` signals a parse regression or edited thread, and `Changed` means the two versions cannot be ordered. Used by `check-updates`, `sync`, and the desktop app so all three agree on what "an update is available" means.
+
 - **`internal/launcher/`** — Shared game launching logic used by both the CLI (`moxie play`) and the TUI (`p` key). Contains `ResolveExecutable()` (scoring-based exe selection with macOS .app/Mach-O detection), `Launch()` (platform-aware process spawning with Wine/CrossOver), and `detect.go` (platform detection helpers). Extracted from duplicated code that previously lived separately in `commands/play.go` and `tui/helpers.go`.
 
 ### Data Flow Through the System
