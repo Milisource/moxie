@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/mili/moxie/internal/browser"
+	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/log"
 )
@@ -20,8 +21,18 @@ const (
 )
 
 // browserEnvVar opts into / forces the browser family:
-// MOXIE_BROWSER=auto|chrome|firefox (1/true = auto).
+// MOXIE_BROWSER=auto|chrome|firefox|off (1/true = auto).
 const browserEnvVar = "MOXIE_BROWSER"
+
+// browserConfigKey is the persistent config.json key mirroring
+// browserEnvVar (moxie config set browser_fallback auto). The env var wins
+// when both are set.
+const browserConfigKey = "browser_fallback"
+
+// browserFallbackDisabledHint is appended to challenge errors when the
+// browser fallback is not installed, so users discover the opt-in exactly
+// when they need it.
+const browserFallbackDisabledHint = "enable browser-assisted downloads with `moxie config set browser_fallback auto` or MOXIE_BROWSER=auto"
 
 // chromeBrowserNames are the kooky store names that map to the rod engine.
 var chromeBrowserNames = map[string]bool{"chrome": true, "chromium": true, "edge": true, "brave": true}
@@ -63,13 +74,21 @@ func selectEngine(o *Options, rawURL string) (engine, error) {
 }
 
 // effectiveBrowserMode resolves the mode option against the MOXIE_BROWSER
-// environment variable. "" and "1"/"true" both mean auto.
+// environment variable, then the browser_fallback config key. "" means the
+// feature is OFF (no auto-detect): the user must opt in explicitly.
 func effectiveBrowserMode(mode string) string {
 	if mode == "" || mode == BrowserAuto {
 		mode = strings.ToLower(strings.TrimSpace(os.Getenv(browserEnvVar)))
 	}
+	if mode == "" {
+		if cfg, err := config.ReadConfig(); err == nil {
+			mode = strings.ToLower(strings.TrimSpace(cfg.Get(browserConfigKey)))
+		}
+	}
 	switch mode {
-	case "", "1", "true", BrowserAuto:
+	case "", "0", "false", "off":
+		return ""
+	case "1", "true", BrowserAuto:
 		return BrowserAuto
 	case BrowserChrome:
 		return BrowserChrome
@@ -114,24 +133,42 @@ func browserAvailable(mode string) (bool, string) {
 }
 
 // InstallDownloaderFallback wires the downloader's browser fallback hook
-// (challenge-graded hosts) to this package, if a usable browser exists.
+// (challenge-graded hosts) to this package, if a usable browser exists and
+// the user opted in.
 //
 // The hook fires only when the Go path hits a Cloudflare challenge — the Go
-// path stays primary. MOXIE_BROWSER=auto|chrome|firefox forces an engine
-// family (1/true = auto); unset auto-detects. The installed hook picks the
-// engine per URL (the cookie-holding browser first), so a Firefox user on a
-// Chrome box gets the right engine for each host.
+// path stays primary. Opt-in is EXPLICIT: nothing is installed when neither
+// MOXIE_BROWSER nor the browser_fallback config key is set, because the
+// fallback launches the user's own browser on a copy of their profile. The
+// installed hook picks the engine per URL (the cookie-holding browser
+// first), so a Firefox user on a Chrome box gets the right engine for each
+// host.
 //
-// Returns installed=false with a reason when no browser is available or the
-// MOXIE_BROWSER value is invalid.
+// Enable: `moxie config set browser_fallback auto` (persistent) or
+// MOXIE_BROWSER=auto|chrome|firefox (per-run; 1/true = auto).
+//
+// Returns installed=false with a reason when the feature is disabled, no
+// browser is available, or the value is invalid.
 func InstallDownloaderFallback() (installed bool, reason string) {
-	mode := strings.ToLower(strings.TrimSpace(os.Getenv(browserEnvVar)))
-	switch mode {
-	case "", "0", "false", "off":
-		// Auto-detect: install when any browser exists.
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(browserEnvVar)))
+	if raw == "" {
+		if cfg, err := config.ReadConfig(); err == nil {
+			raw = strings.ToLower(strings.TrimSpace(cfg.Get(browserConfigKey)))
+		}
+	}
+	switch raw {
+	case "":
+		// Off by default — never launch the user's browser without consent.
+		return false, fmt.Sprintf("disabled by default — enable with `moxie config set %s auto` or %s=auto", browserConfigKey, browserEnvVar)
+	case "0", "false", "off":
+		return false, "disabled via " + browserEnvVar + " / " + browserConfigKey
 	case "1", "true", BrowserAuto, BrowserChrome, BrowserFirefox:
 	default:
-		return false, fmt.Sprintf("invalid %s value %q (want auto|chrome|firefox)", browserEnvVar, mode)
+		return false, fmt.Sprintf("invalid %s value %q (want auto|chrome|firefox|off)", browserEnvVar, raw)
+	}
+	mode := raw
+	if mode == "1" || mode == "true" {
+		mode = BrowserAuto
 	}
 	if ok, why := browserAvailable(mode); !ok {
 		log.Debug("browserresolve: fallback not installed", "reason", why)
@@ -140,6 +177,6 @@ func InstallDownloaderFallback() (installed bool, reason string) {
 	downloader.SetDefaultBrowserFallback(func(ctx context.Context, rawURL, destDir string) (string, error) {
 		return ResolveDownload(ctx, rawURL, destDir)
 	})
-	log.Info("browserresolve: browser fallback installed (challenge-graded downloads)", "mode", effectiveBrowserMode(mode))
+	log.Info("browserresolve: browser fallback installed (challenge-graded downloads)", "mode", mode)
 	return true, ""
 }

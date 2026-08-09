@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mili/moxie/internal/config"
 )
 
 // fakeBin creates an executable script at dir/<name> so binary detection
@@ -139,13 +141,18 @@ func TestSelectEngine_ForcedBrowser(t *testing.T) {
 	}
 }
 
-// TestEffectiveBrowserMode covers MOXIE_BROWSER parsing.
+// TestEffectiveBrowserMode covers MOXIE_BROWSER/config parsing: unset = OFF
+// (no auto-detect — the user must opt in), 1/true/auto = auto, explicit
+// engines force, unknown values are rejected.
 func TestEffectiveBrowserMode(t *testing.T) {
 	tests := []struct {
 		env  string
 		want string
 	}{
-		{"", BrowserAuto},
+		{"", ""}, // OFF by default
+		{"off", ""},
+		{"0", ""},
+		{"false", ""},
 		{"1", BrowserAuto},
 		{"true", BrowserAuto},
 		{"auto", BrowserAuto},
@@ -155,11 +162,44 @@ func TestEffectiveBrowserMode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.env, func(t *testing.T) {
+			config.SetConfigDirForTest(t.TempDir())
 			t.Setenv(browserEnvVar, tt.env)
 			if got := effectiveBrowserMode(""); got != tt.want {
 				t.Errorf("effectiveBrowserMode = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestEffectiveBrowserMode_ConfigKey verifies the browser_fallback config
+// key is honored when the env var is unset.
+func TestEffectiveBrowserMode_ConfigKey(t *testing.T) {
+	t.Setenv(browserEnvVar, "")
+	config.SetConfigDirForTest(t.TempDir())
+	cfg, err := config.ReadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Set(browserConfigKey, "firefox")
+	if err := config.WriteConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := effectiveBrowserMode(""); got != BrowserFirefox {
+		t.Errorf("effectiveBrowserMode = %q, want firefox (from config)", got)
+	}
+}
+
+// TestInstallDownloaderFallback_DisabledByDefault verifies nothing is
+// installed (and no browser is ever launched) without explicit opt-in.
+func TestInstallDownloaderFallback_DisabledByDefault(t *testing.T) {
+	t.Setenv(browserEnvVar, "")
+	config.SetConfigDirForTest(t.TempDir()) // empty config — nothing set
+	installed, why := InstallDownloaderFallback()
+	if installed {
+		t.Fatal("fallback must be OFF by default — no silent browser automation")
+	}
+	if !strings.Contains(why, browserConfigKey) {
+		t.Errorf("reason = %q, want the opt-in command mention", why)
 	}
 }
 
