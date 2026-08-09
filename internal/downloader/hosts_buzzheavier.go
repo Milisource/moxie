@@ -17,7 +17,13 @@ func (r *HostResolver) resolveBuzzheavier(url string) (*ResolveResult, error) {
 
 	// Try direct domain first
 	ddURL := strings.Replace(url, "buzzheavier.com", "dd.buzzheavier.com", 1)
-	resp, err := r.client.Get(ddURL)
+	ddReq, err := http.NewRequest("GET", ddURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create buzzheavier dd request: %w", err)
+	}
+	ddReq.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
+	r.attachBrowserCookies(ddReq)
+	resp, err := r.client.Do(ddReq)
 	if err == nil && resp.StatusCode == http.StatusOK {
 		resp.Body.Close()
 		// If it's a file (has Content-Disposition), we can download directly
@@ -44,6 +50,7 @@ func (r *HostResolver) resolveBuzzheavier(url string) (*ResolveResult, error) {
 	req.Header.Set("HX-Current-URL", url)
 	req.Header.Set("Referer", url)
 	req.Header.Set("Accept", "*/*")
+	r.attachBrowserCookies(req)
 
 	resp, err = r.client.Do(req)
 	if err != nil {
@@ -51,7 +58,9 @@ func (r *HostResolver) resolveBuzzheavier(url string) (*ResolveResult, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
+	// 204 No Content is the normal success shape for the HTMX endpoint
+	// (the hx-redirect header carries the download URL).
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusNoContent {
 		return nil, fmt.Errorf("buzzheavier: HTTP %d", resp.StatusCode)
 	}
 

@@ -113,7 +113,7 @@ func DownloadWithContext(ctx context.Context, urlStr, host, destDir string, expe
 		return fmt.Errorf("resolve %s URL: %w", host, resolveErr)
 	}
 	log.Debug("download resolving via HTTP", "resolved_url", redactedURL(resolved.URL), "headers", len(resolved.Headers), "host", host)
-	return downloadWithHeaders(ctx, resolved.URL, resolved.Headers, host, destDir, expectedTotal, onProgress)
+	return downloadWithHeaders(ctx, resolved.URL, resolved.Headers, host, destDir, expectedTotal, onProgress, resolver.cookieSource)
 }
 
 // Download downloads a file using standard HTTP, auto-detecting the host.
@@ -161,7 +161,7 @@ var sharedDownloadTransport = &http.Transport{
 	IdleConnTimeout:       90 * time.Second,
 }
 
-func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]string, host string, destDir string, expectedTotal int64, onProgress func(Progress)) error {
+func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]string, host string, destDir string, expectedTotal int64, onProgress func(Progress), cookieSource func(hostname string) string) error {
 	if !isValidDownloadURL(urlStr) {
 		return fmt.Errorf("invalid or blocked URL: %s", urlStr)
 	}
@@ -209,6 +209,14 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+
+	// Merge the browser's cookies for the final URL's hostname. Cloudflare-
+	// protected hosts (buzzheavier, datanodes, vikingfile, ...) accept
+	// requests that carry a valid cf_clearance from the user's own browser
+	// session; without it the request commonly 403s. Cookies are host-scoped
+	// to the URL's own domain (RFC 6265 domain match), so they are never
+	// sent to redirect targets on other hosts.
+	mergeBrowserCookies(req, cookieSource)
 
 	if existingSize > 0 {
 		// Don't send Range for host-specific resolvers (they may not support it)
@@ -388,6 +396,29 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 	}
 
 	return nil
+}
+
+// mergeBrowserCookies attaches the browser's cookies for the request URL's
+// hostname to req, preserving any existing Cookie header (e.g. a session
+// cookie a host-specific resolver obtained). A nil cookieSource or a host
+// with no stored cookies leaves the request untouched.
+func mergeBrowserCookies(req *http.Request, cookieSource func(hostname string) string) {
+	if cookieSource == nil {
+		return
+	}
+	hostname := req.URL.Hostname()
+	if hostname == "" {
+		return
+	}
+	browserCookie := cookieSource(hostname)
+	if browserCookie == "" {
+		return
+	}
+	if existing := req.Header.Get("Cookie"); existing != "" {
+		req.Header.Set("Cookie", existing+"; "+browserCookie)
+	} else {
+		req.Header.Set("Cookie", browserCookie)
+	}
 }
 
 // IsValidGameFile returns true if the downloaded file appears to be a real game

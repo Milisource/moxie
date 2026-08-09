@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/browserutils/kooky"
 	_ "github.com/browserutils/kooky/browser/brave"
@@ -22,6 +24,41 @@ import (
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
 
+// cookieCacheTTL bounds how often the browser cookie stores are re-read.
+// Reading every browser profile via kooky is comparatively expensive, while
+// Cloudflare clearance tokens (cf_clearance, __cf_bm) expire in roughly
+// 30 min-2 h — a 60 s cache keeps headers fresh without a kooky read per
+// request, and is shared across all hosts and callers.
+const cookieCacheTTL = 60 * time.Second
+
+// maxCookieHeaderLen caps the Cookie header built for download hosts. Some
+// servers reject headers above ~8 KB; cf_clearance alone is ~1-2 KB and is
+// the most valuable cookie, so the cap only trims low-value extras.
+const maxCookieHeaderLen = 6000
+
+// cookieCache holds the kooky snapshot; refreshed at most once per
+// cookieCacheTTL. The error is kept so callers can distinguish "no cookies
+// stored" from "could not read the stores" and degrade accordingly.
+var cookieCache = struct {
+	mu      sync.Mutex
+	cookies []*kooky.Cookie
+	readErr error
+	at      time.Time
+}{}
+
+// cachedBrowserCookies returns the kooky cookie snapshot, refreshing it at
+// most once per cookieCacheTTL. On refresh failure the previous snapshot is
+// kept (and the error returned) so callers can decide how to degrade.
+func cachedBrowserCookies() ([]*kooky.Cookie, error) {
+	cookieCache.mu.Lock()
+	defer cookieCache.mu.Unlock()
+	if cookieCache.at.IsZero() || time.Since(cookieCache.at) > cookieCacheTTL {
+		cookieCache.cookies, cookieCache.readErr = kooky.ReadCookies(context.Background(), kooky.Valid)
+		cookieCache.at = time.Now()
+	}
+	return cookieCache.cookies, cookieCache.readErr
+}
+
 // GetF95Cookies extracts f95zone.to cookies from installed browsers.
 // Returns a Cookie header string suitable for HTTP requests.
 // Checks kooky's standard paths first, then falls back to non-standard
@@ -31,10 +68,7 @@ func GetF95Cookies() (string, error) {
 	// equality (cookie.Domain == "f95zone.to"), which drops domain-scoped
 	// cookies stored with a leading dot (".f95zone.to") by Firefox/Chrome.
 	// All cookies are read and the f95zone filter below runs locally.
-	cookies, kookyErr := kooky.ReadCookies(
-		context.Background(),
-		kooky.Valid,
-	)
+	cookies, kookyErr := cachedBrowserCookies()
 
 	f95 := filterF95Cookies(cookies)
 	// Same cookie name from multiple browsers/profiles (xf_session,
@@ -61,9 +95,99 @@ func GetF95Cookies() (string, error) {
 	return "", fmt.Errorf("%s", msg)
 }
 
+// GetCookiesForHost extracts cookies valid for hostname from installed
+// browsers and returns them as a Cookie header string. Hostnames are
+// matched per the RFC 6265 domain-match rule, so a cf_clearance stored for
+// ".buzzheavier.com" is returned for "dd.buzzheavier.com" but never for an
+// unrelated host. Returns "" without error when the browser holds no
+// cookies for the host (e.g. download hosts the user has never visited).
+func GetCookiesForHost(hostname string) (string, error) {
+	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	hostname = strings.TrimSuffix(hostname, ".")
+	if hostname == "" {
+		return "", nil
+	}
+
+	cookies, readErr := cachedBrowserCookies()
+	if header := buildHostCookieHeader(cookies, hostname); header != "" {
+		return header, nil
+	}
+
+	// kooky read failed outright (e.g. distro-specific Firefox profile
+	// paths) — retry through the SQLite fallback. A successful read with no
+	// matching cookies means the browser genuinely has none for this host.
+	if readErr != nil {
+		if header, err := tryNonStandardFirefoxPathsForHost(hostname); err == nil && header != "" {
+			return header, nil
+		}
+	}
+	return "", nil
+}
+
+// buildHostCookieHeader filters cookies to those valid for hostname, dedups
+// to the newest value per name, sorts by name, and caps the total header
+// length at maxCookieHeaderLen so oversized stores cannot produce a header
+// that servers reject.
+func buildHostCookieHeader(cookies []*kooky.Cookie, hostname string) string {
+	var matched []*kooky.Cookie
+	for _, c := range cookies {
+		if c == nil {
+			continue
+		}
+		if domainMatchesHostname(hostname, c.Domain) {
+			matched = append(matched, c)
+		}
+	}
+	matched = dedupCookies(matched)
+	sort.Slice(matched, func(i, j int) bool { return matched[i].Name < matched[j].Name })
+
+	var pairs []string
+	length := 0
+	for _, c := range matched {
+		value := sanitizeHeaderValue(c.Value)
+		if value == "" {
+			continue
+		}
+		pair := c.Name + "=" + value
+		if length > 0 && length+len(pair)+2 > maxCookieHeaderLen {
+			continue
+		}
+		pairs = append(pairs, pair)
+		length += len(pair) + 2
+	}
+	return strings.Join(pairs, "; ")
+}
+
+// domainMatchesHostname implements the RFC 6265 domain-match rule browsers
+// use to decide whether a stored cookie applies to a request host: the
+// cookie's Domain attribute (leading dot ignored) must equal the hostname
+// or be a parent domain of it (".buzzheavier.com" → "dd.buzzheavier.com").
+// Browsers enforce the public suffix list when storing cookies, so a
+// Domain=".com" cookie cannot exist in a real store; the single-label guard
+// and the leading-dot boundary check keep lookalikes ("notbuzzheavier.com")
+// out regardless.
+func domainMatchesHostname(hostname, cookieDomain string) bool {
+	h := strings.ToLower(strings.TrimSuffix(hostname, "."))
+	d := strings.ToLower(strings.TrimPrefix(cookieDomain, "."))
+	d = strings.TrimSuffix(d, ".")
+	if h == "" || d == "" || !strings.Contains(d, ".") {
+		return false
+	}
+	return h == d || strings.HasSuffix(h, "."+d)
+}
+
 // GetF95CookiesFromSQLite reads f95zone.to cookies directly from a Firefox
 // cookies.sqlite file at the given path.
 func GetF95CookiesFromSQLite(path string) (string, error) {
+	return GetCookiesFromSQLite(path, "f95zone.to")
+}
+
+// GetCookiesFromSQLite reads cookies matching hostname directly from a
+// Firefox cookies.sqlite file at the given path. Matches the exact host,
+// the dot-prefixed domain form Firefox uses for domain cookies, and any
+// subdomain (the LIKE pattern anchors on a literal dot, so lookalikes like
+// "notf95zone.to" cannot match).
+func GetCookiesFromSQLite(path, hostname string) (string, error) {
 	db, err := sql.Open("sqlite3", "file:"+path+"?mode=ro&immutable=1")
 	if err != nil {
 		return "", fmt.Errorf("opening cookie database: %w", err)
@@ -72,9 +196,9 @@ func GetF95CookiesFromSQLite(path string) (string, error) {
 
 	rows, err := db.Query(`
 		SELECT name, value FROM moz_cookies
-		WHERE (host = 'f95zone.to' OR host = '.f95zone.to')
+		WHERE (host = ? OR host = '.' || ? OR host LIKE '%.' || ?)
 		AND (expiry = 0 OR expiry > strftime('%s','now'))
-	`)
+	`, hostname, hostname, hostname)
 	if err != nil {
 		return "", fmt.Errorf("querying cookies: %w", err)
 	}
@@ -96,36 +220,37 @@ func GetF95CookiesFromSQLite(path string) (string, error) {
 		return "", fmt.Errorf("reading cookies: %w", err)
 	}
 	if len(pairs) == 0 {
-		return "", fmt.Errorf("no f95zone.to cookies found in %s — make sure you are logged in", path)
+		return "", fmt.Errorf("no %s cookies found in %s", hostname, path)
 	}
 	sort.Strings(pairs)
 	return strings.Join(pairs, "; "), nil
 }
 
-// tryNonStandardFirefoxPaths checks Firefox profile locations that kooky
-// doesn't cover (e.g. ~/.config/mozilla/firefox).
-func tryNonStandardFirefoxPaths() (string, error) {
+// tryNonStandardFirefoxPathsForHost checks Firefox profile locations that
+// kooky doesn't cover (e.g. ~/.config/mozilla/firefox) for cookies matching
+// hostname.
+func tryNonStandardFirefoxPathsForHost(hostname string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	roots := []string{
-		filepath.Join(home, ".config", "mozilla", "firefox"),
+	matches, err := filepath.Glob(filepath.Join(home, ".config", "mozilla", "firefox", "*", "cookies.sqlite"))
+	if err != nil || len(matches) == 0 {
+		return "", fmt.Errorf("no cookie stores found in non-standard paths")
 	}
-	for _, root := range roots {
-		pattern := filepath.Join(root, "*", "cookies.sqlite")
-		matches, err := filepath.Glob(pattern)
-		if err != nil || len(matches) == 0 {
-			continue
-		}
-		for _, match := range matches {
-			cookie, err := GetF95CookiesFromSQLite(match)
-			if err == nil && cookie != "" {
-				return cookie, nil
-			}
+	for _, match := range matches {
+		cookie, err := GetCookiesFromSQLite(match, hostname)
+		if err == nil && cookie != "" {
+			return cookie, nil
 		}
 	}
-	return "", fmt.Errorf("no cookies found in non-standard paths")
+	return "", fmt.Errorf("no %s cookies found in non-standard paths", hostname)
+}
+
+// tryNonStandardFirefoxPaths checks Firefox profile locations that kooky
+// doesn't cover (e.g. ~/.config/mozilla/firefox).
+func tryNonStandardFirefoxPaths() (string, error) {
+	return tryNonStandardFirefoxPathsForHost("f95zone.to")
 }
 
 // f95ZoneDomain reports whether a cookie domain is f95zone.to or one of its

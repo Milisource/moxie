@@ -126,7 +126,7 @@ func TestIsValidDownloadURL_HostnameBlocklist(t *testing.T) {
 
 func TestDownloadWithHeaders_InvalidURL(t *testing.T) {
 	t.Parallel()
-	err := downloadWithHeaders(context.Background(), "http://127.0.0.1/secret", nil, "test", t.TempDir(), 0, nil)
+	err := downloadWithHeaders(context.Background(), "http://127.0.0.1/secret", nil, "test", t.TempDir(), 0, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for blocked URL, got nil")
 	}
@@ -396,5 +396,65 @@ func TestCheckHostSizeLimit(t *testing.T) {
 				t.Errorf("unexpected error text: %v", err)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// mergeBrowserCookies
+// ---------------------------------------------------------------------------
+
+func TestMergeBrowserCookies_AttachesForMatchingHost(t *testing.T) {
+	t.Parallel()
+	req, _ := http.NewRequest("GET", "https://dd.buzzheavier.com/file.zip", nil)
+	cookieSource := func(hostname string) string {
+		if hostname == "dd.buzzheavier.com" {
+			return "cf_clearance=abc123"
+		}
+		return ""
+	}
+	mergeBrowserCookies(req, cookieSource)
+	if got := req.Header.Get("Cookie"); got != "cf_clearance=abc123" {
+		t.Errorf("Cookie = %q, want %q", got, "cf_clearance=abc123")
+	}
+}
+
+func TestMergeBrowserCookies_PreservesExistingHeader(t *testing.T) {
+	t.Parallel()
+	req, _ := http.NewRequest("GET", "https://datanodes.to/download/x", nil)
+	req.Header.Set("Cookie", "xfss=session1")
+	cookieSource := func(string) string { return "cf_clearance=ccc" }
+	mergeBrowserCookies(req, cookieSource)
+	if got := req.Header.Get("Cookie"); got != "xfss=session1; cf_clearance=ccc" {
+		t.Errorf("Cookie = %q, want merged header", got)
+	}
+}
+
+func TestMergeBrowserCookies_HostScopedNoLeak(t *testing.T) {
+	t.Parallel()
+	// The browser holds cookies for a different host — nothing may be sent.
+	req, _ := http.NewRequest("GET", "https://cdn.example.com/file.zip", nil)
+	cookieSource := func(hostname string) string {
+		if hostname == "buzzheavier.com" {
+			return "cf_clearance=secret"
+		}
+		return ""
+	}
+	mergeBrowserCookies(req, cookieSource)
+	if got := req.Header.Get("Cookie"); got != "" {
+		t.Errorf("Cookie = %q, want empty (no cross-host leak)", got)
+	}
+}
+
+func TestMergeBrowserCookies_NoOpCases(t *testing.T) {
+	t.Parallel()
+	req, _ := http.NewRequest("GET", "https://example.com/file.zip", nil)
+	mergeBrowserCookies(req, nil) // nil source
+	if got := req.Header.Get("Cookie"); got != "" {
+		t.Errorf("nil source: Cookie = %q, want empty", got)
+	}
+	req2, _ := http.NewRequest("GET", "https://example.com/file.zip", nil)
+	mergeBrowserCookies(req2, func(string) string { return "" }) // no cookies
+	if got := req2.Header.Get("Cookie"); got != "" {
+		t.Errorf("empty source: Cookie = %q, want empty", got)
 	}
 }

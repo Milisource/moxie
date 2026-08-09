@@ -1,6 +1,8 @@
 package browser
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -218,5 +220,121 @@ func TestBuildCookieHeader_EmptyCookies(t *testing.T) {
 	got = buildCookieHeader([]*kooky.Cookie{})
 	if got != "" {
 		t.Errorf("buildCookieHeader(empty) = %q, want empty", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// domainMatchesHostname
+// ---------------------------------------------------------------------------
+
+func TestDomainMatchesHostname(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		hostname string
+		domain   string
+		want     bool
+	}{
+		{"exact match", "buzzheavier.com", "buzzheavier.com", true},
+		{"dot-prefixed exact", "buzzheavier.com", ".buzzheavier.com", true},
+		{"subdomain", "dd.buzzheavier.com", ".buzzheavier.com", true},
+		{"subdomain no dot prefix", "dd.buzzheavier.com", "buzzheavier.com", true},
+		{"deep subdomain", "a.b.buzzheavier.com", ".buzzheavier.com", true},
+		{"unrelated host", "example.com", "buzzheavier.com", false},
+		{"lookalike suffix", "notbuzzheavier.com", "buzzheavier.com", false},
+		{"lookalike boundary", "evilbuzzheavier.com", ".buzzheavier.com", false},
+		{"empty hostname", "", ".buzzheavier.com", false},
+		{"empty domain", "buzzheavier.com", "", false},
+		{"bare dot domain", "buzzheavier.com", ".", false},
+		{"uppercase normalized", "DD.BUZZHEAVIER.COM", ".BuzzHeavier.com", true},
+		{"trailing dot host", "buzzheavier.com.", ".buzzheavier.com", true},
+		{"single label cookie domain", "com", ".com", false},
+		{"localhost cookie", "localhost", "localhost", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := domainMatchesHostname(tt.hostname, tt.domain)
+			if got != tt.want {
+				t.Errorf("domainMatchesHostname(%q, %q) = %v, want %v", tt.hostname, tt.domain, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildHostCookieHeader
+// ---------------------------------------------------------------------------
+
+func TestBuildHostCookieHeader_FiltersSortsDedups(t *testing.T) {
+	t.Parallel()
+	old := domainCookie("cf_clearance", "old", "buzzheavier.com")
+	old.Creation = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newCF := domainCookie("cf_clearance", "new", "buzzheavier.com")
+	newCF.Creation = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	cookies := []*kooky.Cookie{
+		domainCookie("session", "s1", ".buzzheavier.com"),
+		old,
+		domainCookie("other", "x", "example.com"),
+		nil,
+		newCF,
+		domainCookie("__cf_bm", "bm", ".dd.buzzheavier.com"),
+	}
+	// Sorted by name, newest cf_clearance kept, unrelated host excluded.
+	got := buildHostCookieHeader(cookies, "dd.buzzheavier.com")
+	want := "__cf_bm=bm; cf_clearance=new; session=s1"
+	if got != want {
+		t.Errorf("buildHostCookieHeader = %q, want %q", got, want)
+	}
+}
+
+func TestBuildHostCookieHeader_NoMatchReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	cookies := []*kooky.Cookie{
+		domainCookie("cf_clearance", "c", ".example.com"),
+	}
+	if got := buildHostCookieHeader(cookies, "buzzheavier.com"); got != "" {
+		t.Errorf("buildHostCookieHeader = %q, want empty", got)
+	}
+	if got := buildHostCookieHeader(nil, "buzzheavier.com"); got != "" {
+		t.Errorf("buildHostCookieHeader(nil) = %q, want empty", got)
+	}
+	if got := buildHostCookieHeader(cookies, ""); got != "" {
+		t.Errorf("buildHostCookieHeader(empty host) = %q, want empty", got)
+	}
+}
+
+func TestBuildHostCookieHeader_CapsAtMaxLength(t *testing.T) {
+	t.Parallel()
+	var cookies []*kooky.Cookie
+	for i := 0; i < 80; i++ {
+		cookies = append(cookies, domainCookie(fmt.Sprintf("c%02d", i), strings.Repeat("v", 150), ".buzzheavier.com"))
+	}
+	got := buildHostCookieHeader(cookies, "buzzheavier.com")
+	if len(got) > maxCookieHeaderLen+160 {
+		t.Errorf("header length %d exceeds cap %d + pair slack", len(got), maxCookieHeaderLen)
+	}
+	var all []string
+	for _, c := range cookies {
+		all = append(all, c.Name+"="+c.Value)
+	}
+	full := strings.Join(all, "; ")
+	if len(got) >= len(full) {
+		t.Errorf("expected header to be truncated by cap, got full %d bytes", len(got))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetCookiesForHost
+// ---------------------------------------------------------------------------
+
+func TestGetCookiesForHost_EmptyHostname(t *testing.T) {
+	t.Parallel()
+	got, err := GetCookiesForHost("")
+	if err != nil {
+		t.Errorf("GetCookiesForHost(\"\") returned error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("GetCookiesForHost(\"\") = %q, want empty", got)
 	}
 }

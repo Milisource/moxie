@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +23,7 @@ func TestIdentifyHostInURL_MajorHosts(t *testing.T) {
 		{"https://mega.co.nz/file/abc123", "mega"},
 		{"https://pixeldrain.com/u/abc123", "pixeldrain"},
 		{"https://buzzheavier.com/file", "buzzheavier"},
+		{"https://bzzhr.to/1nbctx9", "buzzheavier"},
 		{"https://gofile.io/d/abc123", "gofile"},
 		{"https://vikingfile.com/file", "vikingfile"},
 		{"https://www.mediafire.com/file/abc123", "mediafire"},
@@ -1416,5 +1418,332 @@ func TestResolveGoogleDrive_MockServer_NonHTMLContent(t *testing.T) {
 	expectedURL := fmt.Sprintf("https://drive.google.com/uc?export=download&id=%s", fileID)
 	if result.URL != expectedURL {
 		t.Errorf("expected URL %q, got %q", expectedURL, result.URL)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Browser cookies on resolver requests
+// ---------------------------------------------------------------------------
+
+// rewriteToServer returns a roundTripFunc that redirects requests for
+// hostname to the test server, preserving method, body, and headers. The
+// original DefaultTransport is captured at definition time (before tests
+// replace DefaultTransport) so the rewrite does not recurse into itself.
+func rewriteToServer(hostname, serverURL string) roundTripFunc {
+	orig := http.DefaultTransport
+	return func(req *http.Request) (*http.Response, error) {
+		if req.URL.Hostname() == hostname {
+			testURL := serverURL + req.URL.Path
+			if req.URL.RawQuery != "" {
+				testURL += "?" + req.URL.RawQuery
+			}
+			newReq, err := http.NewRequest(req.Method, testURL, req.Body)
+			if err != nil {
+				return nil, err
+			}
+			newReq.Header = req.Header.Clone()
+			return orig.RoundTrip(newReq)
+		}
+		return orig.RoundTrip(req)
+	}
+}
+
+func TestResolveBuzzheavier_AttachesBrowserCookies(t *testing.T) {
+	var gotCookie string
+	var htmxHit bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/download") {
+			htmxHit = true
+			gotCookie = r.Header.Get("Cookie")
+			w.Header().Set("hx-redirect", "https://dd.buzzheavier.com/game.zip")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	r.client = srv.Client()
+	// The test URL is the httptest server's 127.0.0.1 host, so return the
+	// cookie for any hostname — the point is verifying attachment, and the
+	// host-scoping is covered by TestMergeBrowserCookies_HostScopedNoLeak.
+	r.cookieSource = func(string) string { return "cf_clearance=abc123; __cf_bm=xyz" }
+
+	// The dd probe hits srv.URL (127.0.0.1, no "buzzheavier.com" to
+	// substitute) and 404s, so resolution falls through to the HTMX flow.
+	_, err := r.Resolve(srv.URL+"/f/code", "buzzheavier")
+	if err != nil {
+		t.Fatalf("Resolve buzzheavier failed: %v", err)
+	}
+	if !htmxHit {
+		t.Fatal("HTMX /download endpoint was never hit")
+	}
+	if !strings.Contains(gotCookie, "cf_clearance=abc123") {
+		t.Errorf("HTMX request missing browser cookie, got %q", gotCookie)
+	}
+}
+
+func TestResolveDatanodes_AttachesBrowserCookiesToGETAndPOST(t *testing.T) {
+	// NOT parallel — replaces http.DefaultTransport which is global state.
+
+	var getCookie, postCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getCookie = r.Header.Get("Cookie")
+			http.SetCookie(w, &http.Cookie{Name: "xfss", Value: "sess"})
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<html><form method="POST">
+				<input type="hidden" name="op" value="download">
+				<input type="hidden" name="id" value="code123">
+				<input type="hidden" name="rand" value="r">
+				<input type="hidden" name="method_free" value="1">
+				<input type="hidden" name="file_code" value="code123">
+			</form></html>`)
+		case http.MethodPost:
+			postCookie = r.Header.Get("Cookie")
+			w.Header().Set("Location", "https://cdn.datanodes.to/game.zip")
+			w.WriteHeader(http.StatusFound)
+		}
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = rewriteToServer("datanodes.to", srv.URL)
+	defer func() { http.DefaultTransport = origTransport }()
+
+	r := NewHostResolver()
+	r.cookieSource = func(hostname string) string {
+		if strings.Contains(hostname, "datanodes") {
+			return "cf_clearance=ccc"
+		}
+		return ""
+	}
+
+	_, err := r.Resolve("https://datanodes.to/download/code123", "datanodes")
+	if err != nil {
+		t.Fatalf("Resolve datanodes failed: %v", err)
+	}
+	if !strings.Contains(getCookie, "cf_clearance=ccc") {
+		t.Errorf("GET missing browser cookie, got %q", getCookie)
+	}
+	if !strings.Contains(postCookie, "cf_clearance=ccc") {
+		t.Errorf("POST missing browser cookie, got %q", postCookie)
+	}
+	if !strings.Contains(postCookie, "xfss=sess") {
+		t.Errorf("POST missing session cookie from GET response, got %q", postCookie)
+	}
+}
+
+func TestResolveVikingFile_AttachesBrowserCookiesToGETAndPOST(t *testing.T) {
+	// NOT parallel — replaces http.DefaultTransport which is global state.
+
+	var getCookie, postCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getCookie = r.Header.Get("Cookie")
+			http.SetCookie(w, &http.Cookie{Name: "PHPSESSID", Value: "sess"})
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<html><form method="POST">
+				<input type="hidden" name="op" value="download1">
+				<input type="hidden" name="id" value="hash123">
+				<input type="hidden" name="rand" value="r">
+				<input type="hidden" name="method_free" value="1">
+			</form></html>`)
+		case http.MethodPost:
+			postCookie = r.Header.Get("Cookie")
+			w.Header().Set("Location", "https://cdn.vikingfile.com/game.zip")
+			w.WriteHeader(http.StatusFound)
+		}
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = rewriteToServer("vikingfile.com", srv.URL)
+	defer func() { http.DefaultTransport = origTransport }()
+
+	r := NewHostResolver()
+	r.cookieSource = func(hostname string) string {
+		if strings.Contains(hostname, "vikingfile") {
+			return "cf_clearance=vvv"
+		}
+		return ""
+	}
+
+	_, err := r.Resolve("https://vikingfile.com/f/hash123", "vikingfile")
+	if err != nil {
+		t.Fatalf("Resolve vikingfile failed: %v", err)
+	}
+	if !strings.Contains(getCookie, "cf_clearance=vvv") {
+		t.Errorf("GET missing browser cookie, got %q", getCookie)
+	}
+	if !strings.Contains(postCookie, "cf_clearance=vvv") {
+		t.Errorf("POST missing browser cookie, got %q", postCookie)
+	}
+	if !strings.Contains(postCookie, "PHPSESSID=sess") {
+		t.Errorf("POST missing session cookie from GET response, got %q", postCookie)
+	}
+}
+
+func TestResolve_NoCookieSourceSkipsAttachment(t *testing.T) {
+	t.Parallel()
+	// A resolver without a cookieSource (zero-value) must not panic and must
+	// resolve normally — covers callers constructing HostResolver directly.
+	r := &HostResolver{}
+	result, err := r.Resolve("https://example.com/file.zip", "unknown")
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	if result.URL != "https://example.com/file.zip" {
+		t.Errorf("expected pass-through URL, got %q", result.URL)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Masked URL unwrap (JSON endpoint)
+// ---------------------------------------------------------------------------
+
+func TestUnwrapMasked_OK(t *testing.T) {
+	t.Parallel()
+	const realURL = "https://pixeldrain.com/u/BYzajuVk"
+	var gotBody, gotXHR, gotCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotXHR = r.Header.Get("X-Requested-With")
+		gotCookie = r.Header.Get("Cookie")
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"ok","msg":"%s"}`, realURL)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	r.SetF95Cookie("xf_session=abc123")
+	got, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	if err != nil {
+		t.Fatalf("unwrapMasked failed: %v", err)
+	}
+	if got != realURL {
+		t.Errorf("unwrapMasked = %q, want %q", got, realURL)
+	}
+	if gotBody != "xhr=1&download=1" && gotBody != "download=1&xhr=1" {
+		t.Errorf("POST body = %q, want xhr=1&download=1", gotBody)
+	}
+	if gotXHR != "XMLHttpRequest" {
+		t.Errorf("X-Requested-With = %q, want XMLHttpRequest", gotXHR)
+	}
+	if gotCookie != "xf_session=abc123" {
+		t.Errorf("POST cookie = %q, want explicit f95 cookie", gotCookie)
+	}
+}
+
+func TestUnwrapMasked_BrowserCookieFallback(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"ok","msg":"https://example.com/file.zip"}`)
+	}))
+	defer srv.Close()
+
+	// No explicit f95 cookie — the browser's f95zone.to cookies must be
+	// attached by the resolver instead.
+	r := NewHostResolver()
+	r.cookieSource = func(hostname string) string {
+		if hostname == "127.0.0.1" {
+			return "xf_session=browser"
+		}
+		return ""
+	}
+	got, err := r.unwrapMasked(srv.URL + "/masked/example.com/x")
+	if err != nil {
+		t.Fatalf("unwrapMasked failed: %v", err)
+	}
+	if got != "https://example.com/file.zip" {
+		t.Errorf("unwrapMasked = %q", got)
+	}
+}
+
+func TestUnwrapMasked_CaptchaStatus(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"captcha","msg":"challenge"}`)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	_, err := r.unwrapMasked(srv.URL + "/masked/example.com/x")
+	if err == nil {
+		t.Fatal("expected error for captcha status")
+	}
+	if !strings.Contains(err.Error(), "captcha") {
+		t.Errorf("expected captcha error, got: %v", err)
+	}
+}
+
+func TestUnwrapMasked_ErrorStatus(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"error","msg":"file not found"}`)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	_, err := r.unwrapMasked(srv.URL + "/masked/example.com/x")
+	if err == nil {
+		t.Fatal("expected error for error status")
+	}
+	if !strings.Contains(err.Error(), "file not found") {
+		t.Errorf("expected server error message, got: %v", err)
+	}
+}
+
+func TestUnwrapMasked_NonJSONFallsBackToRedirect(t *testing.T) {
+	t.Parallel()
+	const realURL = "https://pixeldrain.com/u/xyz789"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			// Legacy deployment: the POST returns the interstitial page.
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprint(w, "<html>Continue to Pixeldrain</html>")
+		case http.MethodGet:
+			http.Redirect(w, r, realURL, http.StatusFound)
+		}
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	got, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	if err != nil {
+		t.Fatalf("unwrapMasked fallback failed: %v", err)
+	}
+	if got != realURL {
+		t.Errorf("unwrapMasked = %q, want %q", got, realURL)
+	}
+}
+
+func TestResolve_MaskedURLUnwrapsThenResolves(t *testing.T) {
+	t.Parallel()
+	const realURL = "https://pixeldrain.com/u/BYzajuVk"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"ok","msg":"%s"}`, realURL)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	r.SetF95Cookie("xf_session=abc123")
+	// The masked URL is on our test server; after unwrap the pixeldrain
+	// resolver runs on the real URL (no HTTP request — pure URL rewrite).
+	result, err := r.Resolve(srv.URL+"/masked/pixeldrain.com/123/x", "pixeldrain")
+	if err != nil {
+		t.Fatalf("Resolve masked pixeldrain failed: %v", err)
+	}
+	if result.URL != "https://pixeldrain.com/api/file/BYzajuVk" {
+		t.Errorf("Resolve = %q, want pixeldrain API URL", result.URL)
 	}
 }

@@ -39,8 +39,9 @@ The `f95Cookie` parameter is an optional F95Zone session cookie string used to a
 1. **SSRF check**: `isValidDownloadURL()` verifies HTTPS-only, blocks private/loopback IPs and cloud metadata endpoints (169.254.169.254, metadata.google.internal, 100.100.100.200, AWS IMDSv6 `fd00:ec2::254`, `0.0.0.0`, `::`).
 
 2. **URL resolution**: `HostResolver.Resolve()` handles host-specific protocols. Resolve is recursion-bounded (masked→masked chains cap at depth 5) and normalizes host labels (legacy `"google drive"` → canonical `googledrive`, matching the scraper's labels).
-   - F95Zone masked URLs (`f95zone.to/masked/...`) are first followed via HEAD redirect to get the real download URL, using the optional `f95Cookie` for authentication, then host-specific resolution is applied on the real URL.
+   - F95Zone masked URLs (`f95zone.to/masked/...`) are first unwrapped via the site's JSON endpoint (`unwrapMasked`, see [Masked F95Zone URLs](#masked-f95zone-urls)) to get the real download URL, using the optional `f95Cookie` for authentication, then host-specific resolution is applied on the real URL.
    - Host-specific resolvers handle each provider's protocol (API calls, cookie exchange, POST forms, confirm tokens).
+   - **Browser cookies** (`cf_clearance`): every resolver request and the final download request merge in the browser's cookies for the request's own hostname (see [Browser Cookie Reuse](#browser-cookie-reuse)).
 
 3. **Resume**: If a `.part` file exists, sends `Range: bytes=<existingSize>-` header. On 206 Partial Content, appends to the file. Resume is skipped for host-specific resolvers that don't support range requests. Size limits are computed **after** the resume-mode decision so a server that ignores `Range` (returns a full 200 while a `.part` exists) can't double-count the existing bytes.
 
@@ -166,19 +167,31 @@ Hosts already covered in other sections: WorkUpload (captcha), MediaFire (captch
 
 F95Zone wraps external download links in redirect endpoints:
 ```
-https://f95zone.to/masked/pixeldrain.com/210467/... → HEAD redirect → https://pixeldrain.com/u/L3sayv61
+https://f95zone.to/masked/pixeldrain.com/210467/... → https://pixeldrain.com/u/L3sayv61
 ```
 
 The `HostResolver.Resolve()` handles this transparently:
 1. `IdentifyHostInURL` matches the masked URL against the host table using embedded domain hints
-2. `Resolve` detects `/masked/` in the URL → calls `followRedirect()` (HEAD request, 10s timeout)
-3. Gets the real download URL after the redirect chain
+2. `Resolve` detects `/masked/` in the URL → calls `unwrapMasked()`: POST `{xhr:1, download:1}` to the masked path with the F95Zone session cookie and `X-Requested-With: XMLHttpRequest`
+3. The endpoint answers JSON — `{"status":"ok","msg":"https://pixeldrain.com/u/..."}` — giving the real download URL without needing the browser
 4. Re-identifies the host from the real URL
 5. Recursively calls `Resolve` with the real URL and correct host
 
-**Cookie-based authentication**: The caller sets the F95Zone session cookie via `HostResolver.SetF95Cookie(cookie)` before resolving. When set, `followRedirect()` includes the `Cookie` header in the HEAD request, which is required for some F95Zone masked URLs that redirect through authenticated endpoints. The cookie flows through the pipeline: `Download() → DownloadWithHost() → HostResolver.SetF95Cookie() → followRedirect()`.
+**Why the POST endpoint:** F95Zone's masked page itself is now a JS + reCAPTCHA interstitial ("Continue to <host>") that serves no redirect to plain HTTP clients. The page's own AJAX handler is what reveals the destination — and that same POST works from Go with a valid session cookie (verified live: masked → `pixeldrain.com/u/…` → `api/file/<id>` → 200 with the real archive). A `captcha` status means the session is stale; the error tells the user to re-import cookies or open the link in a browser. If the POST returns non-JSON (legacy deployment), the resolver falls back to `followRedirect()` (GET redirect chain).
 
-If `followRedirect` fails (timeout, network error), it falls through to host-specific resolution with the masked URL — which will likely fail, but the caller's fallback loop will try other links.
+**Cookie-based authentication**: The caller sets the F95Zone session cookie via `HostResolver.SetF95Cookie(cookie)` before resolving. When set, `unwrapMasked()` includes the `Cookie` header in the POST; when unset, the browser's own f95zone.to cookies are attached instead (host-scoped). The cookie flows through the pipeline: `Download() → DownloadWithHost() → HostResolver.SetF95Cookie() → unwrapMasked()`.
+
+If unwrapping fails (timeout, network error, captcha), resolution falls through to host-specific resolution with the masked URL — which will likely fail, but the caller's fallback loop will try other links.
+
+### Browser Cookie Reuse
+
+Cloudflare-protected hosts (buzzheavier, datanodes, vikingfile, workupload, ...) 403 plain HTTP clients — they require the browser-only `cf_clearance` challenge token. Since moxie already extracts cookies from installed browsers (see [browser.md](browser.md)), the resolver now does the same for download hosts automatically:
+
+- `browser.GetCookiesForHost(hostname)` returns every cookie the browser holds for that host (RFC 6265 domain match: a `.buzzheavier.com` cookie is valid for `dd.buzzheavier.com`). The kooky snapshot is cached for 60 s (cf_clearance lives ~30 min-2 h) and the header is sorted/deduped/capped at 6 KB.
+- The `HostResolver` attaches these cookies to every request it makes: resolver GET/POST steps (so datanodes/vikingfile form flows pass Cloudflare) and the final download request (`mergeBrowserCookies` in `downloadWithHeaders`), merged with any existing Cookie header from the resolution flow.
+- Cookies are **host-scoped**: they are only ever sent to the hostname they were stored for. Go's http client also strips manual Cookie headers on cross-domain redirects, so a resolved CDN URL never receives the resolver host's cookies.
+
+**Practical effect**: if the user has visited buzzheavier.com/datanodes.to in a browser (even once, recently), downloads for those hosts pass the Cloudflare challenge instead of failing with HTTP 403. If the browser holds no cookies for a host, extraction is a no-op and the request behaves exactly as before. This is best-effort — a fresh/expired clearance still fails and falls through to the next link.
 
 ### Host-Specific Resolvers (`hosts.go`)
 

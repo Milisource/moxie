@@ -32,6 +32,7 @@ func (r *HostResolver) resolveVikingFile(rawURL string) (*ResolveResult, error) 
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Referer", "https://vikingfile.com/")
+	r.attachBrowserCookies(req)
 
 	resp, err := r.client.Do(req)
 	if err != nil {
@@ -99,6 +100,7 @@ func (r *HostResolver) resolveVikingFile(rawURL string) (*ResolveResult, error) 
 		if cookieStr != "" {
 			postReq.Header.Set("Cookie", cookieStr)
 		}
+		r.attachBrowserCookies(postReq)
 
 		postResp, err := noFollowClient.Do(postReq)
 		if err != nil {
