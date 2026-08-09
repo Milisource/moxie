@@ -182,7 +182,13 @@ func (r *HostResolver) resolveGofile(url string) (*ResolveResult, error) {
 		return nil, err
 	}
 	return &ResolveResult{
-		URL:     directURL,
-		Headers: map[string]string{"User-Agent": gofileUserAgent},
+		URL: directURL,
+		Headers: map[string]string{
+			"User-Agent": gofileUserAgent,
+			// The downloadweb CDN hop serves the file only when the guest
+			// token is presented as a cookie (Bearer alone redirects to the
+			// share page — verified live 2026-08-09).
+			"Cookie": "accountToken=" + token,
+		},
 	}, nil
 }

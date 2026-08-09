@@ -113,6 +113,9 @@ func TestResolveGofile_FreeFlow(t *testing.T) {
 	if res.URL != fx.fileLink {
 		t.Fatalf("URL = %q, want %q", res.URL, fx.fileLink)
 	}
+	if got := res.Headers["Cookie"]; got != "accountToken="+fx.token {
+		t.Fatalf("Cookie header = %q, want accountToken=%q", got, fx.token)
+	}
 	if fx.guestCalls != 1 {
 		t.Fatalf("guest account calls = %d, want 1", fx.guestCalls)
 	}
