@@ -36,6 +36,7 @@ import (
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/browserresolve"
 	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/extractor"
@@ -126,6 +127,12 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.db = database
 	slog.Info("database opened successfully")
+
+	// Browser fallback for challenge-graded download hosts: wired when a
+	// usable browser is installed (MOXIE_BROWSER=auto|chrome|firefox).
+	if installed, reason := browserresolve.InstallDownloaderFallback(); !installed {
+		slog.Debug("browser download fallback not installed", "reason", reason)
+	}
 
 	a.coverServer = startCoverServer()
 	if a.coverServer != nil {

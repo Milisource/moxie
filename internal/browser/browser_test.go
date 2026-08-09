@@ -26,6 +26,55 @@ func domainCookie(name, value, domain string) *kooky.Cookie {
 	return c
 }
 
+// browserCookie is cookie() with a kooky BrowserInfo (store name).
+func browserCookie(name, value, domain, browserName string) *kooky.Cookie {
+	c := domainCookie(name, value, domain)
+	c.Browser = &fakeBrowserInfo{name: browserName}
+	return c
+}
+
+type fakeBrowserInfo struct{ name string }
+
+func (f *fakeBrowserInfo) Browser() string        { return f.name }
+func (f *fakeBrowserInfo) Profile() string        { return "default" }
+func (f *fakeBrowserInfo) IsDefaultProfile() bool { return true }
+func (f *fakeBrowserInfo) FilePath() string       { return "/fake/" + f.name }
+
+// TestGetCookieBrowsersForHost covers browser-store selection: domain
+// matching, dedup, and the stable preference order.
+func TestGetCookieBrowsersForHost(t *testing.T) {
+	cookies := []*kooky.Cookie{
+		browserCookie("cf_clearance", "a", ".vikingfile.com", "firefox"),
+		browserCookie("cf_clearance", "b", ".vikingfile.com", "chrome"),
+		browserCookie("session", "c", "datanodes.to", "firefox"),
+		browserCookie("other", "d", "example.org", "edge"),
+		nil,
+	}
+	tests := []struct {
+		host string
+		want []string
+	}{
+		{"vikingfile.com", []string{"chrome", "firefox"}}, // preference order, deduped
+		{"datanodes.to", []string{"firefox"}},
+		{"cdn.example.org", []string{"edge"}}, // subdomain domain-match
+		{"unrelated.com", nil},
+		{"", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			got := cookieBrowsersForHostname(cookies, tt.host)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("got %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // filterF95Cookies
 // ---------------------------------------------------------------------------

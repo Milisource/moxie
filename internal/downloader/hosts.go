@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,6 +33,12 @@ type HostResolver struct {
 	// SetDefaultResolvedCache.
 	resolvedCache    func(maskedURL string) (string, bool)
 	resolvedCachePut func(maskedURL, resolvedURL, host string)
+	// browserFallback, when set, downloads a challenge-graded URL inside a
+	// real browser (browserresolve). Invoked at most once per download when
+	// the Go path hits a Cloudflare challenge — either at the resolver
+	// stage or on the file hop. It returns the path of the finished file
+	// inside destDir.
+	browserFallback func(ctx context.Context, url, destDir string) (string, error)
 }
 
 // SetF95Cookie sets the F95Zone session cookie string used to authenticate
@@ -56,6 +63,10 @@ func (r *HostResolver) SetResolvedCache(get func(maskedURL string) (string, bool
 var (
 	defaultResolvedCache    func(maskedURL string) (string, bool)
 	defaultResolvedCachePut func(maskedURL, resolvedURL, host string)
+	// defaultBrowserFallback is the browser-download hook every
+	// HostResolver created after SetDefaultBrowserFallback picks up,
+	// including the resolver inside DownloadWithContext. nil = Go path only.
+	defaultBrowserFallback func(ctx context.Context, url, destDir string) (string, error)
 )
 
 // SetDefaultResolvedCache installs the resolved-URL cache pair used by every
@@ -66,6 +77,15 @@ var (
 func SetDefaultResolvedCache(get func(maskedURL string) (string, bool), put func(maskedURL, resolvedURL, host string)) {
 	defaultResolvedCache = get
 	defaultResolvedCachePut = put
+}
+
+// SetDefaultBrowserFallback installs the browser-download hook used by every
+// HostResolver created afterwards (including the one inside
+// DownloadWithContext). It runs at most once per download when the Go path
+// hits a Cloudflare challenge — the browser performs the download itself
+// into destDir and returns the finished file's path. Pass nil to clear.
+func SetDefaultBrowserFallback(fn func(ctx context.Context, url, destDir string) (string, error)) {
+	defaultBrowserFallback = fn
 }
 
 // NewHostResolver creates a resolver with a shared HTTP client.
@@ -83,7 +103,14 @@ func NewHostResolver() *HostResolver {
 		cookieSource:     browserCookieHeader,
 		resolvedCache:    defaultResolvedCache,
 		resolvedCachePut: defaultResolvedCachePut,
+		browserFallback:  defaultBrowserFallback,
 	}
+}
+
+// SetBrowserFallback overrides the browser-download hook for this resolver
+// (see SetDefaultBrowserFallback). Pass nil to disable.
+func (r *HostResolver) SetBrowserFallback(fn func(ctx context.Context, url, destDir string) (string, error)) {
+	r.browserFallback = fn
 }
 
 // browserCookieHeader extracts the browser's cookies for a hostname as a

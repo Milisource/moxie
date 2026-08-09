@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/mili/moxie/internal/archive"
+	"github.com/mili/moxie/internal/browserresolve"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/log"
@@ -177,6 +178,11 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 			}
 		},
 	)
+	// Browser fallback for challenge-graded hosts (vikingfile, datanodes,
+	// mixdrop): wired once when a usable browser is installed. The Go path
+	// stays primary — the browser only runs when a Cloudflare challenge
+	// blocks it.
+	browserresolve.InstallDownloaderFallback()
 
 	dl := &db.Download{
 		GameID:   gameID,

@@ -118,11 +118,45 @@ func DownloadWithContext(ctx context.Context, urlStr, host, destDir string, expe
 			log.Info("mega download delegating to megatools", "url", redactedURL(urlStr), "dest", destDir)
 			return runMegatoolsDownload(ctx, urlStr, destDir, expectedTotal, onProgress)
 		}
+		// The resolver stage hit a Cloudflare/captcha wall (vikingfile,
+		// datanodes, ...): the browser loads the page with its own
+		// fingerprint + clearance and performs the download itself.
+		if isChallengeFailure(resolveErr) && resolver.browserFallback != nil {
+			path, fbErr := resolver.browserFallback(ctx, urlStr, destDir)
+			if fbErr == nil {
+				log.Info("browser fallback download complete (resolve challenge)", "host", host, "file", path)
+				return nil
+			}
+			log.Warn("browser fallback failed after resolve challenge", "host", host, "error", fbErr)
+			return fmt.Errorf("resolve %s URL: %w (browser fallback also failed: %v)", host, resolveErr, fbErr)
+		}
 		log.Info("download resolve failed", "host", host, "error", resolveErr)
 		return fmt.Errorf("resolve %s URL: %w", host, resolveErr)
 	}
 	log.Debug("download resolving via HTTP", "resolved_url", redactedURL(resolved.URL), "headers", len(resolved.Headers), "host", host)
-	return downloadWithHeaders(ctx, resolved.URL, resolved.Headers, host, destDir, expectedTotal, onProgress, resolver.cookieSource)
+	return downloadWithHeaders(ctx, resolved.URL, resolved.Headers, urlStr, host, destDir, expectedTotal, onProgress, resolver.cookieSource, resolver.browserFallback)
+}
+
+// challengeMarkers are error substrings that identify a Cloudflare/captcha
+// wall at the resolver stage — the trigger for the browser fallback. The
+// match is deliberately broad: a false positive only costs one browser
+// attempt, while a miss leaves a challenge-graded host undownloadable.
+var challengeMarkers = []string{
+	"captcha", "challenge", "turnstile", "cloudflare",
+	"http 403", "status 403", "403 forbidden",
+}
+
+// isChallengeFailure reports whether a resolver-stage error indicates a
+// bot wall the Go path cannot pass (as opposed to a dead link or a
+// host-specific protocol problem).
+func isChallengeFailure(err error) bool {
+	lower := strings.ToLower(err.Error())
+	for _, m := range challengeMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // Download downloads a file using standard HTTP, auto-detecting the host.
@@ -170,7 +204,7 @@ var sharedDownloadTransport = &http.Transport{
 	IdleConnTimeout:       90 * time.Second,
 }
 
-func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]string, host string, destDir string, expectedTotal int64, onProgress func(Progress), cookieSource func(hostname string) string) error {
+func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]string, originalURL, host, destDir string, expectedTotal int64, onProgress func(Progress), cookieSource func(hostname string) string, browserFallback func(ctx context.Context, url, destDir string) (string, error)) error {
 	if !isValidDownloadURL(urlStr) {
 		return fmt.Errorf("invalid or blocked URL: %s", urlStr)
 	}
@@ -247,11 +281,27 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 	}
 	defer resp.Body.Close()
 
-	// With the uTLS transport active, a CF challenge means the clearance
-	// cookie is stale or fingerprint-mismatched — surface it as a typed
-	// error instead of a generic status failure.
-	if UseUTLSTransport && cfChallengeDetected(resp) {
-		return fmt.Errorf("download rejected: %w", ErrCFChallengeStale)
+	// A Cloudflare challenge wall (Cf-Mitigated header, or a 403 body with
+	// challenge markers) is the browser fallback's trigger: the Go client —
+	// stdlib or uTLS — cannot produce a Turnstile proof, while the user's
+	// real browser can. Invoke the fallback once with the ORIGINAL URL so
+	// the browser walks the full host flow (page → token → download) under
+	// its own fingerprint and clearance.
+	if cfChallengeDetected(resp) {
+		resp.Body.Close()
+		if browserFallback != nil {
+			path, fbErr := browserFallback(ctx, originalURL, destDir)
+			if fbErr == nil {
+				log.Info("browser fallback download complete (challenge)", "url", redactedURL(originalURL), "file", path)
+				return nil
+			}
+			log.Warn("browser fallback failed after challenge", "url", redactedURL(originalURL), "error", fbErr)
+			return fmt.Errorf("download rejected: %w (browser fallback also failed: %v)", ErrCFChallengeStale, fbErr)
+		}
+		if UseUTLSTransport {
+			return fmt.Errorf("download rejected: %w", ErrCFChallengeStale)
+		}
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	log.Debug("download response", "url", redactedURL(urlStr), "status", resp.StatusCode, "content_length", resp.ContentLength, "content_type", resp.Header.Get("Content-Type"))

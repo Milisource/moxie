@@ -11,23 +11,45 @@ This document is the **browser-agnostic / OS-agnostic** design: the fallback
 must work with whatever major browser the user has (Chrome, Chromium, Edge,
 Brave, Firefox) on any of the three target OSes (Linux, macOS, Windows).
 
-## Current state (2026-08-09)
+## Current state (2026-08-09, implemented + live-verified)
 
 - **Chrome-family engine** (rod, CDP): implemented, tested offline.
   - Binary discovery: PATH (`google-chrome`, `google-chrome-stable`,
-    `chromium`, `chromium-browser`, `chrome`) + rod's own launcher discovery
-    (macOS `.app` bundles, Playwright caches).
+    `chromium`, `chromium-browser`, `microsoft-edge`, `brave-browser`,
+    `chrome`) + rod's own launcher discovery (macOS `.app` bundles,
+    Playwright caches).
   - Profile discovery (`discoverProfileDir` in `profile.go`): Windows
-    `%LOCALAPPDATA%\Google\Chrome\User Data`, macOS
-    `~/Library/Application Support/Google/Chrome`, Linux
-    `~/.config/google-chrome` + `~/.config/chromium`.
+    `%LOCALAPPDATA%` roots for Google Chrome, Microsoft Edge,
+    BraveSoftware/Brave-Browser; macOS `~/Library/Application Support` for
+    the same three; Linux `~/.config/google-chrome`, `chromium`,
+    `microsoft-edge`, `BraveSoftware/Brave-Browser`.
   - Profile copy: skips `Singleton*`, `*.lock`, `*-journal`; **keeps
     `-wal`/`-shm`** (fresh cf_clearance lives in the WAL). Skips cache dirs.
   - Download: `Browser.setDownloadBehavior(allowAndName, eventsEnabled)`,
     download-event tracker with GUID first-wins + `pollDownloadDir` fallback
     (rod#971 target=_blank downloads never emit events).
-- **No Firefox engine yet.** This machine has no Chrome — the user's browser
-  is Firefox 153 — so the fallback cannot run here until Firefox is added.
+- **Firefox engine** (raw-launch, zero new deps): implemented, tested, and
+  **live-verified 2026-08-09** — real Firefox 153.0.1 headless downloaded a
+  1 MiB payload via the full pipeline (profile discovery from `profiles.ini`
+  `Default=1` → copy → user.js download prefs → `firefox --headless
+  -profile <copy> -no-remote <url>` → `.part`-aware download-dir polling →
+  verify → move → teardown kills the process tree). Headless→headful
+  escalation (xvfb-run on display-less Linux) tested with a fake binary.
+  Overrides: `MOXIE_FIREFOX_BIN`, `MOXIE_FIREFOX_PROFILE_DIR`.
+- **Selection + wiring (F95-675j): implemented + live-verified.**
+  `WithBrowser("auto"|"chrome"|"firefox")` (or `MOXIE_BROWSER` env); auto
+  order = cookie-holding browser for the host (kooky per-browser) →
+  Chrome-family → Firefox. `InstallDownloaderFallback()` wires the
+  downloader's `SetDefaultBrowserFallback` hook (TUI download, CLI
+  `download`, desktop app startup): the hook fires at most once per
+  download when the Go path hits a Cloudflare challenge (Cf-Mitigated /
+  403 challenge body at the file hop, or a challenge/captcha failure at the
+  resolver stage), and the browser performs the download itself into the
+  destination dir. Go path stays primary.
+- **Known limitation:** raw-launch Firefox only auto-downloads — hosts whose
+  pages need a button click (vikingfile/datanodes free-download forms) time
+  out unless the resolved URL starts the download on navigation. Click
+  automation is a future rod/CDP enhancement (see F95-* follow-up).
 
 ## Firefox engine (raw-launch, zero new deps)
 
@@ -162,14 +184,14 @@ overrides. Errors stay typed (`ErrNoChrome` → rename/generalize to
 > mints the token via the Turnstile flow, Go downloads the bytes
 > (challenge-free zone, resume + progress).
 
-1. Live: buzzheavier `bzzhr.to/e2yt4zd66jq3` (Turnstile-gated) — Firefox
-   engine headless, then headful escalation. (Resolution may be Go-able via
-   F95-hs4y before this runs.)
-2. Live: fafda.to DD hop with a browser-minted token — the fafda.to zone is
-   Cloudflare-proxied but **not** challenge-gated (plain JSON API, 404
-   `{"error":"not found"}` without token, 403 `{"error":"forbidden"}` with a
-   bad `v=`, 503 `service unavailable` while the origin is down), so the
-   file bytes may be downloadable by Go's stdlib client once the token
-   exists → hybrid: browser mints token, Go downloads with resume/progress.
-3. OS matrix at least on Linux (this machine) + one Windows/macOS smoke test
+1. ✅ Live: **Firefox engine** headless against a local server — real
+   Firefox 153.0.1 downloaded 1 MiB via the full pipeline (1.65 s);
+   headless→headful escalation tested with a fake binary.
+2. ✅ Live: **`InstallDownloaderFallback`** production wiring — installed
+   with `MOXIE_BROWSER=firefox`; the Go path stays primary and only
+   challenge responses trigger the browser.
+3. ⚠️ Vikingfile/datanodes E2E needs **click automation** — the raw-launch
+   engine only auto-downloads URLs that start a download on navigation;
+   free-download-button hosts need a rod/CDP interaction pass (future work).
+4. OS matrix at least on Linux (this machine) + one Windows/macOS smoke test
    before release.

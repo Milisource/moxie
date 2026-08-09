@@ -176,6 +176,65 @@ func domainMatchesHostname(hostname, cookieDomain string) bool {
 	return h == d || strings.HasSuffix(h, "."+d)
 }
 
+// cookieBrowserOrder is the stable order GetCookieBrowsersForHost reports
+// browsers in; earlier entries win when several stores hold cookies for the
+// same host.
+var cookieBrowserOrder = []string{"chrome", "chromium", "edge", "brave", "firefox"}
+
+// GetCookieBrowsersForHost returns the names of the browsers whose stores
+// hold at least one cookie valid for hostname (RFC 6265 domain match), in a
+// stable order (chrome, chromium, edge, brave, firefox). A cf_clearance is
+// cryptographically bound to the browser that minted it, so the fallback
+// download engine should prefer a browser listed here — it is the only one
+// guaranteed to pass the host's challenge. Returns nil when the browser
+// holds no cookies for the host.
+func GetCookieBrowsersForHost(hostname string) []string {
+	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	hostname = strings.TrimSuffix(hostname, ".")
+	if hostname == "" {
+		return nil
+	}
+	cookies, _ := cachedBrowserCookies()
+	return cookieBrowsersForHostname(cookies, hostname)
+}
+
+// cookieBrowsersForHostname filters a cookie snapshot to the browsers
+// holding cookies valid for hostname, in the cookieBrowserOrder preference.
+func cookieBrowsersForHostname(cookies []*kooky.Cookie, hostname string) []string {
+	seen := map[string]bool{}
+	var browsers []string
+	for _, c := range cookies {
+		if c == nil || c.Browser == nil {
+			continue
+		}
+		name := c.Browser.Browser()
+		if name == "" {
+			continue
+		}
+		if !domainMatchesHostname(hostname, c.Domain) {
+			continue
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		browsers = append(browsers, name)
+	}
+	sort.SliceStable(browsers, func(i, j int) bool {
+		return browserOrderIndex(browsers[i]) < browserOrderIndex(browsers[j])
+	})
+	return browsers
+}
+
+func browserOrderIndex(name string) int {
+	for i, b := range cookieBrowserOrder {
+		if name == b {
+			return i
+		}
+	}
+	return len(cookieBrowserOrder)
+}
+
 // GetF95CookiesFromSQLite reads f95zone.to cookies directly from a Firefox
 // cookies.sqlite file at the given path.
 func GetF95CookiesFromSQLite(path string) (string, error) {

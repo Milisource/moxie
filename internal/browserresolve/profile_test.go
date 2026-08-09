@@ -210,6 +210,9 @@ func TestCopyProfileErrorPaths(t *testing.T) {
 
 func TestDiscoverProfileDir(t *testing.T) {
 	// No t.Parallel: t.Setenv mutates the process environment.
+	// Isolate HOME so real browser profiles on this machine cannot satisfy
+	// the "no profile" cases.
+	t.Setenv("HOME", t.TempDir())
 	t.Run("override missing", func(t *testing.T) {
 		_, err := discoverProfileDir(filepath.Join(t.TempDir(), "missing"))
 		if !errorsIs(err, ErrNoProfile) {

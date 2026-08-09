@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mili/moxie/internal/archive"
+	"github.com/mili/moxie/internal/browserresolve"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/log"
@@ -51,6 +52,10 @@ func Download(args []string) {
 			}
 		},
 	)
+	// Browser fallback for challenge-graded hosts: wired when a usable
+	// browser is installed (MOXIE_BROWSER=auto|chrome|firefox); the Go path
+	// stays primary.
+	browserresolve.InstallDownloaderFallback()
 
 	cookie := ResolveCookie(*cookieStr, *cookieFile)
 

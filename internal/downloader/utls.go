@@ -40,13 +40,13 @@ func SetUTLSTransport(on bool) {
 }
 
 // testTransportOverride, when set, replaces the shared transport in
-// downloadWithHeaders (tests only — lets a test client dial an httptest TLS
+// downloadWithHeaders (tests only — lets a test client dial an httptest
 // server through a public-looking hostname).
-var testTransportOverride *http.Transport
+var testTransportOverride http.RoundTripper
 
 // downloadTransport returns the active shared transport: the uTLS-backed
 // one when opted in, else the stdlib sharedDownloadTransport.
-func downloadTransport() *http.Transport {
+func downloadTransport() http.RoundTripper {
 	if testTransportOverride != nil {
 		return testTransportOverride
 	}

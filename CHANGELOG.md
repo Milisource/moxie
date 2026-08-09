@@ -2,6 +2,13 @@
 
 ### Added
 
+- **Browser fallback for challenge-graded downloads (F95-675j)** — when the Go path hits a Cloudflare challenge it cannot pass, moxie hands the download to the user's real browser, which performs the download itself on a copy of the live profile (same IP + UA + TLS fingerprint the clearance was minted to):
+  - `downloader.SetDefaultBrowserFallback(fn)` / `HostResolver.SetBrowserFallback` — package-level hook (mirrors `SetDefaultResolvedCache`), invoked at most once per download on a file-hop challenge (Cf-Mitigated / 403 challenge body) or a resolver-stage challenge/captcha failure (vikingfile-style HTTP 403, datanodes captcha). Go path stays primary; nil hook = unchanged behavior.
+  - **Firefox raw-launch engine** in `browserresolve` (zero new deps): `profiles.ini` `Default=1` discovery (Linux/macOS/Windows roots), profile copy keeping `cookies.sqlite` + WAL (the clearance) and skipping `.parentlock`/`parent.lock`/`cache2`/`startupCache`, download prefs injected via `user.js` (forward-slash paths even on Windows), `firefox --headless -profile <copy> -no-remote <url>` (never `-private` — changes the TLS fingerprint), `.part`-aware download-dir polling, headless→headful escalation (`xvfb-run -a` on display-less Linux), process-tree teardown per OS (`Setpgid`+`kill(-pid)` / `taskkill /T /F`). Overrides: `MOXIE_FIREFOX_BIN`, `MOXIE_FIREFOX_PROFILE_DIR`.
+  - **Per-URL engine selection**: the browser holding cookies for the host (kooky per-browser — a clearance only matches its minting browser) → Chrome-family (rod, profile roots extended with Edge/Brave per OS) → Firefox. `MOXIE_BROWSER=auto|chrome|firefox` (1/true = auto); `ErrNoBrowser` (with `ErrNoChrome` alias).
+  - Wired into the TUI download flow, CLI `download`, and the desktop app startup via `browserresolve.InstallDownloaderFallback()`.
+  - Live-verified 2026-08-09: real Firefox 153.0.1 headless through the full pipeline (1 MiB payload, 1.65 s); installer wiring live-checked. Known limitation: raw-launch only auto-downloads URLs that start a download on navigation — vikingfile/datanodes free-download buttons need future CDP click automation.
+
 - **Buzzheavier token-based resolver (F95-hs4y)** — replaces the old HTMX-only flow that got self-referential `hx-redirect`s (no token → no file link). Live-verified end-to-end 2026-08-09 (`bzzhr.to/e2yt4zd66jq3` → fafda.to → 206 file hop):
   - Share page fetch with browser cookies, retrying through Cloudflare's intermittent adaptive 403s (backoff ~1s, cap 5 tries; non-403 statuses fail fast)
   - Server-signed `t=` token extraction from the page's `hx-get="/<id>/download?t=<token>"` attributes (HTML-entity `&amp;` handled; endpoint always rebuilt with `alt=true`)

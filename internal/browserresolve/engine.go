@@ -24,7 +24,8 @@ const pollInterval = 500 * time.Millisecond
 // explicit BinPath is given. rod's own discovery covers install locations
 // outside PATH (macOS .app bundles, Playwright caches) when none match.
 var browserBinaryCandidates = []string{
-	"google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome",
+	"google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+	"microsoft-edge", "microsoft-edge-stable", "brave-browser", "brave", "chrome",
 }
 
 // rodEngine is the real engine: it launches headless Chrome on a copied
@@ -35,6 +36,11 @@ type rodEngine struct {
 }
 
 func newRodEngine(opts Options) *rodEngine { return &rodEngine{opts: opts} }
+
+// profileDir locates the Chrome-family profile root ("User Data" dir).
+func (e *rodEngine) profileDir(override string) (string, error) {
+	return discoverProfileDir(override)
+}
 
 // detectBrowserBinary returns the first Chrome-family executable on PATH.
 func detectBrowserBinary() (string, error) {
@@ -264,7 +270,7 @@ func stableDownloadFile(dir, last string) (path, next string, ok bool) {
 			continue
 		}
 		name := ent.Name()
-		if strings.HasSuffix(name, ".crdownload") || strings.HasSuffix(name, ".download") {
+		if strings.HasSuffix(name, ".crdownload") || strings.HasSuffix(name, ".download") || strings.HasSuffix(name, ".part") {
 			continue
 		}
 		info, err := ent.Info()

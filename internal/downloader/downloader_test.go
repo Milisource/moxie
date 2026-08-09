@@ -126,7 +126,7 @@ func TestIsValidDownloadURL_HostnameBlocklist(t *testing.T) {
 
 func TestDownloadWithHeaders_InvalidURL(t *testing.T) {
 	t.Parallel()
-	err := downloadWithHeaders(context.Background(), "http://127.0.0.1/secret", nil, "test", t.TempDir(), 0, nil, nil)
+	err := downloadWithHeaders(context.Background(), "http://127.0.0.1/secret", nil, "http://127.0.0.1/secret", "test", t.TempDir(), 0, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for blocked URL, got nil")
 	}

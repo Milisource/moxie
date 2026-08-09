@@ -39,13 +39,17 @@ import (
 // errors.Is so callers can degrade gracefully (e.g. fall back to the Go
 // resolver or surface a "quit Chrome first" hint).
 var (
-	// ErrNoChrome means no Chrome-family binary could be found (nor started
-	// by rod's own discovery covering macOS .app bundles and Playwright
-	// caches). Install Chrome or pass WithBinPath.
-	ErrNoChrome = errors.New("browserresolve: no Chrome/Chromium binary found")
-	// ErrNoProfile means no browser profile ("User Data" root) was found at
-	// the override, the MOXIE_CHROME_PROFILE_DIR environment variable, or
-	// the standard per-OS locations.
+	// ErrNoBrowser means no supported browser binary could be found (nor
+	// started by rod's own discovery covering macOS .app bundles and
+	// Playwright caches). Install Chrome/Chromium/Firefox or pass
+	// WithBinPath / MOXIE_FIREFOX_BIN.
+	ErrNoBrowser = errors.New("browserresolve: no supported browser binary found")
+	// ErrNoChrome is the historical name of ErrNoBrowser for the
+	// Chrome-family engine; kept as an alias for compatibility.
+	ErrNoChrome = ErrNoBrowser
+	// ErrNoProfile means no browser profile was found at the override, the
+	// MOXIE_CHROME_PROFILE_DIR / MOXIE_FIREFOX_PROFILE_DIR environment
+	// variables, or the standard per-OS locations.
 	ErrNoProfile = errors.New("browserresolve: no browser profile found")
 	// ErrProfileLocked means the live profile could not be copied. On
 	// Windows Chrome holds exclusive locks while running — quit Chrome and
@@ -93,6 +97,11 @@ type Options struct {
 	// MinSize is the minimum accepted file size in bytes. Zero accepts any
 	// non-empty file.
 	MinSize int64
+	// Browser forces an engine family: BrowserAuto (default), BrowserChrome
+	// (rod/CDP), or BrowserFirefox (raw-launch). Auto resolves per URL: the
+	// browser holding cookies for the host first, then Chrome-family, then
+	// Firefox.
+	Browser string
 }
 
 // Option mutates an Options value. The With* constructors are the public
@@ -120,16 +129,25 @@ func WithHeadful(v bool) Option { return func(o *Options) { o.Headful = v } }
 // non-empty file).
 func WithMinSize(n int64) Option { return func(o *Options) { o.MinSize = n } }
 
+// WithBrowser forces an engine family: BrowserAuto (default), BrowserChrome,
+// or BrowserFirefox. WithBrowser("firefox") is equivalent to WithBrowser
+// (the option name mirrors the value).
+func WithBrowser(name string) Option { return func(o *Options) { o.Browser = name } }
+
 func defaultOptions() Options {
 	return Options{Timeout: defaultTimeout, DownloadTimeout: defaultDownloadTimeout}
 }
 
 // engine downloads a URL inside a real browser running on a copied profile
 // and returns the finished file (still inside the temp download dir) plus
-// the server-suggested filename. Implemented by rodEngine; tests substitute
-// a fake to exercise orchestrator error and teardown paths offline.
+// the server-suggested filename. Implemented by rodEngine and
+// firefoxEngine; tests substitute a fake to exercise orchestrator error and
+// teardown paths offline.
 type engine interface {
 	run(ctx context.Context, req engineRequest) (engineResult, error)
+	// profileDir locates the engine's live profile (the dir copied for the
+	// session), honoring an explicit override.
+	profileDir(override string) (string, error)
 }
 
 // engineRequest is the input to engine.run.
@@ -182,7 +200,12 @@ func ResolveDownload(ctx context.Context, resolvedURL, destDir string, opts ...O
 	}
 	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
-	r := &resolver{engine: newRodEngine(o), opts: o}
+
+	eng, err := selectEngine(&o, resolvedURL)
+	if err != nil {
+		return "", err
+	}
+	r := &resolver{engine: eng, opts: o}
 	return r.resolve(ctx, resolvedURL, destDir)
 }
 
@@ -196,7 +219,9 @@ func (r *resolver) resolve(ctx context.Context, resolvedURL, destDir string) (st
 		return "", fmt.Errorf("browserresolve: empty destination directory")
 	}
 
-	profileDir, err := discoverProfileDir(r.opts.ProfileDir)
+	var profileDir string
+	var err error
+	profileDir, err = r.engine.profileDir(r.opts.ProfileDir)
 	if err != nil {
 		return "", err
 	}

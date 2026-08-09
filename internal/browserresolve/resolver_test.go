@@ -32,6 +32,13 @@ func (f *fakeEngine) run(_ context.Context, req engineRequest) (engineResult, er
 	return f.result, nil
 }
 
+func (f *fakeEngine) profileDir(override string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	return "", ErrNoProfile
+}
+
 func (f *fakeEngine) requests() []engineRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()

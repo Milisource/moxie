@@ -197,6 +197,36 @@ Cloudflare-protected hosts (datanodes, vikingfile, ...) 403 plain HTTP clients �
 
 > **Buzzheavier is NOT gated by cf_clearance** (live-verified 2026-08-09, see [research-buzzheavier-cloudflare.md](research-buzzheavier-cloudflare.md)). Its wall is the **Turnstile-gated token flow**: the share page (which passes with stdlib TLS + browser cookies, retry through intermittent adaptive 403s) embeds a **server-signed `t=` token** in the `hx-get` attributes — no Turnstile proof is needed to obtain it. `GET /download?t=<token>&alt=true` returns `hx-redirect` with a real file URL (`fafda.to/d/<id>?v=<token>`; plain `alt` yields `ts.bzzhr.to`, whose origin is currently dead). fafda.to is Cloudflare-proxied but **challenge-free** at the app layer (404 no token / 403 bad token / 503 origin outage). **Implemented in `resolveBuzzheavier` (F95-hs4y, live-verified end-to-end 2026-08-09)**: page fetch retries adaptive 403s (backoff ~1s, cap 5), token extraction, HTMX download with `alt=true`, fafda.to preference (ts/dd redirects rewritten), and a `Range: bytes=0-0` probe — 503 origin outages are retried with an escalating backoff, 403/404 JSON errors trigger a share-page refetch for a fresh token (bounded at 2).
 
+### Browser fallback for challenge-graded hosts (F95-675j)
+
+When the Go path hits a wall it cannot pass — a Cloudflare challenge
+(Cf-Mitigated header / 403 challenge body) at the file hop, or a
+challenge/captcha failure at the resolver stage (vikingfile, datanodes,
+mixdrop) — the downloader hands the URL to the **user's real browser**,
+which performs the download itself on a copy of the live profile (same IP +
+UA + TLS fingerprint the clearance was minted to). Wiring:
+
+- `HostResolver.SetBrowserFallback(fn)` / `SetDefaultBrowserFallback(fn)` —
+  package-level hook picked up by every resolver (mirrors
+  `SetDefaultResolvedCache`); nil = Go path only (the default, so existing
+  behavior is unchanged until an app wires it).
+- Invoked **at most once per download**; the browser's finished file lands
+  in the destination dir and the download is reported complete.
+- `browserresolve.InstallDownloaderFallback()` (TUI download, CLI `download`,
+  desktop startup) installs the hook when a usable browser exists:
+  `MOXIE_BROWSER=auto|chrome|firefox` (1/true = auto). Engine choice is per
+  URL: the browser holding cookies for the host first (kooky per-browser —
+  a clearance only matches its minting browser), then Chrome-family (rod),
+  then Firefox (raw-launch, zero deps).
+- Live-verified 2026-08-09: Firefox 153 headless through the full raw-launch
+  pipeline (profiles.ini `Default=1` → copy → user.js prefs →
+  `--headless -profile <copy> -no-remote` → `.part`-aware polling);
+  headless→headful escalation (xvfb-run on display-less Linux).
+- **Limitation:** raw-launch Firefox only auto-downloads URLs that start a
+  download on navigation — hosts whose pages need a button click
+  (vikingfile/datanodes free-download forms) require CDP click automation
+  (future work). See `docs/browserresolve.md`.
+
 ### Host-Specific Resolvers (`hosts.go`)
 
 | Host | Strategy | Status |

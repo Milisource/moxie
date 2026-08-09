@@ -38,6 +38,14 @@ var skippedProfileDirs = map[string]bool{
 	"Component Updater":              true,
 	"GrShaderCache_GL":               true,
 	"optimization_guide_model_store": true,
+	// Firefox rebuilds these multi-GB caches on launch; cookie state
+	// (cookies.sqlite + WAL — the reason the profile is copied) is root-level.
+	"cache2":        true,
+	"startupCache":  true,
+	"OfflineCache":  true,
+	"minidumps":     true,
+	"crashes":       true,
+	"datareporting": true,
 }
 
 // discoverProfileDir locates the user's browser profile root ("User Data"
@@ -62,17 +70,27 @@ func discoverProfileDir(override string) (string, error) {
 	switch runtime.GOOS {
 	case "windows":
 		if appData := os.Getenv("LOCALAPPDATA"); appData != "" {
-			candidates = append(candidates, filepath.Join(appData, "Google", "Chrome", "User Data"))
+			candidates = append(candidates,
+				filepath.Join(appData, "Google", "Chrome", "User Data"),
+				filepath.Join(appData, "Microsoft", "Edge", "User Data"),
+				filepath.Join(appData, "BraveSoftware", "Brave-Browser", "User Data"),
+			)
 		}
 	case "darwin":
 		if home != "" {
-			candidates = append(candidates, filepath.Join(home, "Library", "Application Support", "Google", "Chrome"))
+			candidates = append(candidates,
+				filepath.Join(home, "Library", "Application Support", "Google", "Chrome"),
+				filepath.Join(home, "Library", "Application Support", "Microsoft Edge"),
+				filepath.Join(home, "Library", "Application Support", "BraveSoftware", "Brave-Browser"),
+			)
 		}
 	default:
 		if home != "" {
 			candidates = append(candidates,
 				filepath.Join(home, ".config", "google-chrome"),
 				filepath.Join(home, ".config", "chromium"),
+				filepath.Join(home, ".config", "microsoft-edge"),
+				filepath.Join(home, ".config", "BraveSoftware", "Brave-Browser"),
 			)
 		}
 	}
@@ -160,16 +178,19 @@ func skipProfileEntry(d fs.DirEntry) bool {
 	return skipProfileFile(d.Name())
 }
 
-// skipProfileFile mirrors Chrome's own lock-file naming: Singleton* files
-// (SingletonLock, SingletonSocket, SingletonCookie) guard the live profile
-// against a second process, *.lock are OS-level locks, and *-journal is a
-// SQLite rollback journal. All are safe to omit — Chrome regenerates them.
+// skipProfileFile mirrors the browsers' own lock-file naming: Chrome's
+// Singleton* files (SingletonLock, SingletonSocket, SingletonCookie) guard
+// the live profile against a second process, *.lock are OS-level locks
+// (incl. Firefox's parent.lock), -journal is a SQLite rollback journal, and
+// .parentlock is Firefox's own instance lock (Linux/Windows). All are safe
+// to omit — the browsers regenerate them.
 //
 // SQLite -wal/-shm files ARE copied: per-frame checksums let SQLite
 // truncate a torn tail safely, and skipping them would drop cookies written
 // since the last checkpoint (e.g. a just-issued cf_clearance).
 func skipProfileFile(name string) bool {
 	return strings.HasPrefix(name, "Singleton") ||
+		name == ".parentlock" ||
 		strings.HasSuffix(name, ".lock") ||
 		strings.HasSuffix(name, "-journal")
 }
