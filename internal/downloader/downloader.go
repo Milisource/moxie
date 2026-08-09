@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -109,6 +110,14 @@ func DownloadWithContext(ctx context.Context, urlStr, host, destDir string, expe
 	}
 	resolved, resolveErr := resolver.Resolve(urlStr, host)
 	if resolveErr != nil {
+		// Mega links are downloaded via the megatools subprocess: the
+		// encrypted protocol is not plain HTTP, so resolveMega returns
+		// ErrMegaNeedsMegatools when the binary is installed. Delegate the
+		// whole transfer to 'megatools dl' instead of resolving to a URL.
+		if errors.Is(resolveErr, ErrMegaNeedsMegatools) {
+			log.Info("mega download delegating to megatools", "url", redactedURL(urlStr), "dest", destDir)
+			return runMegatoolsDownload(ctx, urlStr, destDir, expectedTotal, onProgress)
+		}
 		log.Info("download resolve failed", "host", host, "error", resolveErr)
 		return fmt.Errorf("resolve %s URL: %w", host, resolveErr)
 	}
