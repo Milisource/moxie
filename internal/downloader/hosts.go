@@ -125,6 +125,8 @@ func (r *HostResolver) resolveDepth(url string, host string, depth int) (*Resolv
 		return r.resolveDatanodes(url)
 	case "vikingfile":
 		return r.resolveVikingFile(url)
+	case "workupload":
+		return r.resolveWorkupload(url)
 	case "mixdrop":
 		return r.resolveMixdrop(url)
 	case "googledrive":
