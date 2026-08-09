@@ -22,6 +22,12 @@ func main() {
 		return
 	}
 
+	// A swap agent that died between moving the installed executable aside
+	// and installing the new one leaves the exe absent with the previous
+	// version in exe.bak. Restore it before the app starts so a stale marker
+	// can never block (or strand) a normal launch.
+	recoverStaleUpdate()
+
 	app := NewApp()
 
 	err := wails.Run(&options.App{

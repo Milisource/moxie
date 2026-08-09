@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -12,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -63,6 +65,8 @@ func TestCoverServerServesFullImage(t *testing.T) {
 	}
 	t.Cleanup(cs.Close)
 
+	// http.Get sends Host: 127.0.0.1:<port>, which must pass the loopback
+	// validation — the rebinding defense only refuses foreign Hosts.
 	resp, err := http.Get(cs.BaseURL() + "/cover/42")
 	if err != nil {
 		t.Fatalf("GET /cover/42: %v", err)
@@ -74,9 +78,82 @@ func TestCoverServerServesFullImage(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); ct != "image/png" {
 		t.Errorf("Content-Type = %q, want image/png", ct)
 	}
-	got, _ := io.ReadAll(resp.Body)
-	if !bytes.Equal(got, data) {
+	if got, _ := io.ReadAll(resp.Body); !bytes.Equal(got, data) {
 		t.Error("body does not match the cached cover file")
+	}
+}
+
+// TestCoverServerRejectsNonLoopbackHost is the DNS-rebinding defense: a
+// request that connects to the loopback listener but carries a foreign Host
+// header (an attacker domain resolved to 127.0.0.1) must be refused with 403
+// even when the path names a real cover.
+func TestCoverServerRejectsNonLoopbackHost(t *testing.T) {
+	coverDir := testCoverDir(t)
+	if err := os.MkdirAll(coverDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(coverDir, "42"), makePNG(t, 32, 32), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cs := startCoverServer()
+	if cs == nil {
+		t.Fatal("startCoverServer returned nil")
+	}
+	t.Cleanup(cs.Close)
+
+	for _, host := range []string{"attacker.example", "127.0.0.1.attacker.example", "192.168.1.10"} {
+		req, err := http.NewRequest("GET", cs.BaseURL()+"/cover/42", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = host
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET with Host %q: %v", host, err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("GET with Host %q = %d, want 403", host, resp.StatusCode)
+		}
+	}
+
+	// The same cover served with the proper loopback Host still works.
+	resp, err := http.Get(cs.BaseURL() + "/cover/42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET with loopback Host = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestIsLoopbackHost pins down the Host forms the cover server accepts:
+// the two bracket/port variants the webview actually sends, plus plain
+// hostnames. Anything else — including a rebinding domain — is refused.
+func TestIsLoopbackHost(t *testing.T) {
+	cs := &coverServer{}
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"127.0.0.1", true},
+		{"127.0.0.1:41233", true},
+		{"localhost", true},
+		{"localhost:5555", true},
+		{"[::1]:8080", true},
+		{"attacker.example", false},
+		{"127.0.0.1.attacker.example", false},
+		{"192.168.1.10", false},
+		{"127.0.0.1.evil.com:80", false},
+	}
+	for _, tt := range tests {
+		if got := cs.isLoopbackHost(tt.host); got != tt.want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", tt.host, got, tt.want)
+		}
 	}
 }
 
@@ -413,5 +490,190 @@ func TestCacheCoverAcceptsAVIF(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(coverDir, "1")); err != nil {
 		t.Errorf("AVIF cover not persisted: %v", err)
+	}
+}
+
+// TestCoverContentTypeTable covers every sniffed format served by the cover
+// server — including the AVIF/AVIS ISOBMFF brands F95Zone's CDN serves under
+// .png/.jpg URLs — and asserts the hardening behavior: unrecognized magic
+// bytes are served as application/octet-stream, never mislabeled as an image.
+// coverContentType is the function the server actually uses (it sits on top
+// of imageMimeFromPrefix, which still falls back to "png" for unknown input).
+func TestCoverContentTypeTable(t *testing.T) {
+	avis := append([]byte{}, avifMagic[:8]...)
+	avis = append(avis, []byte("avis")...)
+	avis = append(avis, avifMagic[12:]...)
+
+	tests := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{"jpeg", []byte{0xFF, 0xD8, 0xFF, 0xE0}, "image/jpeg"},
+		{"png", []byte{0x89, 0x50, 0x4E, 0x47}, "image/png"},
+		{"webp", append([]byte("RIFF...."), []byte("WEBP")...), "image/webp"},
+		{"gif", []byte("GIF89a"), "image/gif"},
+		{"avif", avifMagic, "image/avif"},
+		{"avis", avis, "image/avif"},
+		// RIFF without the WEBP brand and arbitrary garbage must never be
+		// labeled as images — the octet-stream default.
+		{"riff-not-webp", []byte("RIFF....XXXX"), "application/octet-stream"},
+		{"garbage", []byte("not an image"), "application/octet-stream"},
+		{"empty", nil, "application/octet-stream"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tt.name)
+			if err := os.WriteFile(path, tt.data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := coverContentType(path); got != tt.want {
+				t.Errorf("coverContentType(%s) = %q, want %q", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDecodeCoverImageAVIF asserts AVIF covers fail with the typed
+// errCoverFormatNotThumbnailable (graceful degradation: webview renders the
+// full image, no thumbnail), NOT the misleading stdlib "image: unknown
+// format" that used to spam the log for every cached AVIF cover.
+func TestDecodeCoverImageAVIF(t *testing.T) {
+	img, err := decodeCoverImage(avifMagic)
+	if img != nil {
+		t.Error("decodeCoverImage(avif) returned an image, want nil")
+	}
+	if err == nil {
+		t.Fatal("decodeCoverImage(avif) must fail: no pure-Go AVIF decoder")
+	}
+	if !errors.Is(err, errCoverFormatNotThumbnailable) {
+		t.Errorf("err = %v, want wrap of errCoverFormatNotThumbnailable", err)
+	}
+	if strings.Contains(err.Error(), "image: unknown format") {
+		t.Errorf("err = %q, must not surface the misleading stdlib unknown-format error", err)
+	}
+}
+
+// TestWriteCoverThumbSkipsAVIF asserts AVIF covers produce no .thumb file
+// (the cover server falls back to the full image) and report thumbSkipAVIF
+// so backfill can count them without a per-cover Warn.
+func TestWriteCoverThumbSkipsAVIF(t *testing.T) {
+	coverDir := testCoverDir(t)
+	if err := os.MkdirAll(coverDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	coverPath := filepath.Join(coverDir, "21")
+	if err := os.WriteFile(coverPath, avifMagic, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := writeCoverThumb(coverPath); got != thumbSkipAVIF {
+		t.Errorf("writeCoverThumb(avif) = %v, want thumbSkipAVIF", got)
+	}
+	if _, err := os.Stat(coverPath + ".thumb"); err == nil {
+		t.Error("no .thumb must be written for AVIF covers")
+	}
+}
+
+// TestBackfillCoverThumbsSkipsAVIFAndCorrupt mixes a thumbnailable PNG, an
+// AVIF cover, and a corrupt blob: only the PNG gets a thumbnail, and the
+// backfill still returns the written count so the summary line is accurate.
+func TestBackfillCoverThumbsSkipsAVIFAndCorrupt(t *testing.T) {
+	coverDir := testCoverDir(t)
+	if err := os.MkdirAll(coverDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Thumbnailable large PNG.
+	big := filepath.Join(coverDir, "5")
+	if err := os.WriteFile(big, makePNG(t, 1000, 500), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// AVIF cover — accepted for caching, skipped for thumbnails.
+	avif := filepath.Join(coverDir, "6")
+	if err := os.WriteFile(avif, avifMagic, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt blob — decode failure, no thumbnail.
+	corrupt := filepath.Join(coverDir, "7")
+	if err := os.WriteFile(corrupt, []byte("definitely not an image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	n := backfillCoverThumbs()
+	if n != 1 {
+		t.Fatalf("backfillCoverThumbs wrote %d thumbnails, want 1", n)
+	}
+	if _, err := os.Stat(big + ".thumb"); err != nil {
+		t.Errorf("thumb for PNG cover not written: %v", err)
+	}
+	if _, err := os.Stat(avif + ".thumb"); err == nil {
+		t.Error("thumb must not be written for AVIF cover")
+	}
+	if _, err := os.Stat(corrupt + ".thumb"); err == nil {
+		t.Error("thumb must not be written for corrupt cover")
+	}
+}
+
+// TestBackfillCoverThumbsMarkerSkipsPass: a version-scoped completion marker
+// must suppress the whole walk on later launches — even thumbnails that are
+// still missing stay missing (a deliberate trade: the decode-everything walk
+// runs once per version, and covers cached after it get their thumbs from
+// cacheCover's own writeCoverThumb call).
+func TestBackfillCoverThumbsMarkerSkipsPass(t *testing.T) {
+	coverDir := testCoverDir(t)
+	if err := os.MkdirAll(coverDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	big := filepath.Join(coverDir, "5")
+	if err := os.WriteFile(big, makePNG(t, 1000, 500), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a completed pass from a previous launch.
+	if err := os.WriteFile(filepath.Join(coverDir, backfillMarkerName()), []byte(appVersion+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := backfillCoverThumbs(); n != 0 {
+		t.Errorf("backfill with marker present wrote %d thumbnails, want 0", n)
+	}
+	if _, err := os.Stat(big + ".thumb"); err == nil {
+		t.Error("marker must suppress the walk: no thumbnail may be written")
+	}
+}
+
+// TestBackfillCoverThumbsCancelledCtxLeavesNoMarker: aborting the walk via
+// the context argument must not write the completion marker, so the next
+// launch retries the remaining covers. An uncancelled follow-up run then
+// backfills normally.
+func TestBackfillCoverThumbsCancelledCtxLeavesNoMarker(t *testing.T) {
+	coverDir := testCoverDir(t)
+	if err := os.MkdirAll(coverDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	big := filepath.Join(coverDir, "5")
+	if err := os.WriteFile(big, makePNG(t, 1000, 500), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if n := backfillCoverThumbs(ctx); n != 0 {
+		t.Errorf("backfill with cancelled ctx wrote %d thumbnails, want 0", n)
+	}
+	if _, err := os.Stat(filepath.Join(coverDir, backfillMarkerName())); err == nil {
+		t.Error("no completion marker may be written for an aborted pass")
+	}
+
+	// The follow-up run is not poisoned by the aborted attempt.
+	if n := backfillCoverThumbs(); n != 1 {
+		t.Errorf("follow-up backfill wrote %d thumbnails, want 1", n)
+	}
+	if _, err := os.Stat(big + ".thumb"); err != nil {
+		t.Errorf("thumb not written by follow-up run: %v", err)
 	}
 }
