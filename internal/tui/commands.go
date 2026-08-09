@@ -164,6 +164,20 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 	firstLink := links[0]
 	log.Info("tui download started", "game_id", gameID, "host", firstLink.Host, "total_links", len(links))
 
+	// Attach the DB-backed masked-URL unwrap cache: repeated downloads of
+	// the same /masked/ link resolve from the DB instead of re-hitting
+	// F95Zone's rate-limited unwrap endpoint. Idempotent; every resolver
+	// created afterwards (including the one inside DownloadWithHost)
+	// picks it up.
+	downloader.SetDefaultResolvedCache(
+		m.db.GetResolvedURL,
+		func(maskedURL, resolved, host string) {
+			if err := m.db.PutResolvedURL(maskedURL, resolved, host); err != nil {
+				log.Warn("failed to cache resolved masked URL", "error", err)
+			}
+		},
+	)
+
 	dl := &db.Download{
 		GameID:   gameID,
 		URL:      firstLink.URL,

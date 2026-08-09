@@ -90,7 +90,12 @@ func (db *Database) Close() error {
 //  9. Scraped size: size INTEGER DEFAULT 0 on download_links (bytes;
 //     0 = unknown). The downloader uses it as the expected total to
 //     verify completed downloads and enforce host caps.
-const currentSchemaVersion = 9
+//  10. Masked-URL unwrap cache: resolved_urls table mapping f95zone.to
+//     /masked/ URLs to their unwrapped download URLs, so repeated
+//     resolves of the same link skip the rate-limited unwrap endpoint.
+//     created_at is unix seconds; entries older than ResolvedURLTTL
+//     (7 days) are auto-pruned — unwraps can go stale.
+const currentSchemaVersion = 10
 
 // gamesTableColumns is the games table column definition, shared between the
 // fresh-DB CREATE TABLE and the v8 rebuild (the engine CHECK constraint
@@ -254,6 +259,15 @@ func migrate(conn *sql.DB) error {
 			collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
 			PRIMARY KEY (game_id, collection_id)
 		);
+
+		CREATE TABLE IF NOT EXISTS resolved_urls (
+			masked_url    TEXT PRIMARY KEY,
+			resolved_url  TEXT NOT NULL,
+			resolved_host TEXT,
+			created_at    INTEGER NOT NULL,
+			hits          INTEGER DEFAULT 0
+		);
+		CREATE INDEX IF NOT EXISTS idx_resolved_urls_created_at ON resolved_urls(created_at);
 	`
 
 	// ── First-run databases (userVersion == 0) ─────────────────────
@@ -338,6 +352,15 @@ func migrate(conn *sql.DB) error {
 	); err != nil {
 		// Non-fatal — log and continue.
 		log.Warn("auto-purge failed", "error", err)
+	}
+
+	// Auto-prune expired masked-URL unwrap cache entries (ResolvedURLTTL).
+	if _, err := conn.Exec(
+		"DELETE FROM resolved_urls WHERE created_at < strftime('%s', 'now') - ?",
+		int64(ResolvedURLTTL.Seconds()),
+	); err != nil {
+		// Non-fatal — log and continue.
+		log.Warn("resolved_urls auto-prune failed", "error", err)
 	}
 
 	return nil
@@ -552,6 +575,23 @@ func migrateVersionStep(conn *sql.DB, version int) error {
 			if _, err := tx.Exec("ALTER TABLE download_links ADD COLUMN size INTEGER DEFAULT 0"); err != nil {
 				return fmt.Errorf("add download_links.size: %w", err)
 			}
+		}
+	case 10:
+		// Masked-URL unwrap cache: caches f95zone.to /masked/ unwrap
+		// results so repeated resolves of the same link skip the
+		// rate-limited JSON endpoint. Rows are auto-pruned after
+		// ResolvedURLTTL (7 days) and read as misses past it.
+		if _, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS resolved_urls (
+				masked_url    TEXT PRIMARY KEY,
+				resolved_url  TEXT NOT NULL,
+				resolved_host TEXT,
+				created_at    INTEGER NOT NULL,
+				hits          INTEGER DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS idx_resolved_urls_created_at ON resolved_urls(created_at);
+		`); err != nil {
+			return fmt.Errorf("create resolved_urls: %w", err)
 		}
 	default:
 		return fmt.Errorf("unknown migration version %d", version)

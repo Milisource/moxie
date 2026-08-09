@@ -39,6 +39,19 @@ func Download(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
+	// Attach the DB-backed masked-URL unwrap cache: repeated downloads of
+	// the same /masked/ link resolve from the DB instead of re-hitting
+	// F95Zone's rate-limited unwrap endpoint. Every resolver created
+	// afterwards (including the one inside Download) picks it up.
+	downloader.SetDefaultResolvedCache(
+		database.GetResolvedURL,
+		func(maskedURL, resolved, host string) {
+			if err := database.PutResolvedURL(maskedURL, resolved, host); err != nil {
+				log.Warn("failed to cache resolved masked URL", "error", err)
+			}
+		},
+	)
+
 	cookie := ResolveCookie(*cookieStr, *cookieFile)
 
 	targetPlatform := downloader.Platform(*platform)

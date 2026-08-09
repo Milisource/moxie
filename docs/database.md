@@ -133,6 +133,18 @@ game_collections (
     collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
     PRIMARY KEY (game_id, collection_id)
 )
+
+-- Masked-URL unwrap cache (v10): maps f95zone.to /masked/ links to their
+-- unwrapped download URLs so repeated resolves skip the rate-limited
+-- endpoint. created_at is unix seconds; entries are auto-pruned after
+-- ResolvedURLTTL (7 days) and read as misses past it.
+resolved_urls (
+    masked_url    TEXT PRIMARY KEY,
+    resolved_url  TEXT NOT NULL,
+    resolved_host TEXT,
+    created_at    INTEGER NOT NULL,
+    hits          INTEGER DEFAULT 0
+)
 ```
 
 Indexes:
@@ -140,6 +152,7 @@ Indexes:
 - `idx_downloads_game_id`, `idx_downloads_status`,
 - `idx_download_links_game_id`, `idx_download_links_platform`, `idx_download_links_is_dead`,
 - `idx_play_history_game`, `idx_play_history_played`
+- `idx_resolved_urls_created_at` (pruning)
 
 ### FTS5 Full-Text Search
 
@@ -199,10 +212,12 @@ Each `migrateVersionStep` handles a specific version:
 - **v6**: Repair step — ensures all schema columns exist (handles old DBs that bumped past migration steps)
 - **v7**: Per-game Wine prefix (`wine_prefix TEXT` column on games)
 - **v8**: Godot engine — `games.engine` CHECK constraint gains `'Godot'` (table rebuilt; indexes + FTS triggers recreated). The rebuild pins a single pooled connection: `PRAGMA foreign_keys` is per-connection, so the OFF/ON toggles and the rebuild transaction must land on the same connection or `DROP TABLE games` fails with an FK constraint error. A `PRAGMA foreign_key_check` runs after the rebuild.
+- **v9**: Scraped size (`size INTEGER DEFAULT 0` on `download_links`; 0 = unknown)
+- **v10**: Masked-URL unwrap cache (`resolved_urls` table + `idx_resolved_urls_created_at`; see schema above)
 
 This replaces the earlier approach of running bare `ALTER TABLE` statements that ignored errors. All migration steps are idempotent (use `columnExists` checks for ALTER TABLE, `CREATE TABLE IF NOT EXISTS` for new tables).
 
-An auto-purge step at the end of migration deletes games soft-deleted more than 30 days.
+An auto-purge step at the end of migration deletes games soft-deleted more than 30 days and expired `resolved_urls` cache entries (older than `ResolvedURLTTL`).
 
 ## Why
 

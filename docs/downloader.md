@@ -181,6 +181,8 @@ The `HostResolver.Resolve()` handles this transparently:
 
 **Cookie-based authentication**: The caller sets the F95Zone session cookie via `HostResolver.SetF95Cookie(cookie)` before resolving. When set, `unwrapMasked()` includes the `Cookie` header in the POST; when unset, the browser's own f95zone.to cookies are attached instead (host-scoped). The cookie flows through the pipeline: `Download() → DownloadWithHost() → HostResolver.SetF95Cookie() → unwrapMasked()`.
 
+**Resolved-URL cache**: the unwrap endpoint rate-limits after repeated hits (captcha rotation kicks in), so successful unwrap results are cached in the SQLite `resolved_urls` table (7-day TTL, `ResolvedURLTTL` in `internal/db/resolved_urls.go`). On `Resolve()`, the masked branch consults the cache first (`GetResolvedURL`) and only POSTs to the endpoint on a miss; a successful unwrap is stored via `PutResolvedURL` (upsert, one row per masked URL). The DB-backed pair is attached by the app entry points that hold a `*db.Database` — `tui/commands.go` (`startDownloadCmd`) and `internal/commands/download.go` — via `downloader.SetDefaultResolvedCache(get, put)`, which every `NewHostResolver()` (including the one constructed inside `DownloadWithContext`) picks up. `HostResolver.SetResolvedCache` overrides the pair per resolver; nil = no caching. Stale entries read as misses and are auto-pruned on every DB open.
+
 If unwrapping fails (timeout, network error, captcha), resolution falls through to host-specific resolution with the masked URL — which will likely fail, but the caller's fallback loop will try other links.
 
 ### Browser Cookie Reuse

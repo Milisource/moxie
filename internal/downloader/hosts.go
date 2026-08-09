@@ -24,12 +24,48 @@ type HostResolver struct {
 	// zero-value state, used by callers that construct the resolver
 	// directly without NewHostResolver).
 	cookieSource func(hostname string) string
+	// resolvedCache returns a previously unwrapped destination for a masked
+	// F95Zone URL; resolvedCachePut stores one after a successful unwrap.
+	// Together they let repeated resolves of the same /masked/ link skip
+	// the rate-limited unwrap endpoint. nil = no caching (also the
+	// zero-value state). NewHostResolver picks up the pair installed by
+	// SetDefaultResolvedCache.
+	resolvedCache    func(maskedURL string) (string, bool)
+	resolvedCachePut func(maskedURL, resolvedURL, host string)
 }
 
 // SetF95Cookie sets the F95Zone session cookie string used to authenticate
 // HEAD requests when resolving masked F95Zone redirect URLs.
 func (r *HostResolver) SetF95Cookie(cookie string) {
 	r.f95Cookie = cookie
+}
+
+// SetResolvedCache wires an optional masked-URL unwrap cache: get returns a
+// previously unwrapped destination for a masked URL, put stores one after a
+// successful unwrap. Either may be nil to disable caching for this resolver
+// (overriding the package default set by SetDefaultResolvedCache).
+func (r *HostResolver) SetResolvedCache(get func(maskedURL string) (string, bool), put func(maskedURL, resolvedURL, host string)) {
+	r.resolvedCache = get
+	r.resolvedCachePut = put
+}
+
+// defaultResolvedCache and defaultResolvedCachePut are the cache pair every
+// HostResolver created after SetDefaultResolvedCache picks up — including
+// the resolver constructed inside DownloadWithContext, whose caller never
+// sees the instance. nil = no caching.
+var (
+	defaultResolvedCache    func(maskedURL string) (string, bool)
+	defaultResolvedCachePut func(maskedURL, resolvedURL, host string)
+)
+
+// SetDefaultResolvedCache installs the resolved-URL cache pair used by every
+// HostResolver created afterwards. App entry points that hold a
+// *db.Database (TUI, CLI download) attach the DB-backed implementation so
+// repeated downloads of the same /masked/ link skip F95Zone's rate-limited
+// unwrap endpoint. Pass nil/nil to clear.
+func SetDefaultResolvedCache(get func(maskedURL string) (string, bool), put func(maskedURL, resolvedURL, host string)) {
+	defaultResolvedCache = get
+	defaultResolvedCachePut = put
 }
 
 // NewHostResolver creates a resolver with a shared HTTP client.
@@ -44,7 +80,9 @@ func NewHostResolver() *HostResolver {
 				return nil
 			},
 		},
-		cookieSource: browserCookieHeader,
+		cookieSource:     browserCookieHeader,
+		resolvedCache:    defaultResolvedCache,
+		resolvedCachePut: defaultResolvedCachePut,
 	}
 }
 
@@ -101,6 +139,18 @@ func (r *HostResolver) resolveDepth(url string, host string, depth int) (*Resolv
 	// a HEAD request to get the real download URL, then resolve from there.
 	if strings.Contains(strings.ToLower(url), "/masked/") {
 		log.Debug("masked URL detected", "url", url)
+
+		// Cache consult: skip the rate-limited unwrap endpoint when this
+		// masked URL was already unwrapped. The cached destination still
+		// goes through host-specific resolution below.
+		if r.resolvedCache != nil {
+			if cached, ok := r.resolvedCache(url); ok && cached != "" && cached != url {
+				cachedHost := IdentifyHostInURL(cached)
+				log.Debug("masked URL cache hit", "masked", url, "resolved", cached, "host", cachedHost)
+				return r.resolveDepth(cached, cachedHost, depth+1)
+			}
+		}
+
 		realURL, err := r.unwrapMasked(url)
 		realHost := IdentifyHostInURL(realURL)
 		log.Debug("masked unwrap result", "real_url", realURL, "real_host", realHost, "error", err)
@@ -109,6 +159,11 @@ func (r *HostResolver) resolveDepth(url string, host string, depth int) (*Resolv
 			// Fall through to host-specific resolution with the original URL;
 			// it will fail, but the caller's fallback loop will try other links.
 		} else if realURL != url {
+			// Cache store: a successful unwrap, so the next resolve of this
+			// masked URL skips the endpoint entirely.
+			if r.resolvedCachePut != nil {
+				r.resolvedCachePut(url, realURL, realHost)
+			}
 			log.Debug("masked URL resolved", "original", url, "real", realURL)
 			return r.resolveDepth(realURL, realHost, depth+1)
 		}
