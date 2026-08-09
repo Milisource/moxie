@@ -7,18 +7,28 @@
     GetCollectionGames,
   } from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
+  import {collectionsView} from './viewState.svelte.js'
 
   let {onOpenDetail = () => {}, onCollectionsChanged = () => {}} = $props()
 
+  // ── Collections ───────────────────────────────────────────────
   let collections = $state([])
   let loading = $state(true)
   let error = $state('')
 
+  // Monotonic request id for GetCollectionGames. Rapid A→B clicks: A's slow
+  // response must never overwrite B's games (mirrors F95Browser's searchSeq
+  // pattern). An instance-level counter is sufficient because `games` is
+  // instance-local too — a stale response from a destroyed instance writes to
+  // dead state, and the remount's replay (below) bumps its own counter.
+  let gamesSeq = 0
+
   let newName = $state('')
   let creating = $state(false)
 
-  // Currently expanded collection -> its games.
-  let selectedId = $state(null)
+  // Currently expanded collection -> its games. collectionsView.selectedId lives in
+  // viewState so the expanded collection survives tab switches; the games
+  // list itself refetches on mount (handleSelect is replayed below).
   let games = $state([])
   let gamesLoading = $state(false)
 
@@ -53,8 +63,8 @@
     if (!confirm(`Delete the collection "${c.name}"? The games themselves are not removed.`)) return
     try {
       await DeleteCollection(c.id)
-      if (selectedId === c.id) {
-        selectedId = null
+      if (collectionsView.selectedId === c.id) {
+        collectionsView.selectedId = null
         games = []
       }
       await loadCollections()
@@ -64,25 +74,42 @@
     }
   }
 
-  async function handleSelect(c) {
-    if (selectedId === c.id) {
-      selectedId = null
+  async function loadGamesFor(id) {
+    if (id === null || id === undefined) {
+      gamesSeq++                    // invalidate any in-flight request
       games = []
       return
     }
-    selectedId = c.id
+    const seq = ++gamesSeq
     gamesLoading = true
     try {
-      games = (await GetCollectionGames(c.id)) || []
+      const res = await GetCollectionGames(id)
+      if (seq !== gamesSeq) return   // stale — a newer selection owns the list
+      games = res || []
       error = ''
     } catch (e) {
+      if (seq !== gamesSeq) return
       error = String(e)
       games = []
     }
-    gamesLoading = false
+    if (seq === gamesSeq) gamesLoading = false
   }
 
-  onMount(loadCollections)
+  async function handleSelect(c) {
+    if (collectionsView.selectedId === c.id) {
+      collectionsView.selectedId = null
+      games = []
+      return
+    }
+    collectionsView.selectedId = c.id
+    await loadGamesFor(c.id)
+  }
+
+  onMount(async () => {
+    await loadCollections()
+    // Re-expand the collection that was open when the user left this tab.
+    if (collectionsView.selectedId !== null) await loadGamesFor(collectionsView.selectedId)
+  })
 </script>
 
 <div class="collections-view">
@@ -118,16 +145,16 @@
     <div class="coll-list">
       {#each collections as c}
         <div class="coll-block">
-          <div class="coll-row" class:expanded={selectedId === c.id}>
+          <div class="coll-row" class:expanded={collectionsView.selectedId === c.id}>
             <button class="coll-main" onclick={() => handleSelect(c)}>
-              <span class="coll-caret">{selectedId === c.id ? '▾' : '▸'}</span>
+              <span class="coll-caret">{collectionsView.selectedId === c.id ? '▾' : '▸'}</span>
               <span class="coll-name">{c.name}</span>
               <span class="coll-count">{c.gameCount} game{c.gameCount !== 1 ? 's' : ''}</span>
             </button>
             <button class="btn btn-remove" title="Delete collection" onclick={() => handleDelete(c)}>✕</button>
           </div>
 
-          {#if selectedId === c.id}
+          {#if collectionsView.selectedId === c.id}
             <div class="coll-games">
               {#if gamesLoading}
                 <p class="muted">Loading games…</p>
