@@ -10,7 +10,9 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/fsnotify/fsnotify v1.10.1
+	github.com/go-rod/rod v0.116.2
 	github.com/ncruces/go-sqlite3 v0.34.0
+	github.com/refraction-networking/utls v1.8.2
 	github.com/rkosegi/jdownloader-go v1.0.3
 	github.com/wailsapp/wails/v2 v2.13.0
 	go.uber.org/zap v1.27.0
@@ -36,7 +38,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/go-rod/rod v0.116.2 // indirect
 	github.com/go-sqlite/sqlite3 v0.0.0-20180313105335-53dd8e640ee7 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/gonuts/binary v0.2.0 // indirect
@@ -64,7 +65,6 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/samber/lo v1.49.1 // indirect
 	github.com/tkrajina/go-reflector v0.5.8 // indirect
