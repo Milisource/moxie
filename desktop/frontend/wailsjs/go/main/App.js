@@ -26,6 +26,10 @@ export function CancelGameUpdate() {
   return window['go']['main']['App']['CancelGameUpdate']();
 }
 
+export function CancelSync() {
+  return window['go']['main']['App']['CancelSync']();
+}
+
 export function CheckDependencies() {
   return window['go']['main']['App']['CheckDependencies']();
 }
@@ -174,6 +178,10 @@ export function PlayGame(arg1) {
   return window['go']['main']['App']['PlayGame'](arg1);
 }
 
+export function ProvideUpdateFile(arg1) {
+  return window['go']['main']['App']['ProvideUpdateFile'](arg1);
+}
+
 export function PurgeDeleted() {
   return window['go']['main']['App']['PurgeDeleted']();
 }
@@ -194,8 +202,8 @@ export function RenameGame(arg1, arg2) {
   return window['go']['main']['App']['RenameGame'](arg1, arg2);
 }
 
-export function RescanDirectory(arg1) {
-  return window['go']['main']['App']['RescanDirectory'](arg1);
+export function RescanDirectory(arg1, arg2) {
+  return window['go']['main']['App']['RescanDirectory'](arg1, arg2);
 }
 
 export function RestoreGame(arg1) {
