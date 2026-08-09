@@ -283,7 +283,7 @@ func TestSortLinksByPlatform_AllBonusesBeatNoBonus_TUI(t *testing.T) {
 		{"mega loses (-200)", "mega", "no bonus link"},
 		{"gofile wins (+25)", "gofile", "bonus link"},
 		{"mediafire (tie, stable sort)", "mediafire", "bonus link"},
-		{"workupload loses (-200)", "workupload", "no bonus link"},
+		{"workupload wins (+10)", "workupload", "bonus link"},
 		{"krakenfiles loses (-200)", "krakenfiles", "no bonus link"},
 		{"googledrive (tie, stable sort)", "googledrive", "bonus link"},
 	}
