@@ -187,26 +187,30 @@ If unwrapping fails (timeout, network error, captcha), resolution falls through 
 
 ### Browser Cookie Reuse
 
-Cloudflare-protected hosts (buzzheavier, datanodes, vikingfile, workupload, ...) 403 plain HTTP clients — they require the browser-only `cf_clearance` challenge token. Since moxie already extracts cookies from installed browsers (see [browser.md](browser.md)), the resolver now does the same for download hosts automatically:
+Cloudflare-protected hosts (datanodes, vikingfile, ...) 403 plain HTTP clients — they require the browser-only `cf_clearance` challenge token. Since moxie already extracts cookies from installed browsers (see [browser.md](browser.md)), the resolver now does the same for download hosts automatically:
 
 - `browser.GetCookiesForHost(hostname)` returns every cookie the browser holds for that host (RFC 6265 domain match: a `.buzzheavier.com` cookie is valid for `dd.buzzheavier.com`). The kooky snapshot is cached for 60 s (cf_clearance lives ~30 min-2 h) and the header is sorted/deduped/capped at 6 KB.
 - The `HostResolver` attaches these cookies to every request it makes: resolver GET/POST steps (so datanodes/vikingfile form flows pass Cloudflare) and the final download request (`mergeBrowserCookies` in `downloadWithHeaders`), merged with any existing Cookie header from the resolution flow.
 - Cookies are **host-scoped**: they are only ever sent to the hostname they were stored for. Go's http client also strips manual Cookie headers on cross-domain redirects, so a resolved CDN URL never receives the resolver host's cookies.
 
-**Practical effect**: if the user has visited buzzheavier.com/datanodes.to in a browser (even once, recently), downloads for those hosts pass the Cloudflare challenge instead of failing with HTTP 403. If the browser holds no cookies for a host, extraction is a no-op and the request behaves exactly as before. This is best-effort — a fresh/expired clearance still fails and falls through to the next link.
+**Practical effect**: if the user has visited datanodes.to/vikingfile.com in a browser (even once, recently), downloads for those hosts pass the Cloudflare challenge instead of failing with HTTP 403. If the browser holds no cookies for a host, extraction is a no-op and the request behaves exactly as before. This is best-effort — a fresh/expired clearance still fails and falls through to the next link.
+
+> **Buzzheavier is NOT gated by cf_clearance** (live-verified 2026-08-09, see [research-buzzheavier-cloudflare.md](research-buzzheavier-cloudflare.md)). Its wall is the **Turnstile-gated token flow**: the share page (which passes with stdlib TLS + browser cookies, retry through intermittent adaptive 403s) embeds a **server-signed `t=` token** in the `hx-get` attributes — no Turnstile proof is needed to obtain it. `GET /download?t=<token>&alt=true` returns `hx-redirect` with a real file URL (`fafda.to/d/<id>?v=<token>`; plain `alt` yields `ts.bzzhr.to`, whose origin is currently dead). fafda.to is Cloudflare-proxied but **challenge-free** at the app layer (404 no token / 403 bad token / 503 origin outage). So buzzheavier resolution is fully Go-able — implementation tracked in **F95-hs4y**; the current blocker is the file-origin outage (503), not anti-bot.
 
 ### Host-Specific Resolvers (`hosts.go`)
 
 | Host | Strategy | Status |
 |------|----------|--------|
 | **Pixeldrain** | API: `pixeldrain.com/api/file/<ID>` — direct download | ✅ |
-| **Buzzheavier** | HTMX: `<url>/download` with `HX-Request: true` + `Referer`, follows `hx-redirect` header | ✅ |
-| **Gofile** | Content API + direct download to `{fileID}.gofile.io/{fileID}` | ✅ |
-| **VikingFile** | Scraper: form POST + redirect follow (blocked by Cloudflare anti-bot) | ❌ Beta |
-| **DataNodes** | Cookie + POST flow to extract CDN URL | ⚡ Beta |
+| **Buzzheavier** | HTMX: `<url>/download` with `HX-Request: true` + `Referer`, follows `hx-redirect` header — currently self-referential without the page token; token-based flow (page `t=` → `alt=true` → fafda.to) verified live, not yet implemented | ⚡ Needs token flow |
+| **Gofile** | Guest token + dynamic `X-Website-Token` (SHA-256 `UA::lang::token::4h-slot::secret`) + contents API; CDN hop needs `Cookie: accountToken=<token>` | ✅ |
+| **Mediafire** | Page CDN href / base64 `data-scrambled-url` (allow-listed host) + API fallback | ✅ |
+| **Workupload** | SHA-256 proof-of-work puzzle (`/puzzle` → solve → `/captcha`) + `getDownloadServer` API | ✅ |
+| **VikingFile** | Scraper: form POST + redirect follow (blocked by Cloudflare Turnstile — browser fallback only) | ❌ Beta |
+| **DataNodes** | Cookie + POST flow to extract CDN URL (mostly dead links + captcha) | ⚡ Beta |
 | **MixDrop** | Pass-through with User-Agent (blocked by interstitial on file pages) | ❌ Beta |
 | **Google Drive** | Two-step confirm token extraction for large files | ⚡ Beta |
-| **Mega** | Unsupported — encrypted protocol not HTTP-accessible. Deprioritized to -200 | ❌ Unsupported |
+| **Mega** | Megatools subprocess (`megatools dl`) when the binary is installed; informative error otherwise (Arch: AUR-only) | ⚡ Binary-gated |
 
 All other detected hosts (40+) pass through for standard HTTP download. See [Host Feasibility](#host-feasibility) below for the full breakdown of which hosts work.
 

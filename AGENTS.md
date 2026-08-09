@@ -58,6 +58,8 @@ Documentation lives in `docs/`. Keep it in sync with code changes — update the
 | `docs/database.md` | SQLite schema, version tracking, migration strategy |
 | `docs/tui.md` | Bubble Tea model/update/view, keyboard shortcuts, filters |
 | `docs/browser.md` | Cross-browser cookie extraction with kooky |
+| `docs/browserresolve.md` | Browser-backed download engine: Chrome (rod) + Firefox (raw-launch) engines, OS/browser discovery matrix |
+| `docs/research-buzzheavier-cloudflare.md` | Buzzheavier/Cloudflare deep-dive: Turnstile gate, token flow, fafda.to hybrid, uTLS verdict + live verification matrix |
 | `docs/steam-package-design.md` | Steam shortcut management, artwork, Proton, SteamGridDB |
 
 **When to update docs:**
