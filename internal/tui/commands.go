@@ -241,7 +241,7 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 				ad.mu.Unlock()
 			}
 
-			err := downloader.DownloadWithHost(link.URL, link.Host, destDir, 0, func(p downloader.Progress) {
+			err := downloader.DownloadWithHost(link.URL, link.Host, destDir, link.Size, func(p downloader.Progress) {
 				ad.mu.Lock()
 				if p.BytesDownloaded > 0 {
 					ad.stepMsg = "Downloading..."
@@ -479,6 +479,7 @@ func (m model) resolveDownloadLinks(game *db.Game) ([]db.DownloadLink, error) {
 					URL:    dl.URL,
 					Host:   dl.Host,
 					Name:   dl.Name,
+					Size:   dl.Size,
 				}
 				m.db.CreateDownloadLink(link)
 			}

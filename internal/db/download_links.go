@@ -16,7 +16,7 @@ func scanDownloadLink(s scanner) (*DownloadLink, error) {
 	var host, name, platform, deadReason, lastCheckedStr, createdAtStr sql.NullString
 
 	err := s.Scan(
-		&d.ID, &d.GameID, &d.URL, &host, &name, &platform,
+		&d.ID, &d.GameID, &d.URL, &host, &name, &d.Size, &platform,
 		&d.IsDead, &deadReason, &lastCheckedStr, &createdAtStr,
 	)
 	if err != nil {
@@ -55,9 +55,9 @@ func (db *Database) CreateDownloadLink(d *DownloadLink) (int64, error) {
 	d.CreatedAt, _ = time.Parse(time.RFC3339, now)
 
 	res, err := db.conn.Exec(`
-		INSERT INTO download_links (game_id, url, host, name, platform, is_dead, dead_reason, last_checked, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		d.GameID, d.URL, nullableString(d.Host), nullableString(d.Name), string(d.Platform),
+		INSERT INTO download_links (game_id, url, host, name, size, platform, is_dead, dead_reason, last_checked, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.GameID, d.URL, nullableString(d.Host), nullableString(d.Name), d.Size, string(d.Platform),
 		d.IsDead, nullableString(d.DeadReason), nullableTime(d.LastChecked), now,
 	)
 	if err != nil {
@@ -71,7 +71,7 @@ func (db *Database) CreateDownloadLink(d *DownloadLink) (int64, error) {
 // GetDownloadLink retrieves a download link by its ID.
 func (db *Database) GetDownloadLink(id int64) (*DownloadLink, error) {
 	row := db.conn.QueryRow(`
-		SELECT id, game_id, url, host, name, platform, is_dead, dead_reason, last_checked, created_at
+		SELECT id, game_id, url, host, name, size, platform, is_dead, dead_reason, last_checked, created_at
 		FROM download_links WHERE id = ?`, id)
 
 	d, err := scanDownloadLink(row)
@@ -87,7 +87,7 @@ func (db *Database) GetDownloadLink(id int64) (*DownloadLink, error) {
 // GetDownloadLinkByURL retrieves a download link by game ID and URL.
 func (db *Database) GetDownloadLinkByURL(gameID int64, url string) (*DownloadLink, error) {
 	row := db.conn.QueryRow(`
-		SELECT id, game_id, url, host, name, platform, is_dead, dead_reason, last_checked, created_at
+		SELECT id, game_id, url, host, name, size, platform, is_dead, dead_reason, last_checked, created_at
 		FROM download_links WHERE game_id = ? AND url = ?`, gameID, url)
 
 	d, err := scanDownloadLink(row)
@@ -106,7 +106,7 @@ func scanDownloadLinkWithGame(s scanner) (*DownloadLinkWithGame, error) {
 	var host, name, platform, deadReason, lastCheckedStr, createdAtStr sql.NullString
 
 	err := s.Scan(
-		&d.ID, &d.GameID, &d.URL, &host, &name, &platform,
+		&d.ID, &d.GameID, &d.URL, &host, &name, &d.Size, &platform,
 		&d.IsDead, &deadReason, &lastCheckedStr, &createdAtStr,
 		&d.GameTitle, &d.GamePath,
 	)
@@ -142,7 +142,7 @@ func scanDownloadLinkWithGame(s scanner) (*DownloadLinkWithGame, error) {
 // ListActiveGames followed by per-game ListDownloadLinks.
 func (db *Database) AllDownloadLinks(includeDead bool) ([]DownloadLinkWithGame, error) {
 	query := `
-		SELECT dl.id, dl.game_id, dl.url, dl.host, dl.name, dl.platform,
+		SELECT dl.id, dl.game_id, dl.url, dl.host, dl.name, dl.size, dl.platform,
 		       dl.is_dead, dl.dead_reason, dl.last_checked, dl.created_at,
 		       g.title, g.path
 		FROM download_links dl
@@ -173,7 +173,7 @@ func (db *Database) AllDownloadLinks(includeDead bool) ([]DownloadLinkWithGame, 
 // ListDownloadLinks returns all download links for a game, optionally filtering by platform.
 func (db *Database) ListDownloadLinks(gameID int64, platform string, includeDead bool) ([]DownloadLink, error) {
 	query := `
-		SELECT id, game_id, url, host, name, platform, is_dead, dead_reason, last_checked, created_at
+		SELECT id, game_id, url, host, name, size, platform, is_dead, dead_reason, last_checked, created_at
 		FROM download_links WHERE game_id = ?`
 	args := []any{gameID}
 
@@ -212,10 +212,10 @@ func (db *Database) UpdateDownloadLink(d *DownloadLink) error {
 
 	_, err := db.conn.Exec(`
 		UPDATE download_links SET
-			game_id = ?, url = ?, host = ?, name = ?, platform = ?,
+			game_id = ?, url = ?, host = ?, name = ?, size = ?, platform = ?,
 			is_dead = ?, dead_reason = ?, last_checked = ?
 		WHERE id = ?`,
-		d.GameID, d.URL, nullableString(d.Host), nullableString(d.Name), string(d.Platform),
+		d.GameID, d.URL, nullableString(d.Host), nullableString(d.Name), d.Size, string(d.Platform),
 		d.IsDead, nullableString(d.DeadReason), nullableTime(d.LastChecked),
 		d.ID,
 	)

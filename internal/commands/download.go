@@ -172,6 +172,7 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 						URL:      dl.URL,
 						Host:     dl.Host,
 						Name:     dl.Name,
+						Size:     dl.Size,
 						Platform: db.Platform(linkPlatform),
 					}
 					database.CreateDownloadLink(link)
@@ -262,7 +263,7 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 			renderProgressBar(p)
 		}
 
-		err = downloader.Download(link.URL, destDir, 0, progressFn, cookie)
+		err = downloader.Download(link.URL, destDir, link.Size, progressFn, cookie)
 		if err == nil {
 			downloadedFile := findDownloadedFile(destDir, dlRecord.Filename)
 			if downloadedFile != "" && !downloader.IsValidGameFile(downloadedFile) {

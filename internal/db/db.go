@@ -87,7 +87,10 @@ func (db *Database) Close() error {
 //  7. Per-game wine prefix: wine_prefix TEXT on games table.
 //  8. Godot engine: 'Godot' added to the games.engine CHECK constraint
 //     (games table rebuilt; FTS triggers and indexes recreated).
-const currentSchemaVersion = 8
+//  9. Scraped size: size INTEGER DEFAULT 0 on download_links (bytes;
+//     0 = unknown). The downloader uses it as the expected total to
+//     verify completed downloads and enforce host caps.
+const currentSchemaVersion = 9
 
 // gamesTableColumns is the games table column definition, shared between the
 // fresh-DB CREATE TABLE and the v8 rebuild (the engine CHECK constraint
@@ -214,6 +217,7 @@ func migrate(conn *sql.DB) error {
 			url TEXT NOT NULL,
 			host TEXT,
 			name TEXT,
+			size INTEGER DEFAULT 0,
 			platform TEXT DEFAULT 'unknown',
 			is_dead INTEGER DEFAULT 0,
 			dead_reason TEXT,
@@ -537,6 +541,16 @@ func migrateVersionStep(conn *sql.DB, version int) error {
 		if !columnExists(tx, "games", "wine_prefix") {
 			if _, err := tx.Exec("ALTER TABLE games ADD COLUMN wine_prefix TEXT"); err != nil {
 				return fmt.Errorf("add wine_prefix: %w", err)
+			}
+		}
+	case 9:
+		// Scraped size in bytes for download links (0 = unknown). The
+		// downloader passes it as the expected total so truncated
+		// downloads error out and host caps are enforced before the
+		// request. Existing rows default to 0 (unknown).
+		if !columnExists(tx, "download_links", "size") {
+			if _, err := tx.Exec("ALTER TABLE download_links ADD COLUMN size INTEGER DEFAULT 0"); err != nil {
+				return fmt.Errorf("add download_links.size: %w", err)
 			}
 		}
 	default:

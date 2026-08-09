@@ -25,6 +25,7 @@ type ThreadData struct {
 // DownloadLink represents a download link found in the thread.
 type DownloadLink struct {
 	URL  string `json:"url"`
-	Host string `json:"host"` // mega, keep2share, uploaded, mediafire, workupload, googledrive, dropbox, other
-	Name string `json:"name"` // link text
+	Host string `json:"host"`            // mega, keep2share, uploaded, mediafire, workupload, googledrive, dropbox, other
+	Name string `json:"name"`            // link text
+	Size int64  `json:"size,omitempty"`  // advertised file size in bytes; 0 = not exposed by the thread
 }

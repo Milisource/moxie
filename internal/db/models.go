@@ -165,6 +165,7 @@ type DownloadLink struct {
 	URL         string    `json:"url"`
 	Host        string    `json:"host"`
 	Name        string    `json:"name"`
+	Size        int64     `json:"size"` // scraped file size in bytes; 0 = unknown
 	Platform    Platform  `json:"platform"`
 	IsDead      bool      `json:"is_dead"`
 	DeadReason  string    `json:"dead_reason,omitempty"`

@@ -383,6 +383,18 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 		return err
 	}
 
+	// Truncation detection: when the expected size is known (scraped from
+	// the thread), the bytes written must match exactly. A mismatch means
+	// the server cut the transfer short, returned an interstitial page, or
+	// a host that ignores Range re-served the file from zero. The .part
+	// file is removed so a later retry starts clean instead of trusting a
+	// partial as a resume base.
+	if expectedTotal > 0 && wc.total != expectedTotal {
+		f.Close()
+		os.Remove(partPath)
+		return fmt.Errorf("download truncated: wrote %d bytes, expected %d", wc.total, expectedTotal)
+	}
+
 	if err := f.Sync(); err != nil {
 		f.Close()
 		return fmt.Errorf("sync: %w", err)

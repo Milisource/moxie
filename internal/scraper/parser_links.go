@@ -3,6 +3,7 @@ package scraper
 import (
 	urlpkg "net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
@@ -18,7 +19,82 @@ var (
 	// guard like this so random bold words in prose are never mistaken for
 	// section headings.
 	sectionHeadingRe = regexp.MustCompile(`(?i)\b(part|update|patch|hotfix|dlc|demo|beta|alpha|final|chapter|ch\.|version|ver|v\s?\d|download|win|windows|mac|macos|linux|android|web)\b`)
+	// sizeRe matches human-readable file sizes as posted on F95Zone
+	// download rows: "[228.3 MB]", "1.2 GB", "346.6MB", "500 KB", "1.5 GiB".
+	// A version like "v1.2b" matches the shape but has no unit, and
+	// parseSize returns 0 for it.
+	sizeRe = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(k|m|g|t)?i?b`)
 )
+
+// sizeUnits maps the SI-ish size suffix to its byte multiplier. Sizes on
+// F95Zone download rows are base-1024 (a "228.3 MB" archive is 228.3 MiB).
+var sizeUnits = map[string]int64{
+	"K": 1024,
+	"M": 1024 * 1024,
+	"G": 1024 * 1024 * 1024,
+	"T": 1024 * 1024 * 1024 * 1024,
+}
+
+// parseSize extracts the first human-readable size from text and returns
+// it in bytes. Returns 0 when no size is present. Unit-less matches
+// ("v1.2b") and unknown units return 0 so prose near a link never invents
+// a size.
+func parseSize(text string) int64 {
+	m := sizeRe.FindStringSubmatch(text)
+	if m == nil {
+		return 0
+	}
+	mult, ok := sizeUnits[strings.ToUpper(m[2])]
+	if !ok {
+		return 0
+	}
+	value, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return 0
+	}
+	return int64(value * float64(mult))
+}
+
+// extractLinkSize returns the file size in bytes advertised for a download
+// link, or 0 when the thread does not expose one. Threads state sizes in
+// three common places: the anchor text itself ("Game_v1.0.rar [228.3 MB]"),
+// the link's title/alt attributes, and the text trailing the link inside its
+// row element ("<b>Win</b>: GOFILE - MEGA [346.6 MB]" — one size for the
+// whole row, copied to every link in it). Only the anchor's trailing
+// siblings are scanned so a size mentioned in surrounding prose ("needs 8 GB
+// of RAM") never leaks in.
+func extractLinkSize(a *goquery.Selection, text string) int64 {
+	if n := parseSize(text); n > 0 {
+		return n
+	}
+	for _, attr := range []string{"title", "alt", "aria-label"} {
+		if v, ok := a.Attr(attr); ok {
+			if n := parseSize(v); n > 0 {
+				return n
+			}
+		}
+	}
+	if parent := a.Parent(); parent.Length() > 0 {
+		rowText := trailingText(parent, a)
+		if len(rowText) > 256 {
+			rowText = rowText[:256]
+		}
+		if n := parseSize(rowText); n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// trailingText returns the concatenated text of the nodes following anchor a
+// inside its parent — the sibling text/elements after the link in the row.
+func trailingText(parent, a *goquery.Selection) string {
+	var sb strings.Builder
+	for sib := a.Get(0).NextSibling; sib != nil; sib = sib.NextSibling {
+		sb.WriteString(nodeText(sib))
+	}
+	return sb.String()
+}
 
 // platformLabels canonicalizes platform row labels.
 var platformLabels = map[string]string{
@@ -71,6 +147,7 @@ func extractDownloadLinks(content *goquery.Selection) []DownloadLink {
 			URL:  href,
 			Host: host,
 			Name: downloadLinkName(a, text, host),
+			Size: extractLinkSize(a, text),
 		})
 	})
 	return links
