@@ -238,7 +238,7 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 	// shared across downloads so TCP/TLS connections are reused.
 	client := &http.Client{
 		Timeout:   downloadTimeout,
-		Transport: sharedDownloadTransport,
+		Transport: downloadTransport(),
 	}
 
 	resp, err := client.Do(req)
@@ -246,6 +246,13 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 		return fmt.Errorf("http get: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// With the uTLS transport active, a CF challenge means the clearance
+	// cookie is stale or fingerprint-mismatched — surface it as a typed
+	// error instead of a generic status failure.
+	if UseUTLSTransport && cfChallengeDetected(resp) {
+		return fmt.Errorf("download rejected: %w", ErrCFChallengeStale)
+	}
 
 	log.Debug("download response", "url", redactedURL(urlStr), "status", resp.StatusCode, "content_length", resp.ContentLength, "content_type", resp.Header.Get("Content-Type"))
 
