@@ -6,6 +6,7 @@ export namespace db {
 	    url: string;
 	    host: string;
 	    name: string;
+	    size: number;
 	    platform: string;
 	    is_dead: boolean;
 	    dead_reason?: string;
@@ -25,6 +26,7 @@ export namespace db {
 	        this.url = source["url"];
 	        this.host = source["host"];
 	        this.name = source["name"];
+	        this.size = source["size"];
 	        this.platform = source["platform"];
 	        this.is_dead = source["is_dead"];
 	        this.dead_reason = source["dead_reason"];

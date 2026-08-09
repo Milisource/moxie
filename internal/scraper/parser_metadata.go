@@ -166,24 +166,59 @@ func extractTags(doc *goquery.Document) []string {
 	return tags
 }
 
-// extractCoverImage returns the first usable image URL found in the first post's
-// content area. It prefers images with class "bbImage", then falls back to
-// any <img> with a non-empty src in the bbWrapper.  data: URIs and SVGs are
-// skipped — we need real downloadable images for cover art.
+// extractCoverImage returns the best image URL found in the first post's
+// content area — the game's cover/banner art.
+//
+// Modern XenForo lazy-loads post images: the <img> src is an SVG
+// placeholder and the real URL sits in data-src (and on the wrapping
+// .lbContainer-zoomer div for the lightbox). Gallery thumbnails are
+// additionally served from a thumb/ subpath with the full-size original
+// linked from the wrapping anchor. Candidates are scored so the
+// full-size original wins over thumbnails and placeholders; data: URIs
+// and SVGs are always rejected.
 func extractCoverImage(content *goquery.Selection) string {
-	// content is already the scoped bbWrapper selection from parseThreadHTML.
 	if content.Length() == 0 {
 		return ""
 	}
 
-	// Prefer images with the XenForo "bbImage" class (skipping data: URIs / SVGs).
-	imgs := content.Find("img.bbImage")
-	for i := 0; i < imgs.Length(); i++ {
-		img := imgs.Eq(i)
-		src, ok := img.Attr("src")
-		if ok && isValidCoverURL(src) {
-			return src
+	best := ""
+	bestScore := 0
+	consider := func(u string, score int) {
+		if !isValidCoverURL(u) {
+			return
 		}
+		if score > bestScore {
+			best, bestScore = u, score
+		}
+	}
+
+	content.Find("img.bbImage").Each(func(_ int, img *goquery.Selection) {
+		// A thumbnail wrapped in an anchor links to the full-size original
+		// of the same image — prefer the anchor href.
+		if a := img.Closest("a").First(); a.Length() > 0 {
+			if href, ok := a.Attr("href"); ok && isValidCoverURL(href) {
+				if src, ok := img.Attr("src"); ok && strings.Contains(src, "/thumb/") {
+					consider(href, 3)
+				}
+			}
+		}
+		if ds, ok := img.Attr("data-src"); ok {
+			consider(ds, 2) // lazy-load real URL
+		}
+		if src, ok := img.Attr("src"); ok {
+			consider(src, 1)
+		}
+	})
+
+	// Lightbox zoomer divs always carry the full-res URL.
+	content.Find(".lbContainer-zoomer").Each(func(_ int, z *goquery.Selection) {
+		if ds, ok := z.Attr("data-src"); ok {
+			consider(ds, 2)
+		}
+	})
+
+	if best != "" {
+		return best
 	}
 
 	// Fall back to the first <img> with a meaningful src.

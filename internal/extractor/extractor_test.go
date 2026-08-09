@@ -642,6 +642,46 @@ func TestExtractZip_RejectsZipBomb(t *testing.T) {
 	}
 }
 
+// TestExtractZip_AllowsSmallHighRatioEntry is a regression test for the
+// live false positive that broke LonaRPG updates (2026-08-09): RPG Maker
+// VX Ace .rvdata2 data files compress ~135:1 but decompress to ~80 KB —
+// far too small to be a bomb. The per-entry ratio check must not fire
+// below maxZipEntryAmplifyBytes (16 MiB).
+func TestExtractZip_AllowsSmallHighRatioEntry(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	zipPath := filepath.Join(tmp, "game.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := zip.NewWriter(f)
+	// ~1 MB of zeros compresses to ~1 KB — ratio ~1000:1, way past
+	// maxZipRatio, but well under the 16 MiB amplification floor.
+	fw, err := w.CreateHeader(&zip.FileHeader{Name: "Game/Data/Map212.rvdata2", Method: zip.Deflate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeros := make([]byte, 1024*1024)
+	if _, err := fw.Write(zeros); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	dest := t.TempDir()
+	root, err := Extract(context.Background(), zipPath, dest, nil)
+	if err != nil {
+		t.Fatalf("small high-ratio entry must extract, got: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Data", "Map212.rvdata2")); err != nil {
+		t.Errorf("extracted entry missing: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // sanitizeZipPath
 // ---------------------------------------------------------------------------

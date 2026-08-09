@@ -146,6 +146,41 @@ type LatestSearchResult struct {
 	Creator  string
 }
 
+// SearchCovers searches the F95Checker game catalog for query and returns
+// a map from thread ID to cover art URL. The XenForo search result pages
+// only carry poster avatars (small, personal, wrong subject), so callers
+// use this to attach real game covers to their search results. Best
+// effort: threads the catalog doesn't know (mods, requests, comics) are
+// simply absent from the map.
+//
+// The catalog's cover field points at preview.f95zone.to, F95Checker's
+// downscaled preview CDN (400px). The same path exists on
+// attachments.f95zone.to at the original resolution, so the host is
+// swapped for full-size art at no extra request cost.
+func (p *PublicAPI) SearchCovers(ctx context.Context, query string) (map[int64]string, error) {
+	results, err := p.SearchTitle(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	covers := make(map[int64]string, len(results))
+	for _, r := range results {
+		if r.ThreadID > 0 && r.CoverURL != "" {
+			covers[r.ThreadID] = fullResCoverURL(r.CoverURL)
+		}
+	}
+	return covers, nil
+}
+
+// fullResCoverURL rewrites preview.f95zone.to (F95Checker's downscaled
+// 400px CDN) to attachments.f95zone.to, which serves the same path at the
+// original resolution. Other hosts are returned unchanged.
+func fullResCoverURL(u string) string {
+	if strings.HasPrefix(u, "https://preview.f95zone.to/") {
+		return "https://attachments.f95zone.to/" + strings.TrimPrefix(u, "https://preview.f95zone.to/")
+	}
+	return u
+}
+
 // CacheThread is the parsed response of the F95Checker cache API /full
 // endpoint. Fields are mapped to moxie conventions (Status is the canonical
 // database string, not the cache API's integer enum).

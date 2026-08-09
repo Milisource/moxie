@@ -121,32 +121,61 @@ func clickDownloadTriggers(ctx context.Context, page *rod.Page, tr *downloadTrac
 	}
 }
 
+// recaptchaCheckboxPollTimeout bounds how long clickRecaptchaCheckbox waits
+// for the widget to appear. After the masked Continue click, masked.js only
+// renders the widget into #captcha once the server answers
+// {"status":"captcha"} — and the google iframe can take several seconds to
+// load in a cold headless browser. A single bounded search (the old
+// behaviour) failed the wall path live on 2026-08-09: "no Continue link or
+// reCAPTCHA checkbox on the masked page".
+const recaptchaCheckboxPollTimeout = 10 * time.Second
+
+// recaptchaCheckboxPollInterval is the pause between widget searches.
+const recaptchaCheckboxPollInterval = 500 * time.Millisecond
+
 // clickRecaptchaCheckbox clicks the "I'm not a robot" checkbox inside the
-// reCAPTCHA iframe when present and unchecked. Returns true when clicked.
+// reCAPTCHA iframe when present and unchecked. The widget may take seconds
+// to render after the Continue click, so it is polled for up to
+// recaptchaCheckboxPollTimeout. Returns true when clicked.
 func clickRecaptchaCheckbox(ctx context.Context, page *rod.Page) bool {
 	if ctx.Err() != nil {
 		return false
 	}
-	frameEl, err := page.Timeout(clickElementTimeout).ElementX(recaptchaFrameXPath)
-	if err != nil {
-		return false
+	deadline := time.Now().Add(recaptchaCheckboxPollTimeout)
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		frameEl, err := page.Timeout(clickElementTimeout).ElementX(recaptchaFrameXPath)
+		if err == nil {
+			frame, err := frameEl.Frame()
+			if err != nil {
+				log.Debug("browserresolve: entering recaptcha frame failed", "error", err)
+				return false
+			}
+			box, err := frame.Timeout(clickElementTimeout).ElementX(
+				`//*[@id='recaptcha-anchor' and @aria-checked='false']`)
+			if err == nil {
+				if err := box.Click(proto.InputMouseButtonLeft, 1); err != nil {
+					log.Debug("browserresolve: recaptcha checkbox click failed", "error", err)
+					return false
+				}
+				log.Info("browserresolve: clicked reCAPTCHA checkbox (headless challenge)")
+				return true
+			}
+			// iframe present but no unchecked checkbox yet (still loading
+			// or already solved — keep polling until the deadline).
+			log.Debug("browserresolve: recaptcha iframe present, checkbox not found", "error", err)
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(recaptchaCheckboxPollInterval):
+		}
 	}
-	frame, err := frameEl.Frame()
-	if err != nil {
-		log.Debug("browserresolve: entering recaptcha frame failed", "error", err)
-		return false
-	}
-	box, err := frame.Timeout(clickElementTimeout).ElementX(
-		`//*[@id='recaptcha-anchor' and @aria-checked='false']`)
-	if err != nil {
-		return false // no unchecked checkbox (already solved or a harder challenge)
-	}
-	if err := box.Click(proto.InputMouseButtonLeft, 1); err != nil {
-		log.Debug("browserresolve: recaptcha checkbox click failed", "error", err)
-		return false
-	}
-	log.Info("browserresolve: clicked reCAPTCHA checkbox (headless challenge)")
-	return true
 }
 
 // waitForDownloadOrSettle blocks until a download starts (tracker) or the
@@ -209,6 +238,17 @@ func clickMaskedFlow(ctx context.Context, page *rod.Page, maskedURL string) (str
 				log.Debug("browserresolve: masked continue clicked")
 				if dest, ok := waitForMaskedDestination(ctx, page, maskedURL, clickSettleTimeout); ok {
 					return dest, nil
+				}
+				// The click hit the captcha wall: masked.js keeps the
+				// host_link in the DOM but fades it out (clicks fail from
+				// here on) and renders the reCAPTCHA widget into #captcha.
+				// Poll for the widget before re-clicking the link — the
+				// live wall path (2026-08-09) died here because the widget
+				// never got a chance to load.
+				if clickRecaptchaCheckbox(ctx, page) {
+					if dest, ok := waitForMaskedDestination(ctx, page, maskedURL, clickSettleTimeout); ok {
+						return dest, nil
+					}
 				}
 				continue
 			}

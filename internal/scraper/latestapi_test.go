@@ -269,6 +269,32 @@ func TestSearchTitle_EmptyQuery(t *testing.T) {
 	}
 }
 
+// TestSearchCovers: the catalog search yields a thread-ID → cover map;
+// entries without a cover URL are omitted, and preview.f95zone.to covers
+// are rewritten to the full-resolution attachments host.
+func TestSearchCovers(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"ok","msg":{"data":[
+			{"thread_id":6004,"title":"Meltys Quest","cover":"https://preview.f95zone.to/2017/10/41433_RJ207427_img_main.jpg"},
+			{"thread_id":5000,"title":"No Cover Game"},
+			{"thread_id":0,"title":"Bad Row","cover":"https://preview.f95zone.to/x.jpg"}
+		]}}`)
+	}))
+
+	covers, err := api.SearchCovers(context.Background(), "Meltys Quest")
+	if err != nil {
+		t.Fatalf("SearchCovers failed: %v", err)
+	}
+	if len(covers) != 1 {
+		t.Fatalf("got %d covers, want 1 (no-cover and invalid-id rows dropped)", len(covers))
+	}
+	if got := covers[6004]; got != "https://attachments.f95zone.to/2017/10/41433_RJ207427_img_main.jpg" {
+		t.Errorf("covers[6004] = %q, want the full-res attachments URL", got)
+	}
+}
+
 func TestCacheFastCheck(t *testing.T) {
 	t.Parallel()
 

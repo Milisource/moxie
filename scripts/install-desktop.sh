@@ -130,6 +130,17 @@ DESKTOP
         update-desktop-database "$apps_dir" &>/dev/null || true
     fi
 
+    # ── Refresh KDE/Plasma menu cache ─────────────────────────────────────
+    # KDE caches .desktop entries in ksycoca; the background watcher usually
+    # rebuilds it but can lag by minutes, so the launcher (Super/Kickoff)
+    # keeps showing stale entries after an install. Force a rebuild so the
+    # menu reflects the new binary right away. No-op on non-KDE desktops.
+    if command -v kbuildsycoca6 &>/dev/null; then
+        kbuildsycoca6 --noincremental &>/dev/null || true
+    elif command -v kbuildsycoca5 &>/dev/null; then
+        kbuildsycoca5 --noincremental &>/dev/null || true
+    fi
+
     # ── Check PATH ────────────────────────────────────────────────────────
     if ! echo "$PATH" | tr ':' '\n' | grep -qFx "$bin_dir"; then
         warn "${bin_dir} is not in your PATH."

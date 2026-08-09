@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PuerkitoBio/goquery"
 )
 
 // ---------------------------------------------------------------------------
@@ -550,6 +552,73 @@ const testXenForoHTML = `<!DOCTYPE html>
 </div>
 </body>
 </html>`
+
+// TestExtractCoverImage_LazyLoaded: modern XenForo lazy-loads post images
+// — the <img> src is an SVG placeholder and the real URL sits in data-src
+// (and on the lightbox zoomer div). The extractor must read those.
+func TestExtractCoverImage_LazyLoaded(t *testing.T) {
+	t.Parallel()
+
+	const html = `<div class="bbWrapper">
+<div style="text-align: center"><b>
+<div class="lbContainer lbContainer--inline" data-lb-container-zoom="1" data-lb-id="attachment30243" data-lb-single-image="1">
+<div class="lbContainer-zoomer js-lbImage-attachment30243" data-src="https://attachments.f95zone.to/2017/10/41433_RJ207427_img_main.jpg"></div>
+<img alt="RJ207427_img_main.jpg" class="bbImage lazyload" data-src="https://attachments.f95zone.to/2017/10/41433_RJ207427_img_main.jpg" src="data:image/svg+xml;charset=utf-8,%3Csvg%20viewBox%3D'0%200%20560%20420'%2F%3E" />
+<noscript><img alt="RJ207427_img_main.jpg" class="bbImage" src="https://attachments.f95zone.to/2017/10/41433_RJ207427_img_main.jpg" /></noscript>
+</div>
+</b></div>
+</div>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := extractCoverImage(doc.Find(".bbWrapper").First())
+	want := "https://attachments.f95zone.to/2017/10/41433_RJ207427_img_main.jpg"
+	if got != want {
+		t.Errorf("extractCoverImage = %q, want %q (data-src/zoomer must win over the SVG placeholder)", got, want)
+	}
+}
+
+// TestExtractCoverImage_ThumbAnchorPrefersFullRes: gallery thumbnails are
+// served from a thumb/ subpath with the full-size original linked from the
+// wrapping anchor — the full URL must win over the low-res thumb.
+func TestExtractCoverImage_ThumbAnchorPrefersFullRes(t *testing.T) {
+	t.Parallel()
+
+	const html = `<div class="bbWrapper">
+<p><a href="https://attachments.f95zone.to/2017/10/41434_RJ207427_img_smp1.jpg"><img src="https://attachments.f95zone.to/2017/10/thumb/41434_RJ207427_img_smp1.jpg" class="bbImage" /></a></p>
+<p><img src="https://attachments.f95zone.to/2017/10/thumb/41435_RJ207427_img_smp2.jpg" class="bbImage" /></p>
+</div>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := extractCoverImage(doc.Find(".bbWrapper").First())
+	want := "https://attachments.f95zone.to/2017/10/41434_RJ207427_img_smp1.jpg"
+	if got != want {
+		t.Errorf("extractCoverImage = %q, want %q (anchor href full-res beats thumb src)", got, want)
+	}
+}
+
+// TestExtractCoverImage_PlainSrcStillWorks: legacy posts with a plain
+// bbImage src (no lazy-load, no lightbox) keep working.
+func TestExtractCoverImage_PlainSrcStillWorks(t *testing.T) {
+	t.Parallel()
+
+	const html = `<div class="bbWrapper"><p><img src="https://attachments.f95zone.to/2024/07/3858605_Cover.png" class="bbImage" width="500" /></p></div>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := extractCoverImage(doc.Find(".bbWrapper").First())
+	want := "https://attachments.f95zone.to/2024/07/3858605_Cover.png"
+	if got != want {
+		t.Errorf("extractCoverImage = %q, want %q", got, want)
+	}
+}
 
 func TestParseThreadHTML(t *testing.T) {
 	t.Parallel()

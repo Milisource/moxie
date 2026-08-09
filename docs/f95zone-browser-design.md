@@ -171,7 +171,7 @@ Each tile shows key stats at a glance:
 
 ### Short-term (P2)
 
-1. **Larger cover thumbnails** — Increase the result card thumbnail from ~60px to at least 120×160px to make covers the primary visual element.
+1. **Larger cover thumbnails** — *Partially addressed (2026-08-09):* result cards are 16:9 grid tiles (~220px wide) showing full-res `attachments.f95zone.to` covers from the F95Checker catalog — no more avatars, no more 400px previews. Still not F95Zone's 3:4 portrait tile format; a tile-layout toggle (normal/large/list) remains open work.
 2. **Add category badge** — Extract and display the game category (VN, RPGM, HTML) alongside the engine prefix. F95Zone's thread format includes both.
 3. **Results count** — Show "X results found" in the search results header.
 4. **Per-game metadata** — Display version more prominently in the card, not just in the preview panel.
@@ -196,9 +196,9 @@ Each tile shows key stats at a glance:
 
 | Aspect | F95Zone `/sam/latest_alpha` | Moxie `F95Browser.svelte` |
 |--------|---------------------------|--------------------------|
-| **Data source** | Custom backend API (XenForo DB) | `SearchF95Zone()` → `scraper.SearchF95Zone()` → XenForo/Google |
+| **Data source** | Custom backend API (XenForo DB) | `SearchF95Zone()` → XenForo POST search + F95Checker catalog covers (`SearchCovers`) |
 | **Results** | Full browse of ALL games (26K+) | Search query only (≤5 results) |
-| **Covers** | Server-rendered in grid | Lazy-loaded via `GetThreadPreview()` or cached |
+| **Covers** | Server-rendered in grid | Full-res `attachments.f95zone.to` originals attached at search time (catalog keyed by thread ID); preview pane via `GetThreadPreview()` |
 | **Filters** | Server-side (full query language) | Client-side only (minimal) |
 | **Pagination** | 878 pages, 30/page | Single page, max 5 results |
 | **Add to library** | Not available (site only) | One-click "Add to Library" button |

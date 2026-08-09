@@ -85,6 +85,19 @@ Brave, Firefox) on any of the three target OSes (Linux, macOS, Windows).
   excluded from copies — a Brave sync LevelDB deterministically core-dumps
   vanilla Chromium 2-4s after launch (had been silently killing masked
   sessions all day; looked like navigation races).
+- **Captcha-wall live failure + fixes (2026-08-09):** the wall path (not
+  the ~4s no-wall path) was exercised live for the first time and failed:
+  masked.js keeps `host_link` in the DOM but fades it out (subsequent
+  clicks fail) and only renders the reCAPTCHA widget after the server
+  answers `{"status":"captcha"}` — the old code searched for the widget
+  once with a 2s window, so cold headless browsers died with "no Continue
+  link or reCAPTCHA checkbox". Fixes: `clickRecaptchaCheckbox` now polls
+  the widget for up to 10s (500ms interval), and `clickMaskedFlow` tries
+  the checkbox after every Continue click, not just when the link search
+  fails. Also: the desktop app now wires the DB-backed resolved-URL cache
+  (`SetDefaultResolvedCache`) so retries of the same `/masked/` link skip
+  the rate-limited unwrap endpoint entirely — the missing wiring caused a
+  retry 26s after a successful unwrap to hit the wall (F95-p208).
 - **No browser is shipped or downloaded** — both engines launch the user's
   own installed browser (`launcher.New()`, never rod's `NewBrowser()`
   download path); default is auto-detect on the user's own installs.

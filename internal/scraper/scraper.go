@@ -86,17 +86,27 @@ type Client struct {
 	reqCount    int           // requests since last cooldown
 	csrfToken   string        // _xfToken extracted from xf_csrf cookie
 
+	// Fresh _xfToken fetched from a page. XenForo 2.3+ embeds the current
+	// session token in page HTML and rejects the legacy xf_csrf cookie
+	// value (400 Security error), so POSTs must use a fetched token.
+	// Cached briefly since the token is stable for the session.
+	xfTokenValue string
+	xfTokenAt    time.Time
+
+	// Search endpoints — default to f95zone.to; tests override with
+	// httptest servers.
+	xfTokenPage     string // page fetched to obtain a fresh _xfToken
+	xfSearchURL     string // POST /search/search endpoint
+	googleSearchURL string // Google SERP fallback
+
+	// unsafe skips rate limiting entirely (NewUnsafeClient).
+	unsafe bool
+
 	// Circuit breaker: after maxConsecutiveBlocks blocking responses the
 	// client refuses further requests so a dead session doesn't waste a
 	// whole sync run failing one game at a time.
 	consecutiveBlocks int
 	blocked           bool
-}
-
-// xfCSRFToken returns the XenForo CSRF token for authenticated POST requests.
-// Returns empty string if no xf_csrf cookie was found in the client config.
-func (c *Client) xfCSRFToken() string {
-	return c.csrfToken
 }
 
 // NewClient creates a scraper client with the given cookie string.
@@ -134,8 +144,11 @@ func NewClientWithHTTP(cookieStr string, httpClient *http.Client) *Client {
 			CheckRedirect: httpClient.CheckRedirect,
 			Jar:           httpClient.Jar,
 		},
-		delay:     delay,
-		csrfToken: extractCSRFToken(cookieStr),
+		delay:           delay,
+		csrfToken:       extractCSRFToken(cookieStr),
+		xfTokenPage:     xfTokenPageURL,
+		xfSearchURL:     xfSearchURL,
+		googleSearchURL: googleSearchURL,
 	}
 }
 
@@ -152,8 +165,12 @@ func newClient(cookieStr string, unsafe bool) *Client {
 				cookieValue: strings.TrimSpace(cookieStr),
 			},
 		},
-		delay:     delay,
-		csrfToken: extractCSRFToken(cookieStr),
+		delay:           delay,
+		csrfToken:       extractCSRFToken(cookieStr),
+		xfTokenPage:     xfTokenPageURL,
+		xfSearchURL:     xfSearchURL,
+		googleSearchURL: googleSearchURL,
+		unsafe:          unsafe,
 	}
 }
 
@@ -294,7 +311,13 @@ func retryable(err error) bool {
 		}
 		return false
 	}
-	// Plain transport/network errors are transient.
+	// Plain transport/network errors are transient; HTTP 5xx responses
+	// are worth a retry, but 4xx are client errors that will only fail
+	// again.
+	var statusErr *HTTPStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.StatusCode >= 500
+	}
 	return true
 }
 

@@ -2,7 +2,10 @@ package scraper
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -351,6 +354,63 @@ func TestParseSearchResults_InvalidHTML(t *testing.T) {
 	}
 }
 
+// TestThreadIDFromURL covers both URL forms XenForo produces: the slug
+// form from search results and the slug-agnostic form from ThreadURL.
+func TestThreadIDFromURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		url  string
+		want int64
+	}{
+		{"https://f95zone.to/threads/meltys-quest-v1-2r-happy-life.6004/", 6004},
+		{"https://f95zone.to/threads/some.thing.6004/", 6004},
+		{"https://f95zone.to/threads/6004/", 6004},
+		{"/threads/relative-game.99999/", 99999},
+		{"https://f95zone.to/threads/meltys-quest.6004/", 6004},
+		{"https://f95zone.to/", 0},
+		{"https://f95zone.to/members/jande21.5000/", 0},
+		{"", 0},
+		{"https://f95zone.to/threads/no-id-here/", 0},
+	}
+	for _, tt := range tests {
+		if got := ThreadIDFromURL(tt.url); got != tt.want {
+			t.Errorf("ThreadIDFromURL(%q) = %d, want %d", tt.url, got, tt.want)
+		}
+	}
+}
+
+// TestParseSearchResults_NoAvatarThumbnail: search result rows only carry
+// the poster's avatar image — the parser must NOT surface it as the game
+// thumbnail (the desktop attaches real covers from the F95Checker catalog).
+func TestParseSearchResults_NoAvatarThumbnail(t *testing.T) {
+	t.Parallel()
+
+	const html = `<!DOCTYPE html>
+<html>
+<body>
+<div class="block">
+  <div class="contentRow">
+    <span class="contentRow-figure">
+      <a href="/members/jande21.5000/"><img src="/data/avatars/s/5/5000.jpg" alt="jande21" /></a>
+    </span>
+    <div class="contentRow-main">
+      <h3 class="contentRow-title"><a href="https://f95zone.to/threads/my-awesome-game.12345/">My Awesome Game</a></h3>
+    </div>
+  </div>
+</div>
+</body>
+</html>`
+
+	results := parseSearchResults(html, "")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].ThumbnailURL != "" {
+		t.Errorf("ThumbnailURL = %q, want empty (avatar must not become the thumbnail)", results[0].ThumbnailURL)
+	}
+}
+
 func TestParseSearchResults_NoSnippetField(t *testing.T) {
 	t.Parallel()
 
@@ -371,5 +431,188 @@ func TestParseSearchResults_NoSnippetField(t *testing.T) {
 	}
 	if results[0].Snippet != "" {
 		t.Errorf("expected empty snippet, got %q", results[0].Snippet)
+	}
+}
+
+// searchTestServer routes GET / (token page) and POST /search/search like
+// F95Zone's XenForo, letting tests drive the search flow end to end.
+func searchTestServer(t *testing.T, tokenForFetch func(int) string, handlePost func(token string) (int, string)) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	fetches := &atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/" && r.Method == http.MethodGet:
+			n := fetches.Add(1)
+			token := tokenForFetch(int(n))
+			fmt.Fprintf(w, `<html><body><form><input type="hidden" name="_xfToken" value="%s"></form></body></html>`, token)
+		case r.URL.Path == "/search/search" && r.Method == http.MethodPost:
+			if err := r.ParseForm(); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			status, body := handlePost(r.Form.Get("_xfToken"))
+			w.WriteHeader(status)
+			fmt.Fprint(w, body)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, fetches
+}
+
+// newUnsafeTestClient builds an unpaced scraper client pointed at an
+// httptest server, with a legacy cookie token that must NOT be used.
+func newUnsafeTestClient(srv *httptest.Server) *Client {
+	return &Client{
+		http: &http.Client{
+			Timeout: defaultTimeout,
+			Transport: &cookieTransport{
+				inner:        srv.Client().Transport,
+				cookieValue:  "xf_session=abc123",
+				unrestricted: true,
+			},
+		},
+		delay:           0,
+		unsafe:          true,
+		csrfToken:       "legacy-cookie-token",
+		xfTokenPage:     srv.URL,
+		xfSearchURL:     srv.URL + "/search/search",
+		googleSearchURL: srv.URL + "/google",
+	}
+}
+
+// TestSearchF95Zone_FetchesTokenFromPage: the search POST must use the
+// _xfToken fetched from page HTML — not the legacy xf_csrf cookie value —
+// and the fetched token is cached across searches.
+func TestSearchF95Zone_FetchesTokenFromPage(t *testing.T) {
+	t.Parallel()
+
+	searchResults := `<html><body><div class="block">
+<div class="contentRow">
+  <h3 class="contentRow-title"><a href="https://f95zone.to/threads/meltys-quest.6004/">Meltys Quest [v1.2r] [Happy Life]</a></h3>
+</div>
+</div></body></html>`
+
+	var postedTokens []string
+	srv, fetches := searchTestServer(t,
+		func(int) string { return "page-token-1" },
+		func(token string) (int, string) {
+			postedTokens = append(postedTokens, token)
+			if token != "page-token-1" {
+				return http.StatusBadRequest, ""
+			}
+			return http.StatusOK, searchResults
+		},
+	)
+	client := newUnsafeTestClient(srv)
+
+	results, err := client.SearchF95Zone("Meltys Quest")
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Title != "Meltys Quest [v1.2r] [Happy Life]" {
+		t.Errorf("unexpected title %q", results[0].Title)
+	}
+	if len(postedTokens) != 1 || postedTokens[0] != "page-token-1" {
+		t.Errorf("search POST used token %v, want the page-fetched token", postedTokens)
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Errorf("expected 1 page fetch, got %d", got)
+	}
+
+	// A second search reuses the cached token — no extra page fetch.
+	if _, err := client.SearchF95Zone("Other Game"); err != nil {
+		t.Fatalf("second search failed: %v", err)
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Errorf("expected cached token (1 page fetch total), got %d", got)
+	}
+	if len(postedTokens) != 2 || postedTokens[1] != "page-token-1" {
+		t.Errorf("second search used token %v, want cached page token", postedTokens)
+	}
+}
+
+// TestSearchF95Zone_RefetchesTokenOn400: when the POST is rejected with
+// HTTP 400 (stale/rotated token), the client drops the cached token,
+// re-fetches the page, and retries the search once before falling back.
+func TestSearchF95Zone_RefetchesTokenOn400(t *testing.T) {
+	t.Parallel()
+
+	searchResults := `<html><body><div class="block">
+<div class="contentRow">
+  <h3 class="contentRow-title"><a href="https://f95zone.to/threads/meltys-quest.6004/">Meltys Quest [v1.2r] [Happy Life]</a></h3>
+</div>
+</div></body></html>`
+
+	var postedTokens []string
+	srv, fetches := searchTestServer(t,
+		func(n int) string {
+			if n == 1 {
+				return "stale-token"
+			}
+			return "fresh-token"
+		},
+		func(token string) (int, string) {
+			postedTokens = append(postedTokens, token)
+			if token == "stale-token" {
+				return http.StatusBadRequest, "Security error occurred."
+			}
+			if token != "fresh-token" {
+				return http.StatusBadRequest, ""
+			}
+			return http.StatusOK, searchResults
+		},
+	)
+	client := newUnsafeTestClient(srv)
+
+	results, err := client.SearchF95Zone("Meltys Quest")
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if got := fetches.Load(); got != 2 {
+		t.Errorf("expected 2 page fetches (initial + refetch), got %d", got)
+	}
+	want := []string{"stale-token", "fresh-token"}
+	if len(postedTokens) != len(want) {
+		t.Fatalf("posted tokens %v, want %v", postedTokens, want)
+	}
+	for i := range want {
+		if postedTokens[i] != want[i] {
+			t.Errorf("posted token[%d] = %q, want %q", i, postedTokens[i], want[i])
+		}
+	}
+}
+
+// TestSearchF95Zone_CookieFallbackWhenPageUnreachable: when the token
+// page and the XenForo search are unreachable, the client falls through
+// to the Google SERP fallback (empty results, no crash).
+func TestSearchF95Zone_CookieFallbackWhenPageUnreachable(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/google": // Google SERP with no f95zone links
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `<html><body><div><a href="/url?q=https%3A%2F%2Fexample.com%2F">Example</a></div></body></html>`)
+		default: // token page + search POST both down
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := newUnsafeTestClient(srv)
+
+	results, err := client.SearchF95Zone("Meltys Quest")
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results via fallback path, got %d", len(results))
 	}
 }

@@ -119,6 +119,7 @@
 - **Clobbered archive progress filenames** — `\r` carriage return overwrite left text bleeding from longer previous filenames. Filenames now truncated to 60 chars with `%-60s` width padding to clear the line (F95-nle)
 - **DataNodes regex mismatch** — Expected `/download/<CODE>` URL format but real F95Zone links use `/<CODE>/<filename>`. Resolver now handles both formats (F95-nle)
 - **Pixeldrain masked URL never resolved** — `IdentifyHostInURL` matched "pixeldrain" inside the masked F95Zone URL string and routed to `resolvePixeldrain`, which extracted the file ID from the wrong URL. Fixed by detecting `/masked/` in the URL first and following the redirect before applying host resolution (F95-nle)
+- **Detail-view cover shown at native resolution, larger frame** — the per-game cover was squeezed into the 280px grid column (`width:100%`), so a 1600×400 banner rendered as a 280×70 sliver, a 600×900 portrait as a 280×420 tower, and even a 1884×1080 cover never used its resolution. The column is now 360px and the image sizes itself (`width/height:auto` + `max-width:100%`/`max-height:540px`): sources render at 1:1 pixels when they fit — never upscaled, so low-res F95Zone sources (many are genuinely 560×420) stay as sharp as the file allows — and only oversized images downscale, with the natural aspect ratio always preserved (no crop, no distortion). Verified against real cached covers (4:1 banner, 4:3, 2:3 portrait, 16:9) in old-vs-new side-by-side rendering
 
 ### Architecture
 

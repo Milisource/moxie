@@ -48,8 +48,15 @@ func extractZip(ctx context.Context, archivePath, destDir string, progress Progr
 
 		// Zip bomb defense: a sane entry decompresses at most maxZipRatio×
 		// its compressed size; crafted archives hit 1000:1+ and would
-		// exhaust disk from a small download.
-		if f.CompressedSize64 > 0 && f.UncompressedSize64 > f.CompressedSize64*maxZipRatio {
+		// exhaust disk from a small download. The check only applies to
+		// entries that decompress to at least maxZipEntryAmplifyBytes —
+		// highly compressible small data files (e.g. RPG Maker .rvdata2
+		// serialized maps at 135:1) are normal, not bombs, and a sub-16 MB
+		// entry cannot exhaust disk no matter its ratio. Scale is still
+		// bounded by maxZipTotalBytes below and the downloader's input cap.
+		if f.CompressedSize64 > 0 &&
+			int64(f.UncompressedSize64) >= maxZipEntryAmplifyBytes &&
+			f.UncompressedSize64 > f.CompressedSize64*maxZipRatio {
 			return fmt.Errorf("zip entry %s has suspicious compression ratio (%d → %d bytes); possible zip bomb",
 				f.Name, f.CompressedSize64, f.UncompressedSize64)
 		}
@@ -110,6 +117,14 @@ func extractZip(ctx context.Context, archivePath, destDir string, progress Progr
 // compressed size. Real game assets (already-compressed media, scripts)
 // rarely exceed 20:1; 100:1 catches zip bombs while leaving huge headroom.
 const maxZipRatio = 100
+
+// maxZipEntryAmplifyBytes is the uncompressed-size floor for the per-entry
+// ratio check. Small high-ratio entries are legitimate (RPG Maker VX Ace
+// .rvdata2 data files routinely hit 135:1 — live false-positive that broke
+// LonaRPG updates 2026-08-09); only an entry that decompresses to at least
+// this many bytes can meaningfully amplify a small download, and scale is
+// separately capped by maxZipTotalBytes.
+const maxZipEntryAmplifyBytes int64 = 16 * 1024 * 1024
 
 // maxZipTotalBytes bounds the total uncompressed size of a single archive
 // (twice the downloader's 50 GB input cap).

@@ -72,7 +72,7 @@ dist/$(DESKTOP_BINARY): desktop/build/bin/moxie
 	@echo "  -> dist/$(DESKTOP_BINARY)"
 
 desktop/build/bin/moxie: desktop/frontend/src/**/* desktop/app.go desktop/main.go
-	cd desktop && wails build -tags webkit2_41
+	cd desktop && wails build -tags webkit2_41 -ldflags "-X main.appVersion=$(VERSION)"
 
 # Run desktop in development mode with hot-reload
 desktop-dev:

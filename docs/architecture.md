@@ -136,6 +136,7 @@ desktop/
         AddGameDialog.svelte   Manual add game with directory picker, engine detection, fields
         DedupDialog.svelte     Duplicate game detection and resolution
         StatusBar.svelte       Game count + status messages
+        viewState.svelte.js    Tab-surviving view state (filters, sort, scroll, browser session)
       app.css                  CSS custom properties with dark/light auto-detection
   build/                       Platform build assets (icon, macOS plists, Windows manifests)
 ```
@@ -146,6 +147,7 @@ make desktop                          # production build → dist/moxie-desktop
 make install-desktop                  # register in system app launcher
 cd desktop && wails dev -tags webkit2_41  # hot-reload development
 ```
+`make desktop` stamps the git descriptor into the binary (`-X main.appVersion=$(VERSION)`), so the sidebar shows exactly which build is running. On KDE, `install-desktop.sh` forces a ksycoca rebuild so the launcher menu reflects new builds immediately instead of waiting on the background watcher.
 
 **Per-platform install behavior** (`scripts/install-desktop.sh`):
 - **Linux** → copies to `~/.local/bin`, writes a `.desktop` entry + icon, refreshes the desktop database.
@@ -160,5 +162,13 @@ cd desktop && wails dev -tags webkit2_41  # hot-reload development
 - **Windows** → copies to `%APPDATA%\moxie\bin` and creates a Start Menu shortcut via PowerShell (`[Environment]::GetFolderPath('Programs')`, icon points at the installed exe).
 
 **Key design:** Every bound Go method delegates to an existing `internal/` package. The frontend is purely a view layer — all business logic stays in the shared Go backend. The Svelte frontend communicates with Go exclusively through auto-generated `wailsjs/` bindings (no REST, no IPC).
+
+**Cover art pipeline:** Covers are cached to `~/.config/moxie/covers/<gameID>` and served to the webview over loopback HTTP (`/cover/<id>` full image, `/cover/<id>/thumb` list thumbnail; missing `.thumb` falls back to the full image). F95Zone's CDN serves many covers as **AVIF** regardless of the URL extension — the webview (Chromium) renders AVIF natively, but Go has no pure-Go AVIF decoder (libavif is CGO, banned), so AVIF covers are cached and served in full and simply get no thumbnail: `decodeCoverImage` returns a typed `errCoverFormatNotThumbnailable`, `writeCoverThumb` skips them silently, and `backfillCoverThumbs` reports one `skippedAVIF=N` summary line instead of a per-cover WARN storm (F95-x2mg).
+
+**F95Zone browser search flow:** `F95Browser.svelte` calls `App.SearchF95Zone(query)` which runs a **two-phase lookup**: (1) the XenForo POST search (`scraper.Client.SearchF95Zone` — requires the fresh `_xfToken` fetched from page HTML, see `docs/scraper.md`), and (2) a catalog cover lookup (`scraper.PublicAPI.SearchCovers`) whose `thread_id → cover` map is matched to results by `scraper.ThreadIDFromURL`. Results the catalog doesn't know (mods, requests) get an empty thumbnail → UI placeholder. Searches are **explicit-only**: typing updates the query, only the Search button / Enter calls the backend, and remounting the tab never re-runs a persisted query — in-flight responses are still guarded by the shared `searchSeq` counter in `viewState.svelte.js`.
+
+**State across tabs:** Views are destroyed on every tab switch, so state lives at two levels. Long-running operations (sync, scan, cover backfill, update pipeline) keep their state in `App.svelte` itself — the dialog views only render it, so an in-flight run survives navigation and the backend's single-flight guards stay enforced. Interactive view state (library search/filters/sort/scroll, browser search+preview, downloads expansion, expanded collection) lives in `lib/viewState.svelte.js` as module-scope `$state` objects (`library`, `browser`, `downloads`, `collectionsView`). Exported as containers rather than individual runes: the Svelte compiler rewrites runes one file at a time, so a directly-exported binding can't be reassigned from an importing component. The browser's request sequence counters also live in shared state, so a stale in-flight response can't land in a freshly remounted view.
+
+**View transitions:** The active view is wrapped in `{#key activeView}` with a `fly` transition (140ms, 8px rise + fade), so tab switches crossfade instead of hard-swapping. `prefers-reduced-motion` users get a 0ms hard switch.
 
 **Browser design reference:** See [`docs/f95zone-browser-design.md`](f95zone-browser-design.md) for a detailed analysis of F95Zone's `latest_alpha` page structure and UX patterns, used as inspiration for the `F95Browser.svelte` component.
