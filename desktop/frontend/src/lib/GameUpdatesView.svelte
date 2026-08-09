@@ -16,10 +16,12 @@
   let {
     gameStates = {},
     batchState = null,
+    lastUpdate = 0,
     onNavigate = () => {},
     onUpdateGame = () => {},
     onUpdateAll = () => {},
     onRetryFailed = () => {},
+    onProvideFile = () => {},
     onCancel = () => {},
   } = $props()
 
@@ -74,8 +76,13 @@
   }
 
   // ── Data Loading ─────────────────────────────────────────────
+  let gamesLoadInFlight = false
   async function loadGames() {
-    loading = true
+    if (gamesLoadInFlight) return
+    gamesLoadInFlight = true
+    // Keep showing stale rows during a background refresh; only flash the
+    // full-screen loader when there is nothing to show yet.
+    if (games.length === 0) loading = true
     error = ''
     try {
       games = await GetUpdatableGames()
@@ -84,7 +91,27 @@
       games = []
     }
     loading = false
+    gamesLoadInFlight = false
   }
+
+  // The updatable list is fetched once on mount, but the library changes
+  // underneath this tab: an update batch (or a sync that discovered new
+  // versions) finishes while the tab is open. App bumps lastUpdate on every
+  // pipeline completion — reload whenever it moves so the list (and the
+  // "All games up to date!" empty state) never goes stale.
+  $effect(() => {
+    if (lastUpdate) loadGames()
+  })
+
+  // Batch-complete also transitions batchState.running → false; watch it
+  // directly to cover the paths that don't bump lastUpdate (e.g. a batch
+  // that errors out before it starts).
+  let prevBatchRunning = false
+  $effect(() => {
+    const running = !!batchState?.running
+    if (prevBatchRunning && !running) loadGames()
+    prevBatchRunning = running
+  })
 
   // ── App Update ───────────────────────────────────────────────
   async function handleCheckAppUpdate() {
@@ -400,6 +427,20 @@
                   <span class="cell-error-text" title={gs.error}>
                     {gs.error ? (gs.error.length > 60 ? gs.error.slice(0, 60) + '…' : gs.error) : 'Error'}
                   </span>
+                  {#if gs.manualRequired}
+                    <div class="cell-manual-row">
+                      <span class="cell-manual-hint">
+                        Auto-download blocked{gs.manualHost ? ` (${gs.manualHost})` : ''} — download the file in your browser, then point moxie at it.
+                      </span>
+                      <button
+                        class="btn btn-sm btn-primary"
+                        onclick={() => onProvideFile(game.id)}
+                        disabled={isUpdatingAny || batchState?.running}
+                      >
+                        Provide file…
+                      </button>
+                    </div>
+                  {/if}
                   <button
                     class="btn btn-sm btn-warning"
                     onclick={() => onUpdateGame(game.id)}
@@ -862,6 +903,20 @@
     text-overflow: ellipsis;
     max-width: 100%;
     white-space: nowrap;
+  }
+  .cell-manual-row {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    max-width: 100%;
+  }
+  .cell-manual-hint {
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-align: right;
+    max-width: 320px;
+    line-height: 1.35;
   }
 
   /* ── Buttons ────────────────────────── */

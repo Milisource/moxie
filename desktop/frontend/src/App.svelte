@@ -529,6 +529,9 @@
         // A sync run may have cached covers or associated new games — refresh
         // so cover cells and rows reflect the new state.
         await refreshGames()
+        // A sync can discover new game versions: bump lastUpdate so the
+        // updates view (and sidebar badge) refresh even while it's open.
+        lastUpdate++
         statusMsg = 'Sync complete — library refreshed'
       } catch (e) {
         statusMsg = `Error: ${e}`
@@ -789,6 +792,7 @@
             <GameUpdatesView
               gameStates={gameStates}
               batchState={batchState}
+              {lastUpdate}
               onNavigate={(id) => activeView = id}
               onUpdateGame={startUpdateGame}
               onUpdateAll={startUpdateAll}
