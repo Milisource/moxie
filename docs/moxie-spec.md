@@ -161,7 +161,7 @@ A local game library manager for adult games. Scans directories, detects engines
   - Mega downloads via megatools subprocess when the binary is installed; informative error otherwise (F95-46x0)
   - `CheckLink` routes resolver-backed and masked URLs through `HostResolver` before HEAD — no more false dead-link flags (F95-ry1d)
   - Clearance-aware host scoring — pixeldrain/catbox/mediafire +25, buzzheavier/workupload +10, gofile +5, vikingfile/krakenfiles/mega −200 (F95-ugim)
-  - uTLS transport (opt-in `MOXIE_UTLS=1`) — browser-grade TLS fingerprint, h2 stripped from ALPN, typed challenge error (F95-j3b5, pending live CF verification)
+  - uTLS transport (opt-in `MOXIE_UTLS=1`) — browser-grade TLS fingerprint with ALPN forced to h1 via extension replacement; **live verdict: NO-GO for this machine's cookies** (user's Firefox 153 clearance is unmatchable — uTLS v1.8.2 max profiles FF120/Chrome133; CF challenges the fingerprint), but the transport now produces clean typed challenge errors instead of broken connections (F95-j3b5); challenge-graded hosts are the browser-fallback's job (F95-yyes follow-up)
   - `browserresolve` package — headless Chrome download resolver with real-profile copy, rod download events + dir polling (F95-yyes, pending live Chrome verification)
   - Browser-open fallback + download-dir `ArchiveWatcher` — failed downloads offer `[y]` browser-open; browser-saved files are auto-detected, validated, extracted and merged (F95-cp07)
   - Scraped size wired into downloads (`download_links.size`, migration v9) — post-body truncation verification, host caps enforced on known sizes (F95-yp6s)
