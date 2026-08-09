@@ -18,10 +18,10 @@ import (
 func TestParsePartName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name       string
-		prefix     string
-		index      int
-		ok         bool
+		name   string
+		prefix string
+		index  int
+		ok     bool
 	}{
 		{"Game.part1.rar", "Game", 1, true},
 		{"Game.part01.zip", "Game", 1, true},

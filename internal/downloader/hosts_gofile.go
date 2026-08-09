@@ -20,10 +20,11 @@ import (
 // Without a correct wt the contents API answers error-notPremium — a
 // missing/invalid wt, not actual premium gating. Flow:
 //
-//	1. POST https://api.gofile.io/accounts            -> guest token
-//	2. GET  https://api.gofile.io/contents/<contentId> (with Authorization,
-//	   X-Website-Token, X-BL)                          -> child file's "link"
-//	3. That link is the direct download URL.
+//  1. POST https://api.gofile.io/accounts            -> guest token
+//  2. GET  https://api.gofile.io/contents/<contentId> (with Authorization,
+//     X-Website-Token, X-BL)                          -> child file's "link"
+//  3. That link is the direct download URL.
+//
 // gofileAPIBase is the gofile API origin. A var so tests can point it at an
 // httptest server.
 var gofileAPIBase = "https://api.gofile.io"

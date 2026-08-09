@@ -117,7 +117,7 @@ func TestParseHumanSize(t *testing.T) {
 		want int64
 	}{
 		{"512B", 512},
-		{"12.4KiB", 12697}, // 12.4 * 1024, truncated
+		{"12.4KiB", 12697},  // 12.4 * 1024, truncated
 		{"2.9MiB", 3040870}, // 2.9 * 1024 * 1024, truncated
 		{"1.5MiB", 1572864},
 		{"1GiB", 1 << 30},
@@ -169,9 +169,9 @@ func TestParseMegatoolsProgress(t *testing.T) {
 			wantOK:   true,
 		},
 		{
-			name:    "new style zero bytes first line",
-			line:    "game.zip: 0.00% - 0 bytes of 9.5MiB",
-			wantOK:  true,
+			name:   "new style zero bytes first line",
+			line:   "game.zip: 0.00% - 0 bytes of 9.5MiB",
+			wantOK: true,
 		},
 		{
 			name:     "new style name with parens and digits",

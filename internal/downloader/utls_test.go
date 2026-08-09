@@ -35,11 +35,11 @@ func TestUaProfile(t *testing.T) {
 func TestCfChallengeDetected(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name       string
-		status     int
-		cfHeader   string
-		body       string
-		want       bool
+		name     string
+		status   int
+		cfHeader string
+		body     string
+		want     bool
 	}{
 		{"challenge header", http.StatusOK, "challenge", "ok", true},
 		{"block header", http.StatusOK, "block", "ok", true},

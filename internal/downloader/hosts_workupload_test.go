@@ -30,11 +30,11 @@ func wuTestDigest(s string) string {
 func TestWorkuploadFileParts(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name    string
-		url     string
-		wantID  string
-		wantK   string
-		wantOK  bool
+		name   string
+		url    string
+		wantID string
+		wantK  string
+		wantOK bool
 	}{
 		{"file", "https://workupload.com/file/ckfAZgjjgej", "ckfAZgjjgej", "file", true},
 		{"start", "https://workupload.com/start/ckfAZgjjgej", "ckfAZgjjgej", "file", true},
@@ -231,18 +231,18 @@ func TestResolveWorkupload_FullFlow(t *testing.T) {
 	// NOT parallel — replaces http.DefaultTransport which is global state.
 
 	const (
-		wallPage  = `<html><head><title>workupload - Are you a human?</title></head><body>Security Check</body></html>`
-		realPage  = `<html><head><title>Downloads.zip</title></head><body><a href="/start/code123" class="btn btn-prio nu-reward">Download</a></body></html>`
-		puzzle    = "mock.puzzle.42"
+		wallPage   = `<html><head><title>workupload - Are you a human?</title></head><body>Security Check</body></html>`
+		realPage   = `<html><head><title>Downloads.zip</title></head><body><a href="/start/code123" class="btn btn-prio nu-reward">Download</a></body></html>`
+		puzzle     = "mock.puzzle.42"
 		wantAnswer = "7 1234 "
 	)
 
 	var (
-		filePageHits    int
-		puzzleHits      int
-		postBody        string
-		apiCookie       string
-		apiReferer      string
+		filePageHits int
+		puzzleHits   int
+		postBody     string
+		apiCookie    string
+		apiReferer   string
 	)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

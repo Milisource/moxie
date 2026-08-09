@@ -277,8 +277,13 @@ func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTota
 		streamErrCh <- streamMegatoolsOutput(stderr, expectedTotal, onProgress, &last, &errTail)
 	}()
 
-	waitErr := cmd.Wait()
+	// Drain stderr to EOF BEFORE calling Wait: Wait closes a StderrPipe the
+	// moment it sees the command exit, so a concurrent scanner would hit
+	// "file already closed" (visible under -race). The drain is unblocking —
+	// the pipe reaches EOF when the child exits, and ctx kills the child on
+	// timeout.
 	streamErr := <-streamErrCh
+	waitErr := cmd.Wait()
 
 	if dlCtx.Err() != nil {
 		return fmt.Errorf("megatools download interrupted: %w", dlCtx.Err())

@@ -604,7 +604,7 @@ type browserFallback struct {
 	gamePath string
 	engine   string
 
-	watching bool                     // browser opened + watcher started
+	watching bool // browser opened + watcher started
 	watcher  *downloader.ArchiveWatcher
 }
 
