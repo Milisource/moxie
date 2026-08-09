@@ -209,6 +209,25 @@ func ResolveDownload(ctx context.Context, resolvedURL, destDir string, opts ...O
 	return r.resolve(ctx, resolvedURL, destDir)
 }
 
+// copyProfileForSession copies the live profile into a fresh temp dir
+// (Chrome hard-refuses a second process on the live profile and Chrome >=
+// 136 ignores --remote-debugging-port against the real dir — the copy is
+// what the session runs on, private to this call). The caller removes the
+// copy when done.
+func copyProfileForSession(profileDir string) (string, error) {
+	profileCopy, err := os.MkdirTemp("", "moxie-browser-profile-*")
+	if err != nil {
+		return "", fmt.Errorf("browserresolve: creating profile copy dir: %w", err)
+	}
+	log.Info("browserresolve: copying browser profile for session",
+		"source", profileDir, "copy", profileCopy)
+	if err := copyProfile(profileDir, profileCopy); err != nil {
+		removeDir("profile copy", profileCopy)
+		return "", fmt.Errorf("%w (copying %s): %v", ErrProfileLocked, profileDir, err)
+	}
+	return profileCopy, nil
+}
+
 // resolve implements ResolveDownload on an injectable engine so tests can
 // drive the orchestrator offline.
 func (r *resolver) resolve(ctx context.Context, resolvedURL, destDir string) (string, error) {
@@ -230,17 +249,11 @@ func (r *resolver) resolve(ctx context.Context, resolvedURL, destDir string) (st
 	// the live profile (SingletonLock) and Chrome >= 136 ignores
 	// --remote-debugging-port against the real profile dir — the copy is
 	// what the download session runs on, and it is private to this call.
-	profileCopy, err := os.MkdirTemp("", "moxie-browser-profile-*")
+	profileCopy, err := copyProfileForSession(profileDir)
 	if err != nil {
-		return "", fmt.Errorf("browserresolve: creating profile copy dir: %w", err)
+		return "", err
 	}
 	defer removeDir("profile copy", profileCopy)
-
-	log.Info("browserresolve: copying browser profile for download",
-		"source", profileDir, "copy", profileCopy)
-	if err := copyProfile(profileDir, profileCopy); err != nil {
-		return "", fmt.Errorf("%w (copying %s): %v", ErrProfileLocked, profileDir, err)
-	}
 
 	downloadDir, err := os.MkdirTemp("", "moxie-browser-download-*")
 	if err != nil {

@@ -15,6 +15,8 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/launcher/flags"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/go-rod/stealth"
+	"github.com/mili/moxie/internal/log"
 )
 
 // pollInterval is how often the download-dir fallback watcher samples the
@@ -105,10 +107,15 @@ func detectBrowserBinary() (string, error) {
 // defaults are kept (random --remote-debugging-port, process-group setup,
 // leakless teardown), except --enable-automation, which sets
 // navigator.webdriver=true and is removed so the session is not flagged as
-// automated. AutomationControlled (the blink feature behind
-// navigator.webdriver) is suppressed too — live-verified 2026-08-09 on
-// bot.sannysoft.com: webdriver=false vs true without it (30/31 checks pass;
-// the only residual failure is the headless software-GL renderer).
+// automated.
+//
+// NOTE: navigator.webdriver is NOT neutralized via
+// --disable-blink-features=AutomationControlled here — live-verified
+// 2026-08-09 that the flag crashes Playwright-cached Chromium builds when
+// the copied profile carries conflicting blink-feature preferences (e.g.
+// Brave profiles core-dump at startup). The webdriver signal is patched
+// instead via script injection in open() (EvalOnNewDocument), which has
+// the same effect without the launch flag.
 func applyLaunchFlags(l *launcher.Launcher, args []string) {
 	for _, arg := range args {
 		name, val, hasVal := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
@@ -119,7 +126,6 @@ func applyLaunchFlags(l *launcher.Launcher, args []string) {
 		}
 	}
 	l.Delete(flags.Flag("enable-automation"))
-	l.Set(flags.Flag("disable-blink-features"), "AutomationControlled")
 }
 
 // toDownloadState maps CDP download-progress state strings (identical in
@@ -135,7 +141,11 @@ func toDownloadState(s string) downloadState {
 	}
 }
 
-func (e *rodEngine) run(ctx context.Context, req engineRequest) (engineResult, error) {
+// open launches the browser session for a request: binary discovery,
+// profile copy (launchFlags), rod connection, cookie injection, and the
+// target tab. The returned cleanup kills the browser process tree and
+// removes the profile copy.
+func (e *rodEngine) open(ctx context.Context, req engineRequest) (b *rod.Browser, page *rod.Page, cleanup func(), err error) {
 	bin := e.opts.BinPath
 	if bin == "" {
 		if p, err := detectBrowserBinary(); err == nil {
@@ -152,31 +162,93 @@ func (e *rodEngine) run(ctx context.Context, req engineRequest) (engineResult, e
 	u, err := l.Launch()
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			return engineResult{}, fmt.Errorf("%w: %v", ErrNoChrome, err)
+			return nil, nil, nil, fmt.Errorf("%w: %v", ErrNoChrome, err)
 		}
-		return engineResult{}, fmt.Errorf("browserresolve: launching browser: %w", err)
+		return nil, nil, nil, fmt.Errorf("browserresolve: launching browser: %w", err)
 	}
 	// Teardown guarantee: kill the browser process tree, then wait for it
 	// to exit and remove its user-data-dir (the profile copy). Cleanup
 	// without Kill would block forever on a browser that refuses to exit.
-	defer func() {
-		l.Kill()
-		l.Cleanup()
-	}()
+	cleanup = func() { l.Kill(); l.Cleanup() }
 
 	// NoDefaultDevice is essential: rod emulates a laptop UA by default,
 	// and cf_clearance is cryptographically bound to the UA that solved the
 	// challenge. The browser must send its native fingerprint.
-	b := rod.New().ControlURL(u).Context(ctx)
+	b = rod.New().ControlURL(u).Context(ctx)
 	b.NoDefaultDevice()
 	if err := b.Connect(); err != nil {
-		return engineResult{}, fmt.Errorf("browserresolve: connecting to browser: %w", err)
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("browserresolve: connecting to browser: %w", err)
 	}
-	defer b.Close()
+	baseCleanup := cleanup
+	cleanup = func() { b.Close(); baseCleanup() }
 
 	// Seed the session with the user's cookies for the target host (from
 	// every browser store) before any navigation.
 	injectCookiesForURL(b, req.url)
+
+	// Blank page first, then patch the automation fingerprints via the
+	// go-rod/stealth evasion bundle and navigate. (A launch flag would be
+	// cleaner, but --disable-blink-features=AutomationControlled crashes
+	// Playwright Chromium builds on profiles with conflicting blink prefs
+	// — Brave core-dumps at startup. The JS bundle is crash-proof and
+	// live-verified 2026-08-09 on bot.sannysoft.com: 31/31 checks pass
+	// vs 29/31 baseline. Its en-US/en languages hardcode suits F95Zone
+	// (English site) — the rod#1208 locale breakage affects non-English
+	// locales.)
+	page, err = b.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	if err != nil {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("browserresolve: creating tab: %w", err)
+	}
+	remove, err := page.EvalOnNewDocument(stealth.JS)
+	if err != nil {
+		log.Debug("browserresolve: stealth injection failed", "error", err)
+	} else {
+		defer remove()
+	}
+	if err := page.Navigate(req.url); err != nil {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("browserresolve: opening tab: %w", err)
+	}
+	return b, page, cleanup, nil
+}
+
+// resolveMasked drives the F95Zone masked download interstitial in the
+// browser and returns the real destination URL once the page navigates
+// away from f95zone.to. Nothing is downloaded — the Go path fetches the
+// destination with progress/resume.
+func (e *rodEngine) resolveMasked(ctx context.Context, req engineRequest) (string, error) {
+	b, page, cleanup, err := e.open(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	// Insurance against destinations that auto-start downloads: they land
+	// in a temp dir instead of the user's default download folder.
+	if err := (proto.BrowserSetDownloadBehavior{
+		Behavior:         proto.BrowserSetDownloadBehaviorBehaviorAllowAndName,
+		BrowserContextID: b.BrowserContextID,
+		DownloadPath:     os.TempDir(),
+	}).Call(b); err != nil {
+		log.Debug("browserresolve: masked flow download behavior failed", "error", err)
+	}
+
+	dest, err := clickMaskedFlow(ctx, page, req.url)
+	if err != nil {
+		return "", fmt.Errorf("browserresolve: masked unwrap in browser: %w", err)
+	}
+	log.Info("browserresolve: masked unwrap in browser succeeded", "dest", dest)
+	return dest, nil
+}
+
+func (e *rodEngine) run(ctx context.Context, req engineRequest) (engineResult, error) {
+	b, page, cleanup, err := e.open(ctx, req)
+	if err != nil {
+		return engineResult{}, err
+	}
+	defer cleanup()
 
 	// EventsEnabled:true makes Chrome emit downloadWillBegin/downloadProgress
 	// so the GUID (and real progress for GB files) is observable.
@@ -224,11 +296,6 @@ func (e *rodEngine) run(ctx context.Context, req engineRequest) (engineResult, e
 	pollCtx, pollCancel := context.WithCancel(ctx)
 	defer pollCancel()
 	go pollDownloadDir(pollCtx, req.downloadDir, pollInterval, fileCh)
-
-	page, err := b.Page(proto.TargetCreateTarget{URL: req.url})
-	if err != nil {
-		return engineResult{}, fmt.Errorf("browserresolve: opening download tab: %w", err)
-	}
 
 	// Click-required flows (F95Zone masked "Continue", free-download
 	// buttons): drive the chain until a download starts. Auto-download

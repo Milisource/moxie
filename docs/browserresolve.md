@@ -67,6 +67,24 @@ Brave, Firefox) on any of the three target OSes (Linux, macOS, Windows).
     **intermittent** — the Go unwrap answered `ok` on the winning attempt
     and the whole pipeline (unwrap → pixeldrain API → 1.17 GB → extract →
     merge) completed without a browser.
+- **Masked-URL captcha defenses, self-hosted (Tier 1 + 2, 2026-08-09):**
+  the wall is rate-budgeted (live A/B: ok, ok, wall, wall, wall, wall).
+  Tier 1 (downloader): `unwrapMasked` paces unwrap POSTs (3s min
+  interval), retries a walled unwrap with backoff {2s,5s,15s,45s}, then
+  invokes the `maskedSolver` hook. Tier 2 (browserresolve):
+  `ResolveMaskedURL` drives the interstitial in the user's browser — click
+  Continue, click the reCAPTCHA checkbox if it appears, return the
+  destination URL (nothing downloads; Go fetches with progress/resume).
+  Wired via `SetDefaultMaskedSolver` in `InstallDownloaderFallback` (3 min
+  bound). Live-verified against the real masked pixeldrain link (~4s
+  solve). **Stealth:** `go-rod/stealth` JS injected on a blank page before
+  navigation (bot.sannysoft.com 31/31; the
+  `--disable-blink-features=AutomationControlled` launch flag was
+  rejected — it core-dumps Playwright Chromium on profiles with
+  conflicting blink prefs, e.g. Brave). **Profile copy fix:** `Sync Data`
+  excluded from copies — a Brave sync LevelDB deterministically core-dumps
+  vanilla Chromium 2-4s after launch (had been silently killing masked
+  sessions all day; looked like navigation races).
 - **No browser is shipped or downloaded** — both engines launch the user's
   own installed browser (`launcher.New()`, never rod's `NewBrowser()`
   download path); default is auto-detect on the user's own installs.

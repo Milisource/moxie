@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/config"
@@ -187,6 +188,16 @@ func InstallDownloaderFallback() (installed bool, reason string) {
 	downloader.SetDefaultBrowserFallback(func(ctx context.Context, rawURL, destDir string) (string, error) {
 		return ResolveDownload(ctx, rawURL, destDir)
 	})
-	log.Info("browserresolve: browser fallback installed (challenge-graded downloads)", "mode", mode)
+	downloader.SetDefaultMaskedSolver(func(ctx context.Context, maskedURL string) (string, error) {
+		// The browser drives the masked interstitial (Continue click +
+		// reCAPTCHA checkbox) and returns the destination; the Go path then
+		// downloads it with progress/resume. Bound the session so a
+		// stubborn wall (image challenge, login wall) cannot stall the
+		// unwrap indefinitely.
+		solveCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer cancel()
+		return ResolveMaskedURL(solveCtx, maskedURL)
+	})
+	log.Info("browserresolve: browser fallback installed (challenge-graded downloads + masked-URL solver)", "mode", mode)
 	return true, ""
 }

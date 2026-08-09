@@ -2,12 +2,18 @@ package browserresolve
 
 import (
 	"context"
+	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/mili/moxie/internal/log"
 )
+
+// maskedHostLinkXPath is the F95Zone masked "Continue to <host>" link.
+const maskedHostLinkXPath = `//a[contains(concat(' ', normalize-space(@class), ' '), ' host_link ')]`
 
 // Download triggers, in priority order. The first match on the current page
 // is clicked; after a click the loop re-checks, because a masked "Continue"
@@ -22,7 +28,7 @@ import (
 //     Firefox has no DOM access.
 var downloadTriggerXPaths = []string{
 	// F95Zone masked page: <a href="#" class="host_link">Continue to X</a>
-	`//a[contains(concat(' ', normalize-space(@class), ' '), ' host_link ')]`,
+	maskedHostLinkXPath,
 	// Free-download buttons/links by text (case-insensitive translate).
 	`//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'free download')]`,
 	`//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'free download')]`,
@@ -168,6 +174,98 @@ func waitForDownloadOrSettle(ctx context.Context, tr *downloadTracker, d time.Du
 func pageURL(page *rod.Page) string {
 	info, err := page.Info()
 	if err != nil {
+		return ""
+	}
+	return info.URL
+}
+
+// clickMaskedFlow drives the F95Zone masked interstitial to its
+// destination: waits for the page (the first search gets the full load
+// timeout), clicks the Continue link (host_link), clicks the reCAPTCHA
+// checkbox if the widget appears (headless sessions get the checkbox
+// challenge), and returns the destination URL as soon as the page
+// navigates away from the interstitial. Only masked-page triggers are
+// used — generic download buttons must NOT be clicked here: the
+// destination page's own buttons would start downloads.
+func clickMaskedFlow(ctx context.Context, page *rod.Page, maskedURL string) (string, error) {
+	first := true
+	for click := 0; click < maxDownloadClicks; click++ {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		// A fast redirect (the unwrap answered ok on the first click — no
+		// captcha) can complete before the settle below — check first.
+		if dest, ok := waitForMaskedDestination(ctx, page, maskedURL, 2*time.Second); ok {
+			return dest, nil
+		}
+		timeout := clickElementTimeout
+		if first {
+			timeout = firstClickElementTimeout
+			first = false
+		}
+		el, err := page.Timeout(timeout).ElementX(maskedHostLinkXPath)
+		if err == nil {
+			if err := el.Click(proto.InputMouseButtonLeft, 1); err == nil {
+				log.Debug("browserresolve: masked continue clicked")
+				if dest, ok := waitForMaskedDestination(ctx, page, maskedURL, clickSettleTimeout); ok {
+					return dest, nil
+				}
+				continue
+			}
+			log.Debug("browserresolve: masked continue click failed", "error", err)
+		}
+		// The Continue click hit the captcha wall — the widget renders
+		// into #captcha; solve the checkbox if present.
+		if clickRecaptchaCheckbox(ctx, page) {
+			if dest, ok := waitForMaskedDestination(ctx, page, maskedURL, clickSettleTimeout); ok {
+				return dest, nil
+			}
+			continue
+		}
+		log.Debug("browserresolve: no masked trigger on page", "url", pageURL(page))
+		return "", fmt.Errorf("no Continue link or reCAPTCHA checkbox on the masked page")
+	}
+	return "", fmt.Errorf("masked page did not navigate to the real host within %d clicks", maxDownloadClicks)
+}
+
+// waitForMaskedDestination polls the page URL until it leaves the masked
+// interstitial (different URL, off f95zone.to) or the window elapses.
+func waitForMaskedDestination(ctx context.Context, page *rod.Page, maskedURL string, d time.Duration) (string, bool) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return "", false
+		case <-timer.C:
+			return "", false
+		default:
+			if dest := destinationAfterMasked(page, maskedURL); dest != "" {
+				return dest, true
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
+}
+
+// destinationAfterMasked returns the current page URL once it differs from
+// the masked URL and is off f95zone.to (the interstitial host) — i.e. the
+// page navigated to the real destination. Empty until then; a session
+// login wall or the "back to f95zone" page stays on f95zone.to and never
+// qualifies.
+func destinationAfterMasked(page *rod.Page, maskedURL string) string {
+	info, err := page.Info()
+	if err != nil {
+		return ""
+	}
+	if info.URL == "" || info.URL == maskedURL {
+		return ""
+	}
+	u, err := url.Parse(info.URL)
+	if err != nil {
+		return ""
+	}
+	if strings.EqualFold(u.Hostname(), "f95zone.to") {
 		return ""
 	}
 	return info.URL

@@ -174,6 +174,36 @@ func TestCopyProfileSkipsWholeCacheDirs(t *testing.T) {
 	}
 }
 
+func TestCopyProfileSkipsSyncData(t *testing.T) {
+	t.Parallel()
+	// A Brave/Chrome sync LevelDB core-dumps vanilla Chromium builds
+	// (live-verified 2026-08-09); it is never needed for cookie sessions.
+	src := filepath.Join(t.TempDir(), "profile")
+	for _, f := range []string{"Default/Sync Data/sync-db/blob", "Default/Cookies"} {
+		p := filepath.Join(src, f)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(src, "Local State"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "copy")
+	if err := copyProfile(src, dst); err != nil {
+		t.Fatalf("copyProfile: %v", err)
+	}
+	files := readAllProfile(t, dst)
+	if files["Default/Sync Data/sync-db/blob"] {
+		t.Error("copy must not contain Sync Data (vanilla Chromium core-dumps on it)")
+	}
+	if !files["Default/Cookies"] {
+		t.Error("copy missing Default/Cookies")
+	}
+}
+
 func TestCopyProfileErrorPaths(t *testing.T) {
 	t.Parallel()
 	t.Run("source missing", func(t *testing.T) {

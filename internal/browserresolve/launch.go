@@ -8,10 +8,11 @@ package browserresolve
 //     profile is hard-locked by SingletonLock
 //   - --no-first-run: suppress first-run dialogs that would break a freshly
 //     copied profile
-//   - --disable-blink-features=AutomationControlled: neutralize
-//     navigator.webdriver so the session is not flagged as automated
 //   - --headless=new (unless headful): the modern headless mode; the
 //     challenge engine treats it like a real browser
+//
+// navigator.webdriver is neutralized by script injection in open(), not by
+// a launch flag — see the note in applyLaunchFlags.
 //
 // rod's own launcher defaults (random --remote-debugging-port, leakless
 // process-group teardown, ...) are layered on top by applyLaunchFlags.
@@ -19,7 +20,6 @@ func launchFlags(profileDir string, headful bool) []string {
 	args := []string{
 		"--user-data-dir=" + profileDir,
 		"--no-first-run",
-		"--disable-blink-features=AutomationControlled",
 	}
 	if !headful {
 		args = append(args, "--headless=new")

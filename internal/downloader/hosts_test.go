@@ -1,12 +1,15 @@
 package downloader
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -1640,6 +1643,7 @@ func TestUnwrapMasked_CaptchaStatus(t *testing.T) {
 	defer srv.Close()
 
 	r := NewHostResolver()
+	r.unwrapBackoff = nil // single attempt — the retry path is covered separately
 	_, err := r.unwrapMasked(srv.URL + "/masked/example.com/x")
 	if err == nil {
 		t.Fatal("expected error for captcha status")
@@ -1663,6 +1667,7 @@ func TestResolveMasked_CaptchaPropagates(t *testing.T) {
 	defer srv.Close()
 
 	r := NewHostResolver()
+	r.unwrapBackoff = nil // single attempt — the retry path is covered separately
 	_, err := r.Resolve(srv.URL+"/masked/pixeldrain.com/6004/6265512/abc/def/ghi", "pixeldrain")
 	if err == nil {
 		t.Fatal("expected error for captcha-walled masked unwrap")
@@ -1675,6 +1680,135 @@ func TestResolveMasked_CaptchaPropagates(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "could not extract") {
 		t.Errorf("error = %v, must not fall through to host resolution", err)
+	}
+}
+
+// TestUnwrapMasked_CaptchaRetries verifies a transient captcha wall is
+// ridden out by the backoff retries instead of failing the unwrap.
+func TestUnwrapMasked_CaptchaRetries(t *testing.T) {
+	t.Parallel()
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.Header().Set("Content-Type", "application/json")
+		if posts < 3 {
+			fmt.Fprint(w, `{"status":"captcha","msg":"Please complete the CAPTCHA to continue"}`)
+			return
+		}
+		fmt.Fprint(w, `{"status":"ok","msg":"https://pixeldrain.com/u/retried"}`)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	r.unwrapBackoff = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
+	got, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	if err != nil {
+		t.Fatalf("unwrapMasked with retries: %v", err)
+	}
+	if got != "https://pixeldrain.com/u/retried" {
+		t.Errorf("unwrap = %q, want the retried destination", got)
+	}
+	if posts != 3 {
+		t.Errorf("unwrap POSTs = %d, want 3 (2 walled + 1 ok)", posts)
+	}
+}
+
+// TestUnwrapMasked_CaptchaExhaustsSolver verifies that when the retry
+// budget is exhausted, the browser solver hook is invoked and its result
+// is used as the destination.
+func TestUnwrapMasked_CaptchaExhaustsSolver(t *testing.T) {
+	t.Parallel()
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"captcha","msg":"wall"}`)
+	}))
+	defer srv.Close()
+
+	solverCalled := false
+	r := NewHostResolver()
+	r.unwrapBackoff = []time.Duration{time.Millisecond}
+	r.SetMaskedSolver(func(ctx context.Context, maskedURL string) (string, error) {
+		solverCalled = true
+		if maskedURL != srv.URL+"/masked/pixeldrain.com/x" {
+			t.Errorf("solver received %q, want the masked URL", maskedURL)
+		}
+		return "https://pixeldrain.com/u/solved", nil
+	})
+	got, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	if err != nil {
+		t.Fatalf("unwrapMasked with solver: %v", err)
+	}
+	if got != "https://pixeldrain.com/u/solved" {
+		t.Errorf("unwrap = %q, want the solver destination", got)
+	}
+	if !solverCalled {
+		t.Error("browser solver was not invoked after the retry budget was exhausted")
+	}
+}
+
+// TestUnwrapMasked_CaptchaExhaustsNoSolver verifies the fallback behavior
+// when no solver is installed: the challenge-marked captcha error, which
+// the caller's challenge detection converts into the browser-download
+// fallback.
+func TestUnwrapMasked_CaptchaExhaustsNoSolver(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"captcha","msg":"wall"}`)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	r.unwrapBackoff = []time.Duration{time.Millisecond}
+	_, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	if err == nil {
+		t.Fatal("expected the captcha error after retries exhausted")
+	}
+	if !isChallengeFailure(err) {
+		t.Errorf("error = %v, want challenge marker (browser fallback trigger)", err)
+	}
+}
+
+// TestUnwrapMasked_Pacing verifies unwrap POSTs are spaced by the minimum
+// interval (F95Zone rate-budgets the endpoint; bursts trip the wall).
+// Server-arrival gaps carry first-request connection-setup skew, so the
+// steady-state gaps (after the first request) are what the rate limit
+// sees; the first gap only gets a sanity bound.
+func TestUnwrapMasked_Pacing(t *testing.T) {
+	t.Parallel()
+	var times []time.Time
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		times = append(times, time.Now())
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"ok","msg":"https://pixeldrain.com/u/paced"}`)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	r.unwrapBackoff = nil
+	r.unwrapMinInterval = 120 * time.Millisecond
+	for i := 0; i < 4; i++ {
+		if _, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x"); err != nil {
+			t.Fatalf("unwrap %d: %v", i, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(times) != 4 {
+		t.Fatalf("POSTs = %d, want 4", len(times))
+	}
+	if gap := times[1].Sub(times[0]); gap <= 0 {
+		t.Errorf("first gap = %v, want positive (sanity)", gap)
+	}
+	for i := 2; i < len(times); i++ {
+		if gap := times[i].Sub(times[i-1]); gap < r.unwrapMinInterval {
+			t.Errorf("unwrap gap %d = %v, want >= %v (pacing not enforced)", i, gap, r.unwrapMinInterval)
+		}
 	}
 }
 

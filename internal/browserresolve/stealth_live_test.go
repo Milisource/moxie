@@ -11,17 +11,29 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/launcher/flags"
+	"github.com/go-rod/stealth"
 )
 
-// TestStealthFlagsLive A/Bs the rod launcher flag sets against
+// stealthJS is the full go-rod/stealth evasion bundle (patches
+// navigator.webdriver with a native-looking getter, plugins, languages,
+// chrome object, canvas...). Its en-US/en languages hardcode is fine for
+// F95Zone (an English site) — the rod#1208 locale breakage applies to
+// non-English locales.
+var stealthJS = stealth.JS
+
+// TestStealthJSInjectionLive A/Bs the navigator.webdriver patch against
 // bot.sannysoft.com with a REAL Chromium:
-//   - current: rod defaults with --enable-automation removed (status quo)
-//   - hardened: + --disable-blink-features=AutomationControlled
+//   - baseline: rod defaults with --enable-automation removed (status quo)
+//   - injected: same + the EvalOnNewDocument webdriver patch (what open()
+//     does)
 //
-// The page's JS detection table reports navigator.webdriver and headless
-// markers; the row class is "passed" or "failed". Also reads the raw JS
-// values as ground truth.
-func TestStealthFlagsLive(t *testing.T) {
+// The page's JS detection table reports the WebDriver row; the raw
+// navigator.webdriver value is the ground truth. (The
+// --disable-blink-features=AutomationControlled launch flag is NOT tested:
+// live-verified 2026-08-09 that it crashes Playwright Chromium builds on
+// profiles with conflicting blink-feature prefs — Brave core-dumps at
+// startup.)
+func TestStealthJSInjectionLive(t *testing.T) {
 	if os.Getenv(liveEnvVar) != "1" {
 		t.Skipf("set %s=1 to run the live browser test", liveEnvVar)
 	}
@@ -37,7 +49,8 @@ func TestStealthFlagsLive(t *testing.T) {
 	if bin == "" {
 		t.Skip("no Chromium binary found")
 	}
-	check := func(label string, hardened bool) {
+
+	check := func(label string, inject bool) {
 		profile := buildProfileFixture(t)
 		// The fixture writes SingletonLock as a plain file (copy-behavior
 		// tests); Chrome expects a symlink — strip it for a real launch.
@@ -45,9 +58,6 @@ func TestStealthFlagsLive(t *testing.T) {
 		os.Remove(filepath.Join(profile, "SingletonSocket"))
 		l := launcher.New().Bin(bin).UserDataDir(profile)
 		l.Delete(flags.Flag("enable-automation"))
-		if hardened {
-			l.Set(flags.Flag("disable-blink-features"), "AutomationControlled")
-		}
 		u, err := l.Launch()
 		if err != nil {
 			t.Fatalf("%s: launch: %v", label, err)
@@ -56,31 +66,35 @@ func TestStealthFlagsLive(t *testing.T) {
 
 		b := rod.New().ControlURL(u).MustConnect()
 		defer b.MustClose()
-		p := b.MustPage("https://bot.sannysoft.com/")
+		p := b.MustPage("about:blank")
+		if inject {
+			remove, err := p.EvalOnNewDocument(stealthJS)
+			if err != nil {
+				t.Fatalf("%s: injection: %v", label, err)
+			}
+			defer remove()
+		}
+		p.MustNavigate("https://bot.sannysoft.com/")
 		p.MustWaitLoad()
 		p.MustElement("body")
 		time.Sleep(2500 * time.Millisecond)
 
 		vals, err := p.Eval(`() => JSON.stringify({
 			webdriver: navigator.webdriver,
-			chrome: typeof window.chrome,
 			headlessUA: navigator.userAgent.includes('HeadlessChrome'),
-			plugins: navigator.plugins.length,
-			languages: navigator.languages.join(',')
+			plugins: navigator.plugins.length
 		})`)
 		if err != nil {
 			t.Fatalf("%s: eval: %v", label, err)
 		}
 		var raw struct {
-			Webdriver bool   `json:"webdriver"`
-			Chrome    string `json:"chrome"`
+			Webdriver any    `json:"webdriver"`
 			Headless  bool   `json:"headlessUA"`
 			Plugins   int    `json:"plugins"`
-			Languages string `json:"languages"`
 		}
 		_ = json.Unmarshal([]byte(vals.Value.Str()), &raw)
-		t.Logf("%s: navigator.webdriver=%v window.chrome=%q headlessUA=%v plugins=%d languages=%q",
-			label, raw.Webdriver, raw.Chrome, raw.Headless, raw.Plugins, raw.Languages)
+		t.Logf("%s: navigator.webdriver=%v headlessUA=%v plugins=%d",
+			label, raw.Webdriver, raw.Headless, raw.Plugins)
 
 		rows, err := p.Eval(`() => JSON.stringify(Array.from(document.querySelectorAll('table tr')).map(r => {
 			const tds = r.querySelectorAll('td');
@@ -104,6 +118,6 @@ func TestStealthFlagsLive(t *testing.T) {
 		p.MustClose()
 	}
 
-	check("current", false)
-	check("hardened", true)
+	check("baseline", false)
+	check("injected", true)
 }

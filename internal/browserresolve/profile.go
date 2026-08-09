@@ -38,6 +38,13 @@ var skippedProfileDirs = map[string]bool{
 	"Component Updater":              true,
 	"GrShaderCache_GL":               true,
 	"optimization_guide_model_store": true,
+	// "Sync Data" (Chrome/Brave sync LevelDB): never needed for
+	// cookie-based sessions, and a Brave sync DB core-dumps vanilla
+	// Chromium builds — live-verified 2026-08-09: full Brave profile copy
+	// crashed Playwright Chromium 3/3 (2-4s after launch, mid-session),
+	// 3/3 OK with Sync Data excluded. This silently killed masked-URL
+	// browser sessions all day (the crashes looked like navigation races).
+	"Sync Data": true,
 	// Firefox rebuilds these multi-GB caches on launch; cookie state
 	// (cookies.sqlite + WAL — the reason the profile is copied) is root-level.
 	"cache2":        true,

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mili/moxie/internal/browser"
@@ -39,6 +40,22 @@ type HostResolver struct {
 	// stage or on the file hop. It returns the path of the finished file
 	// inside destDir.
 	browserFallback func(ctx context.Context, url, destDir string) (string, error)
+	// maskedSolver, when set, resolves a masked URL whose unwrap hit the
+	// captcha wall and exhausted the retry budget — the browser drives the
+	// interstitial (click Continue, solve the reCAPTCHA checkbox) and
+	// returns the real destination URL, which the Go path then downloads
+	// with progress/resume. nil = walled links fail with the captcha error
+	// (the browser-download fallback may still pick them up).
+	maskedSolver func(ctx context.Context, maskedURL string) (string, error)
+	// unwrapMu guards the unwrap pacing state. F95Zone's masked endpoint is
+	// rate-budgeted (live A/B: ok, ok, wall, wall, wall, wall) — pacing
+	// unwraps keeps bursts under the budget, retries ride out transient
+	// walls, and the browser solver handles persistent ones.
+	unwrapMu         sync.Mutex
+	lastUnwrap       time.Time
+	lastCaptcha      time.Time
+	unwrapBackoff    []time.Duration
+	unwrapMinInterval time.Duration
 }
 
 // SetF95Cookie sets the F95Zone session cookie string used to authenticate
@@ -67,6 +84,9 @@ var (
 	// HostResolver created after SetDefaultBrowserFallback picks up,
 	// including the resolver inside DownloadWithContext. nil = Go path only.
 	defaultBrowserFallback func(ctx context.Context, url, destDir string) (string, error)
+	// defaultMaskedSolver is the browser-masked-solver hook every
+	// HostResolver created after SetDefaultMaskedSolver picks up.
+	defaultMaskedSolver func(ctx context.Context, maskedURL string) (string, error)
 )
 
 // SetDefaultResolvedCache installs the resolved-URL cache pair used by every
@@ -88,6 +108,16 @@ func SetDefaultBrowserFallback(fn func(ctx context.Context, url, destDir string)
 	defaultBrowserFallback = fn
 }
 
+// SetDefaultMaskedSolver installs the masked-URL browser-solver hook used
+// by every HostResolver created afterwards (including the one inside
+// DownloadWithContext). It runs when an unwrap hits F95Zone's captcha wall
+// and the retry budget is exhausted: the browser drives the masked
+// interstitial and returns the real destination URL, which the Go path
+// then downloads. Pass nil to clear.
+func SetDefaultMaskedSolver(fn func(ctx context.Context, maskedURL string) (string, error)) {
+	defaultMaskedSolver = fn
+}
+
 // NewHostResolver creates a resolver with a shared HTTP client.
 func NewHostResolver() *HostResolver {
 	return &HostResolver{
@@ -104,6 +134,12 @@ func NewHostResolver() *HostResolver {
 		resolvedCache:    defaultResolvedCache,
 		resolvedCachePut: defaultResolvedCachePut,
 		browserFallback:  defaultBrowserFallback,
+		maskedSolver:     defaultMaskedSolver,
+		// F95Zone's masked unwrap is rate-budgeted; live A/B showed the
+		// wall after ~2-3 back-to-back unwraps, clearing minutes later.
+		// Pace unwraps and retry with backoff before surfacing the wall.
+		unwrapBackoff:     []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second, 45 * time.Second},
+		unwrapMinInterval: 3 * time.Second,
 	}
 }
 
@@ -111,6 +147,12 @@ func NewHostResolver() *HostResolver {
 // (see SetDefaultBrowserFallback). Pass nil to disable.
 func (r *HostResolver) SetBrowserFallback(fn func(ctx context.Context, url, destDir string) (string, error)) {
 	r.browserFallback = fn
+}
+
+// SetMaskedSolver overrides the masked-URL browser-solver hook for this
+// resolver (see SetDefaultMaskedSolver). Pass nil to disable.
+func (r *HostResolver) SetMaskedSolver(fn func(ctx context.Context, maskedURL string) (string, error)) {
+	r.maskedSolver = fn
 }
 
 // browserCookieHeader extracts the browser's cookies for a hostname as a
@@ -240,17 +282,91 @@ func (r *HostResolver) resolveDepth(url string, host string, depth int) (*Resolv
 //
 //	{"status":"ok","msg":"https://pixeldrain.com/u/..."}
 //
-// A "captcha" status would require solving an invisible reCAPTCHA; with a
-// fresh session cookie the endpoint typically answers "ok" directly, which
-// is what makes masked links resolvable without a browser. Falls back to
-// followRedirect (HTTP redirect chain) for older F95Zone deployments.
+// The endpoint is rate-budgeted: live A/B (2026-08-09) showed "ok" for the
+// first ~2 requests, then the captcha wall, clearing minutes later. Three
+// defenses, cheapest first:
+//
+//  1. pacing — unwrap POSTs are spaced (unwrapMinInterval) so bursts stay
+//     under the budget;
+//  2. retries — a walled unwrap is retried with backoff before giving up;
+//  3. the maskedSolver hook — when the wall persists, the browser drives
+//     the interstitial (click Continue, solve the reCAPTCHA checkbox) and
+//     hands back the real URL for the Go path to download.
+//
+// Falls back to followRedirect (HTTP redirect chain) for older F95Zone
+// deployments that answer non-JSON.
 func (r *HostResolver) unwrapMasked(rawURL string) (string, error) {
+	r.paceUnwrap()
+
+	status, msg, err := r.unwrapOnce(rawURL)
+	if err != nil {
+		return "", err
+	}
+
+	backoff := r.unwrapBackoff
+	for status == "captcha" && len(backoff) > 0 {
+		delay := backoff[0]
+		backoff = backoff[1:]
+		log.Debug("masked unwrap captcha — retrying", "url", rawURL, "delay", delay)
+		time.Sleep(delay)
+		status, msg, err = r.unwrapOnce(rawURL)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	switch status {
+	case "ok":
+		if msg == "" {
+			return "", fmt.Errorf("masked URL endpoint returned ok without a destination")
+		}
+		return msg, nil
+	case "captcha":
+		if r.maskedSolver != nil {
+			log.Info("masked unwrap: captcha wall persists — solving in the browser", "url", rawURL)
+			realURL, err := r.maskedSolver(context.Background(), rawURL)
+			if err == nil && realURL != "" && realURL != rawURL {
+				log.Info("masked unwrap: browser solver returned destination", "real_url", realURL)
+				return realURL, nil
+			}
+			log.Warn("masked unwrap: browser solver failed", "url", rawURL, "error", err)
+		}
+		return "", fmt.Errorf("masked URL requires a captcha solve (re-import cookies or open the link in a browser)")
+	case "error":
+		return "", fmt.Errorf("masked URL endpoint error: %s", msg)
+	default:
+		return "", fmt.Errorf("masked URL endpoint returned unexpected status %q", status)
+	}
+}
+
+// paceUnwrap enforces a minimum interval between masked unwrap POSTs:
+// F95Zone rate-budgets the endpoint and bursts trip the captcha wall.
+func (r *HostResolver) paceUnwrap() {
+	r.unwrapMu.Lock()
+	defer r.unwrapMu.Unlock()
+	interval := r.unwrapMinInterval
+	if interval <= 0 {
+		return
+	}
+	if !r.lastUnwrap.IsZero() {
+		if wait := interval - time.Since(r.lastUnwrap); wait > 0 {
+			log.Debug("masked unwrap pacing", "wait", wait)
+			time.Sleep(wait)
+		}
+	}
+	r.lastUnwrap = time.Now()
+}
+
+// unwrapOnce performs a single masked unwrap POST and returns the JSON
+// status/msg. Legacy non-JSON deployments (redirect flow) fold into
+// status "ok" with the redirect-chain destination.
+func (r *HostResolver) unwrapOnce(rawURL string) (status, msg string, err error) {
 	form := url.Values{}
 	form.Set("xhr", "1")
 	form.Set("download", "1")
 	req, err := http.NewRequest("POST", rawURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", fmt.Errorf("create masked unwrap request: %w", err)
+		return "", "", fmt.Errorf("create masked unwrap request: %w", err)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -277,13 +393,13 @@ func (r *HostResolver) unwrapMasked(rawURL string) (string, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("masked unwrap POST failed: %w", err)
+		return "", "", fmt.Errorf("masked unwrap POST failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("masked unwrap read body: %w", err)
+		return "", "", fmt.Errorf("masked unwrap read body: %w", err)
 	}
 
 	var result struct {
@@ -294,19 +410,14 @@ func (r *HostResolver) unwrapMasked(rawURL string) (string, error) {
 		// Not JSON — either the legacy redirect flow or an error page.
 		// Reuse the redirect chain as a fallback.
 		log.Debug("masked unwrap non-JSON response", "status", resp.StatusCode, "len", len(body))
-		return r.followRedirect(rawURL)
+		realURL, err := r.followRedirect(rawURL)
+		if err != nil {
+			return "", "", fmt.Errorf("masked unwrap non-JSON and redirect chain failed: %w", err)
+		}
+		return "ok", realURL, nil
 	}
 	log.Debug("masked unwrap response", "status_code", resp.StatusCode, "result_status", result.Status)
-	if result.Status == "ok" && result.Msg != "" {
-		return result.Msg, nil
-	}
-	if result.Status == "captcha" {
-		return "", fmt.Errorf("masked URL requires a captcha solve (re-import cookies or open the link in a browser)")
-	}
-	if result.Status == "error" {
-		return "", fmt.Errorf("masked URL endpoint error: %s", result.Msg)
-	}
-	return "", fmt.Errorf("masked URL endpoint returned unexpected status %q", result.Status)
+	return result.Status, result.Msg, nil
 }
 
 // followRedirect performs a GET request to url and follows redirects to find

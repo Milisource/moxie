@@ -20,7 +20,6 @@ func TestLaunchFlagsHeadless(t *testing.T) {
 	want := []string{
 		"--user-data-dir=/tmp/profile-copy",
 		"--no-first-run",
-		"--disable-blink-features=AutomationControlled",
 		"--headless=new",
 	}
 	if !slices.Equal(got, want) {
@@ -36,8 +35,8 @@ func TestLaunchFlagsHeadful(t *testing.T) {
 			t.Errorf("headful launch must not contain %q (got %v)", arg, got)
 		}
 	}
-	if len(got) != 3 {
-		t.Errorf("launchFlags(headful) = %v, want 3 flags", got)
+	if len(got) != 2 {
+		t.Errorf("launchFlags(headful) = %v, want 2 flags", got)
 	}
 }
 
