@@ -17,13 +17,25 @@ func IsOnlineOnly(name, url string) bool {
 
 // ScoreLinkHost adjusts a download link's priority score based on host reliability.
 // Higher scores are preferred. Callers should add this to their platform priority score.
+//
+// Tiers (calibrated 2026-08-09, F95-ugim host-tier research):
+//
+//	 +25  plain HTTP works (pixeldrain, catbox, mediafire)
+//	 +10  intermittent challenges or solvable puzzles (buzzheavier, workupload);
+//	      googledrive keeps +10 (working resolver, unchanged)
+//	  +5  fragile (gofile — premium-gated API, free path is a web scrape)
+//	   0   browser-gated or unproven (datanodes, mixdrop, hexload, uploadhaven,
+//	       bunkrr, 1cloudfile, ...)
+//	-200  hard walls (vikingfile, krakenfiles; mega until megatools lands)
 func ScoreLinkHost(host string) int {
 	switch strings.ToLower(host) {
-	case "pixeldrain", "buzzheavier", "gofile", "catbox":
+	case "pixeldrain", "catbox", "mediafire":
 		return 25
-	case "datanodes", "googledrive", "mixdrop":
+	case "buzzheavier", "googledrive", "workupload":
 		return 10
-	case "mega", "vikingfile", "workupload", "krakenfiles", "bunkrr":
+	case "gofile":
+		return 5
+	case "mega", "vikingfile", "krakenfiles":
 		return -200
 	default:
 		return 0
