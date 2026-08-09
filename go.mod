@@ -11,7 +11,9 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/ncruces/go-sqlite3 v0.34.0
+	github.com/rkosegi/jdownloader-go v1.0.3
 	github.com/wailsapp/wails/v2 v2.13.0
+	go.uber.org/zap v1.27.0
 	golang.org/x/image v0.40.0
 	golang.org/x/net v0.54.0
 )
@@ -68,6 +70,7 @@ require (
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/zalando/go-keyring v0.2.7 // indirect
+	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
