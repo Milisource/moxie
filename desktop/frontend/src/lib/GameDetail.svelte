@@ -6,7 +6,7 @@
     SetGameWinePrefix, SyncSingleGame, EditGame,
     GetCollections, GetGameCollections, AddGameToCollection, RemoveGameFromCollection,
     GetInstallTargets, InstallGame, GetCoverBaseURL,
-    DownloadGameUpdate, OpenDownloadURL,
+    DownloadGameUpdate, ProvideUpdateFile, OpenDownloadURL,
   } from '../../wailsjs/go/main/App'
   import {engineColor, engineOptions} from './engineColors.js'
   import {safeExternalUrl} from './sanitizeUrl.js'
@@ -27,6 +27,11 @@
 
   // ── Game update (Update Available badge) ─────────────
   let updating = $state(false)
+  // Auto-download failed (Cloudflare-blocked host, …); the backend asked the
+  // user to provide the archive manually via ProvideUpdateFile.
+  let manualRequired = $state(false)
+  let manualHost = $state('')
+  let providingFile = $state(false)
 
   // ── Download link rows ───────────────────────────────
   let openingLinks = $state(new Set())   // link IDs currently being opened
@@ -41,17 +46,25 @@
   let coverBase = $state('')
   let coverSrc = $state('')
   let coverFailed = $state(false)
+  // Identifies the cover currently on screen (game id + remote URL) so a
+  // failed cover stays failed across detail reloads, while a genuinely new
+  // cover (different game or URL) gets a fresh attempt.
+  let coverKey = $state('')
 
   function resolveCoverSrc(d) {
     if (!d) return ''
-    if (d.hasCover && coverBase && !coverFailed) return `${coverBase}/cover/${d.id}`
-    if (d.coverUrl && !coverFailed) return d.coverUrl
+    // The local cached cover failed to load (e.g. cover server briefly down):
+    // fall back to the remote F95Zone URL. The effect must NOT return ''
+    // here or it would immediately wipe the fallback handleCoverError set.
+    if (coverFailed) return d.coverUrl || ''
+    if (d.hasCover && coverBase) return `${coverBase}/cover/${d.id}`
+    if (d.coverUrl) return d.coverUrl
     return ''
   }
 
   function handleCoverError() {
+    // The $effect re-runs on this flag and resolves the remote fallback.
     coverFailed = true
-    coverSrc = detail?.coverUrl || ''
   }
 
   // ── Inline rename ───────────────────────────────
@@ -167,9 +180,17 @@
     if (!gameId) return
     loading = true
     error = ''
-    coverFailed = false
     try {
       detail = await GetGameDetail(gameId)
+      // coverFailed is sticky per cover: only a different game (or a cover
+      // URL that changed after a sync) gets a fresh chance to load. Resetting
+      // here on every reload would re-thrash the failing cover on every
+      // chatty game-update:* event (flicker between fallback and 'No Cover').
+      const key = `${gameId}:${detail?.coverUrl || ''}`
+      if (key !== coverKey) {
+        coverKey = key
+        coverFailed = false
+      }
     } catch (e) {
       error = String(e)
     }
@@ -377,6 +398,8 @@
   async function handleDownloadUpdate() {
     if (updating) return
     updating = true
+    manualRequired = false
+    manualHost = ''
     editError = ''
     try {
       await DownloadGameUpdate(gameId)
@@ -384,6 +407,25 @@
     } catch (err) {
       updating = false
       editError = `Failed to start update: ${fmtErr(err)}`
+    }
+  }
+
+  // Manual fallback: the automatic download was blocked (Cloudflare 403/404
+  // on the file host). The backend opens a native file picker for the archive
+  // the user downloaded by hand, then resumes the pipeline from extraction.
+  async function handleProvideFile() {
+    if (providingFile) return
+    providingFile = true
+    editError = ''
+    try {
+      await ProvideUpdateFile(gameId)
+      // Pipeline continues in the background; game-update:* events drive the
+      // button state. The dialog itself is modal, so this resolves once the
+      // user picks a file or cancels.
+    } catch (err) {
+      editError = `Failed to start update from file: ${fmtErr(err)}`
+    } finally {
+      providingFile = false
     }
   }
 
@@ -450,10 +492,18 @@
       EventsOn('game-update:phase', (d) => {
         if (!mine(d)) return
         updating = busyPhases.includes(d.phase)
+        // A fresh pipeline phase clears any stale manual-fallback offer.
+        if (busyPhases.includes(d.phase)) manualRequired = false
+      }),
+      EventsOn('game-update:manual-required', (d) => {
+        if (!mine(d)) return
+        manualRequired = true
+        manualHost = d.host || ''
       }),
       EventsOn('game-update:complete', async (d) => {
         if (!mine(d)) return
         updating = false
+        manualRequired = false
         await loadDetail()
         onUpdate()
       }),
@@ -462,7 +512,11 @@
         updating = false
         await loadDetail()
         onUpdate()
-        if (d.message) editError = `Update failed: ${d.message}`
+        if (d.message) {
+          // select-file messages are self-describing (cancelled dialog,
+          // bad archive) — no "Update failed:" prefix needed.
+          editError = d.step === 'select-file' ? d.message : `Update failed: ${d.message}`
+        }
       }),
     ]
   })
@@ -521,6 +575,21 @@
               >
                 {updating ? 'Downloading…' : '↓ Download Update'}
               </button>
+              {#if manualRequired && !updating}
+                <div class="manual-fallback">
+                  <span class="manual-fallback-text">
+                    Automatic download failed{manualHost ? ` (${manualHost} is blocking it)` : ''}.
+                    Download the update in your browser, then point moxie at the archive.
+                  </span>
+                  <button
+                    class="btn btn-sm btn-primary"
+                    onclick={handleProvideFile}
+                    disabled={providingFile}
+                  >
+                    {providingFile ? 'Selecting…' : 'Choose Downloaded Archive…'}
+                  </button>
+                </div>
+              {/if}
             {/if}
           {/if}
         </div>
@@ -1010,6 +1079,25 @@
   }
   .update-btn:hover:not(:disabled) { background: var(--accent); color: #fff; }
   .update-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .manual-fallback {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--warning);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--warning) 8%, transparent);
+    max-width: 560px;
+  }
+  .manual-fallback-text {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    flex: 1;
+    min-width: 220px;
+  }
   .badges {
     display: flex;
     gap: 8px;
@@ -1037,7 +1125,7 @@
   /* ── Grid ───────────────────────────────── */
   .detail-grid {
     display: grid;
-    grid-template-columns: 280px 1fr;
+    grid-template-columns: 360px 1fr;
     gap: 24px;
     margin-bottom: 24px;
   }
@@ -1047,15 +1135,22 @@
     justify-content: center;
   }
   .cover-img {
-    width: 100%;
-    max-width: 260px;
+    display: block;
+    /* Render at the image's own resolution — never upscale past the source,
+       so low-res covers stay as sharp as the file allows and high-res ones
+       get shown at full quality. Only oversized images are downscaled, and
+       the natural aspect ratio is always preserved (no crop, no distortion). */
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 540px;
     border-radius: 8px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.3);
   }
   .cover-placeholder {
     width: 100%;
-    max-width: 260px;
-    aspect-ratio: 3/4;
+    max-width: 320px;
+    aspect-ratio: 16/9;
     display: flex;
     flex-direction: column;
     align-items: center;
