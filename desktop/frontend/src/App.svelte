@@ -1,12 +1,12 @@
 <script>
   import {onMount} from 'svelte'
+  import {fly} from 'svelte/transition'
   import {EventsOn} from '../wailsjs/runtime/runtime'
-  import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted, GetCookieStatus, SyncAllGames, DownloadGameUpdate, DownloadAllUpdates, CancelGameUpdate, ScanDirectory, FetchCovers, GetGameCount} from '../wailsjs/go/main/App'
+  import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted, GetCookieStatus, SyncAllGames, DownloadGameUpdate, DownloadAllUpdates, CancelGameUpdate, CancelSync, ProvideUpdateFile, ScanDirectory, FetchCovers, GetGameCount} from '../wailsjs/go/main/App'
   import Sidebar from './lib/Sidebar.svelte'
   import GameList from './lib/GameList.svelte'
   import GameDetail from './lib/GameDetail.svelte'
   import ScanDialog from './lib/ScanDialog.svelte'
-  import UpdateDialog from './lib/UpdateDialog.svelte'
   import GameUpdatesView from './lib/GameUpdatesView.svelte'
   import DownloadsView from './lib/DownloadsView.svelte'
   import AddGameDialog from './lib/AddGameDialog.svelte'
@@ -17,6 +17,7 @@
   import CoversView from './lib/CoversView.svelte'
   import SettingsView from './lib/SettingsView.svelte'
   import StatusBar from './lib/StatusBar.svelte'
+  import {library} from './lib/viewState.svelte.js'
 
   let version = $state('')
   let games = $state([])
@@ -77,6 +78,19 @@
     }
   }
 
+  // Ask the backend to stop the running sync. The backend emits the usual
+  // completion events; this also flips the local flag so the UI never stays
+  // stuck in "Syncing…" if no event follows the cancel.
+  async function cancelSync() {
+    if (!syncState.syncing) return
+    try {
+      await CancelSync()
+    } catch (e) {
+      syncState.syncError = String(e)
+    }
+    syncState.syncing = false
+  }
+
   // ── Scan state (App level) ─────────────────────────────────
   // Moved up from ScanDialog, exactly like syncState: the backend scan runs
   // in a goroutine, so navigating away mid-scan must not destroy the state
@@ -128,6 +142,41 @@
     gameStates = {...gameStates, [gameId]: {...(gameStates[gameId] || {}), ...patch}}
   }
 
+  // A pipeline that dies before its per-game events arrive leaves rows in the
+  // optimistic 'syncing' phase (startUpdateAll) — isUpdatingAny stays true
+  // forever and every row/button stays disabled. Reset busy phases back to
+  // idle and drop any phantom gameStates[0] entry the backend may have left.
+  function resetStaleBusyPhases() {
+    const next = {...gameStates}
+    let changed = false
+    if (next[0]) {
+      delete next[0]
+      changed = true
+    }
+    for (const [id, gs] of Object.entries(next)) {
+      if (gs && UPDATE_BUSY_PHASES.includes(gs.phase)) {
+        next[id] = {...gs, phase: 'idle'}
+        changed = true
+      }
+    }
+    if (changed) gameStates = next
+  }
+
+  // Cancel everything the UI knows about. Mirrors the backend's
+  // game-update:cancelled handling so rows can never wedge in a busy phase.
+  function markAllAsCancelled() {
+    const next = {...gameStates}
+    for (const [id, gs] of Object.entries(next)) {
+      // 'selecting-file' is not a busy phase but is still non-terminal —
+      // a cancel must never leave a row wedged in it.
+      if (UPDATE_BUSY_PHASES.includes(gs.phase) || gs.phase === 'selecting-file') {
+        next[id] = {...gs, phase: 'error', error: 'Cancelled'}
+      }
+    }
+    gameStates = next
+    if (batchState?.running) batchState = {...batchState, running: false, error: 'Cancelled'}
+  }
+
   function retryTitle(gameId) {
     const g = games.find(g => Number(g.id) === Number(gameId))
     if (g?.title) return g.title
@@ -141,7 +190,7 @@
   function startUpdateGame(gameId) {
     const gs = gameStates[gameId] || {phase: 'idle'}
     if (gs.phase !== 'idle' && gs.phase !== 'error') return
-    updateGS(gameId, {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', oldVersion: '', newVersion: ''})
+    updateGS(gameId, {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', oldVersion: '', newVersion: '', manualRequired: false, manualHost: '', step: ''})
     DownloadGameUpdate(gameId).catch((e) => {
       const msg = String(e)
       if (batchState?.retrying && /already in progress/i.test(msg)) {
@@ -174,6 +223,20 @@
     })
   }
 
+  // Manual fallback for auto-download failures (Cloudflare-blocked hosts,
+  // dead links). The backend opens a native file picker for the archive the
+  // user downloaded by hand, then resumes the pipeline from extraction. It
+  // returns an error only if the pipeline could not be started; per-game
+  // failures surface via the game-update:* events.
+  async function provideUpdateFile(gameId) {
+    const id = Number(gameId)
+    try {
+      await ProvideUpdateFile(id)
+    } catch (e) {
+      updateGS(id, {phase: 'error', error: String(e)})
+    }
+  }
+
   async function startUpdateAll(updatableGames) {
     if (batchState?.running) return
     const list = updatableGames || []
@@ -189,6 +252,11 @@
       await DownloadAllUpdates()
     } catch (e) {
       batchState = {...batchState, running: false, error: String(e)}
+      // The batch never started (e.g. the backend's single-run CAS rejected
+      // it because a single-game update holds the lock). Roll back the
+      // optimistic 'syncing' phases we set above, or isUpdatingAny stays true
+      // forever and every row spins with no pipeline behind it.
+      resetStaleBusyPhases()
     }
   }
 
@@ -244,7 +312,16 @@
   function cancelUpdates() {
     retryQueue = []
     retryInFlight = null
-    CancelGameUpdate().catch(() => { /* nothing running */ })
+    CancelGameUpdate().then((cancelled) => {
+      // false = nothing was running — the backend emits no
+      // game-update:cancelled event, so run the same phase reset locally to
+      // make sure stale busy phases can't wedge the UI.
+      if (!cancelled) markAllAsCancelled()
+    }).catch(() => {
+      // Binding rejected (e.g. "already in progress" race): still reset, a
+      // stuck row is worse than a redundant cancel attempt.
+      markAllAsCancelled()
+    })
   }
 
   // Like startSync: UI guard plus backend single-flight (coverRunning) as
@@ -272,6 +349,16 @@
       statusMsg = `Error: ${e}`
     }
     loading = false
+  }
+
+  // View-switch animation parameters. Tab switches fade+rise the incoming
+  // view (~140ms); users with reduced-motion preference get a hard switch
+  // (0ms, no transform) so nothing flashes or drifts. Evaluated once at
+  // module load — the preference doesn't change while the app is running.
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  function viewMotion() {
+    if (reducedMotion) return {y: 0, duration: 0}
+    return {y: 8, duration: 140}
   }
 
   async function init() {
@@ -306,12 +393,23 @@
   }
 
   async function refreshGames() {
+    loading = true
     try {
       games = await GetGames()
-      statusMsg = `${games.length} game${games.length !== 1 ? 's' : ''} loaded`
     } catch (e) {
-      statusMsg = `Error: ${e}`
+      // Callers own their status message — setting a generic "N games loaded"
+      // here would clobber meaningful results (scan/sync/cover summaries).
+    } finally {
+      loading = false
     }
+  }
+
+  // A game added from the F95Zone browser: refresh the library (new rows,
+  // count in the status bar) and bump lastUpdate so sidebar badges (updates,
+  // counts) reflect the new library.
+  async function handleBrowserGameAdded() {
+    await refreshGames()
+    lastUpdate++
   }
 
   async function loadTrash() {
@@ -359,6 +457,7 @@
   let unsubGameDownload
   let unsubGameExtract
   let unsubGameError
+  let unsubGameManual
   let unsubGameComplete
   let unsubGameBatchStart
   let unsubGameBatchProgress
@@ -413,7 +512,15 @@
       statusMsg = `Sync: ${syncPhaseLabel(data?.phase)} (${data?.current ?? 0}/${data?.total ?? 0})`
     })
     unsubSyncGameDone = EventsOn('sync:game-done', (data) => {
-      syncState.gameResults = [...syncState.gameResults, data]
+      // A sync run cached this game's cover — retry it right away (app-level
+      // so it also fires while the library tab is hidden, see covers:complete).
+      if (data?.id && library.failedCovers.has(data.id)) {
+        library.coverEpoch++
+        const next = new Set(library.failedCovers)
+        next.delete(data.id)
+        library.failedCovers = next
+      }
+      syncState.gameResults = [...syncState.gameResults, data].slice(-50)
     })
     unsubSyncComplete = EventsOn('sync:complete', async (data) => {
       syncState.result = data
@@ -466,6 +573,15 @@
         currentFile: data.currentFile ?? '',
       })
     })
+    unsubGameManual = EventsOn('game-update:manual-required', (data) => {
+      // Auto-download failed (Cloudflare-blocked host, dead link, …). The
+      // pipeline has already ended in the error state; flag the game so the
+      // UI can offer the file-picker fallback (ProvideUpdateFile).
+      updateGS(data.gameID, {
+        manualRequired: true,
+        manualHost: data.host || '',
+      })
+    })
     unsubGameError = EventsOn('game-update:error', (data) => {
       // A gameID of 0 (or the 'list-updatable' step) means the whole batch
       // failed before it started (e.g. GetUpdatableGames error). The backend
@@ -478,28 +594,15 @@
           running: false,
           error: data.message || 'Update check failed',
         }
-        // Drop any phantom per-game entry a previous mishap may have written.
-        if (gameStates[0]) {
-          const cleaned = {...gameStates}
-          delete cleaned[0]
-          gameStates = cleaned
-        }
         // startUpdateAll optimistically marks every game 'syncing' before the
         // batch starts; with the batch never starting those states would keep
         // isUpdatingAny true and leave every button disabled. Reset active
-        // phases back to idle so the rows and action buttons re-enable.
-        const next = {...gameStates}
-        let changed = false
-        for (const [id, gs] of Object.entries(next)) {
-          if (gs && UPDATE_BUSY_PHASES.includes(gs.phase)) {
-            next[id] = {...gs, phase: 'idle'}
-            changed = true
-          }
-        }
-        if (changed) gameStates = next
+        // phases back to idle (and drop the phantom gameStates[0]) so the
+        // rows and action buttons re-enable.
+        resetStaleBusyPhases()
         return
       }
-      updateGS(data.gameID, {phase: 'error', error: data.message || 'Unknown error'})
+      updateGS(data.gameID, {phase: 'error', error: data.message || 'Unknown error', step: data.step || ''})
     })
     unsubGameComplete = EventsOn('game-update:complete', (data) => {
       updateGS(data.gameID, {
@@ -557,12 +660,7 @@
       }
     })
     unsubGameCancelled = EventsOn('game-update:cancelled', () => {
-      const next = {...gameStates}
-      for (const [id, gs] of Object.entries(next)) {
-        if (UPDATE_BUSY_PHASES.includes(gs.phase)) next[id] = {...gs, phase: 'error', error: 'Cancelled'}
-      }
-      gameStates = next
-      if (batchState?.running) batchState = {...batchState, running: false, error: 'Cancelled'}
+      markAllAsCancelled()
     })
     // The backend releases its single-run lock and emits this after EVERY
     // pipeline (single update, batch, install). It carries no gameID, so the
@@ -601,6 +699,14 @@
     unsubCoversComplete = EventsOn('covers:complete', async (r) => {
       coverState.result = r
       coverState.fetching = false
+      // Failed-cover retry bookkeeping lives here (not in GameList) because
+      // this subscription survives tab switches: a backfill finishing while
+      // the library tab is hidden must still bump the epoch so the next
+      // mount re-requests those covers instead of re-rendering cached 404s.
+      if (library.failedCovers.size > 0) {
+        library.coverEpoch++
+        library.failedCovers = new Set()
+      }
       try {
         await refreshGames()
         if (r?.total === 0) statusMsg = 'All games already have covers'
@@ -629,6 +735,7 @@
       if (unsubGameDownload) unsubGameDownload()
       if (unsubGameExtract) unsubGameExtract()
       if (unsubGameError) unsubGameError()
+      if (unsubGameManual) unsubGameManual()
       if (unsubGameComplete) unsubGameComplete()
       if (unsubGameBatchStart) unsubGameBatchStart()
       if (unsubGameBatchProgress) unsubGameBatchProgress()
@@ -656,92 +763,103 @@
           directory is writable and that no other copy of Moxie is running.
         </p>
       </div>
-    {:else if activeView === 'detail' && selectedGameId !== null}
-      <GameDetail gameId={selectedGameId} onBack={closeDetail} onUpdate={refreshGames}/>
-    {:else if activeView === 'library'}
-      <GameList {games} onOpenDetail={openDetail} onUpdate={refreshGames}/>
-    {:else if activeView === 'scan'}
-      <ScanDialog
-        scanning={scanState.scanning}
-        currentPath={scanState.currentPath}
-        progress={scanState.progress}
-        showProgress={scanState.showProgress}
-        lastResult={scanState.lastResult}
-        scanError={scanState.scanError}
-        onScan={startScan}
-      />
-    {:else if activeView === 'settings'}
-      <SettingsView />
-    {:else if activeView === 'updates'}
-      <GameUpdatesView
-        gameStates={gameStates}
-        batchState={batchState}
-        onNavigate={(id) => activeView = id}
-        onUpdateGame={startUpdateGame}
-        onUpdateAll={startUpdateAll}
-        onRetryFailed={handleRetryFailed}
-        onCancel={cancelUpdates}
-      />
-    {:else if activeView === 'downloads'}
-      <DownloadsView />
-    {:else if activeView === 'covers'}
-      <CoversView
-        gameCount={coverState.gameCount}
-        fetching={coverState.fetching}
-        progress={coverState.progress}
-        result={coverState.result}
-        coverError={coverState.coverError}
-        onFetch={startCoverFetch}
-      />
-    {:else if activeView === 'add'}
-      <AddGameDialog onGameAdded={refreshGames}/>
-    {:else if activeView === 'sync'}
-      <SyncDialog
-        cookieStatus={syncState.cookieStatus}
-        syncing={syncState.syncing}
-        progress={syncState.progress}
-        gameResults={syncState.gameResults}
-        result={syncState.result}
-        syncError={syncState.syncError}
-        onSync={startSync}
-      />
-    {:else if activeView === 'browser'}
-      <F95Browser />
-    {:else if activeView === 'collections'}
-      <CollectionsView
-        onOpenDetail={openDetail}
-        onCollectionsChanged={() => lastUpdate++}
-      />
-    {:else if activeView === 'duplicates'}
-      <DedupDialog onDedupDone={refreshGames}/>
-    {:else if activeView === 'trash'}
-      <div class="trash-view">
-        <h2>Trash</h2>
-        {#if deletedGames.length === 0}
-          <p class="text-muted">No deleted games.</p>
-        {:else}
-          <div class="trash-actions">
-            <button class="btn btn-danger" onclick={handlePurge}>Purge All ({deletedGames.length})</button>
-          </div>
-          <div class="table-header">
-            <span>Title</span><span>Engine</span><span>Actions</span>
-          </div>
-          {#each deletedGames as game}
-            <div class="table-row">
-              <span>{game.title}</span>
-              <span>{game.engine || '—'}</span>
-              <span>
-                <button class="btn btn-sm" onclick={() => handleRestore(game.id)}>Restore</button>
-              </span>
-            </div>
-          {/each}
-        {/if}
-      </div>
     {:else}
-      <div class="placeholder-view">
-        <h2 style="text-transform: capitalize">{activeView}</h2>
-        <p>Coming soon.</p>
-      </div>
+      <!-- Keyed by the active view: the old view animates out while the new
+           one animates in. Long-running state (sync/scan/covers/updates) lives
+           above this block, so it survives the remounts either way. -->
+      {#key activeView}
+        <div class="view" transition:fly={viewMotion()}>
+          {#if activeView === 'detail' && selectedGameId !== null}
+            <GameDetail gameId={selectedGameId} onBack={closeDetail} onUpdate={refreshGames}/>
+          {:else if activeView === 'library'}
+            <GameList {games} {loading} onOpenDetail={openDetail} onUpdate={refreshGames}/>
+          {:else if activeView === 'scan'}
+            <ScanDialog
+              scanning={scanState.scanning}
+              currentPath={scanState.currentPath}
+              progress={scanState.progress}
+              showProgress={scanState.showProgress}
+              lastResult={scanState.lastResult}
+              scanError={scanState.scanError}
+              onScan={startScan}
+            />
+          {:else if activeView === 'settings'}
+            <SettingsView />
+          {:else if activeView === 'updates'}
+            <GameUpdatesView
+              gameStates={gameStates}
+              batchState={batchState}
+              onNavigate={(id) => activeView = id}
+              onUpdateGame={startUpdateGame}
+              onUpdateAll={startUpdateAll}
+              onRetryFailed={handleRetryFailed}
+              onProvideFile={provideUpdateFile}
+              onCancel={cancelUpdates}
+            />
+          {:else if activeView === 'downloads'}
+            <DownloadsView />
+          {:else if activeView === 'covers'}
+            <CoversView
+              gameCount={coverState.gameCount}
+              fetching={coverState.fetching}
+              progress={coverState.progress}
+              result={coverState.result}
+              coverError={coverState.coverError}
+              onFetch={startCoverFetch}
+            />
+          {:else if activeView === 'add'}
+            <AddGameDialog onGameAdded={refreshGames}/>
+          {:else if activeView === 'sync'}
+            <SyncDialog
+              cookieStatus={syncState.cookieStatus}
+              syncing={syncState.syncing}
+              progress={syncState.progress}
+              gameResults={syncState.gameResults}
+              result={syncState.result}
+              syncError={syncState.syncError}
+              onSync={startSync}
+              onCancel={cancelSync}
+            />
+          {:else if activeView === 'browser'}
+            <F95Browser onAdded={handleBrowserGameAdded}/>
+          {:else if activeView === 'collections'}
+            <CollectionsView
+              onOpenDetail={openDetail}
+              onCollectionsChanged={() => lastUpdate++}
+            />
+          {:else if activeView === 'duplicates'}
+            <DedupDialog onDedupDone={refreshGames}/>
+          {:else if activeView === 'trash'}
+            <div class="trash-view">
+              <h2>Trash</h2>
+              {#if deletedGames.length === 0}
+                <p class="text-muted">No deleted games.</p>
+              {:else}
+                <div class="trash-actions">
+                  <button class="btn btn-danger" onclick={handlePurge}>Purge All ({deletedGames.length})</button>
+                </div>
+                <div class="table-header">
+                  <span>Title</span><span>Engine</span><span>Actions</span>
+                </div>
+                {#each deletedGames as game (game.id)}
+                  <div class="table-row">
+                    <span>{game.title}</span>
+                    <span>{game.engine || '—'}</span>
+                    <span>
+                      <button class="btn btn-sm" onclick={() => handleRestore(game.id)}>Restore</button>
+                    </span>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+          {:else}
+            <div class="placeholder-view">
+              <h2 style="text-transform: capitalize">{activeView}</h2>
+              <p>Coming soon.</p>
+            </div>
+          {/if}
+        </div>
+      {/key}
     {/if}
 
     <StatusBar {statusMsg} gameCount={games.length}/>
@@ -759,8 +877,25 @@
     flex: 1;
     display: flex;
     flex-direction: column;
+    justify-content: flex-end;   /* keep the status bar pinned to the bottom */
     min-width: 0;
     background: var(--bg-primary);
+    position: relative;
+  }
+
+  /* Keyed view container. Absolutely positioned so the outgoing and incoming
+     views overlap during the 140ms switch instead of sharing the flex row —
+     with both in normal flow (flex:1 each) the screen would split 50/50 and
+     the incoming view would render squished. bottom: 25px keeps the view
+     above the 24px status bar (plus its 1px border). */
+  .view {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 25px;
+    display: flex;
+    flex-direction: column;
   }
 
   .placeholder-view {
