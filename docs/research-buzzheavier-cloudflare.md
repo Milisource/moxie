@@ -89,7 +89,7 @@ Independently re-verified each load-bearing claim before acting on it:
 | "ts.bzzhr.to dead" | ✅ Connection fails (000); DNS resolves to burritoflakes.com (Cloudflare IPs). `alt=true` redirects to fafda.to instead. |
 | Adaptive 403s are per-link/rate dependent | ⚠️ e2yt4zd66jq3 page: 200 on attempt 3. sdkifmiy9zm2 page: 5×403 in one run (then 200 later runs?) — retry with backoff is mandatory; a fresh token per page load. |
 
-**Bottom line**: the token-flow resolution is proven Go-able (F95-hs4y); the file hop needs the origin back (fafda.to 503 — infrastructure, retry/backoff). The browser fallback (F95-675j) remains for true Turnstile hosts (vikingfile, datanodes, mixdrop).
+**Bottom line**: the token-flow resolution is proven Go-able and **implemented + live-verified (F95-hs4y)**: `resolveBuzzheavier` resolves bzzhr.to links to fafda.to direct URLs (page `t=` token → HTMX `alt=true` → hx-redirect → probe) and the file hop downloads with plain stdlib. The browser fallback (F95-675j) remains for true Turnstile hosts (vikingfile, datanodes, mixdrop).
 
 ## Probe tooling
 

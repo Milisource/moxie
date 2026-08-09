@@ -60,7 +60,7 @@ The `HostResolver.Resolve()` dispatches to per-host resolvers based on the host 
 | Host | Strategy | Status |
 |------|----------|--------|
 | **Pixeldrain** | API: `pixeldrain.com/api/file/<ID>` — direct download via API endpoint | ✅ Verified |
-| **Buzzheavier** | HTMX: `<url>/download` with `HX-Request: true` + `Referer`, follows `hx-redirect` header | ✅ Verified |
+| **Buzzheavier** | Token flow (live-verified 2026-08-09): share page (`hx-get` server-signed `t=`) → HTMX `/download?t=&alt=true` → `hx-redirect` → **fafda.to** file URL (probe-validated; 503 origin outages retried with backoff) | ✅ Verified |
 | **Gofile** | Content API + direct download to `{fileID}.gofile.io/{fileID}` | ✅ Verified |
 | **Google Drive** | Two-step: `GET /uc?export=download&id=<ID>` → parse HTML for `confirm=` token (for >100 MB virus-scan interstitial) → re-request with `&confirm=<TOKEN>` | ✅ Verified |
 | **DataNodes** | Cookie + POST: `GET /download/<CODE>` for session cookies → parse hidden form fields → `POST` with cookies → follow 302 redirect to CDN | ⚡ May work |
@@ -120,7 +120,7 @@ Hosts already covered in other sections: WorkUpload (captcha), MediaFire (captch
 | Host | Flow |
 |------|------|
 | **Pixeldrain** | Already implemented. Note: rate-limited files may trigger captcha at 3× views/downloads ratio. API key bypasses |
-| **Buzzheavier** | Already implemented. HTMX flow |
+| **Buzzheavier** | Token flow — share page `t=` token → `/download?t=&alt=true` (HTMX) → `hx-redirect` to fafda.to, probe-validated |
 | **Gofile** | Already implemented. ⚠ Breaking change March 2026: API may restrict to premium accounts |
 | **MixDrop** | Official API at `api.mixdrop.ag`. For zips/archives direct; for MP4 add `?download`. Domains: m1xdrop.click, mixdrop.co, etc. |
 | **DataNodes** | POST flow: visit `/download/<ID>` → acquire `file_code` cookie → POST for download URL. Has Cloudflare |
@@ -195,14 +195,14 @@ Cloudflare-protected hosts (datanodes, vikingfile, ...) 403 plain HTTP clients �
 
 **Practical effect**: if the user has visited datanodes.to/vikingfile.com in a browser (even once, recently), downloads for those hosts pass the Cloudflare challenge instead of failing with HTTP 403. If the browser holds no cookies for a host, extraction is a no-op and the request behaves exactly as before. This is best-effort — a fresh/expired clearance still fails and falls through to the next link.
 
-> **Buzzheavier is NOT gated by cf_clearance** (live-verified 2026-08-09, see [research-buzzheavier-cloudflare.md](research-buzzheavier-cloudflare.md)). Its wall is the **Turnstile-gated token flow**: the share page (which passes with stdlib TLS + browser cookies, retry through intermittent adaptive 403s) embeds a **server-signed `t=` token** in the `hx-get` attributes — no Turnstile proof is needed to obtain it. `GET /download?t=<token>&alt=true` returns `hx-redirect` with a real file URL (`fafda.to/d/<id>?v=<token>`; plain `alt` yields `ts.bzzhr.to`, whose origin is currently dead). fafda.to is Cloudflare-proxied but **challenge-free** at the app layer (404 no token / 403 bad token / 503 origin outage). So buzzheavier resolution is fully Go-able — implementation tracked in **F95-hs4y**; the current blocker is the file-origin outage (503), not anti-bot.
+> **Buzzheavier is NOT gated by cf_clearance** (live-verified 2026-08-09, see [research-buzzheavier-cloudflare.md](research-buzzheavier-cloudflare.md)). Its wall is the **Turnstile-gated token flow**: the share page (which passes with stdlib TLS + browser cookies, retry through intermittent adaptive 403s) embeds a **server-signed `t=` token** in the `hx-get` attributes — no Turnstile proof is needed to obtain it. `GET /download?t=<token>&alt=true` returns `hx-redirect` with a real file URL (`fafda.to/d/<id>?v=<token>`; plain `alt` yields `ts.bzzhr.to`, whose origin is currently dead). fafda.to is Cloudflare-proxied but **challenge-free** at the app layer (404 no token / 403 bad token / 503 origin outage). **Implemented in `resolveBuzzheavier` (F95-hs4y, live-verified end-to-end 2026-08-09)**: page fetch retries adaptive 403s (backoff ~1s, cap 5), token extraction, HTMX download with `alt=true`, fafda.to preference (ts/dd redirects rewritten), and a `Range: bytes=0-0` probe — 503 origin outages are retried with an escalating backoff, 403/404 JSON errors trigger a share-page refetch for a fresh token (bounded at 2).
 
 ### Host-Specific Resolvers (`hosts.go`)
 
 | Host | Strategy | Status |
 |------|----------|--------|
 | **Pixeldrain** | API: `pixeldrain.com/api/file/<ID>` — direct download | ✅ |
-| **Buzzheavier** | HTMX: `<url>/download` with `HX-Request: true` + `Referer`, follows `hx-redirect` header — currently self-referential without the page token; token-based flow (page `t=` → `alt=true` → fafda.to) verified live, not yet implemented | ⚡ Needs token flow |
+| **Buzzheavier** | Token flow: share page `t=` → HTMX `/download?t=&alt=true` → `hx-redirect` to fafda.to; probe-validated with 503 backoff + token-refetch | ✅ Verified (F95-hs4y) |
 | **Gofile** | Guest token + dynamic `X-Website-Token` (SHA-256 `UA::lang::token::4h-slot::secret`) + contents API; CDN hop needs `Cookie: accountToken=<token>` | ✅ |
 | **Mediafire** | Page CDN href / base64 `data-scrambled-url` (allow-listed host) + API fallback | ✅ |
 | **Workupload** | SHA-256 proof-of-work puzzle (`/puzzle` → solve → `/captcha`) + `getDownloadServer` API | ✅ |

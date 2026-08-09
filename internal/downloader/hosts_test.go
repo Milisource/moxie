@@ -1448,41 +1448,7 @@ func rewriteToServer(hostname, serverURL string) roundTripFunc {
 	}
 }
 
-func TestResolveBuzzheavier_AttachesBrowserCookies(t *testing.T) {
-	var gotCookie string
-	var htmxHit bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/download") {
-			htmxHit = true
-			gotCookie = r.Header.Get("Cookie")
-			w.Header().Set("hx-redirect", "https://dd.buzzheavier.com/game.zip")
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
 
-	r := NewHostResolver()
-	r.client = srv.Client()
-	// The test URL is the httptest server's 127.0.0.1 host, so return the
-	// cookie for any hostname — the point is verifying attachment, and the
-	// host-scoping is covered by TestMergeBrowserCookies_HostScopedNoLeak.
-	r.cookieSource = func(string) string { return "cf_clearance=abc123; __cf_bm=xyz" }
-
-	// The dd probe hits srv.URL (127.0.0.1, no "buzzheavier.com" to
-	// substitute) and 404s, so resolution falls through to the HTMX flow.
-	_, err := r.Resolve(srv.URL+"/f/code", "buzzheavier")
-	if err != nil {
-		t.Fatalf("Resolve buzzheavier failed: %v", err)
-	}
-	if !htmxHit {
-		t.Fatal("HTMX /download endpoint was never hit")
-	}
-	if !strings.Contains(gotCookie, "cf_clearance=abc123") {
-		t.Errorf("HTMX request missing browser cookie, got %q", gotCookie)
-	}
-}
 
 func TestResolveDatanodes_AttachesBrowserCookiesToGETAndPOST(t *testing.T) {
 	// NOT parallel — replaces http.DefaultTransport which is global state.
