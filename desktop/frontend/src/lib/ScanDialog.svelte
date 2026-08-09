@@ -1,74 +1,17 @@
 <script>
-  import {onMount, onDestroy} from 'svelte'
-  import {EventsOn} from '../../wailsjs/runtime/runtime'
-  import {ScanDirectory} from '../../wailsjs/go/main/App'
+  // Presentational only — scan state and event subscriptions live in
+  // App.svelte (like syncState) so the running flag survives tab switches.
   import ScanPaths from './ScanPaths.svelte'
 
   let {
-    onGamesUpdated = () => {},
+    scanning = false,
+    currentPath = '',
+    progress = {dirsExamined: 0, gamesFound: 0, phase: ''},
+    showProgress = false,
+    lastResult = null,           // { gamesFound, inserted, updated, errors } or null
+    scanError = '',
+    onScan = () => {},
   } = $props()
-
-  // ── State ──────────────────────────────────────────────────
-  let scanning = $state(false)
-  let currentPath = $state('')
-
-  // Progress
-  let progress = $state({ dirsExamined: 0, gamesFound: 0, phase: '' })
-  let showProgress = $state(false)
-
-  // Results
-  let lastResult = $state(null)   // { gamesFound, inserted, updated, errors } or null
-  let scanError = $state('')
-
-  // Unsubscribe fns
-  let unsubProgress = null
-  let unsubComplete = null
-  let unsubError = null
-
-  async function handleScan(path) {
-    scanning = true
-    currentPath = path
-    showProgress = true
-    lastResult = null
-    scanError = ''
-    progress = { dirsExamined: 0, gamesFound: 0, phase: '' }
-
-    try {
-      await ScanDirectory(path)
-    } catch (e) {
-      scanError = String(e)
-      scanning = false
-    }
-  }
-
-  function reloadAfterScan() {
-    // Refresh game list after scan completes
-    onGamesUpdated()
-    scanning = false
-  }
-
-  onMount(() => {
-    // Listen for Wails events from the Go backend
-    unsubProgress = EventsOn('scan:progress', (data) => {
-      progress = data
-    })
-
-    unsubComplete = EventsOn('scan:complete', (data) => {
-      lastResult = data
-      reloadAfterScan()
-    })
-
-    unsubError = EventsOn('scan:error', (data) => {
-      scanError = data.error || 'Unknown error'
-      scanning = false
-    })
-  })
-
-  onDestroy(() => {
-    if (unsubProgress) unsubProgress()
-    if (unsubComplete) unsubComplete()
-    if (unsubError) unsubError()
-  })
 
   // ── Derived ─────────────────────────────────────────────────
   let progressPct = $derived.by(() => {
@@ -93,7 +36,7 @@
     <p class="scan-subtitle">Add game folders to scan for new titles.</p>
   </div>
 
-  <ScanPaths onScan={handleScan} {scanning} {currentPath} />
+  <ScanPaths onScan={onScan} {scanning} {currentPath} />
 
   <!-- ── Scan Progress ──────────────────────────────────── -->
   {#if showProgress && scanning}

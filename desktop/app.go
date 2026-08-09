@@ -4,16 +4,20 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -26,19 +30,22 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/image/draw"
+	"golang.org/x/image/webp"
 
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
-	"github.com/mili/moxie/internal/extractor"
 	"github.com/mili/moxie/internal/engine"
+	"github.com/mili/moxie/internal/extractor"
 	"github.com/mili/moxie/internal/launcher"
 	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/scanner"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/steam"
 	"github.com/mili/moxie/internal/updater"
+	"github.com/mili/moxie/internal/version"
 )
 
 // App is the main application struct for the Wails desktop GUI.
@@ -68,6 +75,28 @@ type App struct {
 	// that installs it.
 	updateCancelMu sync.Mutex
 	updateCancel   context.CancelFunc
+
+	// coverServer serves cached cover art to the webview over loopback HTTP
+	// instead of base64-encoding images through the IPC bridge.
+	coverServer *coverServer
+
+	// coverRunning guards the FetchCovers backfill — one run at a time.
+	coverRunning atomic.Bool
+
+	// syncRunning guards SyncAllGames — one run at a time. The sync view is
+	// destroyed and re-mounted on every tab switch, so without this guard a
+	// second visit to the tab could start a second concurrent run.
+	syncRunning atomic.Bool
+
+	// scanRunning guards ScanDirectory and the watcher's RescanDirectory —
+	// manual scans and background rescans must never run concurrently into
+	// the same upsert path.
+	scanRunning atomic.Bool
+
+	// coverFetchMu guards coverFetch, which dedupes concurrent cover
+	// downloads for the same game (sync and cover backfill may overlap).
+	coverFetchMu sync.Mutex
+	coverFetch   map[int64]chan struct{}
 }
 
 // NewApp creates a new App instance.
@@ -97,6 +126,18 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.db = database
 	slog.Info("database opened successfully")
+
+	a.coverServer = startCoverServer()
+	if a.coverServer != nil {
+		slog.Info("cover server started", "url", a.coverServer.BaseURL())
+	} else {
+		slog.Warn("cover server failed to start; covers will not display")
+	}
+
+	// Covers cached before the thumbnailing change have no .thumb sibling;
+	// backfill them so the list view stops serving full images for those.
+	// Local-only and cheap; runs in the background to keep startup snappy.
+	go backfillCoverThumbs()
 
 	a.startWatcher()
 }
@@ -195,6 +236,9 @@ func (a *App) shutdown(ctx context.Context) {
 			slog.Error("error closing database", "error", err)
 		}
 	}
+	if a.coverServer != nil {
+		a.coverServer.Close()
+	}
 	slog.Info("moxie desktop shutting down")
 }
 
@@ -249,17 +293,17 @@ type DesktopGameSummary struct {
 // DesktopGameDetail is the full game data for the detail view.
 type DesktopGameDetail struct {
 	DesktopGameSummary
-	Developer   string                `json:"developer"`
-	Overview    string                `json:"overview"`
-	CoverURL    string                `json:"coverUrl"`
-	F95URL      string                `json:"f95Url"`
-	Tags        []string              `json:"tags"`
-	Notes       string                `json:"notes"`
-	StoreLinks  map[string]string     `json:"storeLinks"`
-	SteamAppID  int64                 `json:"steamAppId"`
-	WinePrefix  string                `json:"winePrefix"`
+	Developer     string                `json:"developer"`
+	Overview      string                `json:"overview"`
+	CoverURL      string                `json:"coverUrl"`
+	F95URL        string                `json:"f95Url"`
+	Tags          []string              `json:"tags"`
+	Notes         string                `json:"notes"`
+	StoreLinks    map[string]string     `json:"storeLinks"`
+	SteamAppID    int64                 `json:"steamAppId"`
+	WinePrefix    string                `json:"winePrefix"`
 	DownloadLinks []DesktopDownloadLink `json:"downloadLinks"`
-	PlayHistory []DesktopPlayEntry    `json:"playHistory"`
+	PlayHistory   []DesktopPlayEntry    `json:"playHistory"`
 }
 
 // DesktopDownloadLink is a download link for the detail view.
@@ -287,12 +331,6 @@ type DesktopDownloadLinkWithGame struct {
 	GamePath  string `json:"gamePath"`
 }
 
-// StatusCount is the count of games in a given status.
-type StatusCount struct {
-	Status string `json:"status"`
-	Count  int    `json:"count"`
-}
-
 // ---------------------------------------------------------------------------
 // Game list methods
 // ---------------------------------------------------------------------------
@@ -309,8 +347,9 @@ func (a *App) GetGames() ([]DesktopGameSummary, error) {
 	}
 
 	result := make([]DesktopGameSummary, 0, len(games))
+	covers := coverSetFromDir()
 	for _, g := range games {
-		result = append(result, gameToSummary(&g))
+		result = append(result, gameToSummaryCovers(&g, covers))
 	}
 	return result, nil
 }
@@ -327,8 +366,9 @@ func (a *App) SearchGames(query string) ([]DesktopGameSummary, error) {
 	}
 
 	result := make([]DesktopGameSummary, 0, len(games))
+	covers := coverSetFromDir()
 	for _, g := range games {
-		result = append(result, gameToSummary(&g))
+		result = append(result, gameToSummaryCovers(&g, covers))
 	}
 	return result, nil
 }
@@ -339,27 +379,6 @@ func (a *App) GetGameCount() (int, error) {
 		return 0, fmt.Errorf("database not initialized")
 	}
 	return a.db.GameCount()
-}
-
-// GetGameCountByStatus returns counts for each status.
-func (a *App) GetGameCountByStatus() ([]StatusCount, error) {
-	if a.db == nil {
-		return nil, fmt.Errorf("database not initialized")
-	}
-
-	counts, err := a.db.CountGamesByStatus()
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]StatusCount, 0, len(counts))
-	for status, count := range counts {
-		result = append(result, StatusCount{Status: status, Count: count})
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Count > result[j].Count
-	})
-	return result, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -379,8 +398,9 @@ func (a *App) GetUpdatableGames() ([]DesktopGameSummary, error) {
 	}
 
 	result := make([]DesktopGameSummary, 0, len(games))
+	covers := coverSetFromDir()
 	for _, g := range games {
-		result = append(result, gameToSummary(&g))
+		result = append(result, gameToSummaryCovers(&g, covers))
 	}
 	return result, nil
 }
@@ -595,16 +615,21 @@ func (a *App) ScanDirectory(path string) error {
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
+	if !a.scanRunning.CompareAndSwap(false, true) {
+		return fmt.Errorf("a scan is already running")
+	}
 
 	// games.path is UNIQUE and everything downstream (watcher root matching,
 	// removeMissingUnder) compares absolute paths, so normalise here rather
 	// than storing whatever the caller happened to type.
 	abs, err := filepath.Abs(path)
 	if err != nil {
+		a.scanRunning.Store(false)
 		return fmt.Errorf("resolving scan path: %w", err)
 	}
 
 	a.goBackground("scan", func(ctx context.Context) {
+		defer a.scanRunning.Store(false)
 		progress := func(dirsExamined, gamesFound int, phase string) {
 			runtime.EventsEmit(a.ctx, "scan:progress", ScanProgress{
 				DirsExamined: dirsExamined,
@@ -613,7 +638,7 @@ func (a *App) ScanDirectory(path string) error {
 			})
 		}
 
-		detected, err := scanner.ScanFiltered(abs, nil, progress)
+		detected, err := scanner.ScanFiltered(a.bgCtx, abs, nil, progress)
 		if err != nil {
 			runtime.EventsEmit(a.ctx, "scan:error", map[string]string{
 				"error": err.Error(),
@@ -765,14 +790,16 @@ func (a *App) GetGamesWithDownloadLinks() ([]DesktopGameSummary, error) {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
+	log.Info("GetGamesWithDownloadLinks called")
 	allLinks, err := a.db.AllDownloadLinks(true)
 	if err != nil {
+		log.Error("GetGamesWithDownloadLinks failed", "error", err)
 		return nil, fmt.Errorf("failed to query download links: %w", err)
 	}
 
 	// Deduplicate by game ID while preserving title and sorting.
 	seen := make(map[int64]bool)
-	var result []DesktopGameSummary
+	result := make([]DesktopGameSummary, 0, len(allLinks))
 	for _, l := range allLinks {
 		if seen[l.GameID] {
 			continue
@@ -785,6 +812,7 @@ func (a *App) GetGamesWithDownloadLinks() ([]DesktopGameSummary, error) {
 		})
 	}
 
+	log.Info("GetGamesWithDownloadLinks done", "games", len(result), "links", len(allLinks))
 	return result, nil
 }
 
@@ -795,8 +823,10 @@ func (a *App) GetAllDownloadLinks() ([]DesktopDownloadLinkWithGame, error) {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
+	log.Info("GetAllDownloadLinks called")
 	links, err := a.db.AllDownloadLinks(true)
 	if err != nil {
+		log.Error("GetAllDownloadLinks failed", "error", err)
 		return nil, fmt.Errorf("failed to query all download links: %w", err)
 	}
 
@@ -816,6 +846,7 @@ func (a *App) GetAllDownloadLinks() ([]DesktopDownloadLinkWithGame, error) {
 			GamePath:  l.GamePath,
 		})
 	}
+	log.Info("GetAllDownloadLinks done", "links", len(result))
 	return result, nil
 }
 
@@ -920,7 +951,8 @@ func (a *App) downloadGameFile(ctx context.Context, evPrefix string, gameID int6
 			}
 		}
 
-		err = downloader.DownloadWithHost(
+		err = downloader.DownloadWithContext(
+			ctx,
 			link.URL,
 			link.Host,
 			tempDir,
@@ -985,13 +1017,6 @@ func (a *App) downloadGameFile(ctx context.Context, evPrefix string, gameID int6
 		"file", filepath.Base(bestFile),
 		"size", bestSize,
 	)
-
-	// Emit completion event (caller is responsible for cleanup).
-	runtime.EventsEmit(a.ctx, evPrefix+":download-complete", map[string]interface{}{
-		"gameID": gameID,
-		"path":   bestFile,
-		"size":   bestSize,
-	})
 
 	return bestFile, nil
 }
@@ -1077,8 +1102,15 @@ func isTransientDownloadError(err error) bool {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// gameToSummary converts a db.Game to DesktopGameSummary.
+// gameToSummary converts a db.Game to DesktopGameSummary. HasCover is
+// resolved with a single stat — fine for one-off calls like GetGameDetail.
 func gameToSummary(g *db.Game) DesktopGameSummary {
+	return gameToSummaryCovers(g, nil)
+}
+
+// gameToSummaryCovers is gameToSummary with a precomputed cover set, so list
+// endpoints check one directory read instead of N per-game stats.
+func gameToSummaryCovers(g *db.Game, covers map[int64]bool) DesktopGameSummary {
 	s := DesktopGameSummary{
 		ID:            g.ID,
 		Title:         g.Title,
@@ -1092,13 +1124,38 @@ func gameToSummary(g *db.Game) DesktopGameSummary {
 		SizeLabel:     formatBytes(g.SizeBytes),
 	}
 
-	// Check if a cached cover exists on disk (cheap file stat).
-	coverPath := filepath.Join(config.CoverDir(), strconv.FormatInt(g.ID, 10))
-	if _, err := os.Stat(coverPath); err == nil {
-		s.HasCover = true
+	if covers != nil {
+		s.HasCover = covers[g.ID]
+	} else {
+		// Check if a cached cover exists on disk (cheap file stat).
+		coverPath := filepath.Join(config.CoverDir(), strconv.FormatInt(g.ID, 10))
+		if _, err := os.Stat(coverPath); err == nil {
+			s.HasCover = true
+		}
 	}
 
 	return s
+}
+
+// coverSetFromDir lists the cover directory once and returns the set of game
+// IDs that have a cached cover file. One directory read beats N stats, and
+// directory reads are cheap even on network mounts.
+func coverSetFromDir() map[int64]bool {
+	entries, err := os.ReadDir(config.CoverDir())
+	if err != nil {
+		return nil
+	}
+	set := make(map[int64]bool, len(entries))
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasSuffix(name, ".thumb") {
+			continue
+		}
+		if id, err := strconv.ParseInt(name, 10, 64); err == nil {
+			set[id] = true
+		}
+	}
+	return set
 }
 
 // formatBytes returns a human-readable size string.
@@ -1210,7 +1267,37 @@ func (a *App) CheckForUpdate() UpdateInfo {
 
 // DownloadUpdate downloads the latest release binary with progress events
 // emitted to the frontend.
+// DownloadUpdate downloads the latest desktop release from GitHub and stages
+// it for ApplyUpdate. The download runs on the background pipeline — it is
+// cancellable via CancelGameUpdate and emits throttled progress events; this
+// method returns as soon as the download is started. The frontend tracks
+// progress via update:progress / update:complete / update:error events.
 func (a *App) DownloadUpdate() error {
+	if a.ctx == nil {
+		return fmt.Errorf("application context not initialized")
+	}
+
+	if !a.updateRunning.CompareAndSwap(false, true) {
+		return fmt.Errorf("an update is already in progress")
+	}
+
+	a.goBackground("self-update", func(ctx context.Context) {
+		defer func() {
+			a.updateRunning.Store(false)
+			runtime.EventsEmit(a.ctx, "update:idle", map[string]interface{}{})
+		}()
+		ctx = a.beginCancellableUpdate(ctx)
+		defer a.endCancellableUpdate()
+		if err := a.downloadUpdateRun(ctx); err != nil {
+			slog.Warn("self-update download failed", "error", err)
+		}
+	})
+	return nil
+}
+
+// downloadUpdateRun fetches release metadata, downloads the staged binary,
+// and verifies its digest. Runs on the background pipeline.
+func (a *App) downloadUpdateRun(ctx context.Context) error {
 	release, err := fetchLatestRelease()
 	if err != nil {
 		runtime.EventsEmit(a.ctx, "update:error", map[string]string{"error": err.Error()})
@@ -1243,7 +1330,7 @@ func (a *App) DownloadUpdate() error {
 		return fmt.Errorf("%s", errMsg)
 	}
 
-	req, err := http.NewRequest("GET", downloadURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
 	if err != nil {
 		runtime.EventsEmit(a.ctx, "update:error", map[string]string{"error": err.Error()})
 		return fmt.Errorf("create download request: %w", err)
@@ -1280,7 +1367,16 @@ func (a *App) DownloadUpdate() error {
 	var downloaded int64
 	digest := sha256.New()
 	buf := make([]byte, 32*1024)
+	// Throttle progress events so a large release does not flood the
+	// frontend with thousands of IPC messages.
+	var lastProgress time.Time
 	for {
+		if cerr := ctx.Err(); cerr != nil {
+			f.Close()
+			os.Remove(tmpPath)
+			runtime.EventsEmit(a.ctx, "update:error", map[string]string{"error": cerr.Error()})
+			return fmt.Errorf("download cancelled: %w", cerr)
+		}
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			digest.Write(buf[:n])
@@ -1291,7 +1387,8 @@ func (a *App) DownloadUpdate() error {
 				return fmt.Errorf("write temp: %w", writeErr)
 			}
 			downloaded += int64(n)
-			if total > 0 {
+			if total > 0 && (time.Since(lastProgress) >= 200*time.Millisecond || downloaded >= total) {
+				lastProgress = time.Now()
 				runtime.EventsEmit(a.ctx, "update:progress", map[string]interface{}{
 					"downloaded": downloaded,
 					"total":      total,
@@ -1347,8 +1444,12 @@ func (a *App) DownloadUpdate() error {
 }
 
 // ApplyUpdate replaces the current binary with a previously downloaded update.
-// It renames the current binary to .bak, moves the temp file to the exe path,
-// and removes the .bak on success.
+// On Linux/macOS it renames the current binary to .bak, moves the temp file
+// to the exe path, and removes the .bak on success. On Windows the running
+// executable is locked and can never be renamed or replaced in place, so the
+// update is staged instead: a marker file is written and the staged binary is
+// spawned as a swap agent that waits for this process to exit, swaps the
+// binaries, and relaunches the installed copy (see applyPendingUpdateIfRequested).
 func (a *App) ApplyUpdate() error {
 	assetName := binaryName()
 	if assetName == "" {
@@ -1375,7 +1476,18 @@ func (a *App) ApplyUpdate() error {
 		return fmt.Errorf("cannot resolve symlink: %w", err)
 	}
 
+	if goruntime.GOOS == "windows" {
+		if err := stageWindowsUpdate(tmpPath, exe); err != nil {
+			return fmt.Errorf("staging update: %w", err)
+		}
+		slog.Info("update staged for next launch", "staged", tmpPath, "exe", exe)
+		return nil
+	}
+
 	backupPath := exe + ".bak"
+	// A stale backup from an earlier failed attempt blocks the copy fallback
+	// (it opens O_EXCL) — clear it before re-attempting the backup.
+	os.Remove(backupPath)
 	if err := renameOrCopy(exe, backupPath); err != nil {
 		return fmt.Errorf("cannot back up current binary: %w", err)
 	}
@@ -1448,6 +1560,19 @@ func fetchLatestRelease() (*githubRelease, error) {
 		return nil, fmt.Errorf("github API: decode: %w", err)
 	}
 	return &release, nil
+}
+
+// isGameUpdate reports whether a game's F95Zone version warrants an update
+// over the installed one. Unlike isNewerVersion (which compares moxie's own
+// semver releases), game versions are free-form, so an unorderable change
+// counts as an update while an older or equivalent version does not.
+func isGameUpdate(latest, installed string) bool {
+	switch version.Compare(latest, installed) {
+	case version.Newer, version.Changed:
+		return true
+	default:
+		return false
+	}
 }
 
 // isNewerVersion returns true if latest > current using semver-like comparison.
@@ -1600,7 +1725,7 @@ func (a *App) SearchF95Zone(query string) ([]F95SearchResult, error) {
 // Base: position bonus + title match quality + engine prefix match.
 func computeSearchScore(title, prefix, queryLower string, position int) int {
 	score := 100
-	
+
 	// Position bonus: earlier results get higher base scores.
 	score -= position * 10
 	if score < 20 {
@@ -1628,6 +1753,10 @@ func computeSearchScore(title, prefix, queryLower string, position int) int {
 
 // GetThreadPreview scrapes an F95Zone thread and returns preview data.
 func (a *App) GetThreadPreview(url string) (*ThreadPreview, error) {
+	if err := scraper.ValidateThreadURL(url); err != nil {
+		return nil, fmt.Errorf("invalid thread URL: %w", err)
+	}
+
 	cookie, err := browser.GetF95Cookies()
 	if err != nil || cookie == "" {
 		return nil, fmt.Errorf("F95Zone cookies not available. Log into F95Zone in your browser first")
@@ -1647,7 +1776,7 @@ func (a *App) GetThreadPreview(url string) (*ThreadPreview, error) {
 
 	downloads := make([]F95DownloadLink, 0, len(data.DownloadLinks))
 	for _, dl := range data.DownloadLinks {
-		platform := downloader.DetectPlatformFromLink(dl.Name, dl.URL)
+		platform := string(downloader.DetectPlatform(dl.Name, dl.URL))
 		downloads = append(downloads, F95DownloadLink{
 			URL:      dl.URL,
 			Name:     dl.Name,
@@ -1677,6 +1806,10 @@ func (a *App) GetThreadPreview(url string) (*ThreadPreview, error) {
 func (a *App) AddGameFromF95Zone(url, title, engineName string) (int64, error) {
 	if a.db == nil {
 		return 0, fmt.Errorf("database not initialized")
+	}
+
+	if err := scraper.ValidateThreadURL(url); err != nil {
+		return 0, fmt.Errorf("invalid thread URL: %w", err)
 	}
 
 	cookie, err := browser.GetF95Cookies()
@@ -1767,7 +1900,7 @@ func (a *App) AddGameFromF95Zone(url, title, engineName string) (int64, error) {
 
 	// Save download links.
 	for _, dl := range data.DownloadLinks {
-		p := downloader.DetectPlatformFromLink(dl.Name, dl.URL)
+		p := downloader.DetectPlatform(dl.Name, dl.URL)
 		link := &db.DownloadLink{
 			GameID:   id,
 			URL:      dl.URL,
@@ -1798,11 +1931,8 @@ func (a *App) AddGameFromF95Zone(url, title, engineName string) (int64, error) {
 const maxCoverBytes int64 = 16 << 20 // 16 MiB
 
 // imageMimeFromPrefix detects the image MIME type from the file's magic bytes.
-// Returns "jpeg", "png", "webp", "gif", or "png" as fallback.
+// Returns "jpeg", "png", "webp", "gif", "avif", or "png" as fallback.
 func imageMimeFromPrefix(data []byte) string {
-	if len(data) < 4 {
-		return "png"
-	}
 	switch {
 	case bytes.HasPrefix(data, []byte{0xFF, 0xD8, 0xFF}):
 		return "jpeg"
@@ -1816,22 +1946,311 @@ func imageMimeFromPrefix(data []byte) string {
 		return "png"
 	case bytes.HasPrefix(data, []byte{0x47, 0x49, 0x46}):
 		return "gif"
+	case isAVIF(data):
+		return "avif"
 	default:
 		return "png"
 	}
+}
+
+// isAVIF reports whether data is an ISOBMFF container with the avif or avis
+// brand (bytes 4-7 = "ftyp", major brand at bytes 8-11). F95Zone's CDN serves
+// AVIF-encoded covers under .png/.jpg URLs, so magic-sniffing must accept it.
+func isAVIF(data []byte) bool {
+	if len(data) < 12 || string(data[4:8]) != "ftyp" {
+		return false
+	}
+	brand := string(data[8:12])
+	return brand == "avif" || brand == "avis"
+}
+
+// knownImageFormat reports whether data starts with the magic bytes of a
+// format this app can display. Unlike imageMimeFromPrefix it never falls
+// back: an HTML error page or garbage blob is not an image.
+func knownImageFormat(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	switch {
+	case bytes.HasPrefix(data, []byte{0xFF, 0xD8, 0xFF}):
+		return true
+	case bytes.HasPrefix(data, []byte{0x89, 0x50, 0x4E, 0x47}):
+		return true
+	case bytes.HasPrefix(data, []byte{0x52, 0x49, 0x46, 0x46}):
+		return len(data) > 11 && string(data[8:12]) == "WEBP"
+	case bytes.HasPrefix(data, []byte{0x47, 0x49, 0x46}):
+		return true
+	case isAVIF(data):
+		return true
+	default:
+		return false
+	}
+}
+
+// GetCoverBaseURL returns the loopback origin the webview should use to load
+// cached cover art, e.g. "http://127.0.0.1:41233". Covers are served at
+// /cover/<gameID> (full image) and /cover/<gameID>/thumb (list thumbnail).
+// An empty string means the cover server failed to start.
+func (a *App) GetCoverBaseURL() string {
+	if a.coverServer == nil {
+		return ""
+	}
+	return a.coverServer.BaseURL()
+}
+
+// coverFetchWorkers bounds how many cover downloads run at once during a
+// backfill. Downloads are cheap but F95Zone's image hosts rate-limit.
+const coverFetchWorkers = 4
+
+// FetchCoversResult summarizes a cover backfill run.
+type FetchCoversResult struct {
+	Fetched    int `json:"fetched"`
+	Failed     int `json:"failed"`
+	Skipped    int `json:"skipped"`
+	Total      int `json:"total"`
+	Backfilled int `json:"backfilled"`
+}
+
+// CoverProgress mirrors sync progress for the covers view.
+type CoverProgress struct {
+	Current int    `json:"current"`
+	Total   int    `json:"total"`
+	Title   string `json:"title"`
+	Phase   string `json:"phase"` // "resolving" | "downloading"
+}
+
+// FetchCovers backfills cached cover art for every game that does not have
+// one yet. Games with a stored cover URL download it directly; games without
+// one are resolved through the F95Zone public cache API first, then the
+// cookie-backed thread scrape as a fallback. Unassociated games (no F95 URL,
+// no thread ID) are skipped — auto-association is the sync command's job.
+//
+// Runs in the background; progress and completion arrive over the
+// "covers:progress", "covers:complete", and "covers:error" events.
+func (a *App) FetchCovers() error {
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if !a.coverRunning.CompareAndSwap(false, true) {
+		return fmt.Errorf("cover fetch already running")
+	}
+	a.goBackground("covers", func(ctx context.Context) {
+		defer a.coverRunning.Store(false)
+		a.fetchCoversRun(ctx)
+	})
+	return nil
+}
+
+// fetchCoversRun is the FetchCovers worker body.
+func (a *App) fetchCoversRun(ctx context.Context) {
+	runStart := time.Now()
+	games, err := a.db.ListActiveGames("", "")
+	if err != nil {
+		log.Error("cover fetch failed to load games", "error", err)
+		runtime.EventsEmit(a.ctx, "covers:error", map[string]string{
+			"error": fmt.Sprintf("failed to load games: %v", err),
+		})
+		return
+	}
+
+	have := coverSetFromDir()
+	type job struct {
+		game  db.Game
+		cover string // resolved cover URL; "" = could not be found
+	}
+	var jobs []job
+	for _, g := range games {
+		if have[g.ID] {
+			continue
+		}
+		jobs = append(jobs, job{game: g})
+	}
+	total := len(jobs)
+	if total == 0 {
+		log.Info("cover fetch complete", "total", 0, "elapsed", time.Since(runStart))
+		runtime.EventsEmit(a.ctx, "covers:complete", FetchCoversResult{Total: 0})
+		return
+	}
+	log.Info("cover fetch started", "missing", total, "library", len(games))
+
+	// Phase A: resolve cover URLs. Scraping is rate-limited and must stay
+	// serial, so this phase runs one game at a time.
+	coverCookie := ""
+	if cookie, err := browser.GetF95Cookies(); err == nil {
+		coverCookie = cookie
+	}
+	public := scraper.NewPublicAPIWithCookie(coverCookie)
+	client := scraper.NewClient(coverCookie)
+
+	resolved := 0
+	for i := range jobs {
+		if ctx.Err() != nil {
+			break
+		}
+		gameStart := time.Now()
+		if jobs[i].cover == "" {
+			jobs[i].cover = a.resolveCoverURL(ctx, public, client, jobs[i].game)
+		}
+		resolved++
+		source := "none"
+		if jobs[i].cover != "" {
+			source = "url"
+		}
+		log.Info("cover resolved",
+			"game_id", jobs[i].game.ID,
+			"title", jobs[i].game.Title,
+			"source", source,
+			"elapsed", time.Since(gameStart),
+		)
+		runtime.EventsEmit(a.ctx, "covers:progress", CoverProgress{
+			Current: resolved,
+			Total:   total,
+			Title:   jobs[i].game.Title,
+			Phase:   "resolving",
+		})
+	}
+	if ctx.Err() != nil {
+		log.Warn("cover fetch cancelled", "resolved", resolved, "total", total)
+		runtime.EventsEmit(a.ctx, "covers:error", map[string]string{
+			"error": "cover fetch cancelled",
+		})
+		return
+	}
+
+	withURL := 0
+	for i := range jobs {
+		if jobs[i].cover != "" {
+			withURL++
+		}
+	}
+	log.Info("cover downloads starting", "with_url", withURL, "total", total)
+
+	// Phase B: download concurrently. The singleflight in cacheCover makes
+	// these safe to overlap with sync's own cover caching.
+	var mu sync.Mutex
+	var done, fetched, failed, skipped int
+	sem := make(chan struct{}, coverFetchWorkers)
+	var wg sync.WaitGroup
+
+	for i := range jobs {
+		if ctx.Err() != nil {
+			break
+		}
+		j := jobs[i]
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			ok := j.cover != "" && a.cacheCover(j.game.ID, j.cover) != ""
+			mu.Lock()
+			done++
+			switch {
+			case j.cover == "":
+				skipped++
+			case ok:
+				fetched++
+			default:
+				failed++
+			}
+			cur := done
+			title := j.game.Title
+			mu.Unlock()
+
+			runtime.EventsEmit(a.ctx, "covers:progress", CoverProgress{
+				Current: cur,
+				Total:   total,
+				Title:   title,
+				Phase:   "downloading",
+			})
+		}()
+	}
+	wg.Wait()
+
+	// Self-heal: covers cached before the thumbnailing change (or any cover
+	// whose thumbnail is missing) get one locally. No network involved.
+	backfilled := backfillCoverThumbs()
+
+	log.Info("cover fetch complete",
+		"fetched", fetched, "failed", failed, "skipped", skipped,
+		"total", total, "backfilled", backfilled,
+		"elapsed", time.Since(runStart),
+	)
+	runtime.EventsEmit(a.ctx, "covers:complete", FetchCoversResult{
+		Fetched:    fetched,
+		Failed:     failed,
+		Skipped:    skipped,
+		Total:      total,
+		Backfilled: backfilled,
+	})
+}
+
+// resolveCoverURL finds cover art for a game that has no stored cover URL.
+// It tries the cookie-free cache API first (thread ID), then the
+// cookie-backed thread scrape (f95_url). Metadata found along the way is
+// persisted via saveScrapedMeta, which also caches the cover.
+func (a *App) resolveCoverURL(ctx context.Context, public *scraper.PublicAPI, client *scraper.Client, g db.Game) string {
+	if g.F95ThreadID > 0 {
+		log.Debug("cover resolve attempt", "game_id", g.ID, "title", g.Title, "path", "cache-api", "thread_id", g.F95ThreadID)
+		ct, err := public.CacheFullThread(ctx, g.F95ThreadID)
+		if err == nil && ct != nil && ct.ImageURL != "" {
+			log.Debug("cover resolve succeeded", "game_id", g.ID, "title", g.Title, "path", "cache-api", "url", ct.ImageURL)
+			a.saveScrapedMeta(g, ct.Developer, ct.Description, ct.ImageURL)
+			return ct.ImageURL
+		}
+		if err != nil {
+			log.Warn("cover resolve failed", "game_id", g.ID, "title", g.Title, "path", "cache-api", "thread_id", g.F95ThreadID, "error", err)
+		} else {
+			log.Debug("cover resolve no image", "game_id", g.ID, "title", g.Title, "path", "cache-api")
+		}
+	}
+
+	if g.F95URL != "" {
+		log.Debug("cover resolve attempt", "game_id", g.ID, "title", g.Title, "path", "thread-scrape")
+		url := scraper.ResolveScrapeURL(g.F95URL, g.F95ThreadID)
+		data, err := client.ScrapeThreadWithContext(ctx, url)
+		if err == nil && data != nil && data.CoverURL != "" {
+			log.Debug("cover resolve succeeded", "game_id", g.ID, "title", g.Title, "path", "thread-scrape", "url", data.CoverURL)
+			a.saveScrapedMeta(g, data.Developer, data.Overview, data.CoverURL)
+			return data.CoverURL
+		}
+		if err != nil {
+			log.Warn("cover resolve failed", "game_id", g.ID, "title", g.Title, "path", "thread-scrape", "error", err)
+		} else {
+			log.Debug("cover resolve no image", "game_id", g.ID, "title", g.Title, "path", "thread-scrape")
+		}
+	}
+
+	if g.F95ThreadID == 0 && g.F95URL == "" {
+		log.Debug("cover resolve skipped (unassociated)", "game_id", g.ID, "title", g.Title)
+	}
+	return ""
 }
 
 // cacheCover downloads a cover image from coverURL and caches it to
 // config.CoverDir()/<gameID>. It is a no-op if the file already exists.
 // Returns the local cached path, or empty string on failure.
 //
-// Unexported deliberately: the frontend reads covers through GetCachedCovers,
-// and every exported App method becomes part of the Wails binding surface.
+// Concurrent calls for the same game are coalesced: only one download runs,
+// the others wait on the singleflight channel.
+// f95ZoneHost reports whether rawURL targets F95Zone itself (or a
+// subdomain). Cover/attachment URLs live on attachments.f95zone.to.
+func f95ZoneHost(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "f95zone.to" || strings.HasSuffix(host, ".f95zone.to")
+}
+
 func (a *App) cacheCover(gameID int64, coverURL string) string {
 	if coverURL == "" {
 		return ""
 	}
 
+	start := time.Now()
 	coverDir := config.CoverDir()
 	coverPath := filepath.Join(coverDir, strconv.FormatInt(gameID, 10))
 
@@ -1840,9 +2259,35 @@ func (a *App) cacheCover(gameID int64, coverURL string) string {
 		return coverPath
 	}
 
+	// Coalesce concurrent downloads of the same cover.
+	a.coverFetchMu.Lock()
+	if a.coverFetch == nil {
+		a.coverFetch = make(map[int64]chan struct{})
+	}
+	if done, ok := a.coverFetch[gameID]; ok {
+		a.coverFetchMu.Unlock()
+		<-done
+		// The first downloader may have failed — re-check before claiming
+		// success, otherwise a failed fetch would count as cached.
+		if _, err := os.Stat(coverPath); err == nil {
+			return coverPath
+		}
+		return ""
+	}
+	done := make(chan struct{})
+	a.coverFetch[gameID] = done
+	a.coverFetchMu.Unlock()
+
+	defer func() {
+		a.coverFetchMu.Lock()
+		delete(a.coverFetch, gameID)
+		close(done)
+		a.coverFetchMu.Unlock()
+	}()
+
 	// Ensure the cover directory exists.
 	if err := os.MkdirAll(coverDir, 0755); err != nil {
-		slog.Error("failed to create cover directory", "error", err)
+		slog.Error("failed to create cover directory", "game_id", gameID, "error", err)
 		return ""
 	}
 
@@ -1850,12 +2295,12 @@ func (a *App) cacheCover(gameID int64, coverURL string) string {
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequest("GET", coverURL, nil)
 	if err != nil {
-		slog.Error("failed to create cover request", "url", coverURL, "error", err)
+		slog.Error("failed to create cover request", "game_id", gameID, "url", coverURL, "error", err)
 		return ""
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; moxie/0.4)")
-	// F95Zone covers may need auth cookies
-	if strings.Contains(coverURL, "f95zone") {
+	// F95Zone covers may need auth cookies; only send them to F95Zone hosts.
+	if f95ZoneHost(coverURL) {
 		if cookie, err := browser.GetF95Cookies(); err == nil && cookie != "" {
 			req.Header.Set("Cookie", cookie)
 		}
@@ -1863,60 +2308,116 @@ func (a *App) cacheCover(gameID int64, coverURL string) string {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Error("failed to download cover", "url", coverURL, "error", err)
+		slog.Error("failed to download cover", "game_id", gameID, "url", coverURL, "error", err)
 		return ""
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		slog.Warn("cover download returned non-200", "url", coverURL, "status", resp.StatusCode)
+		slog.Warn("cover download returned non-200", "game_id", gameID, "url", coverURL, "status", resp.StatusCode)
 		return ""
 	}
 
 	// Cap the read: coverURL comes from a scraped page, and covers get
-	// base64-encoded into memory for the frontend.
+	// decoded for thumbnails and cached on disk.
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCoverBytes+1))
 	if err != nil {
-		slog.Error("failed to read cover response", "error", err)
+		slog.Error("failed to read cover response", "game_id", gameID, "error", err)
 		return ""
 	}
 
 	if len(data) == 0 {
-		slog.Warn("cover download returned empty body", "url", coverURL)
+		slog.Warn("cover download returned empty body", "game_id", gameID, "url", coverURL)
 		return ""
 	}
 	if int64(len(data)) > maxCoverBytes {
-		slog.Warn("cover exceeds size limit; skipping", "url", coverURL, "limit", maxCoverBytes)
+		slog.Warn("cover exceeds size limit; skipping", "game_id", gameID, "url", coverURL, "limit", maxCoverBytes)
+		return ""
+	}
+	if !knownImageFormat(data) {
+		slog.Warn("cover response is not an image; skipping", "game_id", gameID, "url", coverURL, "size", len(data))
 		return ""
 	}
 
 	if err := os.WriteFile(coverPath, data, 0644); err != nil {
-		slog.Error("failed to write cover file", "path", coverPath, "error", err)
+		slog.Error("failed to write cover file", "game_id", gameID, "path", coverPath, "error", err)
 		return ""
 	}
 
-	slog.Info("cover cached", "gameID", gameID, "path", coverPath, "size", len(data))
+	writeCoverThumb(coverPath)
+	slog.Info("cover cached", "game_id", gameID, "bytes", len(data), "elapsed", time.Since(start))
 	return coverPath
 }
 
-// GetCachedCovers returns a batch map of gameID → base64 data URI for cached
-// covers. Games without cached covers are omitted from the map.
-func (a *App) GetCachedCovers(gameIDs []int64) map[int64]string {
-	result := make(map[int64]string, len(gameIDs))
-	coverDir := config.CoverDir()
+// coverThumbMaxDim bounds the long edge of list-view cover thumbnails. The
+// list rows are ~56px tall; 320px keeps one row sharp on HiDPI screens at a
+// fraction of the full image's bytes.
+const coverThumbMaxDim = 320
 
-	for _, id := range gameIDs {
-		coverPath := filepath.Join(coverDir, strconv.FormatInt(id, 10))
-		data, err := os.ReadFile(coverPath)
-		if err != nil {
-			continue
-		}
-		mime := imageMimeFromPrefix(data)
-		encoded := base64.StdEncoding.EncodeToString(data)
-		result[id] = "data:image/" + mime + ";base64," + encoded
+// writeCoverThumb decodes the cover at coverPath and writes a downscaled
+// JPEG thumbnail to coverPath+".thumb". Best-effort: if the image is already
+// small or fails to decode, no thumbnail is written and the cover server
+// falls back to serving the full image.
+func writeCoverThumb(coverPath string) {
+	data, err := os.ReadFile(coverPath)
+	if err != nil {
+		return
 	}
 
-	return result
+	img, err := decodeCoverImage(data)
+	if err != nil {
+		slog.Warn("failed to decode cover for thumbnail", "path", coverPath, "error", err)
+		return
+	}
+
+	src := img.Bounds()
+	long := src.Dx()
+	if src.Dy() > long {
+		long = src.Dy()
+	}
+	if long <= coverThumbMaxDim {
+		return
+	}
+
+	ratio := float64(coverThumbMaxDim) / float64(long)
+	w := int(float64(src.Dx()) * ratio)
+	h := int(float64(src.Dy()) * ratio)
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, src, draw.Over, nil)
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 82}); err != nil {
+		return
+	}
+	if err := os.WriteFile(coverPath+".thumb", buf.Bytes(), 0644); err != nil {
+		slog.Warn("failed to write cover thumbnail", "path", coverPath, "error", err)
+	}
+}
+
+// decodeCoverImage decodes image bytes by sniffing the format first, so
+// formats stdlib's generic decoder routes to the right codec (webp included).
+func decodeCoverImage(data []byte) (image.Image, error) {
+	switch imageMimeFromPrefix(data) {
+	case "jpeg":
+		return jpeg.Decode(bytes.NewReader(data))
+	case "png":
+		return png.Decode(bytes.NewReader(data))
+	case "webp":
+		return webp.Decode(bytes.NewReader(data))
+	case "gif":
+		img, err := gif.Decode(bytes.NewReader(data))
+		return img, err
+	default:
+		img, _, err := image.Decode(bytes.NewReader(data))
+		return img, err
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2082,10 +2583,11 @@ func (a *App) RenameGame(id int64, newTitle string) error {
 		return fmt.Errorf("game with id %d not found", id)
 	}
 
-	// Rename directory on disk if it still exists.
+	// Rename the directory on disk if it still exists.
+	oldPath := game.Path
+	newPath := game.Path
 	if _, statErr := os.Stat(game.Path); statErr == nil {
-		parent := filepath.Dir(game.Path)
-		newPath := filepath.Join(parent, newTitle)
+		newPath = filepath.Join(filepath.Dir(game.Path), newTitle)
 
 		// Skip if the new path is the same as old.
 		if newPath != game.Path {
@@ -2093,20 +2595,31 @@ func (a *App) RenameGame(id int64, newTitle string) error {
 			if _, existsErr := os.Stat(newPath); existsErr == nil {
 				return fmt.Errorf("target directory already exists: %q", newPath)
 			}
-			if err := os.Rename(game.Path, newPath); err != nil {
-				return fmt.Errorf("renaming directory: %w", err)
-			}
-			slog.Info("renamed game directory", "old", game.Path, "new", newPath)
-			game.Path = newPath
 		}
 	} else {
 		slog.Warn("game directory does not exist, updating title only", "path", game.Path, "id", id)
 	}
 
-	// Update title and path in DB.
+	// Update the database first so a DB failure never leaves a renamed
+	// directory with a stale path; if the on-disk rename then fails, roll
+	// the path back.
 	game.Title = newTitle
+	game.Path = newPath
 	if err := a.db.UpdateGame(game); err != nil {
 		return fmt.Errorf("updating game in database: %w", err)
+	}
+
+	if newPath != oldPath {
+		if err := os.Rename(oldPath, newPath); err != nil {
+			game.Path = oldPath
+			if rbErr := a.db.UpdateGame(game); rbErr != nil {
+				slog.Error("rename failed and DB rollback also failed",
+					"game_id", id, "old", oldPath, "new", newPath,
+					"rename_err", err, "rollback_err", rbErr)
+			}
+			return fmt.Errorf("renaming directory: %w", err)
+		}
+		slog.Info("renamed game directory", "old", oldPath, "new", newPath)
 	}
 
 	slog.Info("game renamed", "id", id, "title", newTitle)
@@ -2138,8 +2651,9 @@ func (a *App) ListDeletedGames() ([]DesktopGameSummary, error) {
 	}
 
 	result := make([]DesktopGameSummary, 0, len(games))
+	covers := coverSetFromDir()
 	for _, g := range games {
-		result = append(result, gameToSummary(&g))
+		result = append(result, gameToSummaryCovers(&g, covers))
 	}
 	return result, nil
 }
@@ -2148,20 +2662,21 @@ func (a *App) ListDeletedGames() ([]DesktopGameSummary, error) {
 // Edit game fields
 // ---------------------------------------------------------------------------
 
-// EditGameFields holds the editable fields for a game.
+// EditGameFields holds the editable fields for a game. All fields are
+// nullable: nil means "leave unchanged", while a pointer to an empty string
+// explicitly clears the field. This lets the detail view clear a wrong
+// executable path or a stale note without wiping unrelated fields.
 type EditGameFields struct {
-	Engine  string `json:"engine"`
-	Version string `json:"version"`
-	ExePath string `json:"exePath"`
-	Notes   string `json:"notes"`
+	Engine  *string `json:"engine"`
+	Version *string `json:"version"`
+	ExePath *string `json:"exePath"`
+	Notes   *string `json:"notes"`
 }
 
 // EditGame updates multiple editable fields on a game in one call.
 //
-// An empty string means "leave unchanged" — callers send "" for every field
-// they are not editing. Consequently these fields cannot be cleared through
-// this call; clearing would need nullable fields to tell "unset" apart from
-// "set to empty".
+// A nil field means "leave unchanged"; a pointer to "" clears the field.
+// Callers send only the fields they are editing.
 func (a *App) EditGame(id int64, fields EditGameFields) error {
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
@@ -2175,18 +2690,17 @@ func (a *App) EditGame(id int64, fields EditGameFields) error {
 		return fmt.Errorf("game with id %d not found", id)
 	}
 
-	// Only update non-empty fields (empty = keep current)
-	if fields.Engine != "" {
-		game.Engine = fields.Engine
+	if fields.Engine != nil {
+		game.Engine = *fields.Engine
 	}
-	if fields.Version != "" {
-		game.Version = fields.Version
+	if fields.Version != nil {
+		game.Version = *fields.Version
 	}
-	if fields.ExePath != "" {
-		game.ExePath = fields.ExePath
+	if fields.ExePath != nil {
+		game.ExePath = *fields.ExePath
 	}
-	if fields.Notes != "" {
-		game.Notes = fields.Notes
+	if fields.Notes != nil {
+		game.Notes = *fields.Notes
 	}
 
 	return a.db.UpdateGame(game)
@@ -2272,11 +2786,12 @@ func (a *App) GetCollectionGames(collectionID int64) ([]DesktopGameSummary, erro
 	}
 
 	result := make([]DesktopGameSummary, 0, len(games))
+	covers := coverSetFromDir()
 	for _, g := range games {
 		if g == nil || !g.DeletedAt.IsZero() {
 			continue
 		}
-		result = append(result, gameToSummary(g))
+		result = append(result, gameToSummaryCovers(g, covers))
 	}
 	return result, nil
 }
@@ -2328,8 +2843,8 @@ func (a *App) RemoveGameFromCollection(gameID, collectionID int64) error {
 
 // DuplicateGroup holds games that share a normalized title.
 type DuplicateGroup struct {
-	Title string              `json:"title"`
-	Count int                 `json:"count"`
+	Title string               `json:"title"`
+	Count int                  `json:"count"`
 	Games []DesktopGameSummary `json:"games"`
 }
 
@@ -2356,7 +2871,7 @@ func (a *App) FindDuplicateGames() ([]DuplicateGroup, error) {
 	}
 
 	// Build result, keeping only groups with 2+ games.
-	var result []DuplicateGroup
+	result := make([]DuplicateGroup, 0, len(groups))
 	for _, group := range groups {
 		if len(group) < 2 {
 			continue
@@ -2490,6 +3005,8 @@ type SyncProgress struct {
 type SyncResult struct {
 	Associated int      `json:"associated"`
 	Updated    int      `json:"updated"`
+	Skipped    int      `json:"skipped"` // games within the 24h search/check cooldown
+	NoMatch    int      `json:"noMatch"` // games searched without a good match
 	Errors     []string `json:"errors"`
 }
 
@@ -2497,24 +3014,41 @@ type SyncResult struct {
 // Phase 1: Auto-associate unassociated games with F95Zone threads.
 // Phase 2: Check associated games for version updates.
 //
-// The F95Zone cookie is read from the browser here rather than passed in by
-// the frontend — thread pages are login-walled, and an empty cookie makes
-// every request in both phases silently return nothing useful.
-func (a *App) SyncAllGames() error {
+// Sync runs cookie-free through F95Zone's public JSON endpoints (checker.php
+// for bulk versions, latest_data.php for search, the F95Checker cache API for
+// thread metadata) so it works even when the browser session is expired or
+// blocked. The cookie-based scrape path is kept as a fallback when the public
+// endpoints are unavailable.
+// SyncAllGames syncs the library: phase 1 auto-associates unassociated games
+// with F95Zone threads, phase 2 checks associated games for updates. When
+// force is true the 24h cooldown is bypassed for both phases, and every
+// associated game's thread is scraped so download links are refreshed (the
+// cheap bulk/cache-API paths never see links). Mirrors the CLI's
+// `sync --force`.
+func (a *App) SyncAllGames(force bool) error {
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
+	if !a.syncRunning.CompareAndSwap(false, true) {
+		return fmt.Errorf("a sync is already running")
+	}
 
-	cookie, err := browser.GetF95Cookies()
-	if err != nil || cookie == "" {
-		return fmt.Errorf("F95Zone cookies not available. Log into F95Zone in your browser first")
+	cookie, cookieErr := browser.GetF95Cookies()
+	if cookieErr != nil {
+		cookie = ""
 	}
 
 	a.goBackground("sync", func(ctx context.Context) {
+		defer a.syncRunning.Store(false)
 		client := scraper.NewClient(cookie)
+		// The shared PublicAPI serves phase 2 (bulk versions, cache-API
+		// metadata). Phase 1 workers create their own per-worker instances.
+		public := scraper.NewPublicAPIWithCookie(cookie)
 		var allErrors []string
 		associated := 0
 		updated := 0
+		skipped := 0
+		noMatch := 0
 
 		// Phase 1: Auto-association.
 		unassociated, err := a.db.GamesWithoutF95URL()
@@ -2524,76 +3058,17 @@ func (a *App) SyncAllGames() error {
 			allErrors = append(allErrors, errMsg)
 		} else if len(unassociated) > 0 {
 			slog.Info("sync phase 1: associating games", "count", len(unassociated))
-			total := len(unassociated)
-
-			for i, game := range unassociated {
-				if ctx.Err() != nil {
-					return
-				}
-				runtime.EventsEmit(a.ctx, "sync:progress", SyncProgress{
-					Current: i + 1,
-					Total:   total,
-					Title:   game.Title,
-					Phase:   "associating",
-				})
-
-				query := scraper.SanitizeTitle(game.Title)
-				if query == "" {
-					query = game.Title
-				}
-
-				results, searchErr := client.SearchF95Zone(query)
-				if searchErr != nil {
-					allErrors = append(allErrors, fmt.Sprintf("%s: search failed: %v", game.Title, searchErr))
-					continue
-				}
-
-				if len(results) == 0 {
-					continue
-				}
-
-				// Use the first result as best match.
-				best := results[0]
-				data, scrapeErr := client.ScrapeThread(best.URL)
-				if scrapeErr != nil {
-					allErrors = append(allErrors, fmt.Sprintf("%s: scrape failed: %v", game.Title, scrapeErr))
-					continue
-				}
-
-				scraper.ApplyThreadData(&game, data, best.URL)
-				if err := a.db.UpdateGame(&game); err != nil {
-					allErrors = append(allErrors, fmt.Sprintf("%s: save failed: %v", game.Title, err))
-					continue
-				}
-
-				// Save scraped metadata.
-				if data.Developer != "" || data.Overview != "" || data.CoverURL != "" {
-					meta := &db.ScrapedMeta{
-						GameID:    game.ID,
-						Developer: data.Developer,
-						Overview:  data.Overview,
-						CoverURL:  data.CoverURL,
-					}
-					if err := a.db.UpsertScrapedMeta(meta); err != nil {
-						slog.Warn("failed to save metadata", "game", game.Title, "error", err)
-					}
-					if data.CoverURL != "" {
-						a.cacheCover(game.ID, data.CoverURL)
-					}
-				}
-
-				associated++
-
-				runtime.EventsEmit(a.ctx, "sync:game-done", map[string]interface{}{
-					"id":      game.ID,
-					"title":   game.Title,
-					"status":  game.Status,
-					"version": data.Version,
-				})
+			p1, blocked := a.syncPhase1Associate(ctx, unassociated, client, cookie, force, &allErrors)
+			skipped += p1.skipped
+			associated = p1.associated
+			noMatch = p1.noMatch
+			if blocked {
+				a.emitSyncBlocked()
+				return
 			}
 		}
 
-		// Phase 2: Version updates.
+		// Phase 2: Version updates — bulk cookie-free check first.
 		trackable, err := a.db.GamesWithF95URL()
 		if err != nil {
 			errMsg := fmt.Sprintf("failed to load trackable games: %v", err)
@@ -2601,56 +3076,819 @@ func (a *App) SyncAllGames() error {
 			allErrors = append(allErrors, errMsg)
 		} else if len(trackable) > 0 {
 			slog.Info("sync phase 2: checking for updates", "count", len(trackable))
-			total := len(trackable)
-
-			for i, game := range trackable {
-				if ctx.Err() != nil {
-					return
-				}
-				runtime.EventsEmit(a.ctx, "sync:progress", SyncProgress{
-					Current: i + 1,
-					Total:   total,
-					Title:   game.Title,
-					Phase:   "checking-updates",
-				})
-
-				url := scraper.ResolveScrapeURL(game.F95URL, game.F95ThreadID)
-				if url == "" {
-					continue
-				}
-
-				data, scrapeErr := client.ScrapeThread(url)
-				if scrapeErr != nil {
-					allErrors = append(allErrors, fmt.Sprintf("%s: version check failed: %v", game.Title, scrapeErr))
-					continue
-				}
-
-				if data.Version != "" && data.Version != game.LatestVersion {
-					game.LatestVersion = data.Version
-					if err := a.db.UpdateGame(&game); err != nil {
-						allErrors = append(allErrors, fmt.Sprintf("%s: save version failed: %v", game.Title, err))
-						continue
-					}
-					updated++
-
-					runtime.EventsEmit(a.ctx, "sync:game-done", map[string]interface{}{
-						"id":      game.ID,
-						"title":   game.Title,
-						"status":  game.Status,
-						"version": data.Version,
-					})
-				}
+			var phase2Skipped int
+			var blocked bool
+			updated, phase2Skipped, blocked = a.syncPhase2CheckUpdates(ctx, trackable, public, client, cookie, force, &allErrors)
+			skipped += phase2Skipped
+			if blocked {
+				a.emitSyncBlocked()
+				return
 			}
 		}
 
 		runtime.EventsEmit(a.ctx, "sync:complete", SyncResult{
 			Associated: associated,
 			Updated:    updated,
+			Skipped:    skipped,
+			NoMatch:    noMatch,
 			Errors:     allErrors,
 		})
 	})
 
 	return nil
+}
+
+// syncWorkers is the number of concurrent auto-association workers in the
+// desktop sync. Each worker owns its own PublicAPI client, so F95Zone pacing
+// applies per worker instead of serializing every search through one shared
+// client. Matches the CLI's --parallel default.
+const syncWorkers = 3
+
+// syncCooldown mirrors the CLI's 24h update-check cooldown: games whose last
+// association search or version check found nothing are skipped on repeat
+// syncs instead of re-running the same work. SyncAllGames(force=true)
+// bypasses it — re-searching, re-checking, and scraping every thread for
+// download links, exactly like the CLI's `sync --force`.
+const syncCooldown = 24 * time.Hour
+
+// phase1Result is the outcome of the auto-association phase.
+type phase1Result struct {
+	skipped    int // games within the search cooldown
+	associated int
+	noMatch    int // searched but no good match (cooldown stamped)
+}
+
+// syncJob is one auto-association unit of work. detEngine is precomputed so
+// the engine-consistency checks don't re-detect per request.
+type syncJob struct {
+	game      db.Game
+	query     string
+	detEngine engine.Result
+	memo      *queryMemo
+}
+
+// queryMemo shares one search outcome among every game whose sanitized
+// query collides. Platform copies of the same game ("Game [Win]" /
+// "Game [Mac]") collapse to a single search, but each copy still gets its
+// own association — the CLI instead drops duplicate queries entirely.
+type queryMemo struct {
+	query     string
+	mu        sync.Mutex
+	done      bool
+	latestRes []scraper.LatestSearchResult
+	searchErr error
+}
+
+// search runs the cookie-free title search once for the memo's query.
+func (m *queryMemo) search(ctx context.Context, public *scraper.PublicAPI) ([]scraper.LatestSearchResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.done {
+		m.latestRes, m.searchErr = public.SearchTitle(ctx, m.query)
+		m.done = true
+	}
+	return m.latestRes, m.searchErr
+}
+
+// syncPhase1Associate associates unassociated games with F95Zone threads
+// using a bounded worker pool. Returns the phase counts and whether
+// F95Zone blocked the run (the pool aborts on a block instead of grinding
+// through the queue one futile request at a time).
+//
+// Games searched recently without success are skipped (syncCooldown), and
+// identical sanitized queries share one search via queryMemo. The
+// persistent association cache is consulted before any network request, so
+// threads identified by an earlier run (CLI or desktop) are reused
+// directly. Game-row writes and error-list appends are serialized through
+// one mutex — the workers share the single SQLite connection. Scraped-meta
+// upserts and cover downloads are not under that mutex but are safe: WAL
+// mode plus a 5s busy timeout serialize writers at the SQLite layer.
+func (a *App) syncPhase1Associate(ctx context.Context, unassociated []db.Game, client *scraper.Client, cookie string, force bool, allErrors *[]string) (phase1Result, bool) {
+	var res phase1Result
+	memos := make(map[string]*queryMemo)
+	var jobs []syncJob
+	for _, g := range unassociated {
+		if !force && !g.VersionCheckedAt.IsZero() && time.Since(g.VersionCheckedAt) < syncCooldown {
+			res.skipped++
+			continue
+		}
+		query := scraper.SanitizeTitle(g.Title)
+		if query == "" {
+			query = g.Title
+		}
+		memo, ok := memos[query]
+		if !ok {
+			memo = &queryMemo{query: query}
+			memos[query] = memo
+		}
+		jobs = append(jobs, syncJob{
+			game:      g,
+			query:     query,
+			detEngine: engine.Detect(g.Path),
+			memo:      memo,
+		})
+	}
+
+	total := len(jobs)
+	if total == 0 {
+		slog.Info("sync phase 1: nothing to associate", "cooldown_skipped", res.skipped)
+		return res, false
+	}
+	slog.Info("sync phase 1: associating games",
+		"total", total, "cooldown_skipped", res.skipped, "workers", syncWorkers)
+
+	scraper.LoadAssociationCache()
+	defer scraper.SaveAssociationCache()
+
+	// Buffered so cancellation can never deadlock the pool: if every worker
+	// exits early on ctx cancellation, the remaining sends still complete.
+	jobCh := make(chan syncJob, len(jobs))
+	var wg sync.WaitGroup
+	var associatedCount atomic.Int64
+	var noMatchCount atomic.Int64
+	var blocked atomic.Bool
+	var saveMu sync.Mutex
+
+	// Progress is emitted from a single goroutine so the bar only moves
+	// forward — events from three workers could otherwise arrive out of
+	// order and make it visibly regress.
+	progressCh := make(chan string, syncWorkers)
+	emitterDone := make(chan struct{})
+	go func() {
+		defer close(emitterDone)
+		done := 0
+		for title := range progressCh {
+			done++
+			runtime.EventsEmit(a.ctx, "sync:progress", SyncProgress{
+				Current: done,
+				Total:   total,
+				Title:   title,
+				Phase:   "associating",
+			})
+		}
+	}()
+
+	for w := 0; w < syncWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Each worker gets its own PublicAPI so F95Zone's own endpoints
+			// (search, checker) are paced per worker — a shared client would
+			// serialize the whole pool back to one request per delay. The
+			// session cookie keeps the search under the anonymous quota.
+			public := scraper.NewPublicAPIWithCookie(cookie)
+			for job := range jobCh {
+				if ctx.Err() != nil {
+					return
+				}
+				game := job.game
+				assoc, noMatch, b := a.associateGame(ctx, &game, job.query, job.detEngine, job.memo, client, cookie, public, allErrors, &saveMu)
+				if b {
+					blocked.Store(true)
+					return
+				}
+				if assoc {
+					associatedCount.Add(1)
+				}
+				if noMatch {
+					noMatchCount.Add(1)
+				}
+				progressCh <- game.Title
+			}
+		}()
+	}
+	for _, j := range jobs {
+		jobCh <- j
+	}
+	close(jobCh)
+	wg.Wait()
+	close(progressCh)
+	<-emitterDone
+
+	res.associated = int(associatedCount.Load())
+	res.noMatch = int(noMatchCount.Load())
+	return res, blocked.Load()
+}
+
+// associateGame searches for and associates one game with its F95Zone
+// thread. Paths, in order:
+//
+//  1. Persistent association cache — a thread identified by an earlier run.
+//  2. Cookie-free search (latest-updates endpoint) + cache API thread data.
+//  3. Cookie-based search + direct thread scrape (fallback layer).
+//
+// Engine-consistency is enforced like the CLI: a thread whose prefix IDs or
+// tags positively contradict the detected engine is skipped, never
+// associated. Searches that produce no association record the search time
+// so repeat runs skip the game within the cooldown window (syncCooldown).
+//
+// Returns whether the game was associated, whether the search found no
+// match (cooldown stamped), and whether F95Zone blocked the requests.
+// saveMu serializes game-row writes and error-list appends across workers.
+func (a *App) associateGame(ctx context.Context, game *db.Game, query string, detEngine engine.Result, memo *queryMemo, client *scraper.Client, cookie string, public *scraper.PublicAPI, allErrors *[]string, saveMu *sync.Mutex) (associated, noMatch, blocked bool) {
+	// Path 1: known thread from the association cache — no search needed.
+	// The cached mapping was verified by an earlier run, so the match is
+	// treated as exact (score 1.0) and thread data may be applied freely.
+	if cachedID := scraper.GetCachedThreadID(query); cachedID > 0 {
+		ct, cacheErr := public.CacheFullThread(ctx, cachedID)
+		if cacheErr == nil {
+			scraper.ApplyCacheThreadData(game, ct, cachedID, nil, 1.0)
+			game.VersionCheckedAt = time.Now()
+			saveMu.Lock()
+			err := a.db.UpdateGame(game)
+			saveMu.Unlock()
+			if err != nil {
+				a.appendSyncError(allErrors, saveMu, "%s: save failed: %v", game.Title, err)
+				return false, false, false
+			}
+			a.saveScrapedMeta(*game, ct.Developer, ct.Description, ct.ImageURL)
+			a.emitSyncGameDone(*game, ct.Version)
+			return true, false, false
+		}
+		if isBlockedErr(cacheErr) {
+			return false, false, true
+		}
+		// Cache API unavailable — fall back to scraping the cached thread
+		// directly (cookie path), like the CLI does.
+		if cookie != "" {
+			ok, b := a.associateByScrape(ctx, game, scraper.ThreadURL(cachedID), detEngine, client, query, allErrors, saveMu)
+			return ok, false, b
+		}
+		slog.Debug("cached association unusable; falling back to search",
+			"game", game.Title, "thread", cachedID, "error", cacheErr)
+	}
+
+	// Cookie-free search first, cookie search as fallback. The memo shares
+	// one search outcome across every game with the same sanitized query.
+	latestRes, searchErr := memo.search(ctx, public)
+	if isBlockedErr(searchErr) {
+		return false, false, true
+	}
+	useCookiePath := false
+	if searchErr != nil {
+		slog.Warn("latest-updates search failed, falling back to cookie search",
+			"game", game.Title, "error", searchErr)
+		useCookiePath = true
+	}
+	if searchErr == nil && len(latestRes) == 0 {
+		useCookiePath = true
+	}
+
+	if useCookiePath {
+		results, searchErr := client.SearchF95Zone(query)
+		if isBlockedErr(searchErr) || client.Blocked() {
+			return false, false, true
+		}
+		if searchErr != nil {
+			a.appendSyncError(allErrors, saveMu, "%s: search failed: %v", game.Title, searchErr)
+			return false, false, false
+		}
+		if len(results) == 0 {
+			a.markSearchDone(game, saveMu)
+			return false, true, false
+		}
+
+		// Score candidates and pick the best non-game match.
+		best := a.pickBestSearchResult(*game, detEngine, results)
+		if best == nil {
+			a.markSearchDone(game, saveMu)
+			return false, true, false
+		}
+		ok, b := a.associateByScrape(ctx, game, best.URL, detEngine, client, query, allErrors, saveMu)
+		return ok, false, b
+	}
+
+	// Cookie-free association via the cache API.
+	best, bestScore := a.pickBestLatestResult(*game, detEngine, latestRes)
+	if best == nil {
+		a.markSearchDone(game, saveMu)
+		return false, true, false
+	}
+	ct, cacheErr := public.CacheFullThread(ctx, best.ThreadID)
+	if cacheErr != nil {
+		if isBlockedErr(cacheErr) {
+			return false, false, true
+		}
+		// Cache API unavailable — cookie scrape of the candidate (the CLI
+		// falls through to its direct-scrape path too).
+		if cookie != "" {
+			ok, b := a.associateByScrape(ctx, game, best.URL, detEngine, client, query, allErrors, saveMu)
+			return ok, false, b
+		}
+		a.appendSyncError(allErrors, saveMu, "%s: cache fetch failed: %v", game.Title, cacheErr)
+		return false, false, false
+	}
+	// Engine-consistency refusal (mirrors CLI sync.go): the cache API type
+	// field is authoritative (correct numbering). The search result's prefix
+	// array uses an unrelated numbering, so it is never consulted here — a
+	// positively contradicting engine means this thread belongs to a
+	// different game.
+	if eng := ct.Engine; eng != "" {
+		if !engine.EngineMatchesThread(detEngine, []string{eng}, best.Title) {
+			slog.Warn("engine mismatch; skipping association",
+				"game", game.Title, "engine", detEngine.Engine, "thread", best.Title)
+			return false, false, false
+		}
+	}
+	scraper.ApplyCacheThreadData(game, ct, best.ThreadID, best.Prefixes, bestScore)
+	if game.LatestVersion == "" {
+		game.LatestVersion = best.Version
+	}
+	game.VersionCheckedAt = time.Now()
+	saveMu.Lock()
+	err := a.db.UpdateGame(game)
+	saveMu.Unlock()
+	if err != nil {
+		a.appendSyncError(allErrors, saveMu, "%s: save failed: %v", game.Title, err)
+		return false, false, false
+	}
+	scraper.SetCachedThreadID(query, best.ThreadID)
+	a.saveScrapedMeta(*game, ct.Developer, ct.Description, ct.ImageURL)
+
+	runtime.EventsEmit(a.ctx, "sync:game-done", map[string]interface{}{
+		"id":      game.ID,
+		"title":   game.Title,
+		"status":  game.Status,
+		"version": ct.Version,
+	})
+	return true, false, false
+}
+
+// associateByScrape associates a game by scraping a thread URL directly
+// (cookie path). Used as the fallback layer when the cache API is
+// unavailable for a known thread. Returns whether the game was associated
+// and whether the requests were blocked.
+func (a *App) associateByScrape(ctx context.Context, game *db.Game, url string, detEngine engine.Result, client *scraper.Client, query string, allErrors *[]string, saveMu *sync.Mutex) (bool, bool) {
+	if client.Blocked() {
+		return false, true
+	}
+	data, scrapeErr := client.ScrapeThread(url)
+	if scrapeErr != nil {
+		if isBlockedErr(scrapeErr) {
+			return false, true
+		}
+		a.appendSyncError(allErrors, saveMu, "%s: scrape failed: %v", game.Title, scrapeErr)
+		return false, false
+	}
+
+	// Engine-consistency refusal (CLI sync.go:616): scraped metadata that
+	// positively contradicts the detected engine means this is the wrong
+	// thread — never associate it.
+	if !engine.EngineMatchesThread(detEngine, data.Tags, data.Title) {
+		slog.Warn("engine mismatch; skipping association",
+			"game", game.Title, "engine", detEngine.Engine, "thread", data.Title)
+		return false, false
+	}
+
+	scraper.ApplyThreadData(game, data, url)
+	game.VersionCheckedAt = time.Now()
+	saveMu.Lock()
+	err := a.db.UpdateGame(game)
+	saveMu.Unlock()
+	if err != nil {
+		a.appendSyncError(allErrors, saveMu, "%s: save failed: %v", game.Title, err)
+		return false, false
+	}
+	if data.ThreadID > 0 {
+		scraper.SetCachedThreadID(query, data.ThreadID)
+	}
+	a.saveScrapedMeta(*game, data.Developer, data.Overview, data.CoverURL)
+	a.emitSyncGameDone(*game, data.Version)
+	return true, false
+}
+
+// markSearchDone records that a game's association search produced no match
+// so repeat syncs skip it within the cooldown window. Best-effort — a failed
+// write only costs a re-search later.
+func (a *App) markSearchDone(game *db.Game, saveMu *sync.Mutex) {
+	game.VersionCheckedAt = time.Now()
+	saveMu.Lock()
+	defer saveMu.Unlock()
+	if err := a.db.UpdateGame(game); err != nil {
+		slog.Warn("failed to update search cooldown", "game", game.Title, "error", err)
+	}
+}
+
+// appendSyncError appends a formatted message to the sync error list under
+// saveMu — the phase-1 workers share the list. Callers outside the pool
+// (phase 2) append directly; they run on the single sync goroutine.
+func (a *App) appendSyncError(allErrors *[]string, saveMu *sync.Mutex, format string, args ...any) {
+	saveMu.Lock()
+	defer saveMu.Unlock()
+	*allErrors = append(*allErrors, fmt.Sprintf(format, args...))
+}
+
+// isBlockedErr reports whether an error is a scraper block (Cloudflare
+// challenge, rate limit, or IP block). A block aborts the run — the CLI's
+// circuit breaker does the same — instead of producing one futile error
+// per remaining game.
+func isBlockedErr(err error) bool {
+	var be *scraper.BlockedError
+	return errors.As(err, &be)
+}
+
+// emitSyncBlocked surfaces a block to the frontend. The sync:error event
+// clears the syncing state so the UI doesn't hang on a dead run.
+func (a *App) emitSyncBlocked() {
+	msg := "F95Zone blocked the sync (Cloudflare challenge or rate limit) — refresh your F95Zone session or try again later"
+	slog.Warn(msg)
+	runtime.EventsEmit(a.ctx, "sync:error", map[string]string{"error": msg})
+}
+
+// syncPhase2CheckUpdates checks associated games for version updates,
+// mirroring the CLI's RunUpdateCheck: a bulk checker.php pass, then the
+// cache API for threads checker.php doesn't track, then cookie scraping
+// for thread-ID-less games. Games checked within the cooldown window are
+// skipped, and every checked game has its check time persisted so repeat
+// syncs stay cheap. Returns (updates found, cooldown-skipped, blocked).
+func (a *App) syncPhase2CheckUpdates(ctx context.Context, trackable []db.Game, public *scraper.PublicAPI, client *scraper.Client, cookie string, force bool, allErrors *[]string) (updated, skipped int, blocked bool) {
+	// Capture the previous check times before the loop stamps new ones —
+	// the metadata refresh gates on them.
+	prevChecks := make(map[int64]time.Time, len(trackable))
+	active := make([]db.Game, 0, len(trackable))
+	for _, g := range trackable {
+		prevChecks[g.F95ThreadID] = g.VersionCheckedAt
+		if !force && !g.VersionCheckedAt.IsZero() && time.Since(g.VersionCheckedAt) < syncCooldown {
+			skipped++
+			continue
+		}
+		active = append(active, g)
+	}
+	if len(active) == 0 {
+		slog.Info("sync phase 2: all games within check cooldown", "skipped", skipped)
+		return 0, skipped, false
+	}
+	slog.Info("sync phase 2: checking for updates",
+		"count", len(active), "cooldown_skipped", skipped, "force", force)
+	total := len(active)
+
+	// The cheap bulk/cache-API paths never carry download links, so a forced
+	// sync skips them entirely and cookie-scrapes every thread instead —
+	// that's what refreshes the Downloads tab.
+	var versions map[int64]string
+	if !force {
+		var bulkIDs []int64
+		for _, g := range active {
+			if g.F95ThreadID > 0 {
+				bulkIDs = append(bulkIDs, g.F95ThreadID)
+			}
+		}
+
+		var bulkErr error
+		versions, bulkErr = public.BulkVersions(ctx, bulkIDs)
+		if bulkErr != nil {
+			slog.Warn("bulk version API unavailable, falling back to per-game scrape",
+				"error", bulkErr)
+			*allErrors = append(*allErrors, fmt.Sprintf("bulk version API unavailable (%v) — fell back to per-game scraping", bulkErr))
+			blocked = a.syncPhase2Fallback(ctx, client, active, allErrors, &updated)
+			return updated, skipped, blocked
+		}
+	}
+
+	for i := range active {
+		if ctx.Err() != nil {
+			return updated, skipped, false
+		}
+		game := &active[i]
+		runtime.EventsEmit(a.ctx, "sync:progress", SyncProgress{
+			Current: i + 1,
+			Total:   total,
+			Title:   game.Title,
+			Phase:   "checking-updates",
+		})
+
+		var isUpdate, block bool
+		if force {
+			isUpdate, block = a.syncPhase2ScrapeOne(ctx, game, client, allErrors)
+		} else {
+			isUpdate, block = a.checkGameVersion(ctx, game, public, client, cookie, versions, allErrors)
+		}
+		if block {
+			return updated, skipped, true
+		}
+		game.VersionCheckedAt = time.Now()
+		if err := a.db.UpdateGame(game); err != nil {
+			*allErrors = append(*allErrors, fmt.Sprintf("%s: save version failed: %v", game.Title, err))
+			continue
+		}
+		if isUpdate {
+			updated++
+			a.emitSyncGameDone(*game, game.LatestVersion)
+		}
+	}
+
+	// Refresh status/tags via the cache API for threads that changed since
+	// the previous check. Best effort. Forced runs already scraped the full
+	// thread, so this would be redundant.
+	if !force {
+		a.syncPhase2MetadataRefresh(ctx, active, prevChecks, public, allErrors)
+	}
+	return updated, skipped, false
+}
+
+// checkGameVersion determines the current F95Zone version for one game:
+// checker.php bulk data when the thread is tracked, the cache API for
+// untracked threads, or a cookie scrape for thread-ID-less games. It
+// updates game fields in place (the caller applies the cooldown stamp and
+// persists). Returns whether the version counts as an update and whether
+// the requests were blocked.
+func (a *App) checkGameVersion(ctx context.Context, game *db.Game, public *scraper.PublicAPI, client *scraper.Client, cookie string, versions map[int64]string, allErrors *[]string) (isUpdate, blocked bool) {
+	var latest string
+
+	if v, tracked := versions[game.F95ThreadID]; tracked {
+		// checker.php knows this thread.
+		latest = v
+	} else if game.F95ThreadID > 0 {
+		// Untracked by checker.php — ask the cache API (CLI pass 2).
+		ct, cacheErr := public.CacheFullThread(ctx, game.F95ThreadID)
+		if cacheErr != nil {
+			if isBlockedErr(cacheErr) {
+				return false, true
+			}
+			if errors.Is(cacheErr, scraper.ErrThreadNotFound) {
+				return false, false // privated/deleted thread — nothing to check
+			}
+			// Cache API unavailable — cookie scrape fallback.
+			if cookie != "" {
+				return a.syncPhase2ScrapeOne(ctx, game, client, allErrors)
+			}
+			*allErrors = append(*allErrors, fmt.Sprintf("%s: cache version check failed: %v", game.Title, cacheErr))
+			return false, false
+		}
+		latest = ct.Version
+		if ct.Status != "" && ct.Status != game.Status {
+			game.Status = ct.Status
+		}
+		a.saveScrapedMeta(*game, ct.Developer, ct.Description, ct.ImageURL)
+	} else {
+		// Thread-ID-less (legacy association) — cookie scrape.
+		if cookie == "" {
+			*allErrors = append(*allErrors, fmt.Sprintf("%s: cannot check version (no thread ID and no F95Zone cookies)", game.Title))
+			return false, false
+		}
+		return a.syncPhase2ScrapeOne(ctx, game, client, allErrors)
+	}
+
+	// Version comparison — both sides qualifier-stripped so stored
+	// qualifiers ("v1.03 + DLC") don't surface as phantom updates.
+	knownVer := game.Version
+	if knownVer == "" {
+		knownVer = game.LatestVersion
+	}
+	knownVer = scraper.StripVersionQualifier(knownVer)
+	if latest != "" && knownVer != "" {
+		switch version.Compare(latest, knownVer) {
+		case version.Newer, version.Changed:
+			isUpdate = true
+		}
+	}
+	if latest != "" && latest != game.LatestVersion {
+		game.LatestVersion = latest
+	}
+	return isUpdate, false
+}
+
+// syncPhase2ScrapeOne scrapes a game's thread via the cookie path and
+// updates game fields with the fresh data. Returns whether the version
+// counts as an update and whether the requests were blocked. The caller
+// applies the cooldown stamp and persists the game.
+func (a *App) syncPhase2ScrapeOne(ctx context.Context, game *db.Game, client *scraper.Client, allErrors *[]string) (isUpdate, blocked bool) {
+	if client.Blocked() {
+		return false, true
+	}
+	url := scraper.ResolveScrapeURL(game.F95URL, game.F95ThreadID)
+	if url == "" {
+		return false, false
+	}
+	data, scrapeErr := client.ScrapeThread(url)
+	if scrapeErr != nil {
+		if isBlockedErr(scrapeErr) {
+			return false, true
+		}
+		*allErrors = append(*allErrors, fmt.Sprintf("%s: version check failed: %v", game.Title, scrapeErr))
+		return false, false
+	}
+	if data.Status != "" && data.Status != game.Status {
+		game.Status = data.Status
+	}
+	if len(data.Tags) > 0 {
+		game.Tags = data.Tags
+	}
+	if data.Developer != "" || data.Overview != "" || data.CoverURL != "" {
+		a.saveScrapedMeta(*game, data.Developer, data.Overview, data.CoverURL)
+	}
+
+	// Refresh download links from the scraped thread (diff-and-apply, so
+	// unchanged URLs keep their IDs and dead state).
+	if len(data.DownloadLinks) > 0 {
+		slog.Info("refreshing download links", "game", game.Title, "count", len(data.DownloadLinks))
+		a.syncDownloadLinks(game.ID, data.DownloadLinks)
+	}
+
+	latest := data.Version
+	knownVer := game.Version
+	if knownVer == "" {
+		knownVer = game.LatestVersion
+	}
+	knownVer = scraper.StripVersionQualifier(knownVer)
+	if latest != "" && knownVer != "" {
+		switch version.Compare(latest, knownVer) {
+		case version.Newer, version.Changed:
+			isUpdate = true
+		}
+	}
+	if latest != "" && latest != game.LatestVersion {
+		game.LatestVersion = latest
+	}
+	return isUpdate, false
+}
+
+// pickBestSearchResult scores cookie-search candidates and returns the best
+// non-game match above the 0.3 threshold. Engine compatibility is enforced
+// separately by associateByScrape, which has the scraped thread tags.
+func (a *App) pickBestSearchResult(game db.Game, detEngine engine.Result, results []scraper.SearchResult) *scraper.SearchResult {
+	engVariants, hasEngVariants := engine.EngineTagVariants[string(detEngine.Engine)]
+
+	var best *scraper.SearchResult
+	bestScore := 0.0
+	for i, r := range results {
+		score := scraper.ComputeMatchScore(game.Title, r.Title)
+		if hasEngVariants {
+			titleLower := strings.ToLower(r.Title)
+			for _, variant := range engVariants {
+				if strings.Contains(titleLower, variant) {
+					score += 0.15
+					if score > 1.0 {
+						score = 1.0
+					}
+					break
+				}
+			}
+		}
+		if scraper.IsNonGameThread(r.Title) {
+			continue
+		}
+		if score > bestScore {
+			bestScore = score
+			best = &results[i]
+		}
+	}
+	if best == nil || bestScore < 0.3 {
+		return nil
+	}
+	return best
+}
+
+// pickBestLatestResult scores latest-updates search candidates and returns
+// the best non-game match above the 0.3 threshold together with its score
+// (used by the caller to decide how much thread data may be applied — a weak
+// match must not overwrite a curated local title). Non-game rejection is
+// title-based only: the search result's prefix array uses an unrelated
+// numbering and must not drive classification (see scraper.HasNonGamePrefix).
+// Engine compatibility is enforced separately by the caller via the cache
+// API type field.
+func (a *App) pickBestLatestResult(game db.Game, detEngine engine.Result, results []scraper.LatestSearchResult) (*scraper.LatestSearchResult, float64) {
+	engVariants, hasEngVariants := engine.EngineTagVariants[string(detEngine.Engine)]
+
+	var best *scraper.LatestSearchResult
+	bestScore := 0.0
+	for i, r := range results {
+		score := scraper.ComputeMatchScore(game.Title, r.Title)
+		if hasEngVariants {
+			titleLower := strings.ToLower(r.Title)
+			for _, variant := range engVariants {
+				if strings.Contains(titleLower, variant) {
+					score += 0.15
+					if score > 1.0 {
+						score = 1.0
+					}
+					break
+				}
+			}
+		}
+		if scraper.IsNonGameThread(r.Title) {
+			continue
+		}
+		if score > bestScore {
+			bestScore = score
+			best = &results[i]
+		}
+	}
+	if best == nil || bestScore < 0.3 {
+		return nil, 0
+	}
+	return best, bestScore
+}
+
+// saveScrapedMeta persists scraped metadata and caches the cover.
+func (a *App) saveScrapedMeta(game db.Game, developer, overview, coverURL string) {
+	if developer == "" && overview == "" && coverURL == "" {
+		return
+	}
+	meta := &db.ScrapedMeta{
+		GameID:    game.ID,
+		Developer: developer,
+		Overview:  overview,
+		CoverURL:  coverURL,
+	}
+	if err := a.db.UpsertScrapedMeta(meta); err != nil {
+		slog.Warn("failed to save metadata", "game", game.Title, "error", err)
+	}
+	if coverURL != "" {
+		a.cacheCover(game.ID, coverURL)
+	}
+}
+
+// emitSyncGameDone emits the per-game sync completion event.
+func (a *App) emitSyncGameDone(game db.Game, version string) {
+	runtime.EventsEmit(a.ctx, "sync:game-done", map[string]interface{}{
+		"id":      game.ID,
+		"title":   game.Title,
+		"status":  game.Status,
+		"version": version,
+	})
+}
+
+// syncPhase2Fallback is the cookie-based per-game scrape path used when the
+// bulk version API is unavailable. Mirror of the CLI's direct-scrape pool,
+// sequential here since the path is rare. Returns whether requests were
+// blocked.
+func (a *App) syncPhase2Fallback(ctx context.Context, client *scraper.Client, trackable []db.Game, allErrors *[]string, updated *int) bool {
+	total := len(trackable)
+	for i := range trackable {
+		if ctx.Err() != nil {
+			return false
+		}
+		game := &trackable[i]
+		runtime.EventsEmit(a.ctx, "sync:progress", SyncProgress{
+			Current: i + 1,
+			Total:   total,
+			Title:   game.Title,
+			Phase:   "checking-updates",
+		})
+
+		isUpdate, blocked := a.syncPhase2ScrapeOne(ctx, game, client, allErrors)
+		if blocked {
+			return true
+		}
+		game.VersionCheckedAt = time.Now()
+		if err := a.db.UpdateGame(game); err != nil {
+			*allErrors = append(*allErrors, fmt.Sprintf("%s: save version failed: %v", game.Title, err))
+			continue
+		}
+		if isUpdate {
+			*updated++
+			a.emitSyncGameDone(*game, game.LatestVersion)
+		}
+	}
+	return false
+}
+
+// syncPhase2MetadataRefresh refreshes status/metadata via the cache API for
+// threads that changed since the previous check. Best effort.
+func (a *App) syncPhase2MetadataRefresh(ctx context.Context, trackable []db.Game, prevChecks map[int64]time.Time, public *scraper.PublicAPI, allErrors *[]string) {
+	var ids []int64
+	for _, g := range trackable {
+		if g.F95ThreadID > 0 {
+			ids = append(ids, g.F95ThreadID)
+		}
+	}
+	lastChanged, err := public.CacheFastCheck(ctx, ids)
+	if err != nil {
+		slog.Debug("cache API fast check unavailable; skipping metadata refresh", "error", err)
+		return
+	}
+
+	for _, g := range trackable {
+		ts, ok := lastChanged[g.F95ThreadID]
+		prev := prevChecks[g.F95ThreadID]
+		if !ok || ts <= prev.Unix() {
+			continue
+		}
+		ct, err := public.CacheFullThread(ctx, g.F95ThreadID)
+		if err != nil {
+			if !errors.Is(err, scraper.ErrThreadNotFound) {
+				slog.Debug("cache API full check failed", "thread", g.F95ThreadID, "error", err)
+			}
+			continue
+		}
+
+		changed := false
+		if ct.Version != "" && ct.Version != g.LatestVersion {
+			g.LatestVersion = ct.Version
+			changed = true
+		}
+		if ct.Status != "" && ct.Status != g.Status {
+			g.Status = ct.Status
+			changed = true
+		}
+		if changed {
+			if err := a.db.UpdateGame(&g); err != nil {
+				*allErrors = append(*allErrors, fmt.Sprintf("%s: save metadata failed: %v", g.Title, err))
+			}
+		}
+		a.saveScrapedMeta(g, ct.Developer, ct.Description, ct.ImageURL)
+	}
 }
 
 // GetCookieStatus checks whether F95Zone browser cookies are available.
@@ -2694,7 +3932,15 @@ func (a *App) SyncSingleGame(id int64) error {
 		return fmt.Errorf("scraping failed: %w", err)
 	}
 
+	// ApplyThreadData rewrites the title from the thread's; the CLI's
+	// single-game check deliberately does not touch a curated title, so
+	// preserve it here.
+	origTitle := game.Title
 	scraper.ApplyThreadData(game, data, url)
+	game.Title = origTitle
+	// Record the check time like the CLI so the bulk sync's cooldown
+	// doesn't re-check this game for 24h.
+	game.VersionCheckedAt = time.Now()
 	if err := a.db.UpdateGame(game); err != nil {
 		return fmt.Errorf("saving game data: %w", err)
 	}
@@ -2715,33 +3961,69 @@ func (a *App) SyncSingleGame(id int64) error {
 		}
 	}
 
-	// Refresh download links from the scraped thread data.
-	// Stale links (pointing to old version files) are replaced with fresh ones.
+	// Refresh download links from the scraped thread data, diffing against
+	// what is already stored: unchanged URLs keep their link IDs and their
+	// user-set IsDead state, links new to the thread are inserted, and links
+	// that vanished from the thread are dropped. The old delete-and-reinsert
+	// churned link IDs on every sync and silently resurrected dead links.
 	if len(data.DownloadLinks) > 0 {
 		slog.Info("refreshing download links", "game", game.Title, "count", len(data.DownloadLinks))
-		if err := a.db.DeleteDownloadLinksByGameID(game.ID); err != nil {
-			slog.Warn("failed to clear old download links", "game", game.Title, "error", err)
-		} else {
-			for _, dl := range data.DownloadLinks {
-				p := downloader.DetectPlatformFromLink(dl.Name, dl.URL)
-				link := &db.DownloadLink{
-					GameID:   game.ID,
-					URL:      dl.URL,
-					Host:     dl.Host,
-					Name:     dl.Name,
-					Platform: db.Platform(p),
-					IsDead:   false,
-				}
-				if _, err := a.db.CreateDownloadLink(link); err != nil {
-					slog.Warn("failed to save download link", "game", game.Title, "error", err)
-				}
-			}
-		}
+		a.syncDownloadLinks(game.ID, data.DownloadLinks)
 	}
 
 	slog.Info("game sync complete", "id", id, "title", data.Title, "version", data.Version,
 		"downloadLinks", len(data.DownloadLinks))
 	return nil
+}
+
+// syncDownloadLinks diff-and-applies scraped download links for a game:
+// unchanged URLs keep their link IDs and user-set IsDead state, new links
+// are inserted, and links the thread no longer carries are removed.
+func (a *App) syncDownloadLinks(gameID int64, links []scraper.DownloadLink) {
+	existing, err := a.db.ListDownloadLinks(gameID, "", true)
+	if err != nil {
+		slog.Warn("failed to load existing download links", "game_id", gameID, "error", err)
+		return
+	}
+	byURL := make(map[string]db.DownloadLink, len(existing))
+	for _, l := range existing {
+		byURL[l.URL] = l
+	}
+	seen := make(map[string]bool, len(links))
+	for _, dl := range links {
+		seen[dl.URL] = true
+		if existing, ok := byURL[dl.URL]; ok {
+			// Unchanged URL — keep ID and IsDead state, but refresh the name
+			// so section/platform labels from a newer parser flow through.
+			if existing.Name != dl.Name {
+				existing.Name = dl.Name
+				if err := a.db.UpdateDownloadLink(&existing); err != nil {
+					slog.Warn("failed to refresh download link name", "game_id", gameID, "error", err)
+				}
+			}
+			continue
+		}
+		p := downloader.DetectPlatform(dl.Name, dl.URL)
+		link := &db.DownloadLink{
+			GameID:   gameID,
+			URL:      dl.URL,
+			Host:     dl.Host,
+			Name:     dl.Name,
+			Platform: db.Platform(p),
+			IsDead:   false,
+		}
+		if _, err := a.db.CreateDownloadLink(link); err != nil {
+			slog.Warn("failed to save download link", "game_id", gameID, "error", err)
+		}
+	}
+	// Links the thread no longer carries are stale — drop them.
+	for _, l := range existing {
+		if !seen[l.URL] {
+			if err := a.db.DeleteDownloadLink(l.ID); err != nil {
+				slog.Warn("failed to remove stale download link", "game_id", gameID, "error", err)
+			}
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2852,8 +4134,10 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) error {
 		return err
 	}
 
-	// Check whether an update is actually needed.
-	if game.LatestVersion == "" || game.LatestVersion == game.Version {
+	// Check whether an update is actually needed. Compare normalized forms
+	// so "v0.8" and "0.8" are recognised as the same version rather than
+	// kicking off a pointless re-download.
+	if game.LatestVersion == "" || !isGameUpdate(game.LatestVersion, game.Version) {
 		err = fmt.Errorf("no update available (current version: %s)", game.Version)
 		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
 			"gameID":  gameID,

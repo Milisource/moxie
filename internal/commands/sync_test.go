@@ -1,9 +1,11 @@
 package commands
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -435,7 +437,7 @@ func TestRunUpdateCheck_NoGames(t *testing.T) {
 	database := setupTestDB(t)
 	defer database.Close()
 
-	updatesFound, results := RunUpdateCheck(database, nil, nil, false)
+	updatesFound, results := RunUpdateCheck(database, nil, nil, false, nil)
 	if updatesFound != 0 {
 		t.Errorf("expected 0 updates, got %d", updatesFound)
 	}
@@ -461,7 +463,7 @@ func TestRunUpdateCheck_NoGamesWithURL(t *testing.T) {
 	}
 
 	games := []db.Game{*game}
-	updatesFound, results := RunUpdateCheck(database, nil, games, false)
+	updatesFound, results := RunUpdateCheck(database, nil, games, false, nil)
 	if updatesFound != 0 {
 		t.Errorf("expected 0 updates (game has no F95URL), got %d", updatesFound)
 	}
@@ -489,7 +491,7 @@ func TestRunUpdateCheck_CooldownSkip(t *testing.T) {
 	}
 
 	games := []db.Game{*game}
-	updatesFound, results := RunUpdateCheck(database, nil, games, false)
+	updatesFound, results := RunUpdateCheck(database, nil, games, false, nil)
 	if updatesFound != 0 {
 		t.Errorf("expected 0 updates (within cooldown), got %d", updatesFound)
 	}
@@ -528,7 +530,7 @@ func TestRunUpdateCheck_ForceBypassCooldown(t *testing.T) {
 	games := []db.Game{*game}
 	// With force=true, cooldown is bypassed. Scrape will fail (500 response)
 	// but the game should be processed (not skipped).
-	updatesFound, results := RunUpdateCheck(database, client, games, true)
+	updatesFound, results := RunUpdateCheck(database, client, games, true, nil)
 	if updatesFound != 0 {
 		t.Errorf("expected 0 updates (scrape fails), got %d", updatesFound)
 	}
@@ -540,4 +542,219 @@ func TestRunUpdateCheck_ForceBypassCooldown(t *testing.T) {
 		t.Error("expected error in result when scrape fails")
 	}
 	_ = id
+}
+
+// threadPage renders a minimal thread page for the update-check tests.
+func threadPage(title, version, status string) string {
+	tag := ""
+	if status != "" {
+		tag = `<a class="tagItem">` + status + `</a>`
+	}
+	return `<html><body>` + tag + `
+<h1 class="p-title-value">` + title + `</h1>
+<article class="message-content"><div class="bbWrapper">Overview
+A game.
+
+Version: ` + version + `
+Developer: Some Studio
+</div></article></body></html>`
+}
+
+// RunUpdateCheck must only report a game as updated when the thread version
+// is genuinely ahead. A thread reporting an older or equivalent version —
+// typically a parse regression or an edited thread — is not an update.
+func TestRunUpdateCheck_OnlyNewerVersionsCount(t *testing.T) {
+	t.Parallel()
+	database := setupTestDB(t)
+	defer database.Close()
+
+	// Each game gets its own path on one server, keyed by thread slug.
+	pages := map[string]string{
+		"/threads/newer.1/":      threadPage("Newer Game", "0.9", ""),
+		"/threads/older.2/":      threadPage("Older Game", "0.4", ""),
+		"/threads/equivalent.3/": threadPage("Equivalent Game", "v1.0.0", ""),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := pages[r.URL.Path]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, body)
+	}))
+	defer server.Close()
+
+	client := scraper.NewClientWithHTTP("", server.Client())
+
+	// F95ThreadID is deliberately left zero so ResolveScrapeURL falls back
+	// to F95URL and the test stays off the real f95zone.to.
+	mk := func(title, localVer, path string) db.Game {
+		g := &db.Game{
+			Title:   title,
+			Engine:  "RenPy",
+			Path:    "/" + title,
+			Version: localVer,
+			F95URL:  server.URL + path,
+		}
+		id, err := database.InsertGame(g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.ID = id
+		return *g
+	}
+
+	games := []db.Game{
+		mk("Newer Game", "0.8", "/threads/newer.1/"),
+		mk("Older Game", "0.8", "/threads/older.2/"),
+		mk("Equivalent Game", "1.0", "/threads/equivalent.3/"),
+	}
+
+	updatesFound, results := RunUpdateCheck(database, client, games, true, nil)
+	if updatesFound != 1 {
+		t.Errorf("updatesFound = %d, want 1 (only the 0.8 → 0.9 game)", updatesFound)
+	}
+
+	byTitle := make(map[string]UpdateResult, len(results))
+	for _, r := range results {
+		byTitle[r.Game.Title] = r
+	}
+	for _, tc := range []struct {
+		title    string
+		wantNew  bool
+		wantDiff string
+	}{
+		{"Newer Game", true, "newer"},
+		{"Older Game", false, "older"},
+		{"Equivalent Game", false, "same"},
+	} {
+		got, ok := byTitle[tc.title]
+		if !ok {
+			t.Errorf("no result for %q", tc.title)
+			continue
+		}
+		if got.IsNew != tc.wantNew {
+			t.Errorf("%s: IsNew = %v, want %v (latest %q vs current %q)", tc.title, got.IsNew, tc.wantNew, got.Latest, got.Current)
+		}
+		if got.Diff != tc.wantDiff {
+			t.Errorf("%s: Diff = %q, want %q", tc.title, got.Diff, tc.wantDiff)
+		}
+	}
+}
+
+// The update check scrapes status and tags on every pass; a game that has
+// gone Completed upstream must be recorded, not silently discarded.
+func TestRunUpdateCheck_PersistsStatusAndTags(t *testing.T) {
+	t.Parallel()
+	database := setupTestDB(t)
+	defer database.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, threadPage("Done Game", "1.0", "Completed"))
+	}))
+	defer server.Close()
+
+	client := scraper.NewClientWithHTTP("", server.Client())
+
+	game := &db.Game{
+		Title:   "Done Game",
+		Engine:  "RenPy",
+		Path:    "/done-game",
+		Version: "1.0",
+		Status:  "active",
+		F95URL:  server.URL + "/threads/done.1/",
+	}
+	id, err := database.InsertGame(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+	game.ID = id
+
+	RunUpdateCheck(database, client, []db.Game{*game}, true, nil)
+
+	got, err := database.GetGame(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "completed" {
+		t.Errorf("Status = %q, want %q — status change was dropped", got.Status, "completed")
+	}
+	if len(got.Tags) == 0 {
+		t.Error("Tags were not persisted by the update check")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RunScrapeAuto — latest_data.php prefixes are NOT a non-game signal
+// ---------------------------------------------------------------------------
+
+// TestRunScrapeAuto_PrefixSevenNotRejected is the regression test for
+// F95-sj8o: the `prefixes` array in latest_data.php search results uses a
+// numbering that is NOT the F95Checker Type enum — a real RenPy game
+// (Summertime Saga) returns [7], which the old prefix table treated as a
+// "non-game" prefix, wrongly rejecting 89/98 fresh-DB associations even at
+// 100% self-match. Non-game rejection must come from the title only
+// (IsNonGameThread); a game-title candidate carrying prefix [7] must
+// associate through the cache API, and its engine must come from the cache
+// API's type field, not the prefixes.
+func TestRunScrapeAuto_PrefixSevenNotRejected(t *testing.T) {
+	// t.Setenv forbids t.Parallel; this test deliberately runs sequentially
+	// so the global association cache is redirected to a temp HOME instead
+	// of the developer's real ~/.config/moxie/associations.json.
+	t.Setenv("HOME", t.TempDir())
+
+	// Routes: latest_data.php search returns a 100%-matching game title with
+	// prefixes [7] (old non-game table → would have been rejected); the
+	// cache API /full endpoint returns the same thread with Type 14 (RenPy).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "latest_data.php"):
+			fmt.Fprint(w, `{"status":"ok","msg":{"data":[{"thread_id":777,"title":"Summertime Saga","creator":"DarkCookie","version":"v0.21.0","prefixes":[7],"cover":""}]}}`)
+		case strings.Contains(r.URL.Path, "/full/"):
+			fmt.Fprint(w, `{"name":"Summertime Saga","version":"v0.21.0","developer":"DarkCookie","status":"1","image_url":"","description":"","changelog":"","last_updated":"1700000000","score":"4.5","type":"14"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	api := scraper.NewPublicAPI()
+	api.Host = server.URL
+	api.CacheHost = server.URL
+
+	database := setupTestDB(t)
+	defer database.Close()
+
+	game := &db.Game{
+		Title: "Summertime Saga",
+		// Engine "Unknown" is required by the schema CHECK constraint; the
+		// association must replace it with the cache API's RenPy type.
+		Engine: "Unknown",
+		// Nonexistent path → engine.Detect returns "Others" (inconclusive),
+		// so the cache API's RenPy type is accepted without a mismatch.
+		Path: "/nonexistent/summertime-saga",
+	}
+	id, err := database.InsertGame(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The client is only exercised on the cookie-scrape fallback; pointing
+	// it at the test server keeps any accidental fallback off the real site.
+	if err := RunScrapeAuto(database, scraper.NewClientWithHTTP("", server.Client()), true, 1, api); err != nil {
+		t.Fatalf("RunScrapeAuto: %v", err)
+	}
+
+	got, err := database.GetGame(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://f95zone.to/threads/777/"; got.F95URL != want {
+		t.Errorf("F95URL = %q, want %q — prefix [7] candidate was rejected as non-game", got.F95URL, want)
+	}
+	if got.Engine != "RenPy" {
+		t.Errorf("Engine = %q, want %q — engine must come from cache API type, not prefixes", got.Engine, "RenPy")
+	}
 }

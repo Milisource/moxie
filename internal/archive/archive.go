@@ -73,8 +73,6 @@ type ProgressFunc func(totalFiles, extractedFiles int, currentFile string, bytes
 
 // Options controls extraction behavior.
 type Options struct {
-	// Password for encrypted archives (optional)
-	Password string
 	// Progress callback (optional)
 	OnProgress ProgressFunc
 }
@@ -90,6 +88,14 @@ type Result struct {
 // The destination directory will be created if it doesn't exist.
 // Returns a Result with the extracted root path (handles single-folder wrapping).
 func Extract(archivePath, destDir string, opts Options) (*Result, error) {
+	return ExtractWithContext(context.Background(), archivePath, destDir, opts)
+}
+
+// ExtractWithContext is Extract with a cancellable context. If ctx is
+// cancelled during extraction, the operation stops between entries and
+// only the extractor's temporary subdirectory is removed — destDir and
+// its pre-existing contents are never deleted.
+func ExtractWithContext(ctx context.Context, archivePath, destDir string, opts Options) (*Result, error) {
 	// Ensure destination exists
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return nil, fmt.Errorf("create destination directory: %w", err)
@@ -102,7 +108,7 @@ func Extract(archivePath, destDir string, opts Options) (*Result, error) {
 		}
 	}
 
-	extractedRoot, err := extractor.Extract(context.Background(), archivePath, destDir, extractProgress)
+	extractedRoot, err := extractor.Extract(ctx, archivePath, destDir, extractProgress)
 	if err != nil {
 		return nil, err
 	}

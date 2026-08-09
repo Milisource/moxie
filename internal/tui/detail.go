@@ -3,7 +3,7 @@ package tui
 import (
 	"fmt"
 	"path/filepath"
-	"sort"
+
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -86,7 +86,7 @@ func (m model) buildDetailContent() string {
 
 	// ── Header ────────────────────────────────────────────────────
 	back := titleStyle.Render("◂  Back to Library  ")
-	hint := subtleStyle.Render("[Esc] back  [s] status  [e] edit  [x] exe  [u] url  [p] play  [g] dl  [d] delete  [?] help")
+	hint := subtleStyle.Render("[Esc] back  [s] status  [e] edit  [x] exe  [Ctrl+U] url  [p] play  [g] dl  [d] delete  [?] help")
 	gap := max(0, w-lipgloss.Width(back)-lipgloss.Width(hint)-4)
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, back, strings.Repeat(" ", gap), hint))
 	b.WriteString("\n")
@@ -133,7 +133,7 @@ func (m model) buildDetailContent() string {
 		b.WriteString(copyHintStyle.Render("  (Press Enter on URL line to open in browser)"))
 		b.WriteString("\n")
 	} else {
-		writeField(&b, labelStyle, "URL:", "not set — press [u] to add", subtleStyle)
+		writeField(&b, labelStyle, "URL:", "not set — press [Ctrl+U] to add", subtleStyle)
 	}
 
 	if m.scrapedMeta != nil {
@@ -155,7 +155,6 @@ func (m model) buildDetailContent() string {
 	// Tags — show each tag individually styled
 	if len(game.Tags) > 0 {
 		writeField(&b, labelStyle, "Tags:", "", valueStyle)
-		sort.Strings(game.Tags)
 		var tagParts []string
 		for _, t := range game.Tags {
 			if t != "" {
@@ -202,7 +201,7 @@ func (m model) buildDetailContent() string {
 
 	// ── Action buttons ────────────────────────────────────────────
 	actions := subtleStyle.Render(
-		"  [e] Edit  [s] Status  [x] Exe  [u] URL  [o] Path  [p] Play  [g] Download  [d] Delete  [Esc] Back  ",
+		"  [e] Edit  [s] Status  [x] Exe  [Ctrl+U] URL  [o] Path  [p] Play  [g] Download  [d] Delete  [Esc] Back  ",
 	)
 	b.WriteString("\n\n")
 	b.WriteString(actions)

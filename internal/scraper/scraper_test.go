@@ -3,6 +3,7 @@ package scraper
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -144,8 +145,8 @@ func TestExtractVersion(t *testing.T) {
 		{"", ""},
 		{"Ver 0.9", "0.9"},
 		{"ver 4.5.6", "4.5.6"},
-		{"Developer: SomeStudio", ""},         // no version
-		{"v 1.0", ""},                          // "v " not "v" directly followed by digit
+		{"Developer: SomeStudio", ""}, // no version
+		{"v 1.0", ""},                 // "v " not "v" directly followed by digit
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%q", tt.text), func(t *testing.T) {
@@ -171,7 +172,7 @@ func TestExtractDeveloper(t *testing.T) {
 		{"Developer: Cool Dev Team", "Cool Dev Team"},
 		{"Publisher: BigPublisher", "BigPublisher"},
 		{"Developer/Publisher: DevName", "DevName"}, // Publisher pattern captures "DevName"
-		{"No developer info here", ""},     // "developer" mid-sentence should NOT match
+		{"No developer info here", ""},              // "developer" mid-sentence should NOT match
 		{"", ""},
 		{"Developer:   Lots of   spaces  ", "Lots of   spaces"},
 		{"Developer: Studio\nOther text", "Studio"},
@@ -209,6 +210,14 @@ func TestIdentifyHost(t *testing.T) {
 		{"https://www.dropbox.com/s/abc", "Dropbox", "dropbox"},
 		{"https://example.com/file.zip", "Random Link", "other"},
 		{"", "", "other"},
+		// Short needles must not match unrelated URLs that merely contain
+		// the substring (hostname-suffix matching only).
+		{"https://example.com/k2s/file.zip", "Download", "other"},
+		{"https://example.com/bunkr/file.zip", "Download", "other"},
+		{"https://example.com/dp.ua/file.zip", "Download", "other"},
+		{"https://example.com/terminal/file.zip", "Download", "other"},
+		{"https://files.dp.ua/file/abc", "", "filesdpua"},
+		{"https://terminal.ink/file/abc", "", "terminal"},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%s|%s", tt.url, tt.text), func(t *testing.T) {
@@ -624,6 +633,49 @@ func TestParseThreadHTML(t *testing.T) {
 // Version source precedence
 // ---------------------------------------------------------------------------
 
+// TestDownloadLinkSectionPlatform covers threads whose download section
+// lists the same host once per part/platform row (e.g. "Henteria Chronicles")
+// — the flattened anchor text alone cannot tell the links apart.
+func TestDownloadLinkSectionPlatform(t *testing.T) {
+	t.Parallel()
+
+	body := `<p>Story text.</p>
+<b><span style="font-size: 26px">DOWNLOAD</span><br /><span style="font-size: 18px">Part 2</span></b><br />
+<span style="font-size: 18px"><b>Win</b>: <a href="https://f95zone.to/masked/gofile.io/134272/1">GOFILE</a> - <a href="https://f95zone.to/masked/mega.nz/134272/2">MEGA</a></span><br />
+<br />
+<b>Part 1</b><br />
+<span style="font-size: 18px"><b>Win</b>: <a href="https://f95zone.to/masked/gofile.io/134272/3">GOFILE</a> - <a href="https://www.mediafire.com/file/HC3-PK[Part.2]+fix1.rar/file">MEDIAFIRE</a></span><br />
+<b>Mac</b>: <a href="https://f95zone.to/masked/pixeldrain.com/134272/4">PIXELDRAIN</a><br />
+<p>Random prose with <b>important</b> words must not become a heading.</p>
+<a href="https://vikingfile.com/f/abc123">Game_v1.0.rar</a>`
+
+	td, err := parseThreadHTML(threadHTMLWith("Section Test [v1.0] [Test]", body), "https://f95zone.to/threads/test.999/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	got := make([]DownloadLink, 0, len(td.DownloadLinks))
+	got = td.DownloadLinks
+
+	want := []struct {
+		host, name string
+	}{
+		{"gofile", "DOWNLOAD Part 2 · Win"},
+		{"mega", "DOWNLOAD Part 2 · Win"},
+		{"gofile", "Part 1 · Win"},
+		{"mediafire", "Part 1 · Win"},
+		{"pixeldrain", "Part 1 · Mac"},
+		{"vikingfile", "Game_v1.0.rar"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d links, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].Host != w.host || got[i].Name != w.name {
+			t.Errorf("link[%d] = {%q, %q}, want {%q, %q}", i, got[i].Host, got[i].Name, w.host, w.name)
+		}
+	}
+}
+
 // threadHTMLWith builds a minimal XenForo thread page with the given title
 // and first-post body.
 func threadHTMLWith(title, body string) string {
@@ -762,10 +814,10 @@ func TestExtractVersionFromBrackets(t *testing.T) {
 		{"Game [v0.5] [Studio]", "0.5"},
 		{"Game [v1.0]", "1.0"},
 		{"[v1.0.0] Game At Start", "1.0.0"},
-		{"Multiple [v1.0] [v2.0]", "1.0"},               // first match wins
-		{"[v 0.5]", ""},                                  // space between v and digit not handled
-		{"Game [v1.0 Alpha] [Dev]", "1.0"},               // prerelease suffix
-		{"Game [Ch. 2 v3.0] [Dev]", "3.0"},               // chapter + version
+		{"Multiple [v1.0] [v2.0]", "1.0"},  // first match wins
+		{"[v 0.5]", ""},                    // space between v and digit not handled
+		{"Game [v1.0 Alpha] [Dev]", "1.0"}, // prerelease suffix
+		{"Game [Ch. 2 v3.0] [Dev]", "3.0"}, // chapter + version
 
 		// Date in brackets (per F95Zone title format rules)
 		{"Game [2018-07-18] [Dev]", "2018-07-18"},
@@ -916,6 +968,41 @@ func TestClientDo_ContextCancellation(t *testing.T) {
 	_, err = client.do(req, 0)
 	if err == nil {
 		t.Error("expected context cancellation error")
+	}
+}
+
+// TestClientDo_UnsafeDelayStaysZero verifies the success-path delay decay
+// does not clamp a zero delay (NewUnsafeClient, unpaced cache client) up to
+// minDelay after the first successful request.
+func TestClientDo_UnsafeDelayStaysZero(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := &Client{
+		http: &http.Client{
+			Timeout: defaultTimeout,
+			Transport: &cookieTransport{
+				inner:       srv.Client().Transport,
+				cookieValue: "",
+			},
+		},
+		delay:     0, // unsafe/unpaced mode
+		csrfToken: "",
+	}
+
+	req, err := http.NewRequest("GET", srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.do(req, 0); err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if d := client.Delay(); d != 0 {
+		t.Errorf("delay = %v after one successful request, want 0 (unsafe mode must stay unpaced)", d)
 	}
 }
 
@@ -1244,5 +1331,116 @@ func TestExtractStoreLinks_FirstMatchWins(t *testing.T) {
 	// First link should be preserved.
 	if v != "https://store.steampowered.com/app/111/" {
 		t.Errorf("steam link = %q, want first link %q", v, "https://store.steampowered.com/app/111/")
+	}
+}
+
+func TestValidateThreadURL_AcceptsF95ZoneHTTPS(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		"https://f95zone.to/threads/some-game-slug.12345/",
+		"https://www.f95zone.to/threads/some-game-slug.12345/",
+		"https://f95zone.to/threads/12345/",
+		"https://f95zone.to/members/someone.678/",
+	}
+	for _, u := range cases {
+		if err := ValidateThreadURL(u); err != nil {
+			t.Errorf("ValidateThreadURL(%q) = %v, want nil", u, err)
+		}
+	}
+}
+
+func TestValidateThreadURL_RejectsNonF95ZoneHosts(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		"https://evil.example.com/threads/x.1/",
+		"https://f95zone.to.evil.com/threads/x.1/",
+		"https://f95zone.to@evil.com/threads/x.1/",
+		"http://f95zone.to/threads/x.1/",
+		"ftp://f95zone.to/threads/x.1/",
+		"https://evil.com/threads/f95zone.to.1/",
+		"https:///threads/x.1/",
+		"f95zone.to/threads/x.1/",
+		"",
+		"not a url",
+	}
+	for _, u := range cases {
+		if err := ValidateThreadURL(u); err == nil {
+			t.Errorf("ValidateThreadURL(%q) = nil, want error", u)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cookieTransport host scoping
+// ---------------------------------------------------------------------------
+
+// recordingTransport records the Cookie header seen on each request and
+// returns an empty 200 response without any network I/O.
+type recordingTransport struct {
+	cookies []string
+}
+
+func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.cookies = append(rt.cookies, req.Header.Get("Cookie"))
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    req,
+	}, nil
+}
+
+// TestCookieTransport_HostScoped verifies the session cookie is only
+// attached to F95Zone/F95Checker requests and never leaks to third-party
+// hosts (Google search fallback, external download hosts, redirects).
+func TestCookieTransport_HostScoped(t *testing.T) {
+	t.Parallel()
+
+	rt := &recordingTransport{}
+	ct := &cookieTransport{inner: rt, cookieValue: "xf_user=secret; xf_csrf=tok"}
+
+	allowed := []string{
+		"https://f95zone.to/threads/x/",
+		"https://www.f95zone.to/threads/x/",
+		"https://attachments.f95zone.to/cover.png",
+		"https://api.f95checker.dev/fast?ids=1",
+	}
+	for _, u := range allowed {
+		req, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ct.RoundTrip(req); err != nil {
+			t.Fatalf("RoundTrip(%s): %v", u, err)
+		}
+	}
+
+	blocked := []string{
+		"https://www.google.com/search?q=site%3Af95zone.to",
+		"https://drive.google.com/uc?export=download&id=1",
+		"https://api.f95checker.dev.evil.com/fast",
+		"https://f95zone.to.evil.com/threads/x/",
+	}
+	for _, u := range blocked {
+		req, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ct.RoundTrip(req); err != nil {
+			t.Fatalf("RoundTrip(%s): %v", u, err)
+		}
+	}
+
+	want := "xf_user=secret; xf_csrf=tok"
+	for i, got := range rt.cookies {
+		if i < len(allowed) {
+			if got != want {
+				t.Errorf("request %d: got cookie %q, want %q", i, got, want)
+			}
+		} else if got != "" {
+			t.Errorf("request %d: cookie leaked to third-party host: %q", i, got)
+		}
 	}
 }

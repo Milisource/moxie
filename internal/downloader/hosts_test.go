@@ -49,7 +49,7 @@ func TestIdentifyHostInURL_MajorHosts(t *testing.T) {
 		{"https://files.dp.ua/file/abc123", "filesdpua"},
 		{"https://files.fm/file/abc123", "filesfm"},
 		{"https://fromsmash.com/file/abc123", "fromsmash"},
-		{"https://drive.google.com/file/d/abc123", "google drive"},
+		{"https://drive.google.com/file/d/abc123", "googledrive"},
 		{"https://hexload.com/file/abc123", "hexload"},
 		{"https://mixdrop.co/file/abc123", "mixdrop"},
 		{"https://qu.ax/file/abc123", "quax"},
@@ -1139,6 +1139,20 @@ func TestExtractGoogleDriveConfirm_Missing(t *testing.T) {
 func TestResolveGoogleDrive_InvalidURL(t *testing.T) {
 	t.Parallel()
 	r := NewHostResolver()
+	_, err := r.Resolve("https://example.com/file", "googledrive")
+	if err == nil {
+		t.Fatal("expected error for invalid google drive URL")
+	}
+	if !strings.Contains(err.Error(), "could not extract Google Drive file ID") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// TestResolveGoogleDrive_LegacyLabel ensures labels stored by older scrapes
+// ("google drive" with a space) still route to the Drive resolver.
+func TestResolveGoogleDrive_LegacyLabel(t *testing.T) {
+	t.Parallel()
+	r := NewHostResolver()
 	_, err := r.Resolve("https://example.com/file", "google drive")
 	if err == nil {
 		t.Fatal("expected error for invalid google drive URL")
@@ -1151,7 +1165,7 @@ func TestResolveGoogleDrive_InvalidURL(t *testing.T) {
 func TestResolveGoogleDrive_EmptyURL(t *testing.T) {
 	t.Parallel()
 	r := NewHostResolver()
-	_, err := r.Resolve("", "google drive")
+	_, err := r.Resolve("", "googledrive")
 	if err == nil {
 		t.Fatal("expected error for empty URL")
 	}
@@ -1194,7 +1208,7 @@ func TestResolveGoogleDrive_MockServer_SmallFile(t *testing.T) {
 	})
 
 	testURL := fmt.Sprintf("https://drive.google.com/file/d/%s/view", fileID)
-	result, err := r.Resolve(testURL, "google drive")
+	result, err := r.Resolve(testURL, "googledrive")
 	if err != nil {
 		t.Fatalf("Resolve google drive small file failed: %v", err)
 	}
@@ -1256,7 +1270,7 @@ func TestResolveGoogleDrive_MockServer_LargeFileWithConfirm(t *testing.T) {
 	})
 
 	testURL := fmt.Sprintf("https://drive.google.com/open?id=%s", fileID)
-	result, err := r.Resolve(testURL, "google drive")
+	result, err := r.Resolve(testURL, "googledrive")
 	if err != nil {
 		t.Fatalf("Resolve google drive large file failed: %v", err)
 	}
@@ -1302,7 +1316,7 @@ func TestResolveGoogleDrive_MockServer_MissingConfirmToken(t *testing.T) {
 	})
 
 	testURL := fmt.Sprintf("https://drive.google.com/file/d/%s/view", fileID)
-	result, err := r.Resolve(testURL, "google drive")
+	result, err := r.Resolve(testURL, "googledrive")
 	if err != nil {
 		t.Fatalf("Resolve google drive missing confirm failed: %v", err)
 	}
@@ -1352,7 +1366,7 @@ func TestResolveGoogleDrive_MockServer_HTMLErrorWithoutConfirm(t *testing.T) {
 	})
 
 	testURL := fmt.Sprintf("https://drive.google.com/file/d/%s/view", fileID)
-	result, err := r.Resolve(testURL, "google drive")
+	result, err := r.Resolve(testURL, "googledrive")
 	if err != nil {
 		t.Fatalf("expected fallback to UC URL on error HTML, got error: %v", err)
 	}
@@ -1395,7 +1409,7 @@ func TestResolveGoogleDrive_MockServer_NonHTMLContent(t *testing.T) {
 	})
 
 	testURL := fmt.Sprintf("https://drive.google.com/file/d/%s/view", fileID)
-	result, err := r.Resolve(testURL, "google drive")
+	result, err := r.Resolve(testURL, "googledrive")
 	if err != nil {
 		t.Fatalf("expected UC URL for JSON response, got error: %v", err)
 	}

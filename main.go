@@ -225,7 +225,7 @@ COMMON FLAGS
     --json                    Output as JSON
 
   sync, check-updates:
-    --cookie <str>            Cookie header from browser DevTools
+    --cookie <str>            Cookie header (only needed for the direct-scrape fallback)
     --cookie-file <path>      Read cookie from file
     --unsafe                  ⚠ Skip rate limiting (may get IP-banned)
     --force                   Re-check even if checked within 24h

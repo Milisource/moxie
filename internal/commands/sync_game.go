@@ -230,6 +230,10 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 			if interactive {
 				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save version data for %q: %v\n", game.Title, err)
 			}
+			// Nothing was persisted — the caller must not report an update
+			// as available. SyncGame exits on this error before printing
+			// the "Update available" line.
+			return result, fmt.Errorf("save failed: %w", err)
 		}
 
 		// Save scraped metadata (cover, developer, overview) from the scrape.

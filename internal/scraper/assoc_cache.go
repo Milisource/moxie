@@ -15,10 +15,10 @@ import (
 // The cache is stored as a JSON file at AssociationCachePath() in the config
 // directory. Keys are SanitizeTitle(title), values are thread IDs (int64).
 type associationCache struct {
-	mu     sync.RWMutex
-	path   string
+	mu      sync.RWMutex
+	path    string
 	entries map[string]int64
-	dirty  bool
+	dirty   bool
 }
 
 var globalCache = &associationCache{
@@ -37,8 +37,12 @@ func LoadAssociationCache() error {
 	globalCache.mu.Lock()
 	defer globalCache.mu.Unlock()
 
-	if globalCache.path != "" && !globalCache.dirty {
-		return nil // already loaded
+	if globalCache.path != "" {
+		// Already loaded. When dirty, a previous SaveAssociationCache failed
+		// and the in-memory entries are newer than the file — keep them
+		// instead of re-reading the file, which would drop the unsaved
+		// updates.
+		return nil
 	}
 
 	path := AssociationCachePath()
@@ -104,14 +108,20 @@ func SaveAssociationCache() error {
 		tmp.Close()
 		return err
 	}
+	// fsync before the rename so a crash cannot leave a truncated cache at
+	// the final path, and restrict permissions before the file is visible
+	// under its final name (the cache contains game/thread associations).
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
 	tmp.Close()
 
 	if err := os.Rename(tmpName, globalCache.path); err != nil {
-		return err
-	}
-
-	// Restrict permissions — cache contains game/thread associations.
-	if err := os.Chmod(globalCache.path, 0600); err != nil {
 		return err
 	}
 
@@ -136,4 +146,37 @@ func SetCachedThreadID(sanitizedTitle string, threadID int64) {
 	defer globalCache.mu.Unlock()
 	globalCache.entries[sanitizedTitle] = threadID
 	globalCache.dirty = true
+}
+
+// DeleteCachedThreadID removes the cached thread ID for a sanitized game
+// title. Use it when a cached association turns out to be stale — the
+// thread was privated, moved, or deleted (CacheFullThread returns
+// ErrThreadNotFound) — so a wrong mapping cannot persist across runs. The
+// cache is marked dirty and will be saved on the next call to
+// SaveAssociationCache. Deleting a key that is not present is a no-op.
+func DeleteCachedThreadID(sanitizedTitle string) {
+	globalCache.mu.Lock()
+	defer globalCache.mu.Unlock()
+	if _, ok := globalCache.entries[sanitizedTitle]; !ok {
+		return
+	}
+	delete(globalCache.entries, sanitizedTitle)
+	globalCache.dirty = true
+}
+
+// deleteCachedThreadIDByThread removes every cached entry that maps to the
+// given (now dead) thread ID. CacheFullThread calls this when the cache API
+// reports a thread as gone, so every game associated with that thread is
+// re-associated on the next sync instead of being pinned to a stale mapping.
+// The cache is marked dirty and will be saved on the next call to
+// SaveAssociationCache. Deleting nothing is a no-op.
+func deleteCachedThreadIDByThread(threadID int64) {
+	globalCache.mu.Lock()
+	defer globalCache.mu.Unlock()
+	for title, id := range globalCache.entries {
+		if id == threadID {
+			delete(globalCache.entries, title)
+			globalCache.dirty = true
+		}
+	}
 }

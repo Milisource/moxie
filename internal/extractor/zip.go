@@ -21,12 +21,21 @@ func extractZip(ctx context.Context, archivePath, destDir string, progress Progr
 
 	// Count total non-directory files for progress reporting.
 	var files []*zip.File
+	var totalUncompressed int64
 	for _, f := range r.File {
-		if !f.FileInfo().IsDir() {
-			files = append(files, f)
+		if f.FileInfo().IsDir() {
+			continue
 		}
+		files = append(files, f)
+		totalUncompressed += int64(f.UncompressedSize64)
 	}
 	total := len(files)
+
+	// Zip bomb defense: reject archives whose declared total decompressed
+	// size is absurd before writing anything to disk.
+	if totalUncompressed > maxZipTotalBytes {
+		return fmt.Errorf("zip total uncompressed size %d bytes exceeds limit of %d bytes", totalUncompressed, maxZipTotalBytes)
+	}
 
 	for i, f := range files {
 		if err := ctx.Err(); err != nil {
@@ -35,6 +44,14 @@ func extractZip(ctx context.Context, archivePath, destDir string, progress Progr
 
 		if err := sanitizeZipPath(f.Name); err != nil {
 			return fmt.Errorf("%w: %s", ErrPathTraversal, f.Name)
+		}
+
+		// Zip bomb defense: a sane entry decompresses at most maxZipRatio×
+		// its compressed size; crafted archives hit 1000:1+ and would
+		// exhaust disk from a small download.
+		if f.CompressedSize64 > 0 && f.UncompressedSize64 > f.CompressedSize64*maxZipRatio {
+			return fmt.Errorf("zip entry %s has suspicious compression ratio (%d → %d bytes); possible zip bomb",
+				f.Name, f.CompressedSize64, f.UncompressedSize64)
 		}
 
 		destPath := filepath.Join(destDir, f.Name)
@@ -63,10 +80,18 @@ func extractZip(ctx context.Context, archivePath, destDir string, progress Progr
 		}
 
 		_, err = io.Copy(out, rc)
-		rc.Close()
-		out.Close()
+		rcErr := rc.Close()
+		outErr := out.Close()
 		if err != nil {
 			return fmt.Errorf("extract %s: %w", f.Name, err)
+		}
+		// archive/zip verifies the entry CRC/checksum on Close, so a
+		// corrupted entry only surfaces here — treat it as a failure.
+		if rcErr != nil {
+			return fmt.Errorf("extract %s: %w", f.Name, rcErr)
+		}
+		if outErr != nil {
+			return fmt.Errorf("extract %s: %w", f.Name, outErr)
 		}
 
 		if progress != nil {
@@ -81,16 +106,47 @@ func extractZip(ctx context.Context, archivePath, destDir string, progress Progr
 	return nil
 }
 
+// maxZipRatio bounds how much a zip entry may decompress relative to its
+// compressed size. Real game assets (already-compressed media, scripts)
+// rarely exceed 20:1; 100:1 catches zip bombs while leaving huge headroom.
+const maxZipRatio = 100
+
+// maxZipTotalBytes bounds the total uncompressed size of a single archive
+// (twice the downloader's 50 GB input cap).
+const maxZipTotalBytes int64 = 100 * 1024 * 1024 * 1024
+
 // sanitizeZipPath checks whether a zip entry name is safe to extract.
-// It rejects paths containing ".." (zip-slip) and absolute paths.
+// It rejects path traversal components — any path segment that is exactly
+// ".." — and absolute paths. Names that merely contain ".." as part of a
+// longer segment (e.g. "Game v1.0..beta/file.bin") are allowed.
 func sanitizeZipPath(name string) error {
-	// Reject path traversal components.
-	if strings.Contains(name, "..") {
+	// Reject absolute paths. isWindowsAbsPath is needed because
+	// filepath.IsAbs only recognizes Windows drive paths on Windows, but
+	// zips are portable and must behave the same on every target.
+	if filepath.IsAbs(name) || isWindowsAbsPath(name) {
 		return ErrPathTraversal
 	}
-	// Reject absolute paths.
-	if filepath.IsAbs(name) {
-		return ErrPathTraversal
+	// Reject traversal components. Both separators are treated as path
+	// separators because zips created on Windows may use backslashes.
+	for _, part := range strings.FieldsFunc(name, func(r rune) bool {
+		return r == '/' || r == '\\'
+	}) {
+		if part == ".." {
+			return ErrPathTraversal
+		}
 	}
 	return nil
+}
+
+// isWindowsAbsPath reports whether name looks like a Windows absolute path
+// such as `C:\evil.exe` or `C:/evil.exe`.
+func isWindowsAbsPath(name string) bool {
+	if len(name) < 3 || name[1] != ':' {
+		return false
+	}
+	c := name[0]
+	if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
+		return false
+	}
+	return name[2] == '/' || name[2] == '\\'
 }

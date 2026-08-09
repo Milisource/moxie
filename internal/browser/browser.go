@@ -14,6 +14,10 @@ import (
 	"strings"
 
 	"github.com/browserutils/kooky"
+	_ "github.com/browserutils/kooky/browser/brave"
+	_ "github.com/browserutils/kooky/browser/chrome"
+	_ "github.com/browserutils/kooky/browser/chromium"
+	_ "github.com/browserutils/kooky/browser/edge"
 	_ "github.com/browserutils/kooky/browser/firefox"
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
@@ -23,18 +27,20 @@ import (
 // Checks kooky's standard paths first, then falls back to non-standard
 // locations like ~/.config/mozilla/firefox (used by some distros).
 func GetF95Cookies() (string, error) {
+	// No kooky.Domain filter here: kooky's Domain filter matches with exact
+	// equality (cookie.Domain == "f95zone.to"), which drops domain-scoped
+	// cookies stored with a leading dot (".f95zone.to") by Firefox/Chrome.
+	// All cookies are read and the f95zone filter below runs locally.
 	cookies, kookyErr := kooky.ReadCookies(
 		context.Background(),
 		kooky.Valid,
-		kooky.Domain("f95zone.to"),
 	)
 
-	var f95 []*kooky.Cookie
-	for _, c := range cookies {
-		if c.Domain == "f95zone.to" || strings.HasSuffix(c.Domain, ".f95zone.to") {
-			f95 = append(f95, c)
-		}
-	}
+	f95 := filterF95Cookies(cookies)
+	// Same cookie name from multiple browsers/profiles (xf_session,
+	// xf_user) would otherwise produce duplicate name=value pairs with
+	// nondeterministic order — keep the newest value per name.
+	f95 = dedupCookies(f95)
 
 	if len(f95) > 0 {
 		sort.Slice(f95, func(i, j int) bool { return f95[i].Name < f95[j].Name })
@@ -120,6 +126,63 @@ func tryNonStandardFirefoxPaths() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no cookies found in non-standard paths")
+}
+
+// f95ZoneDomain reports whether a cookie domain is f95zone.to or one of its
+// subdomains. Browser stores record domain-scoped cookies with a leading
+// dot (".f95zone.to") — the leading dot also keeps lookalike hosts
+// ("notf95zone.to") out.
+func f95ZoneDomain(domain string) bool {
+	return domain == "f95zone.to" || strings.HasSuffix(domain, ".f95zone.to")
+}
+
+// filterF95Cookies keeps only cookies whose domain belongs to f95zone.to.
+func filterF95Cookies(cookies []*kooky.Cookie) []*kooky.Cookie {
+	var f95 []*kooky.Cookie
+	for _, c := range cookies {
+		if c == nil {
+			continue
+		}
+		if f95ZoneDomain(c.Domain) {
+			f95 = append(f95, c)
+		}
+	}
+	return f95
+}
+
+// dedupCookies removes duplicate cookie names, keeping the newest value per
+// name (first occurrence's position is kept, so the result order is
+// deterministic for a given input order). Multiple browsers/profiles can
+// hold the same cookie (xf_session, xf_user) with different values; a
+// Cookie header with duplicate name=value pairs is invalid, and which
+// browser's value won used to be nondeterministic.
+func dedupCookies(cookies []*kooky.Cookie) []*kooky.Cookie {
+	seen := make(map[string]int, len(cookies)) // name → index in out
+	out := make([]*kooky.Cookie, 0, len(cookies))
+	for _, c := range cookies {
+		if c == nil {
+			continue
+		}
+		if idx, ok := seen[c.Name]; ok {
+			if cookieNewer(c, out[idx]) {
+				out[idx] = c
+			}
+			continue
+		}
+		seen[c.Name] = len(out)
+		out = append(out, c)
+	}
+	return out
+}
+
+// cookieNewer reports whether a is newer than b: the later Creation wins;
+// when both are unset, the later Expires is used as a proxy (some stores
+// don't record creation). Zero times compare as older.
+func cookieNewer(a, b *kooky.Cookie) bool {
+	if a.Creation.Equal(b.Creation) {
+		return a.Expires.After(b.Expires)
+	}
+	return a.Creation.After(b.Creation)
 }
 
 // buildCookieHeader constructs a Cookie header string from cookie pairs.

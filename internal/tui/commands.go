@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,7 +40,7 @@ func (m model) loadGames() tea.Cmd {
 // scanDirectory runs scanner.Scan on a directory and saves/updates games in the database.
 func (m model) scanDirectory(dir string) tea.Cmd {
 	return func() tea.Msg {
-		games, err := scanner.Scan(dir)
+		games, err := scanner.Scan(context.Background(), dir)
 		if err != nil {
 			return errMsg{fmt.Errorf("scanning %s: %w", dir, err)}
 		}
@@ -186,8 +187,27 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 		stepMsg: "Finding suitable host...",
 	}
 	m.activeDownloadsMu.Lock()
-	m.activeDownloads[gameID] = ad
+	existing, ok := m.activeDownloads[gameID]
+	if !ok {
+		m.activeDownloads[gameID] = ad
+	}
 	m.activeDownloadsMu.Unlock()
+	if ok {
+		// Upgrade the Pending reservation placed by handleDownloadKey
+		// instead of replacing it, keeping the entry's identity stable
+		// across the resolve → download flow.
+		existing.mu.Lock()
+		existing.gameID = gameID
+		existing.url = firstLink.URL
+		existing.host = firstLink.Host
+		existing.destDir = destDir
+		existing.status = db.DownloadStatusDownloading
+		existing.progress = downloader.Progress{}
+		existing.err = ""
+		existing.stepMsg = "Finding suitable host..."
+		existing.mu.Unlock()
+		ad = existing
+	}
 
 	go func() {
 		var lastErr error
@@ -267,7 +287,6 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 			ad.status = db.DownloadStatusFailed
 			ad.err = summary
 			ad.stepMsg = "✗ All links failed"
-			ad.completedAt = time.Now()
 			dl.Status = db.DownloadStatusFailed
 			dl.Error = lastErr.Error()
 			log.Error("tui download failed (all links exhausted)", "game_id", gameID, "links_tried", len(links), "error", lastErr)
@@ -293,6 +312,11 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 				ad.mu.Lock()
 				if extractErr != nil {
 					log.Warn("extraction failed", "file", filepath.Base(downloadedFile), "error", extractErr)
+					ad.status = db.DownloadStatusFailed
+					ad.err = fmt.Sprintf("Download succeeded, but extraction failed: %v", extractErr)
+					ad.stepMsg = "✗ Extraction failed"
+					dl.Status = db.DownloadStatusFailed
+					dl.Error = extractErr.Error()
 				} else {
 					log.Info("extraction complete", "files", result.FilesExtracted, "dest", result.Destination)
 					os.Remove(downloadedFile)
@@ -306,15 +330,19 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 					ad.mu.Lock()
 					if mergeErr != nil {
 						log.Warn("merge failed", "game", gamePath, "error", mergeErr)
+						ad.status = db.DownloadStatusFailed
+						ad.err = fmt.Sprintf("Download succeeded, but merging into the game directory failed: %v", mergeErr)
+						ad.stepMsg = "✗ Merge failed"
+						dl.Status = db.DownloadStatusFailed
+						dl.Error = mergeErr.Error()
 					} else {
 						log.Info("merge complete", "game", gamePath, "copied", mergeResult.FilesCopied, "preserved", mergeResult.FilesPreserved)
+						ad.status = db.DownloadStatusCompleted
+						ad.progress.Percent = 100
+						dl.Status = db.DownloadStatusCompleted
+						dl.PercentComplete = 100
 					}
 				}
-				ad.status = db.DownloadStatusCompleted
-				ad.progress.Percent = 100
-				ad.completedAt = time.Now()
-				dl.Status = db.DownloadStatusCompleted
-				dl.PercentComplete = 100
 			}
 		}
 		dl.CompletedAt = time.Now()
@@ -332,6 +360,26 @@ func (m model) pollDownloads() tea.Cmd {
 	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
 		return downloadProgressMsg{}
 	})
+}
+
+// releasePendingReservation removes the Pending-status reservation for
+// gameID, if one exists. Reservations are placed synchronously by
+// handleDownloadKey to guard against double-starts; they must be released
+// whenever the resolve/download flow fails before startDownloadCmd had a
+// chance to upgrade them into a real download entry.
+func (m model) releasePendingReservation(gameID int64) {
+	m.activeDownloadsMu.Lock()
+	defer m.activeDownloadsMu.Unlock()
+	ad, ok := m.activeDownloads[gameID]
+	if !ok {
+		return
+	}
+	ad.mu.Lock()
+	status := ad.status
+	ad.mu.Unlock()
+	if status == db.DownloadStatusPending {
+		delete(m.activeDownloads, gameID)
+	}
 }
 
 // hasActiveDownloads checks if any downloads are in progress.
@@ -360,6 +408,24 @@ func (m model) getDownloadProgress(gameID int64) (downloader.Progress, db.Downlo
 	ad.mu.Lock()
 	defer ad.mu.Unlock()
 	return ad.progress, ad.status, ad.err, ad.stepMsg
+}
+
+// resolveLinksCmd resolves download links in a background goroutine and
+// emits a downloadLinksMsg. The fallback path scrapes F95Zone, so this
+// must never run synchronously inside Update — a rate-limited scrape
+// would stall the whole TUI for seconds.
+func (m model) resolveLinksCmd(game *db.Game, destDir string) tea.Cmd {
+	return func() tea.Msg {
+		links, err := m.resolveDownloadLinks(game)
+		return downloadLinksMsg{
+			gameID:   game.ID,
+			links:    links,
+			destDir:  destDir,
+			gamePath: game.Path,
+			engine:   game.Engine,
+			err:      err,
+		}
+	}
 }
 
 // resolveDownloadLinks finds all viable download links for a game, sorted by platform score.

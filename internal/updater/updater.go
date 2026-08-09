@@ -23,6 +23,9 @@ type MergeResult struct {
 // user data (saves, mods, configs) based on the detected game engine.
 // If backup is true, the existing gameDir is renamed to gameDir.old first
 // and preserved files are restored from the backup after copying new files.
+// A failed merge is rolled back from the backup, so the live game dir is
+// never left half-updated and a previous backup is never destroyed before
+// the new merge has completed.
 func Merge(gameDir, engine, extractedDir string, backup bool) (*MergeResult, error) {
 	if _, err := os.Stat(gameDir); os.IsNotExist(err) {
 		return nil, fmt.Errorf("game directory does not exist: %s", gameDir)
@@ -35,19 +38,77 @@ func Merge(gameDir, engine, extractedDir string, backup bool) (*MergeResult, err
 
 	preserve := patterns(engine)
 	result := &MergeResult{}
+	committed := false
 
-	// Optional backup
+	// Optional backup. The backup is the rollback safety net — if it
+	// cannot be created, proceeding would overwrite the live game dir
+	// with nothing to restore.
 	if backup {
 		backupPath := gameDir + ".old"
-		os.RemoveAll(backupPath)
-		if err := os.Rename(gameDir, backupPath); err != nil {
-			log.Warn("merge backup failed", "game_dir", gameDir, "error", err)
-		} else {
-			result.BackupPath = backupPath
-			if err := os.MkdirAll(gameDir, 0755); err != nil {
-				return nil, fmt.Errorf("recreate game dir: %w", err)
+
+		// A previous merge left a backup behind. Set it aside instead of
+		// deleting it: until this merge completes it is the only intact
+		// pre-merge copy on disk, and it is discarded only after the new
+		// backup has been created successfully (see the deferred commit).
+		// The staging name keeps the ".old" suffix so the scanner skips
+		// it if a scan happens to run mid-merge.
+		stalePath := ""
+		if _, err := os.Stat(backupPath); err == nil {
+			stalePath = backupPath + ".old"
+			if err := os.Rename(backupPath, stalePath); err != nil {
+				return nil, fmt.Errorf("merge backup failed (game dir not modified): %w", err)
 			}
 		}
+
+		if err := os.Rename(gameDir, backupPath); err != nil {
+			// Restore the set-aside backup so a failed rename never
+			// destroys the previous merge's snapshot.
+			if stalePath != "" {
+				if rerr := os.Rename(stalePath, backupPath); rerr != nil {
+					log.Warn("merge backup failed: restoring previous backup", "dir", backupPath, "error", rerr)
+				}
+			}
+			return nil, fmt.Errorf("merge backup failed (game dir not modified): %w", err)
+		}
+		result.BackupPath = backupPath
+
+		if err := os.MkdirAll(gameDir, 0755); err != nil {
+			// gameDir may be partially created; remove it and restore the
+			// live dir plus any stale backup before returning.
+			os.RemoveAll(gameDir)
+			os.Rename(backupPath, gameDir)
+			if stalePath != "" {
+				os.Rename(stalePath, backupPath)
+			}
+			return nil, fmt.Errorf("recreate game dir: %w", err)
+		}
+
+		// From here on the live game dir is a fresh, half-populated copy.
+		// If the copy below fails (or panics), roll the live dir back from
+		// the backup and put the stale backup back in place.
+		defer func() {
+			if committed {
+				// Success: backupPath holds the pre-merge game version;
+				// the stale backup is now obsolete.
+				if stalePath != "" {
+					os.RemoveAll(stalePath)
+				}
+				return
+			}
+			// Failure: undo the rename dance.
+			if err := os.RemoveAll(gameDir); err != nil {
+				log.Warn("merge rollback: remove partial game dir", "dir", gameDir, "error", err)
+			}
+			if err := os.Rename(backupPath, gameDir); err != nil {
+				log.Warn("merge rollback: restore game dir from backup", "dir", gameDir, "error", err)
+			}
+			if stalePath != "" {
+				if err := os.Rename(stalePath, backupPath); err != nil {
+					log.Warn("merge rollback: restore previous backup", "dir", backupPath, "error", err)
+				}
+			}
+			result.BackupPath = ""
+		}()
 	}
 
 	// Copy new files
@@ -59,6 +120,8 @@ func Merge(gameDir, engine, extractedDir string, backup bool) (*MergeResult, err
 	if result.BackupPath != "" {
 		restorePreserved(result.BackupPath, gameDir, preserve)
 	}
+
+	committed = true
 
 	log.Info("merge complete", "game_dir", gameDir, "engine", engine,
 		"copied", result.FilesCopied, "preserved", result.FilesPreserved)
@@ -161,6 +224,11 @@ func copyFile(src, dst string) error {
 	}
 	defer s.Close()
 
+	fi, err := s.Stat()
+	if err != nil {
+		return err
+	}
+
 	d, err := os.Create(dst)
 	if err != nil {
 		return err
@@ -168,6 +236,12 @@ func copyFile(src, dst string) error {
 	defer d.Close()
 
 	if _, err := io.Copy(d, s); err != nil {
+		return err
+	}
+	// Preserve the source's permission bits: os.Create applies 0666 &
+	// umask, which drops the executable bit from game launchers
+	// (.sh, .x86_64, .AppImage).
+	if err := os.Chmod(dst, fi.Mode().Perm()); err != nil {
 		return err
 	}
 	return d.Sync()

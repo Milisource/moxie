@@ -2,6 +2,7 @@ package browser
 
 import (
 	"testing"
+	"time"
 
 	"github.com/browserutils/kooky"
 )
@@ -14,6 +15,108 @@ func cookie(name, value string) *kooky.Cookie {
 	c.Name = name
 	c.Value = value
 	return c
+}
+
+// domainCookie is cookie() with a domain set.
+func domainCookie(name, value, domain string) *kooky.Cookie {
+	c := cookie(name, value)
+	c.Domain = domain
+	return c
+}
+
+// ---------------------------------------------------------------------------
+// filterF95Cookies
+// ---------------------------------------------------------------------------
+
+// Regression: kooky's Domain filter is exact-match and drops domain-scoped
+// cookies stored with a leading dot; the local filter must accept them.
+func TestFilterF95Cookies_DotDomain(t *testing.T) {
+	t.Parallel()
+	cookies := []*kooky.Cookie{
+		domainCookie("xf_session", "sess", ".f95zone.to"),
+		domainCookie("xf_user", "u1", "f95zone.to"),
+		domainCookie("cf_clearance", "cf", "www.f95zone.to"),
+		domainCookie("other", "x", "example.com"),
+		domainCookie("lookalike", "x", "notf95zone.to"),
+		nil,
+	}
+	got := filterF95Cookies(cookies)
+	if len(got) != 3 {
+		t.Fatalf("filterF95Cookies kept %d cookies, want 3 (got: %v)", len(got), got)
+	}
+	// All kept cookies must be f95zone-owned (both bare and dot-prefixed).
+	for _, c := range got {
+		if !f95ZoneDomain(c.Domain) {
+			t.Errorf("kept cookie with domain %q", c.Domain)
+		}
+	}
+}
+
+func TestFilterF95Cookies_Empty(t *testing.T) {
+	t.Parallel()
+	if got := filterF95Cookies(nil); len(got) != 0 {
+		t.Errorf("filterF95Cookies(nil) = %v, want empty", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// dedupCookies
+// ---------------------------------------------------------------------------
+
+func TestDedupCookies_KeepsNewest(t *testing.T) {
+	t.Parallel()
+	old := cookie("xf_session", "old")
+	old.Creation = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	mid := cookie("xf_session", "mid")
+	mid.Creation = time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	new := cookie("xf_session", "new")
+	new.Creation = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	got := dedupCookies([]*kooky.Cookie{old, new, mid})
+	if len(got) != 1 {
+		t.Fatalf("dedupCookies = %v, want 1 cookie", got)
+	}
+	if got[0].Value != "new" {
+		t.Errorf("dedupCookies kept value %q, want newest %q", got[0].Value, "new")
+	}
+}
+
+func TestDedupCookies_FallsBackToExpires(t *testing.T) {
+	t.Parallel()
+	// Both Creation times unset — newer Expires wins as a proxy.
+	soon := cookie("xf_user", "soon")
+	soon.Expires = time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
+	later := cookie("xf_user", "later")
+	later.Expires = time.Date(2027, 12, 31, 0, 0, 0, 0, time.UTC)
+
+	got := dedupCookies([]*kooky.Cookie{later, soon})
+	if len(got) != 1 || got[0].Value != "later" {
+		t.Errorf("dedupCookies = %v, want single cookie with value %q", got, "later")
+	}
+}
+
+func TestDedupCookies_KeepsDistinctNames(t *testing.T) {
+	t.Parallel()
+	cookies := []*kooky.Cookie{
+		cookie("xf_session", "a"),
+		cookie("xf_user", "b"),
+		cookie("cf_clearance", "c"),
+	}
+	got := dedupCookies(cookies)
+	if len(got) != 3 {
+		t.Errorf("dedupCookies = %v, want all 3 distinct names kept", got)
+	}
+}
+
+func TestDedupCookies_FirstKeptWhenTimesEqual(t *testing.T) {
+	t.Parallel()
+	// Identical timestamps (all zero) — the first occurrence wins.
+	a := cookie("xf_session", "first")
+	b := cookie("xf_session", "second")
+	got := dedupCookies([]*kooky.Cookie{a, b})
+	if len(got) != 1 || got[0].Value != "first" {
+		t.Errorf("dedupCookies = %v, want first occurrence kept", got)
+	}
 }
 
 // ---------------------------------------------------------------------------

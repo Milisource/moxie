@@ -1,6 +1,9 @@
 <script>
-  import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCachedCovers} from '../../wailsjs/go/main/App'
+  import {onMount, onDestroy} from 'svelte'
+  import {EventsOn} from '../../wailsjs/runtime/runtime'
+  import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCoverBaseURL} from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
+  import {GAME_STATUSES, statusLabel} from './statuses.js'
 
   let {
     games = [],
@@ -9,36 +12,62 @@
   } = $props()
 
   // ── Cover loading ─────────────────────────────────────────────
-  let coverCache = $state(new Map())   // gameId → data URI string
-  let coverLoading = $state(new Set()) // gameIds currently loading
+  // Covers are served by the backend over loopback HTTP (see GetCoverBaseURL)
+  // and the webview caches them itself — no base64 over the IPC bridge.
+  // An empty coverBase means the cover server failed to start: rows fall
+  // back to the placeholder.
+  let coverBase = $state('')
 
-  // One IPC round-trip for the whole visible batch. Fetching per-row meant 50
-  // sequential calls, each carrying a base64-encoded image.
-  async function loadCovers(list) {
-    const need = list
-      .filter(g => g.hasCover && !coverCache.has(g.id) && !coverLoading.has(g.id))
-      .map(g => g.id)
-    if (need.length === 0) return
+  // Games whose <img> failed to load. A retry epoch appended to the src
+  // forces the webview to re-request them after a sync/backfill caches the
+  // file — the plain URL would otherwise keep returning the cached 404.
+  let failedCovers = $state(new Set())
+  let coverEpoch = $state(0)
 
-    for (const id of need) coverLoading.add(id)
-    try {
-      const covers = await GetCachedCovers(need)
-      const next = new Map(coverCache)
-      // Go returns map[int64]string, so the keys arrive as strings.
-      for (const [id, uri] of Object.entries(covers ?? {})) {
-        if (uri) next.set(Number(id), uri)
-      }
-      coverCache = next
-    } catch (e) {
-      console.error('Failed to load covers', e)
-    } finally {
-      for (const id of need) coverLoading.delete(id)
+  let unsubCoversComplete = null
+  let unsubGameDone = null
+
+  function coverSrc(id) {
+    const epoch = failedCovers.has(id) ? `?r=${coverEpoch}` : ''
+    return `${coverBase}/cover/${id}/thumb${epoch}`
+  }
+
+  function markFailed(id) {
+    failedCovers = new Set([...failedCovers, id])
+  }
+
+  // A sync run cached this game's cover — retry it right away.
+  function onGameDone(data) {
+    if (data?.id && failedCovers.has(data.id)) {
+      coverEpoch++
+      const next = new Set(failedCovers)
+      next.delete(data.id)
+      failedCovers = next
     }
   }
 
-  // Watch the displayed list and load covers for the visible rows.
-  $effect(() => {
-    loadCovers(displayed.slice(0, 50))
+  // A cover backfill finished — retry everything that had failed.
+  function onCoversComplete() {
+    if (failedCovers.size > 0) {
+      coverEpoch++
+      failedCovers = new Set()
+    }
+  }
+
+  onMount(async () => {
+    try {
+      coverBase = await GetCoverBaseURL()
+    } catch (e) {
+      console.error('Failed to get cover base URL', e)
+    }
+    unsubCoversComplete = EventsOn('covers:complete', onCoversComplete)
+    unsubGameDone = EventsOn('sync:game-done', onGameDone)
+  })
+
+  onDestroy(() => {
+    clearTimeout(debounceTimer)
+    if (unsubCoversComplete) unsubCoversComplete()
+    if (unsubGameDone) unsubGameDone()
   })
 
   // ── Search & Filters ──────────────────────────────────────────
@@ -59,12 +88,42 @@
     return arr
   })
 
-  // Available statuses
-  const statuses = ['All', 'active', 'completed', 'abandoned', 'on_hold', 'unknown']
+  // Available statuses (shared with the context menu via lib/statuses.js)
+  const statuses = ['All', ...GAME_STATUSES]
 
   // ── Sorting ───────────────────────────────────────────────────
   let sortColumn = $state('title')
   let sortDesc = $state(false)
+
+  // Numeric-aware version comparison: "10.0" sorts after "9.0". Splits on
+  // non-alphanumerics and compares token-wise — numeric tokens numerically,
+  // anything else lexically (numeric tokens first when mixed).
+  function compareVersions(a, b) {
+    const ta = String(a || '')
+    const tb = String(b || '')
+    if (ta === tb) return 0
+    const pa = ta.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+    const pb = tb.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+    const len = Math.max(pa.length, pb.length)
+    for (let i = 0; i < len; i++) {
+      const x = pa[i]
+      const y = pb[i]
+      if (x === undefined) return -1
+      if (y === undefined) return 1
+      const xNum = /^\d+$/.test(x)
+      const yNum = /^\d+$/.test(y)
+      if (xNum && yNum) {
+        const n = parseInt(x, 10) - parseInt(y, 10)
+        if (n !== 0) return n
+      } else if (xNum !== yNum) {
+        return xNum ? -1 : 1
+      } else {
+        const c = x.localeCompare(y)
+        if (c !== 0) return c
+      }
+    }
+    return 0
+  }
 
   function toggleSort(col) {
     if (sortColumn === col) {
@@ -107,7 +166,7 @@
           cmp = (a.engine || '').localeCompare(b.engine || '')
           break
         case 'version':
-          cmp = (a.version || '').localeCompare(b.version || '')
+          cmp = compareVersions(a.version, b.version)
           break
         case 'status':
           cmp = (a.status || '').localeCompare(b.status || '')
@@ -123,41 +182,45 @@
   })
 
   // ── Search with debounce ──────────────────────────────────────
+  // Monotonic request id: a slower, older response must never overwrite a
+  // newer one (or resurrect results after the field was cleared).
+  let searchSeq = 0
+
   async function doSearch(query) {
     if (!query || query.trim().length < 2) {
+      searchSeq++                    // invalidate any in-flight request
       searchResults = null
       isSearching = false
       return
     }
+    const seq = ++searchSeq
     isSearching = true
     try {
-      searchResults = await SearchGames(query.trim())
+      const res = await SearchGames(query.trim())
+      if (seq !== searchSeq) return   // stale — a newer search owns the results
+      searchResults = res
     } catch (e) {
+      if (seq !== searchSeq) return
       console.error('Search failed:', e)
       searchResults = null
     }
-    isSearching = false
+    if (seq === searchSeq) isSearching = false
   }
 
   function onSearchInput(e) {
     searchQuery = e.target.value
     clearTimeout(debounceTimer)
+    // Clearing (or shortening below the threshold) must clear results right
+    // away and invalidate any in-flight request — don't wait for the debounce.
+    if (!searchQuery || searchQuery.trim().length < 2) {
+      doSearch(searchQuery)
+      return
+    }
     debounceTimer = setTimeout(() => doSearch(searchQuery), 300)
   }
 
   // ── Engine colors — imported from shared module ───────────────
   // See engineColors.js for the canonical palette matching TUI styles
-
-  function statusLabel(s) {
-    const labels = {
-      active: 'Active',
-      completed: 'Completed',
-      abandoned: 'Abandoned',
-      on_hold: 'On Hold',
-      unknown: 'Unknown',
-    }
-    return labels[s] || s || 'Unknown'
-  }
 
   function hasUpdate(game) {
     return game.latestVersion && game.version &&
@@ -190,7 +253,7 @@
     closeContextMenu()
     try {
       await SetGameStatus(g.id, status)
-      onUpdate()
+      await onUpdate()
     } catch (e) {
       console.error('Failed to set status:', e)
     }
@@ -204,7 +267,7 @@
     if (!newTitle || newTitle.trim() === '' || newTitle.trim() === g.title) return
     try {
       await RenameGame(g.id, newTitle.trim())
-      onUpdate()
+      await onUpdate()
     } catch (e) {
       console.error('Failed to rename:', e)
     }
@@ -217,7 +280,7 @@
     if (!window.confirm(`Are you sure you want to remove "${g.title}" from your library?`)) return
     try {
       await RemoveGame(g.id, false)
-      onUpdate()
+      await onUpdate()
     } catch (e) {
       console.error('Failed to remove:', e)
     }
@@ -303,19 +366,20 @@
           tabindex="0"
         >
           <span class="col-cover">
-            {#if game.hasCover && coverCache.has(game.id)}
+            {#if game.hasCover && coverBase && !failedCovers.has(game.id)}
               <img
                 class="cover-thumb"
-                src={coverCache.get(game.id)}
+                src={coverSrc(game.id)}
                 alt="{game.title} cover"
                 loading="lazy"
+                onerror={() => markFailed(game.id)}
               />
-            {:else if game.hasCover}
-              <span class="cover-placeholder" title="Loading cover…">
-                <span class="cover-spinner"></span>
+            {:else if game.hasCover && coverBase}
+              <span class="cover-placeholder" title="Cover unavailable — retries after the next sync or cover fetch">
+                <span class="cover-icon">🖼</span>
               </span>
             {:else}
-              <span class="cover-placeholder" title="No cover">
+              <span class="cover-placeholder" title="No cover — use Covers in the sidebar to fetch one">
                 <span class="cover-icon">🎮</span>
               </span>
             {/if}
@@ -362,7 +426,7 @@
       <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="context-menu-overlay" onclick={closeContextMenu} oncontextmenu={(e) => e.preventDefault()}>
-        <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px">
+        <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px" onclick={(e) => e.stopPropagation()}>
           {#if contextMenuView === 'main'}
             <button class="ctx-item" onclick={() => contextMenuView = 'status'}>
               <span>Set Status</span>
@@ -377,7 +441,7 @@
               <span>Status</span>
             </button>
             <div class="ctx-divider"></div>
-            {#each ['active', 'completed', 'abandoned', 'on_hold', 'unknown'] as s}
+            {#each GAME_STATUSES as s}
               <button class="ctx-item" onclick={() => handleStatus(s)}>
                 <span class="ctx-dot ctx-dot-{s}"></span>
                 {statusLabel(s)}

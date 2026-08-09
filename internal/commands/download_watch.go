@@ -41,9 +41,11 @@ func resolveBestLink(database *db.Database, game db.Game, cookie, targetPlatform
 		scrapeURL := scraper.ResolveScrapeURL(game.F95URL, game.F95ThreadID)
 		data, err := client.ScrapeThread(scrapeURL)
 		if err == nil && len(data.DownloadLinks) > 0 {
-			database.DeleteDownloadLinksByGameID(game.ID)
+			if err := database.DeleteDownloadLinksByGameID(game.ID); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠ Failed to clear stale download links: %v\n", err)
+			}
 			for _, dl := range data.DownloadLinks {
-				linkPlatform := downloader.DetectPlatformFromLink(dl.Name, dl.URL)
+				linkPlatform := db.Platform(downloader.DetectPlatform(dl.Name, dl.URL))
 				link := &db.DownloadLink{
 					GameID:   game.ID,
 					URL:      dl.URL,

@@ -1,12 +1,15 @@
 package util
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mili/moxie/internal/scraper"
 )
 
 // Pre-compiled regexps used by FilesystemSafe.
@@ -52,9 +55,16 @@ func IsBlocked(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Typed match first: the scraper surfaces blocks as *scraper.BlockedError
+	// (its Error() format is "scraper: blocked — <reason> (HTTP <n>)", so the
+	// old string match on "BlockedError" never hit). String checks remain as a
+	// fallback for errors from other sources that describe a block.
+	var blockedErr *scraper.BlockedError
+	if errors.As(err, &blockedErr) {
+		return true
+	}
 	msg := err.Error()
-	return strings.Contains(msg, "BlockedError") ||
-		strings.Contains(msg, "blocked") ||
+	return strings.Contains(msg, "blocked") ||
 		strings.Contains(msg, "Cloudflare challenge")
 }
 
@@ -62,6 +72,9 @@ func IsBlocked(err error) bool {
 func Truncate(s string, maxLen int) string {
 	// Strip newlines and truncate.
 	s = strings.ReplaceAll(s, "\n", " ")
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(s) <= maxLen {
 		return s
 	}

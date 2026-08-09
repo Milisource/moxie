@@ -63,15 +63,15 @@ If the backup approach doesn't work, the Steam client's own `steam://flushconfig
 
 ### Why is scraping slow?
 
-moxie deliberately rate-limits HTTP requests to F95Zone to avoid being blocked. Each thread scrape inserts a 1-second delay between requests. For a library with 100 associated games, a full `check-updates` or `sync` takes at least 100 seconds sequentially.
+moxie deliberately rate-limits HTTP requests to F95Zone to avoid being blocked. Each thread scrape waits at least 1.5s between requests (searches wait 3s), plus random jitter. The cookie-free sync path avoids most of this: version checks for the whole library are a single bulk request (`checker.php`, ~100 thread IDs each — 100 games complete in ~2s), and repeat syncs skip games already searched/checked within 24h.
 
-**Speed it up with parallel scraping:**
+The slow parts are per-game operations: auto-association (one search per game) and the cookie-based direct-scrape fallback. Both are parallelized:
 
 ```bash
-moxie sync --parallel 3  # runs 3 workers concurrently — ~3× faster
+moxie sync --parallel 3  # up to 3 workers concurrently (default is 3)
 ```
 
-Each worker gets its own rate-limited client, so F95Zone still sees polite request timing per-worker. Default is sequential (`--parallel 1`). Max recommended is 3-5.
+Note that all workers share one rate-limited client, so parallelism helps with CPU-bound work and fallback scrapes but does not multiply the request rate. The desktop app takes a different approach: each of its 3 sync workers owns its own client, which does multiply search throughput.
 
 **Bypassing the rate limit entirely** is possible but not recommended:
 
@@ -117,7 +117,7 @@ If you type a search term and the table goes empty, check:
 
 ### `moxie sync` fails with a block error
 
-F95Zone uses Cloudflare's anti-bot protection. moxie authenticates via browser cookies — if your session cookie expires, the scraping layer gets a Cloudflare challenge page instead of real content.
+Sync runs cookie-free through F95Zone's public JSON endpoints, so it works without a browser session. The cookie-based layers (XenForo search fallback, direct thread scraping) sit behind Cloudflare's anti-bot protection — if your session cookie expires, those fallback layers get a Cloudflare challenge page instead of real content, and a run that relies on them will abort with a block error.
 
 **Resolution steps:**
 

@@ -1,51 +1,38 @@
 <script>
-  import {onMount, onDestroy} from 'svelte'
-  import {EventsOn} from '../../wailsjs/runtime/runtime'
+  import {onMount} from 'svelte'
   import {
     GetUpdatableGames,
     GetVersion,
     CheckForUpdate,
-    DownloadGameUpdate,
-    DownloadAllUpdates,
-    CancelGameUpdate,
   } from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
+  import {safeExternalUrl} from './sanitizeUrl.js'
 
-  let {onNavigate = () => {}, onUpdateCompleted = () => {}} = $props()
+  // Presentational view: the game-update pipeline state (gameStates,
+  // batchState) and its event subscriptions live in App.svelte so they
+  // survive tab switches — exactly like syncState for the sync view. This
+  // component renders that state and calls back into App for actions.
+
+  let {
+    gameStates = {},
+    batchState = null,
+    onNavigate = () => {},
+    onUpdateGame = () => {},
+    onUpdateAll = () => {},
+    onRetryFailed = () => {},
+    onCancel = () => {},
+  } = $props()
 
   // ── Game List State ──────────────────────────────────────────
   let games = $state([])           // DesktopGameSummary[]
   let loading = $state(true)
   let error = $state('')
 
-  // ── Per-Game State Machine ───────────────────────────────────
-  // Phase: idle | syncing | selecting-link | downloading | extracting | merging | updating-db | done | error
-  // Each entry: { phase, percent, speed, bytesDownloaded, totalBytes, filesExtracted, totalFiles, currentFile, error, oldVersion, newVersion }
-  /** @type {Record<number, {phase:string,percent:number,speed:number,bytesDownloaded:number,totalBytes:number,filesExtracted:number,totalFiles:number,currentFile:string,error:string,oldVersion:string,newVersion:string}>} */
-  let gameStates = $state({})
-
-  // ── Batch State ──────────────────────────────────────────────
-  /** @type {{running:boolean,current:number,total:number,currentGameTitle:string,results:Array,error:string}|null} */
-  let batchState = $state(null)
-
   // ── App Update State ─────────────────────────────────────────
   let appVersion = $state('')
   let appUpdateInfo = $state(null)
   let appChecking = $state(false)
   let appError = $state('')
-
-  // ── Unsubscribe functions ────────────────────────────────────
-  let unsubPhase = null
-  let unsubDownload = null
-  let unsubExtract = null
-  let unsubError = null
-  let unsubComplete = null
-  let unsubBatchStart = null
-  let unsubBatchProgress = null
-  let unsubGameDone = null
-  let unsubBatchComplete = null
-  let unsubCancelled = null
-  let unsubIdle = null
 
   // ── Utility Formatting ───────────────────────────────────────
   function formatBytes(bytes) {
@@ -99,219 +86,28 @@
     loading = false
   }
 
-  // ── Update Actions ───────────────────────────────────────────
-  function initGameState(gameId) {
-    gameStates = {
-      ...gameStates,
-      [gameId]: {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', oldVersion: '', newVersion: ''},
-    }
-  }
-
-  async function handleUpdateGame(gameId) {
-    const gs = getGS(gameId)
-    if (gs.phase !== 'idle' && gs.phase !== 'error') return
-    initGameState(gameId)
-    try {
-      await DownloadGameUpdate(gameId)
-    } catch (e) {
-      gameStates = {
-        ...gameStates,
-        [gameId]: {...(gameStates[gameId] || {}), phase: 'error', error: String(e)},
-      }
-    }
-  }
-
-  async function handleRetry(gameId) {
-    initGameState(gameId)
-    try {
-      await DownloadGameUpdate(gameId)
-    } catch (e) {
-      gameStates = {
-        ...gameStates,
-        [gameId]: {...(gameStates[gameId] || {}), phase: 'error', error: String(e)},
-      }
-    }
-  }
-
-  async function handleUpdateAll() {
-    if (batchState?.running) return
-
-    // Initialize all games as syncing
-    const newStates = {...gameStates}
-    for (const game of games) {
-      newStates[game.id] = {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', oldVersion: '', newVersion: ''}
-    }
-    gameStates = newStates
-    batchState = {running: true, current: 0, total: games.length, currentGameTitle: '', results: [], error: ''}
-
-    try {
-      await DownloadAllUpdates()
-    } catch (e) {
-      batchState = {...batchState, running: false, error: String(e)}
-    }
-  }
-
-  // The backend runs at most one update at a time, so retries are queued and
-  // pumped one-by-one as each finishes rather than fired off together.
-  let retryQueue = $state([])
-
-  function handleRetryFailed() {
-    const failed = (batchState?.results || []).filter(r => !r.success)
-    if (failed.length === 0) return
-    batchState = null
-    retryQueue = failed.map(f => f.gameID)
-    pumpRetryQueue()
-  }
-
-  function pumpRetryQueue() {
-    if (retryQueue.length === 0) return
-    const [next, ...rest] = retryQueue
-    retryQueue = rest
-    handleUpdateGame(next)
-  }
-
-  async function handleCancel() {
-    try {
-      retryQueue = []
-      await CancelGameUpdate()
-    } catch (e) { /* nothing running */ }
-  }
-
-
   // ── App Update ───────────────────────────────────────────────
   async function handleCheckAppUpdate() {
     appChecking = true
     appError = ''
     appUpdateInfo = null
     try {
-      appUpdateInfo = await CheckForUpdate()
+      const result = await CheckForUpdate()
+      // CheckForUpdate carries API failures in the `error` field instead of
+      // throwing — surface it rather than rendering "up to date".
+      if (result?.error) {
+        appError = result.error
+        appUpdateInfo = null
+      } else {
+        appUpdateInfo = result
+      }
     } catch (e) {
       appError = String(e)
     }
     appChecking = false
   }
 
-  // ── Event Setup ──────────────────────────────────────────────
-  function setupEvents() {
-    unsubPhase = EventsOn('game-update:phase', (data) => {
-      gameStates = {
-        ...gameStates,
-        [data.gameID]: {...(gameStates[data.gameID] || {}), phase: data.phase},
-      }
-    })
-
-    unsubDownload = EventsOn('game-update:download-progress', (data) => {
-      gameStates = {
-        ...gameStates,
-        [data.gameID]: {
-          ...(gameStates[data.gameID] || {}),
-          percent: Math.min(data.percent ?? 0, 100),
-          speed: data.speedBytesPerSec ?? 0,
-          bytesDownloaded: data.bytesDownloaded ?? 0,
-          totalBytes: data.totalBytes ?? 0,
-        },
-      }
-    })
-
-    unsubExtract = EventsOn('game-update:extract-progress', (data) => {
-      gameStates = {
-        ...gameStates,
-        [data.gameID]: {
-          ...(gameStates[data.gameID] || {}),
-          filesExtracted: data.filesExtracted ?? 0,
-          totalFiles: data.totalFiles ?? 0,
-          currentFile: data.currentFile ?? '',
-        },
-      }
-    })
-
-    unsubError = EventsOn('game-update:error', (data) => {
-      gameStates = {
-        ...gameStates,
-        [data.gameID]: {
-          ...(gameStates[data.gameID] || {}),
-          phase: 'error',
-          error: data.message || 'Unknown error',
-        },
-      }
-    })
-
-    // The backend releases its single-run lock just before this fires, so
-    // it is the only safe point to start the next queued retry.
-    unsubIdle = EventsOn('game-update:idle', () => {
-      pumpRetryQueue()
-    })
-
-    unsubCancelled = EventsOn('game-update:cancelled', () => {
-      const busy = ['syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
-      const next = {...gameStates}
-      for (const [id, gs] of Object.entries(next)) {
-        if (busy.includes(gs.phase)) next[id] = {...gs, phase: 'error', error: 'Cancelled'}
-      }
-      gameStates = next
-      if (batchState?.running) batchState = {...batchState, running: false, error: 'Cancelled'}
-    })
-
-    unsubComplete = EventsOn('game-update:complete', (data) => {
-      gameStates = {
-        ...gameStates,
-        [data.gameID]: {
-          ...(gameStates[data.gameID] || {}),
-          phase: 'done',
-          oldVersion: data.oldVersion || '',
-          newVersion: data.newVersion || '',
-        },
-      }
-      onUpdateCompleted()
-    })
-
-    unsubBatchStart = EventsOn('game-update:batch-start', (data) => {
-      batchState = {
-        running: true,
-        current: 0,
-        total: data.total || 0,
-        currentGameTitle: '',
-        results: [],
-        error: '',
-      }
-    })
-
-    unsubBatchProgress = EventsOn('game-update:batch-progress', (data) => {
-      if (batchState) {
-        batchState = {...batchState, current: data.current ?? 0, currentGameTitle: data.currentGameTitle || ''}
-      }
-    })
-
-    unsubGameDone = EventsOn('game-update:game-done', (data) => {
-      if (batchState) {
-        batchState = {
-          ...batchState,
-          results: [...batchState.results, {
-            gameID: data.gameID,
-            title: data.title || '',
-            success: !!data.success,
-            error: data.error || '',
-          }],
-        }
-      }
-    })
-
-    unsubBatchComplete = EventsOn('game-update:batch-complete', (data) => {
-      if (batchState) {
-        batchState = {
-          ...batchState,
-          running: false,
-          succeeded: data.succeeded ?? 0,
-          failed: data.failed ?? 0,
-        }
-      }
-    })
-  }
-
   onMount(async () => {
-    // Set up event listeners FIRST (before calling update functions)
-    setupEvents()
-
     // Load version
     try {
       appVersion = await GetVersion()
@@ -319,20 +115,6 @@
 
     // Load updatable games
     await loadGames()
-  })
-
-  onDestroy(() => {
-    if (unsubPhase) unsubPhase()
-    if (unsubDownload) unsubDownload()
-    if (unsubExtract) unsubExtract()
-    if (unsubError) unsubError()
-    if (unsubComplete) unsubComplete()
-    if (unsubBatchStart) unsubBatchStart()
-    if (unsubBatchProgress) unsubBatchProgress()
-    if (unsubGameDone) unsubGameDone()
-    if (unsubBatchComplete) unsubBatchComplete()
-    if (unsubCancelled) unsubCancelled()
-    if (unsubIdle) unsubIdle()
   })
 
   // ── Derived ──────────────────────────────────────────────────
@@ -348,6 +130,17 @@
     Object.values(gameStates).filter(s => s && s.phase === 'done').length
   )
   let allDone = $derived(count > 0 && doneCount === count)
+
+  // Batch progress bar. The backend's batch-progress `current` counts games
+  // that have STARTED, so it equals `total` while the last game is still
+  // running — a naive current/total bar would read 100% prematurely. Cap the
+  // bar at 97% while the batch runs; only a finished batch (running=false)
+  // renders as 100%.
+  let batchProgressPct = $derived.by(() => {
+    if (!batchState || !batchState.total) return 0
+    if (!batchState.running) return 100
+    return Math.min(Math.round((batchState.current / batchState.total) * 100), 97)
+  })
 </script>
 
 <div class="updates-view">
@@ -395,9 +188,7 @@
           <div class="batch-progress-bar-bg">
             <div
               class="batch-progress-bar-fill"
-              style="width: {batchState.total > 0
-                ? Math.round((batchState.current / batchState.total) * 100)
-                : 0}%"
+              style="width: {batchProgressPct}%"
             ></div>
           </div>
           <p class="batch-progress-label">
@@ -438,7 +229,7 @@
             {#if batchState.failed > 0}
               <button
                 class="btn btn-sm btn-warning"
-                onclick={handleRetryFailed}
+                onclick={onRetryFailed}
               >
                 Retry Failed ({batchState.failed})
               </button>
@@ -459,7 +250,7 @@
       <div class="action-bar">
         <button
           class="btn btn-primary"
-          onclick={handleUpdateAll}
+          onclick={() => onUpdateAll(games)}
           disabled={isUpdatingAny || batchState?.running}
         >
           {#if batchState?.running}
@@ -476,7 +267,7 @@
           Sync Now
         </button>
         {#if updateInFlight}
-          <button class="btn btn-outline btn-cancel" onclick={handleCancel}>
+          <button class="btn btn-outline btn-cancel" onclick={onCancel}>
             Cancel
           </button>
         {/if}
@@ -540,7 +331,7 @@
               {#if phase === 'idle'}
                 <button
                   class="btn btn-sm btn-accent"
-                  onclick={() => handleUpdateGame(game.id)}
+                  onclick={() => onUpdateGame(game.id)}
                   disabled={isUpdatingAny || batchState?.running}
                 >
                   Update
@@ -611,7 +402,7 @@
                   </span>
                   <button
                     class="btn btn-sm btn-warning"
-                    onclick={() => handleRetry(game.id)}
+                    onclick={() => onUpdateGame(game.id)}
                     disabled={isUpdatingAny || batchState?.running}
                   >
                     Retry
@@ -671,7 +462,7 @@
             {/if}
           </button>
 
-          {#if appUpdateInfo && !appUpdateInfo.hasUpdate}
+          {#if appUpdateInfo && !appUpdateInfo.error && !appUpdateInfo.hasUpdate}
             <div class="inline-status inline-ok">
               <span>✓</span>
               <span>Moxie is up to date ({appVersion}).</span>
@@ -686,9 +477,9 @@
                 <code class="version-tag">{appUpdateInfo.currentVersion}</code>
                 → <code class="version-tag">{appUpdateInfo.latestVersion}</code>
               </span>
-              {#if appUpdateInfo.releaseUrl}
+              {#if safeExternalUrl(appUpdateInfo.releaseUrl)}
                 <a
-                  href={appUpdateInfo.releaseUrl}
+                  href={safeExternalUrl(appUpdateInfo.releaseUrl)}
                   target="_blank"
                   rel="noopener noreferrer"
                   class="release-link"

@@ -1,5 +1,5 @@
 <script>
-  import {onMount} from 'svelte'
+  import {onMount, onDestroy} from 'svelte'
   import {
     GetCookieStatus,
     SearchF95Zone,
@@ -7,6 +7,7 @@
     AddGameFromF95Zone,
   } from '../../wailsjs/go/main/App'
   import {engineColor, engineStyle} from './engineColors.js'
+  import {safeExternalUrl} from './sanitizeUrl.js'
 
   // ── State ──────────────────────────────────────────────────
   let query = $state('')
@@ -20,6 +21,7 @@
   let previewing = $state(false)
   let preview = $state(null)
   let previewError = $state('')
+  let expandedOverview = $state(false)
 
   // Add-to-library state
   let adding = $state(false)
@@ -31,6 +33,13 @@
   // Debounce timer
   let debounceTimer = null
 
+  // Monotonic request ids: a slower, older response (search or preview) must
+  // never overwrite a newer one — e.g. preview A rendering under selection B.
+  // Wails bindings don't support abort, so we bump a counter and bail out of
+  // stale responses instead.
+  let searchSeq = 0
+  let previewSeq = 0
+
   // ── Cookie check on mount ──────────────────────────────────
   onMount(async () => {
     try {
@@ -40,18 +49,40 @@
     }
   })
 
+  // A pending debounce must never fire after the view is destroyed — it
+  // would resurrect search results (and a fetch) on a torn-down component.
+  onDestroy(() => {
+    clearTimeout(debounceTimer)
+  })
+
   // ── Derived ─────────────────────────────────────────────────
   let canSearch = $derived(query.trim().length >= 2 && cookieStatus === 'available' && !loading)
 
   // Engine display colors — imported from engineColors.js
 
   // ── Search with debounce ───────────────────────────────────
+  // Clearing the field (or typing a too-short query) must clear results AND
+  // invalidate any in-flight request so it can't resurrect stale results.
+  function resetSearchResults() {
+    searchSeq++
+    previewSeq++
+    loading = false
+    searched = false
+    results = []
+    error = ''
+    selectedResult = null
+    preview = null
+    previewing = false
+    addResult = null
+    expandedOverview = false
+  }
+
   function handleSearchInput(e) {
     query = e.target.value
     clearTimeout(debounceTimer)
 
     if (query.trim().length < 2) {
-      searched = false
+      resetSearchResults()
       return
     }
 
@@ -61,9 +92,16 @@
   }
 
   async function doSearch() {
+    // An explicit Search click / Enter supersedes a pending debounce.
+    clearTimeout(debounceTimer)
     const q = query.trim()
-    if (q.length < 2) return
+    if (q.length < 2) {
+      resetSearchResults()
+      return
+    }
 
+    const seq = ++searchSeq
+    previewSeq++                    // a new search invalidates any in-flight preview
     loading = true
     error = ''
     searched = true
@@ -72,13 +110,17 @@
     preview = null
     previewing = false
     addResult = null
+    expandedOverview = false
 
     try {
-      results = await SearchF95Zone(q)
+      const res = await SearchF95Zone(q)
+      if (seq !== searchSeq) return   // stale — a newer search owns the results
+      results = res
     } catch (e) {
+      if (seq !== searchSeq) return
       error = String(e)
     }
-    loading = false
+    if (seq === searchSeq) loading = false
   }
 
   // ── Preview ────────────────────────────────────────────────
@@ -88,10 +130,15 @@
     preview = null
     previewError = ''
     addResult = null
+    expandedOverview = false        // don't leak the previous game's expanded state
 
+    const seq = ++previewSeq
     try {
-      preview = await GetThreadPreview(result.url)
+      const p = await GetThreadPreview(result.url)
+      if (seq !== previewSeq) return  // stale — a newer preview/search owns the pane
+      preview = p
     } catch (e) {
+      if (seq !== previewSeq) return
       previewError = String(e)
     }
   }
@@ -101,6 +148,7 @@
     preview = null
     selectedResult = null
     addResult = null
+    expandedOverview = false
   }
 
   // ── Add to Library ─────────────────────────────────────────
@@ -124,8 +172,6 @@
   }
 
   // ── Overview truncation ────────────────────────────────────
-  let expandedOverview = $state(false)
-
   function truncate(text, maxLen = 300) {
     if (!text || text.length <= maxLen) return text
     return text.slice(0, maxLen) + '…'
@@ -347,16 +393,18 @@
               <h4>Store Links</h4>
               <div class="store-links">
                 {#each Object.entries(preview.storeLinks) as [name, url]}
-                  <a href={url} target="_blank" rel="noopener" class="store-link">
-                    {#if name === 'steam'}
-                      ◈
-                    {:else if name === 'patreon'}
-                      ⚡
-                    {:else}
-                      🔗
-                    {/if}
-                    {name}
-                  </a>
+                  {#if safeExternalUrl(url)}
+                    <a href={safeExternalUrl(url)} target="_blank" rel="noopener" class="store-link">
+                      {#if name === 'steam'}
+                        ◈
+                      {:else if name === 'patreon'}
+                        ⚡
+                      {:else}
+                        🔗
+                      {/if}
+                      {name}
+                    </a>
+                  {/if}
                 {/each}
               </div>
             </div>
@@ -368,13 +416,15 @@
               <h4>Download Links</h4>
               <div class="download-list">
                 {#each preview.downloadLinks as dl}
-                  <a href={dl.url} target="_blank" rel="noopener" class="download-link">
-                    <span class="dl-host">{dl.host}</span>
-                    <span class="dl-name">{dl.name || 'Link'}</span>
-                    {#if dl.platform}
-                      <span class="dl-platform">{dl.platform}</span>
-                    {/if}
-                  </a>
+                  {#if safeExternalUrl(dl.url)}
+                    <a href={safeExternalUrl(dl.url)} target="_blank" rel="noopener" class="download-link">
+                      <span class="dl-host">{dl.host}</span>
+                      <span class="dl-name">{dl.name || 'Link'}</span>
+                      {#if dl.platform}
+                        <span class="dl-platform">{dl.platform}</span>
+                      {/if}
+                    </a>
+                  {/if}
                 {/each}
               </div>
             </div>

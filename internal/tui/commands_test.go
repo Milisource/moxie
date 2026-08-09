@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/mili/moxie/internal/db"
@@ -56,6 +59,110 @@ func TestIsOnlineOnlyLink_EdgeCases_TUI(t *testing.T) {
 	}
 	if downloader.IsOnlineOnly("bone", "") {
 		t.Error("expected 'bone' NOT to be online-only")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Download flow: double-start guard and reservation lifecycle
+// ---------------------------------------------------------------------------
+
+func TestHandleDownloadKey_DoubleInvokeStartsOneDownload(t *testing.T) {
+	f, err := os.CreateTemp("", "tui-download-*.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := f.Name()
+	f.Close()
+	database, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		database.Close()
+		os.Remove(path)
+	})
+
+	id, err := database.InsertGame(&db.Game{
+		Title:  "Test Game",
+		Path:   filepath.Join(t.TempDir(), "game"),
+		Engine: "Unknown",
+	})
+	if err != nil {
+		t.Fatalf("InsertGame: %v", err)
+	}
+
+	m := model{
+		db:                database,
+		selectedID:        id,
+		activeDownloadsMu: &sync.Mutex{},
+		activeDownloads:   make(map[int64]*activeDownload),
+	}
+
+	// First keypress: must reserve a Pending entry synchronously and
+	// return a resolveLinksCmd.
+	m1, cmd1 := m.handleDownloadKey()
+	if cmd1 == nil {
+		t.Fatal("expected a resolveLinksCmd from the first keypress")
+	}
+	updated := m1.(model)
+
+	updated.activeDownloadsMu.Lock()
+	ad, ok := updated.activeDownloads[id]
+	updated.activeDownloadsMu.Unlock()
+	if !ok {
+		t.Fatal("expected a Pending reservation immediately after the first keypress")
+	}
+	ad.mu.Lock()
+	status := ad.status
+	ad.mu.Unlock()
+	if status != db.DownloadStatusPending {
+		t.Errorf("expected Pending reservation, got %q", status)
+	}
+	if !updated.hasActiveDownloads() {
+		t.Error("expected the Pending reservation to count as an active download")
+	}
+
+	// Second keypress while resolution is still in flight: must be
+	// rejected before any async work is started.
+	m2, cmd2 := updated.handleDownloadKey()
+	if cmd2 != nil {
+		t.Fatal("second keypress must not start another link resolution")
+	}
+	if m2.(model).err == nil {
+		t.Error("expected 'already in progress' error on second keypress")
+	}
+
+	// Exactly one entry in the map — the reservation.
+	updated.activeDownloadsMu.Lock()
+	count := len(updated.activeDownloads)
+	updated.activeDownloadsMu.Unlock()
+	if count != 1 {
+		t.Errorf("expected exactly 1 activeDownloads entry, got %d", count)
+	}
+
+	// Run the resolveLinksCmd: no links in the DB and no scraper client,
+	// so resolution fails.
+	msg := cmd1()
+	linksMsg, ok := msg.(downloadLinksMsg)
+	if !ok {
+		t.Fatalf("expected downloadLinksMsg, got %T", msg)
+	}
+	if linksMsg.err == nil {
+		t.Fatal("expected link resolution to fail (no links, no scraper)")
+	}
+
+	// Feeding the failure back through Update must release the
+	// reservation so the game can be retried.
+	m3, _ := updated.Update(linksMsg)
+	released := m3.(model)
+	released.activeDownloadsMu.Lock()
+	_, stillReserved := released.activeDownloads[id]
+	released.activeDownloadsMu.Unlock()
+	if stillReserved {
+		t.Error("expected reservation to be released after failed link resolution")
+	}
+	if released.hasActiveDownloads() {
+		t.Error("expected no active downloads after failed link resolution")
 	}
 }
 

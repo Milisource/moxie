@@ -93,7 +93,7 @@ func (m model) libraryView() string {
 		engineInfo,
 		statusInfo,
 		collectionInfo,
-		m.sortBy.Indicator(),
+		m.sortIndicator(),
 		filterIndicator,
 		downloadInfo,
 		spinnerView,
@@ -146,6 +146,7 @@ func (m model) libraryView() string {
 		footerParts = append(footerParts, "Ctrl+S status:"+m.statusFilter)
 	}
 	footerParts = append(footerParts, "s sort")
+	footerParts = append(footerParts, "r reverse")
 	footerParts = append(footerParts, "b browse dirs")
 	footerParts = append(footerParts, "? help")
 	footer := subtleStyle.Render("  " + strings.Join(footerParts, "  •  ") + "  ")

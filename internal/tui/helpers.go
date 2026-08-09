@@ -12,6 +12,15 @@ import (
 	"github.com/mili/moxie/internal/launcher"
 )
 
+// sortedTags returns a copy of tags sorted for display. View() must stay
+// pure — mutating model state (sort.Strings in place) during render would
+// re-sort and repeat work on every frame.
+func sortedTags(tags []string) []string {
+	out := append([]string(nil), tags...)
+	sort.Strings(out)
+	return out
+}
+
 // reflowTable adjusts column widths and table height to fit the current
 // terminal dimensions.
 func (m *model) reflowTable() {
@@ -48,12 +57,13 @@ func (m *model) reflowTable() {
 // rebuildFiltered re-filters and re-sorts the game list, then updates the
 // table rows.
 func (m *model) rebuildFiltered() {
-	m.filtered = filterAndSort(m.allGames, m.filterText, m.engineFilter, m.statusFilter, m.sortBy)
+	m.filtered = filterAndSort(m.allGames, m.filterText, m.engineFilter, m.statusFilter, m.sortBy, m.sortDesc)
 	m.updateTableRows()
 }
 
 // filterAndSort returns a filtered and sorted copy of the games slice.
-func filterAndSort(games []db.GameSummary, titleFilter, engineFilter, statusFilter string, sortBy SortField) []db.GameSummary {
+// When desc is true the sorted order is reversed (the r key toggles it).
+func filterAndSort(games []db.GameSummary, titleFilter, engineFilter, statusFilter string, sortBy SortField, desc bool) []db.GameSummary {
 	var out []db.GameSummary
 	flw := strings.ToLower(titleFilter)
 	for _, g := range games {
@@ -93,7 +103,28 @@ func filterAndSort(games []db.GameSummary, titleFilter, engineFilter, statusFilt
 			return strings.ToLower(out[i].Title) < strings.ToLower(out[j].Title)
 		})
 	}
+	if desc {
+		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+			out[i], out[j] = out[j], out[i]
+		}
+	}
 	return out
+}
+
+// sortIndicator renders the current sort field with an arrow reflecting the
+// effective direction. SortVersion's default is newest-first (descending);
+// the r key toggles sortDesc, reversing whichever direction the field
+// currently sorts by.
+func (m model) sortIndicator() string {
+	desc := m.sortDesc
+	if m.sortBy == SortVersion {
+		desc = !desc
+	}
+	arrow := "↑"
+	if desc {
+		arrow = "↓"
+	}
+	return fmt.Sprintf("%s %s", m.sortBy.String(), arrow)
 }
 
 func (m *model) updateTableRows() {

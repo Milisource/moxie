@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -85,7 +86,11 @@ func scanGame(s scanner) (*Game, error) {
 		g.F95ThreadID = f95ThreadID.Int64
 	}
 
-	g.Tags, _ = unmarshalTags(tagsStr)
+	var tagsErr error
+	g.Tags, tagsErr = unmarshalTags(tagsStr)
+	if tagsErr != nil {
+		return nil, fmt.Errorf("game %d: corrupt tags JSON: %w", g.ID, tagsErr)
+	}
 	if storeLinksStr.Valid {
 		g.StoreLinks, _ = unmarshalStoreLinks(storeLinksStr.String)
 	}
@@ -324,7 +329,10 @@ func (db *Database) SearchGames(query string) ([]Game, error) {
 		  AND g.deleted_at IS NULL
 		ORDER BY rank`, ftsQuery)
 	if err != nil {
-		return nil, err
+		// A malformed FTS query (stray quote, unbalanced operator) raises a
+		// MATCH syntax error — fall through to the LIKE path instead of
+		// failing the whole search.
+		return searchGamesLike(db, query)
 	}
 	defer rows.Close()
 
@@ -342,7 +350,12 @@ func (db *Database) SearchGames(query string) ([]Game, error) {
 
 	// FTS5 returned no results — fall back to LIKE-based substring matching
 	// for backward compatibility (e.g., "itch" matching "Witcher").
-	rows, err = db.conn.Query(`
+	return searchGamesLike(db, query)
+}
+
+// searchGamesLike runs the LIKE-based substring fallback for SearchGames.
+func searchGamesLike(db *Database, query string) ([]Game, error) {
+	rows, err := db.conn.Query(`
 		SELECT `+gameColumns+`
 		FROM games
 		WHERE deleted_at IS NULL
@@ -353,7 +366,7 @@ func (db *Database) SearchGames(query string) ([]Game, error) {
 	}
 	defer rows.Close()
 
-	games = nil
+	var games []Game
 	for rows.Next() {
 		g, err := scanGame(rows)
 		if err != nil {
@@ -489,6 +502,35 @@ func (db *Database) UpdateGame(g *Game) error {
 		nullableInt64Ptr(g.SeriesID), g.SeriesOrder,
 		now, g.ID,
 	)
+	return err
+}
+
+// UpdateGameScanFields atomically applies scanner-detected values to an
+// existing game without touching columns the user may be editing right now
+// (title, status, notes, f95_url, ...). Version/engine/exe_path are only
+// filled when currently unset, preserving manual corrections; size, scan
+// time, and directory mtime are always refreshed.
+//
+// Unlike UpdateGame (read-modify-write of the whole row), the "is it set?"
+// checks run inside the UPDATE statement itself, so a manual edit landing
+// between the scanner's read and write can never be clobbered with stale
+// data — SQLite executes the statement against the row's current state.
+func (db *Database) UpdateGameScanFields(id int64, version, engine, exePath string, sizeBytes int64, lastScannedAt, dirMTime time.Time) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.conn.Exec(`
+		UPDATE games SET
+			version = CASE WHEN version IS NULL OR version = '' THEN ? ELSE version END,
+			engine = CASE WHEN engine IS NULL OR engine IN ('', 'Unknown') THEN ? ELSE engine END,
+			exe_path = CASE WHEN exe_path IS NULL OR exe_path = '' THEN ? ELSE exe_path END,
+			size_bytes = ?,
+			last_scanned_at = ?,
+			dir_mtime = ?,
+			updated_at = ?
+		WHERE id = ?`,
+		nullableString(version), engine, nullableString(exePath),
+		sizeBytes,
+		nullableTime(lastScannedAt), nullableTime(dirMTime),
+		now, id)
 	return err
 }
 
@@ -749,14 +791,19 @@ func (db *Database) AllGamePaths() ([]GamePathEntry, error) {
 func (db *Database) BatchUpdateStatus(engine, status string) (int, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	if engine == "" {
-		res, err := db.conn.Exec("UPDATE games SET status = ?, updated_at = ?", status, now)
+		// Only live games (not soft-deleted, not .old backup dirs) — the
+		// same filters every other listing applies.
+		res, err := db.conn.Exec(
+			"UPDATE games SET status = ?, updated_at = ? WHERE deleted_at IS NULL AND path NOT LIKE '%.old'",
+			status, now)
 		if err != nil {
 			return 0, err
 		}
 		n, _ := res.RowsAffected()
 		return int(n), nil
 	}
-	res, err := db.conn.Exec("UPDATE games SET status = ?, updated_at = ? WHERE engine = ?",
+	res, err := db.conn.Exec(
+		"UPDATE games SET status = ?, updated_at = ? WHERE engine = ? AND deleted_at IS NULL AND path NOT LIKE '%.old'",
 		status, now, engine)
 	if err != nil {
 		return 0, err
@@ -878,7 +925,7 @@ func (db *Database) RecentPlays(limit int) ([]PlayHistoryWithGame, error) {
 		if err := rows.Scan(&e.ID, &e.GameID, &playedAtStr, &e.DurationS, &e.Platform, &e.GameTitle); err != nil {
 			return nil, err
 		}
-		e.PlayedAt, _ = time.Parse(time.RFC3339, playedAtStr)
+		e.PlayedAt = parseTime(playedAtStr)
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
@@ -907,7 +954,7 @@ func (db *Database) PlaysForGame(gameID int64, limit int) ([]PlayHistoryWithGame
 		if err := rows.Scan(&e.ID, &e.GameID, &playedAtStr, &e.DurationS, &e.Platform, &e.GameTitle); err != nil {
 			return nil, err
 		}
-		e.PlayedAt, _ = time.Parse(time.RFC3339, playedAtStr)
+		e.PlayedAt = parseTime(playedAtStr)
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()

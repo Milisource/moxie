@@ -108,31 +108,41 @@ type scanCompletedMsg struct {
 	total   int
 }
 
-type downloadProgressMsg struct {
-	gameID   int64
-	progress downloader.Progress
-	status   db.DownloadStatus
-	err      string
-}
+// downloadProgressMsg is a periodic tick sent by pollDownloads to trigger
+// re-renders while a download is active. All progress data lives in the
+// model's activeDownloads map (written by the download goroutine), so the
+// message itself carries no payload.
+type downloadProgressMsg struct{}
 
 type downloadStartedMsg struct {
 	gameID int64
 	err    error
 }
 
+// downloadLinksMsg carries the result of resolving a game's download links.
+// Resolution runs in a background goroutine: the fallback path scrapes
+// F95Zone, which must never block the Update layer.
+type downloadLinksMsg struct {
+	gameID   int64
+	links    []db.DownloadLink
+	destDir  string
+	gamePath string
+	engine   string
+	err      error
+}
+
 // ─── Active Download ───────────────────────────────────────────────────────
 
 type activeDownload struct {
-	mu          sync.Mutex
-	gameID      int64
-	url         string
-	host        string
-	destDir     string
-	status      db.DownloadStatus
-	progress    downloader.Progress
-	err         string
-	stepMsg     string // "Finding suitable host...", "Trying Pixeldrain...", etc.
-	completedAt time.Time // set when status becomes Completed or Failed
+	mu       sync.Mutex
+	gameID   int64
+	url      string
+	host     string
+	destDir  string
+	status   db.DownloadStatus
+	progress downloader.Progress
+	err      string
+	stepMsg  string // "Finding suitable host...", "Trying Pixeldrain...", etc.
 }
 
 // ─── Model ─────────────────────────────────────────────────────────────────
@@ -142,21 +152,22 @@ type model struct {
 	table       table.Model
 	filterInput textinput.Model
 
-	allGames     []db.GameSummary
-	filtered     []db.GameSummary
-	viewMode     ViewMode
-	selectedID   int64
-	filterText   string
-	sortBy       SortField
-	showHelp     bool
-	width        int
-	height       int
+	allGames      []db.GameSummary
+	filtered      []db.GameSummary
+	viewMode      ViewMode
+	selectedID    int64
+	filterText    string
+	sortBy        SortField
+	sortDesc      bool // r toggles: reverse the current sort direction
+	showHelp      bool
+	width         int
+	height        int
 	err           error
 	notice        string
 	filterDirty   bool
 	confirmDelete bool
-	deleteID     int64
-	deleteTitle  string
+	deleteID      int64
+	deleteTitle   string
 
 	// detail view
 	detailGame     *db.Game
@@ -182,11 +193,11 @@ type model struct {
 	f95Cookie string
 
 	// filters
-	engineFilter      string
-	statusFilter      string
-	collectionFilter  int64  // 0 = no filter
-	collectionName    string // name of the currently selected collection
-	collections       []db.Collection
+	engineFilter     string
+	statusFilter     string
+	collectionFilter int64  // 0 = no filter
+	collectionName   string // name of the currently selected collection
+	collections      []db.Collection
 
 	// active downloads
 	activeDownloadsMu *sync.Mutex
@@ -196,8 +207,8 @@ type model struct {
 	showStartupTip bool
 
 	// spinner for background operations
-	spinner        spinner.Model
-	spinnerActive  bool
+	spinner       spinner.Model
+	spinnerActive bool
 
 	// file picker mode
 	showFilePicker bool
@@ -286,12 +297,12 @@ func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) m
 		scraperClient:     sc,
 		f95Cookie:         f95Cookie,
 		activeDownloadsMu: &sync.Mutex{},
-		activeDownloads:    make(map[int64]*activeDownload),
-		detailViewport:     viewport.New(0, 0),
-		showStartupTip:     true,
-		spinner:            sp,
-		showFilePicker:     false,
-		filePicker:         fp,
+		activeDownloads:   make(map[int64]*activeDownload),
+		detailViewport:    viewport.New(0, 0),
+		showStartupTip:    true,
+		spinner:           sp,
+		showFilePicker:    false,
+		filePicker:        fp,
 	}
 }
 

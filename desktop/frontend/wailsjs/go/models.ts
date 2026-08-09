@@ -71,29 +71,15 @@ export namespace main {
 	        this.details = source["details"];
 	    }
 	}
-	export class InstallTarget {
-	    path: string;
-	    available: boolean;
-
-	    static createFrom(source: any = {}) {
-	        return new InstallTarget(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.path = source["path"];
-	        this.available = source["available"];
-	    }
-	}
 	export class DesktopCollection {
 	    id: number;
 	    name: string;
 	    gameCount: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new DesktopCollection(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -331,10 +317,10 @@ export namespace main {
 		}
 	}
 	export class EditGameFields {
-	    engine: string;
-	    version: string;
-	    exePath: string;
-	    notes: string;
+	    engine?: string;
+	    version?: string;
+	    exePath?: string;
+	    notes?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new EditGameFields(source);
@@ -386,18 +372,18 @@ export namespace main {
 	        this.matchScore = source["matchScore"];
 	    }
 	}
-	export class StatusCount {
-	    status: string;
-	    count: number;
+	export class InstallTarget {
+	    path: string;
+	    available: boolean;
 	
 	    static createFrom(source: any = {}) {
-	        return new StatusCount(source);
+	        return new InstallTarget(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.status = source["status"];
-	        this.count = source["count"];
+	        this.path = source["path"];
+	        this.available = source["available"];
 	    }
 	}
 	export class ThreadPreview {

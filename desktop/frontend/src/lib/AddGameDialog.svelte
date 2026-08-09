@@ -33,16 +33,20 @@
 
   // ── Directory Browse ──────────────────────────────────────────
   async function handleBrowse() {
-    const dir = await PickDirectory()
-    if (dir) {
-      directoryPath = dir
-      // Reset previous detection when path changes
-      detection = null
-      title = ''
-      engine = ''
-      version = ''
-      result = null
-      error = ''
+    try {
+      const dir = await PickDirectory()
+      if (dir) {
+        directoryPath = dir
+        // Reset previous detection when path changes
+        detection = null
+        title = ''
+        engine = ''
+        version = ''
+        result = null
+        error = ''
+      }
+    } catch (e) {
+      error = String(e)
     }
   }
 

@@ -1,74 +1,20 @@
 <script>
-  import {onMount, onDestroy} from 'svelte'
-  import {EventsOn} from '../../wailsjs/runtime/runtime'
-  import {
-    GetCookieStatus,
-    SyncAllGames,
-  } from '../../wailsjs/go/main/App'
+  // Presentational only — sync state and event subscriptions live in
+  // App.svelte so they survive tab switches. This view just renders them.
 
-  // ── State ──────────────────────────────────────────────────
-  let cookieStatus = $state('')        // 'available' | 'not_found' | ''
-  let syncing = $state(false)          // loading during sync
-  let progress = $state({ current: 0, total: 0, title: '', phase: '' })
-  let gameResults = $state([])         // array of {id, title, status, version}
-  let result = $state(null)            // {associated, updated, errors} or null
-  let syncError = $state('')           // error message
+  let {
+    cookieStatus = '',        // 'available' | 'not_found' | ''
+    syncing = false,
+    progress = {current: 0, total: 0, title: '', phase: ''},
+    gameResults = [],         // {id, title, status, version}
+    result = null,            // {associated, updated, skipped, errors} or null
+    syncError = '',
+    onSync = () => {},
+  } = $props()
 
-  // Unsubscribe fns
-  let unsubProgress = null
-  let unsubGameDone = null
-  let unsubComplete = null
-  let unsubError = null
-
-  async function handleSync() {
-    syncing = true
-    syncError = ''
-    result = null
-    gameResults = []
-    progress = { current: 0, total: 0, title: '', phase: '' }
-
-    try {
-      await SyncAllGames()
-    } catch (e) {
-      syncError = String(e)
-      syncing = false
-    }
-  }
-
-  onMount(async () => {
-    // Load cookie status on mount
-    try {
-      cookieStatus = await GetCookieStatus()
-    } catch (e) {
-      console.error('Failed to get cookie status:', e)
-    }
-
-    // Listen for Wails events from the Go backend
-    unsubProgress = EventsOn('sync:progress', (data) => {
-      progress = data
-    })
-
-    unsubGameDone = EventsOn('sync:game-done', (data) => {
-      gameResults = [...gameResults, data]
-    })
-
-    unsubComplete = EventsOn('sync:complete', (data) => {
-      result = data
-      syncing = false
-    })
-
-    unsubError = EventsOn('sync:error', (data) => {
-      syncError = data.error || 'Sync failed'
-      syncing = false
-    })
-  })
-
-  onDestroy(() => {
-    if (unsubProgress) unsubProgress()
-    if (unsubGameDone) unsubGameDone()
-    if (unsubComplete) unsubComplete()
-    if (unsubError) unsubError()
-  })
+  // Full sync: bypasses the 24h cooldown; every associated game's thread is
+  // scraped, which also refreshes download links for the Downloads tab.
+  let force = $state(false)
 
   // ── Derived ─────────────────────────────────────────────────
   let progressPct = $derived.by(() => {
@@ -87,12 +33,9 @@
     return 'Synchronizing…'
   })
 
-  let runningLabel = $derived.by(() => {
-    if (progress.title) return progress.title
-    return phaseLabel
-  })
-
-  let canSync = $derived(cookieStatus === 'available' && !syncing)
+  // Sync is cookie-free via F95Zone's public endpoints — cookies only add
+  // the direct-scrape fallback layer. The button is never gated on them.
+  let canSync = $derived(!syncing)
 </script>
 
 <div class="sync-dialog">
@@ -116,11 +59,12 @@
     <div class="cookie-status cookie-missing">
       <span class="cookie-icon">⚠</span>
       <div class="cookie-body">
-        <p class="cookie-title">Log into F95Zone in your browser first</p>
+        <p class="cookie-title">No F95Zone cookies found</p>
         <p class="cookie-detail">
-          Sync needs your F95Zone session cookies to associate games and check for
-          updates. Log in at <strong>f95zone.to</strong> in your browser, then
-          restart this app.
+          Sync runs cookie-free through F95Zone's public endpoints, so it works
+          without a browser session. Logging in at <strong>f95zone.to</strong>
+          and restarting adds the cookie fallback for games the public
+          endpoints can't resolve.
         </p>
       </div>
     </div>
@@ -133,9 +77,13 @@
 
   <!-- ── Start Sync Button ─────────────────────────────────── -->
   <div class="action-bar">
+    <label class="sync-force" title="Bypasses the 24h cooldown and scrapes every game thread — also refreshes download links for the Downloads tab.">
+      <input type="checkbox" bind:checked={force} disabled={!canSync} />
+      Full sync (ignore 24h cooldown)
+    </label>
     <button
       class="btn btn-primary"
-      onclick={handleSync}
+      onclick={() => onSync(force)}
       disabled={!canSync}
     >
       {#if syncing}
@@ -188,6 +136,12 @@
           <p class="result-title">Sync Complete</p>
           <p class="result-summary">
             {result.associated} associated, {result.updated} updated
+            {#if result.skipped > 0}
+              , {result.skipped} skipped (checked recently)
+            {/if}
+            {#if result.noMatch > 0}
+              , {result.noMatch} no match found
+            {/if}
             {#if result.errors?.length > 0}
               , {result.errors.length} error{result.errors.length !== 1 ? 's' : ''}
             {/if}
@@ -241,6 +195,22 @@
   /* ── Action Bar ────────────────────── */
   .action-bar {
     margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .sync-force {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+  }
+  .sync-force input {
+    accent-color: var(--accent, #7c5cff);
   }
 
   /* ── Cookie Status ─────────────────── */

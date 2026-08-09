@@ -241,7 +241,7 @@ func TestFilterAndSort_NoFilters(t *testing.T) {
 		{ID: 1, Title: "Alpha", Engine: "RenPy", Status: "completed"},
 		{ID: 2, Title: "Bravo", Engine: "Unity", Status: "active"},
 	}
-	result := filterAndSort(games, "", "", "", SortID)
+	result := filterAndSort(games, "", "", "", SortID, false)
 	if len(result) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(result))
 	}
@@ -257,7 +257,7 @@ func TestFilterAndSort_TitleFilter(t *testing.T) {
 		{ID: 2, Title: "Bravo", Engine: "RenPy"},
 		{ID: 3, Title: "Champion", Engine: "Unity"},
 	}
-	result := filterAndSort(games, "ch", "", "", SortID)
+	result := filterAndSort(games, "ch", "", "", SortID, false)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(result))
 	}
@@ -273,7 +273,7 @@ func TestFilterAndSort_EngineFilter(t *testing.T) {
 		{ID: 2, Title: "B", Engine: "RenPy"},
 		{ID: 3, Title: "C", Engine: "Unity"},
 	}
-	result := filterAndSort(games, "", "Unity", "", SortID)
+	result := filterAndSort(games, "", "Unity", "", SortID, false)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 Unity games, got %d", len(result))
 	}
@@ -291,7 +291,7 @@ func TestFilterAndSort_StatusFilter(t *testing.T) {
 		{ID: 2, Title: "B", Status: "completed"},
 		{ID: 3, Title: "C", Status: "active"},
 	}
-	result := filterAndSort(games, "", "", "completed", SortID)
+	result := filterAndSort(games, "", "", "completed", SortID, false)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 completed game, got %d", len(result))
 	}
@@ -307,7 +307,7 @@ func TestFilterAndSort_TitleSort(t *testing.T) {
 		{ID: 1, Title: "Alpha"},
 		{ID: 2, Title: "Bravo"},
 	}
-	result := filterAndSort(games, "", "", "", SortTitle)
+	result := filterAndSort(games, "", "", "", SortTitle, false)
 	if result[0].Title != "Alpha" || result[1].Title != "Bravo" || result[2].Title != "Charlie" {
 		t.Errorf("expected sorted by title, got %v", result)
 	}
@@ -320,7 +320,7 @@ func TestFilterAndSort_EngineSort(t *testing.T) {
 		{ID: 2, Title: "B", Engine: "Unity"},
 		{ID: 3, Title: "C", Engine: "RenPy"},
 	}
-	result := filterAndSort(games, "", "", "", SortEngine)
+	result := filterAndSort(games, "", "", "", SortEngine, false)
 	// RenPy < Unity alphabetically
 	if result[0].Engine != "RenPy" || result[1].Engine != "RenPy" || result[2].Engine != "Unity" {
 		t.Errorf("expected sorted by engine, got %v", result)
@@ -338,7 +338,7 @@ func TestFilterAndSort_VersionSort(t *testing.T) {
 		{ID: 2, Title: "B", Version: "1.0"},
 		{ID: 3, Title: "C", Version: "0.5"},
 	}
-	result := filterAndSort(games, "", "", "", SortVersion)
+	result := filterAndSort(games, "", "", "", SortVersion, false)
 	// Version sort: newest first (descending)
 	if result[0].Version != "1.0" {
 		t.Errorf("expected 1.0 first (newest), got %v", result[0].Version)
@@ -351,9 +351,44 @@ func TestFilterAndSort_VersionSort(t *testing.T) {
 
 func TestFilterAndSort_EmptyList(t *testing.T) {
 	t.Parallel()
-	result := filterAndSort(nil, "", "", "", SortID)
+	result := filterAndSort(nil, "", "", "", SortID, false)
 	if len(result) != 0 {
 		t.Errorf("expected 0 from nil input, got %d", len(result))
+	}
+}
+
+func TestFilterAndSort_Reverse(t *testing.T) {
+	t.Parallel()
+	games := []db.GameSummary{
+		{ID: 3, Title: "Charlie", Engine: "RenPy"},
+		{ID: 1, Title: "Alpha", Engine: "Unity"},
+		{ID: 2, Title: "Bravo", Engine: "RenPy"},
+	}
+	// desc=true reverses the default ascending ID order.
+	result := filterAndSort(games, "", "", "", SortID, true)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(result))
+	}
+	if result[0].ID != 3 || result[1].ID != 2 || result[2].ID != 1 {
+		t.Errorf("expected descending IDs 3,2,1: got %d, %d, %d", result[0].ID, result[1].ID, result[2].ID)
+	}
+
+	// desc=true on SortVersion flips the default newest-first order.
+	result = filterAndSort(games, "", "", "", SortVersion, true)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(result))
+	}
+	if result[0].ID != 3 {
+		t.Errorf("expected reverse version sort to start with ID 3 (empty versions tie on title asc, reversed), got %d", result[0].ID)
+	}
+
+	// Filtering still applies when descending.
+	result = filterAndSort(games, "", "RenPy", "", SortID, true)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 RenPy games, got %d", len(result))
+	}
+	if result[0].ID != 3 || result[1].ID != 2 {
+		t.Errorf("expected RenPy games descending 3,2: got %d, %d", result[0].ID, result[1].ID)
 	}
 }
 
@@ -445,7 +480,8 @@ func TestCycleEngineFilter(t *testing.T) {
 		{"RPGM", "UnrealEngine"},
 		{"UnrealEngine", "HTML"},
 		{"HTML", "Java"},
-		{"Java", "Flash"},
+		{"Java", "Godot"},
+		{"Godot", "Flash"},
 		{"Flash", "Others"},
 		{"Others", "ADRIFT"},
 		{"ADRIFT", "QSP"},

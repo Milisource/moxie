@@ -190,6 +190,8 @@ func IsSteamRunning() (bool, error)
 
 Binary VDF parsing is **vendored** in `vdf.go` (replacing the unmaintained `github.com/wakeful-cloud/vdf`). The vendored code uses a custom binary VDF reader/writer (`readVdf`, `writeVdf`, `vdfMap` type) providing the same functionality without external dependency risk.
 
+The serializer is **deterministic and byte-faithful**: fields are emitted in Steam's canonical order (verified against a byte-identical copy of a real Steam-generated `shortcuts.vdf` committed as `testdata/shortcuts_real.vdf` — 12 entries with `FlatpakAppID`, `LastPlayTime`, `DevkitOverrideAppID`, tags and the root terminator). The fixture test asserts the known layout parses, serialization is deterministic across runs, and the round-trip loses nothing. Steam itself quotes `exe`/`StartDir` inconsistently across entries, so byte-equality with the fixture is not the contract — semantic round-trip equality is. Unknown keys (`RawFields`) round-trip byte-for-byte so new Steam fields are never dropped.
+
 ```go
 package steam
 
@@ -205,8 +207,9 @@ func ReadShortcuts(path string) (*ShortcutFile, error)
 //
 // SAFETY: Automatically creates a backup of the original file before writing.
 // The backup is named "<path>.backup-<timestamp>". If the write succeeds,
-// the backup is retained for 1 hour (caller can delete it). If the write
-// fails, the original file is preserved.
+// the backup is retained; only the 5 most recent backups are kept, older
+// ones are pruned on the next write. If the write fails, the original file
+// is preserved.
 //
 // Caller MUST ensure Steam is not running before calling this.
 func WriteShortcuts(path string, sf *ShortcutFile) error
@@ -344,8 +347,9 @@ func RemoveProtonVersion(steamRoot string, appID uint32) error
 // This is informational; the caller can present the list to the user.
 //
 // Scan locations:
-//   - <steamRoot>/compatibilitytools.d/    (custom, e.g. GE-Proton)
-//   - <steamRoot>/steamapps/common/Proton*/ (official)
+//   - <steamRoot>/compatibilitytools.d/    (custom, e.g. GE-Proton — used as-is)
+//   - <steamRoot>/steamapps/common/Proton*/ (official — lowercased: "Proton
+//     Experimental" → "proton_experimental", matching Steam's tool IDs)
 //
 // On non-Linux platforms, returns ErrNotLinux.
 func ListProtonVersions(steamRoot string) ([]string, error)

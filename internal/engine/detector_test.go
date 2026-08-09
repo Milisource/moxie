@@ -3,7 +3,11 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/mili/moxie/internal/config"
 )
 
 func makeDir(t *testing.T, paths ...string) string {
@@ -143,6 +147,57 @@ func TestDetectHTMLGeneric(t *testing.T) {
 	}
 }
 
+// TestDetectHTMLShallowIndex verifies the fallback search for index.html at
+// shallow depth (source-repo layout, e.g. src/index.html).
+func TestDetectHTMLShallowIndex(t *testing.T) {
+	dir := makeDir(t, "src/index.html", "css/style.css")
+	result := Detect(dir)
+	if result.Engine != HTML {
+		t.Errorf("expected HTML from shallow index.html, got %s (%s)", result.Engine, result.MatchedBy)
+	}
+}
+
+// TestDetectHTMLIndexTooDeep verifies the shallow search does not match
+// index.html beyond maxIndexDepth levels.
+func TestDetectHTMLIndexTooDeep(t *testing.T) {
+	dir := makeDir(t, "a/b/c/index.html")
+	result := Detect(dir)
+	if result.Engine == HTML {
+		t.Errorf("expected NOT HTML with index.html at depth > 2, got %s (%s)", result.Engine, result.MatchedBy)
+	}
+}
+
+// TestDetectHTMLIndexInContentDir verifies the shallow search skips
+// non-content directories (js/, css/, img/, ...).
+func TestDetectHTMLIndexInContentDir(t *testing.T) {
+	dir := makeDir(t, "js/index.html")
+	result := Detect(dir)
+	if result.Engine == HTML {
+		t.Errorf("expected NOT HTML with index.html inside non-content dir, got %s (%s)", result.Engine, result.MatchedBy)
+	}
+}
+
+// TestDetectHTMLShallowTwine verifies the fallback also matches any .html
+// entry file at shallow depth — Twine-compiled games ship precompiled.html
+// (or similar) instead of index.html.
+func TestDetectHTMLShallowTwine(t *testing.T) {
+	dir := makeDir(t, "dist/precompiled.html", "src/config.json")
+	result := Detect(dir)
+	if result.Engine != HTML {
+		t.Errorf("expected HTML from shallow precompiled.html, got %s (%s)", result.Engine, result.MatchedBy)
+	}
+}
+
+// TestDetectHTMLDeepTwine verifies a .html file beyond maxIndexDepth levels
+// does not match the shallow fallback.
+func TestDetectHTMLDeepTwine(t *testing.T) {
+	dir := makeDir(t, "a/b/c/precompiled.html")
+	result := Detect(dir)
+	if result.Engine == HTML {
+		t.Errorf("expected NOT HTML with precompiled.html at depth > 2, got %s (%s)", result.Engine, result.MatchedBy)
+	}
+}
+
 func TestDetectJava(t *testing.T) {
 	dir := makeDir(t, "game.jar")
 	result := Detect(dir)
@@ -159,19 +214,67 @@ func TestDetectFlash(t *testing.T) {
 	}
 }
 
-func TestDetectGodotMapsToOthers(t *testing.T) {
+// TestDetectFlashRuffle verifies that a game played via the Ruffle Flash
+// emulator (ruffle.exe) is classified as Flash even without a root .swf.
+func TestDetectFlashRuffle(t *testing.T) {
+	dir := makeDir(t, "ruffle.exe")
+	result := Detect(dir)
+	if result.Engine != Flash {
+		t.Errorf("expected Flash from ruffle.exe, got %s (%s)", result.Engine, result.MatchedBy)
+	}
+}
+
+// TestDetectJavaBundledJRE verifies that a JRE-bundled Java game (Lilith's
+// Throne layout: LT.exe + jre1.8.0_172/lib/*.jar, no root .jar) is
+// classified as Java.
+func TestDetectJavaBundledJRE(t *testing.T) {
+	dir := makeDir(t, "LT.exe", "jre1.8.0_172/", "jre1.8.0_172/lib/rt.jar")
+	result := Detect(dir)
+	if result.Engine != Java {
+		t.Errorf("expected Java from bundled JRE, got %s (%s)", result.Engine, result.MatchedBy)
+	}
+}
+
+// TestDetectJavaJREDirNoJar verifies that a jre*/ directory without any
+// .jar files is not a Java signal.
+func TestDetectJavaJREDirNoJar(t *testing.T) {
+	dir := makeDir(t, "jre/", "jre/bin/java.exe")
+	result := Detect(dir)
+	if result.Engine == Java {
+		t.Errorf("expected NOT Java without .jar in jre dir, got %s (%s)", result.Engine, result.MatchedBy)
+	}
+}
+
+func TestDetectGodot(t *testing.T) {
 	dir := makeDir(t, "game.pck")
 	result := Detect(dir)
-	if result.Engine != Others {
-		t.Errorf("expected Others (Godot), got %s", result.Engine)
+	if result.Engine != Godot {
+		t.Errorf("expected Godot, got %s (%s)", result.Engine, result.MatchedBy)
 	}
 }
 
 func TestDetectElectronMapsToOthers(t *testing.T) {
-	dir := makeDir(t, "resources.pak")
+	dir := makeDir(t, "resources.pak", "package.json")
 	result := Detect(dir)
 	if result.Engine != Others {
 		t.Errorf("expected Others (Electron), got %s", result.Engine)
+	}
+	if !strings.Contains(result.MatchedBy, "nw.js") {
+		t.Errorf("expected Electron/nw.js profile, got %s", result.MatchedBy)
+	}
+}
+
+// package.json alone must not trigger the Electron/nw.js profile — Twine
+// source repos and RPGM bundles ship one too. Only resources.pak +
+// package.json together are a real nw.js signal.
+func TestDetectPackageJSONAloneNotElectron(t *testing.T) {
+	dir := makeDir(t, "package.json", "index.html")
+	result := Detect(dir)
+	if strings.Contains(result.MatchedBy, "nw.js") {
+		t.Errorf("package.json alone matched Electron/nw.js: %s (%s)", result.Engine, result.MatchedBy)
+	}
+	if result.Engine != HTML {
+		t.Errorf("expected HTML (root index.html), got %s (%s)", result.Engine, result.MatchedBy)
 	}
 }
 
@@ -292,3 +395,101 @@ func TestCanonicalEngines(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Custom profile cache invalidation
+// ---------------------------------------------------------------------------
+
+const testProfileJSON = `{"name":"test-profile","engine":"Others","confidence":100,"filenames":["MOXIE_TEST_MARKER.bin"]}`
+const testProfile2JSON = `{"name":"test-profile-2","engine":"Others","confidence":100,"filenames":["MOXIE_TEST_MARKER2.bin"]}`
+
+// detectOnMarker returns Detect's MatchedBy for a directory containing the
+// given marker file (and nothing else).
+func detectOnMarker(t *testing.T, marker string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, marker), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return Detect(dir).MatchedBy
+}
+
+// TestProfilesReloadOnDirChange verifies the merged-profiles cache is keyed
+// on the engine profiles directory mtime: creating the directory and adding
+// profile files invalidates the cache, so a long-running process picks up
+// profile edits without a restart.
+func TestProfilesReloadOnDirChange(t *testing.T) {
+	root := t.TempDir()
+	config.SetConfigDirForTest(root)
+	t.Cleanup(func() { config.SetConfigDirForTest("") })
+
+	// Before any profiles dir exists: only built-ins; the marker matches
+	// nothing.
+	if got := detectOnMarker(t, "MOXIE_TEST_MARKER.bin"); got != "no matching profile" {
+		t.Fatalf("expected no custom profile before engines dir exists, got %q", got)
+	}
+
+	// Create the engines dir with one profile: dir went from missing to
+	// existing, so the signature changes and the cache must reload.
+	profilesDir := filepath.Join(root, "engines")
+	if err := os.MkdirAll(profilesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profilesDir, "profile.json"), []byte(testProfileJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectOnMarker(t, "MOXIE_TEST_MARKER.bin"); got != "test-profile" {
+		t.Fatalf("expected custom profile after adding profile.json, got %q", got)
+	}
+
+	// Add a second profile to the now-existing dir. Force a distinct mtime
+	// so the reload is observable even within the same fs timestamp tick.
+	if err := os.WriteFile(filepath.Join(profilesDir, "profile2.json"), []byte(testProfile2JSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := os.Chtimes(profilesDir, now, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectOnMarker(t, "MOXIE_TEST_MARKER2.bin"); got != "test-profile-2" {
+		t.Fatalf("expected second custom profile after dir mtime change, got %q", got)
+	}
+	// The first profile is still active alongside the second.
+	if got := detectOnMarker(t, "MOXIE_TEST_MARKER.bin"); got != "test-profile" {
+		t.Fatalf("expected first custom profile to survive reload, got %q", got)
+	}
+}
+
+// TestResetProfilesForTest verifies the test-only reset forces a reload even
+// for an in-place content edit, which a directory mtime does not expose.
+func TestResetProfilesForTest(t *testing.T) {
+	root := t.TempDir()
+	config.SetConfigDirForTest(root)
+	t.Cleanup(func() { config.SetConfigDirForTest("") })
+
+	profilesDir := filepath.Join(root, "engines")
+	if err := os.MkdirAll(profilesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	profilePath := filepath.Join(profilesDir, "profile.json")
+	if err := os.WriteFile(profilePath, []byte(testProfileJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectOnMarker(t, "MOXIE_TEST_MARKER.bin"); got != "test-profile" {
+		t.Fatalf("expected custom profile after initial load, got %q", got)
+	}
+
+	// Edit the profile in place (same dir mtime): the cache keeps serving
+	// the old profile — the documented limitation of mtime invalidation.
+	if err := os.WriteFile(profilePath, []byte(testProfile2JSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectOnMarker(t, "MOXIE_TEST_MARKER2.bin"); got == "test-profile-2" {
+		t.Fatal("in-place edit must not invalidate the mtime-keyed cache")
+	}
+
+	// ResetProfilesForTest forces a reload regardless.
+	ResetProfilesForTest()
+	if got := detectOnMarker(t, "MOXIE_TEST_MARKER2.bin"); got != "test-profile-2" {
+		t.Fatalf("expected reloaded profile after ResetProfilesForTest, got %q", got)
+	}
+}

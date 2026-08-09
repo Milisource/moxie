@@ -111,8 +111,9 @@ func (db *Database) DeleteCollection(id int64) error {
 	return nil
 }
 
-// AddGameToCollection adds a game to a collection. Returns an error if the
-// association already exists or either ID is invalid.
+// AddGameToCollection adds a game to a collection. The association is
+// idempotent: adding an already-existing pair is a no-op, and invalid IDs
+// are silently ignored (INSERT OR IGNORE) rather than reported.
 func (db *Database) AddGameToCollection(gameID, collectionID int64) error {
 	_, err := db.conn.Exec(
 		"INSERT OR IGNORE INTO game_collections (game_id, collection_id) VALUES (?, ?)",

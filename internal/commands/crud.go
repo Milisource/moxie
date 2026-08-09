@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -104,6 +106,11 @@ func Scan(args []string) {
 	}
 
 	if err := RunScan(database, runCfg); err != nil {
+		if errors.Is(err, ErrSyncInterrupted) {
+			fmt.Fprintln(os.Stderr, "\nsync interrupted — refresh session and retry")
+			os.Exit(1)
+			return
+		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -144,7 +151,7 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 	}
 	fmt.Fprintf(os.Stderr, "\n")
 	scanStart := time.Now()
-	games, err := scanner.ScanFiltered(absDir, skipPaths, func(dirsExamined, gamesFound int, phase string) {
+	games, err := scanner.ScanFiltered(context.Background(), absDir, skipPaths, func(dirsExamined, gamesFound int, phase string) {
 		if phase == "walk" {
 			fmt.Fprintf(os.Stderr, "\r  Directories examined: %d  •  Games found: %d  ", dirsExamined, gamesFound)
 		} else {
@@ -266,9 +273,6 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 	// Post-scan action hooks: auto-sync or auto-scrape.
 	if cfg.DoSync || cfg.DoScrape {
 		cookie := ResolveCookie(cfg.CookieStr, cfg.CookieFile)
-		if cookie == "" {
-			return fmt.Errorf("cookie required for --sync/--scrape. Log into f95zone.to in Firefox")
-		}
 
 		var client *scraper.Client
 		if cfg.Unsafe {
@@ -276,11 +280,17 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 		} else {
 			client = scraper.NewClient(cookie)
 		}
+		public := scraper.NewPublicAPIWithCookie(cookie)
 
 		if cfg.DoSync {
 			// Phase 1: Auto-associate.
 			fmt.Fprintln(os.Stderr, "\n=== Post-scan: Auto-associating games with F95Zone threads ===")
-			if err := RunScrapeAuto(database, client, false, 3); err != nil {
+			if err := RunScrapeAuto(database, client, false, 3, public); err != nil {
+				// Blocked: stop the whole post-scan flow — Phase 2 would
+				// hammer the just-blocked IP.
+				if errors.Is(err, ErrSyncInterrupted) {
+					return err
+				}
 				return fmt.Errorf("auto-association: %w", err)
 			}
 
@@ -291,13 +301,16 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 				return fmt.Errorf("querying games with F95 URLs: %w", err)
 			}
 			if len(trackable) > 0 {
-				updatesFound, _ := RunUpdateCheck(database, client, trackable, false)
+				updatesFound, _ := RunUpdateCheck(database, client, trackable, false, public)
 				fmt.Fprintf(os.Stderr, "\n=== %d updates available ===\n", updatesFound)
 			}
 		} else {
 			// Scrape only (no update check).
 			fmt.Fprintln(os.Stderr, "\n=== Post-scan: Auto-associating games with F95Zone threads ===")
-			if err := RunScrapeAuto(database, client, false, 3); err != nil {
+			if err := RunScrapeAuto(database, client, false, 3, public); err != nil {
+				if errors.Is(err, ErrSyncInterrupted) {
+					return err
+				}
 				return fmt.Errorf("auto-association: %w", err)
 			}
 		}
@@ -635,6 +648,39 @@ func SetStatus(args []string) {
 	assumeYes := fs.Bool("y", false, "Skip confirmation prompt")
 	fs.Parse(args)
 
+	database := OpenDB()
+	defer database.Close()
+
+	hasEngine := *engineFilter != ""
+	hasAll := *all
+
+	// Single game: positional args are <id|name> <status>.
+	if !hasEngine && !hasAll {
+		if fs.NArg() < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: moxie set-status <id|name> <status>\n")
+			os.Exit(1)
+		}
+		status := fs.Arg(1)
+		if !isValidStatus(status) {
+			fmt.Fprintf(os.Stderr, "Invalid status %q. Valid: %s\n", status, strings.Join(validStatuses, ", "))
+			os.Exit(1)
+		}
+		// fs.Arg(0) is the game identifier — flags before the ID are parsed
+		// away, so raw args would misread them as the identifier.
+		game := ResolveGame(database, fs.Arg(0))
+		if game == nil {
+			fmt.Fprintf(os.Stderr, "Cancelled.\n")
+			os.Exit(1)
+		}
+		oldStatus := game.Status
+		if err := database.UpdateGameStatus(game.ID, status); err != nil {
+			fmt.Fprintf(os.Stderr, "Error updating status: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Updated %q: %s → %s\n", game.Title, oldStatus, status)
+		return
+	}
+
 	if fs.NArg() < 1 {
 		fmt.Fprintf(os.Stderr, "Usage: moxie set-status [flags] <status>\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
@@ -647,33 +693,6 @@ func SetStatus(args []string) {
 	if !isValidStatus(status) {
 		fmt.Fprintf(os.Stderr, "Invalid status %q. Valid: %s\n", status, strings.Join(validStatuses, ", "))
 		os.Exit(1)
-	}
-
-	database := OpenDB()
-	defer database.Close()
-
-	hasEngine := *engineFilter != ""
-	hasAll := *all
-
-	// Single game: positional arg is ID or name.
-	if !hasEngine && !hasAll {
-		if len(args) < 2 {
-			fmt.Fprintf(os.Stderr, "Usage: moxie set-status <id|name> <status>\n")
-			os.Exit(1)
-		}
-		// Re-parse: first arg is the game identifier, second is status.
-		game := ResolveGame(database, args[0])
-		if game == nil {
-			fmt.Fprintf(os.Stderr, "Cancelled.\n")
-			os.Exit(1)
-		}
-		oldStatus := game.Status
-		if err := database.UpdateGameStatus(game.ID, status); err != nil {
-			fmt.Fprintf(os.Stderr, "Error updating status: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Updated %q: %s → %s\n", game.Title, oldStatus, status)
-		return
 	}
 
 	// Batch operations require confirmation.

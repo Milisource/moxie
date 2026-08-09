@@ -72,11 +72,12 @@ func WriteShortcuts(path string, shortcuts []ShortcutEntry) error {
 		if err := os.WriteFile(backup, data, 0644); err != nil {
 			return fmt.Errorf("steam: cannot write backup: %w", err)
 		}
+		pruneOldBackups(path)
 	}
 
 	// Serialize to binary VDF.
 	m := buildShortcutsMap(shortcuts)
-	data, err := writeVdf(m)
+	data, err := writeVdfOrdered(m)
 	if err != nil {
 		return fmt.Errorf("steam: cannot encode shortcuts.vdf: %w", err)
 	}
@@ -245,12 +246,23 @@ func parseShortcutEntry(m vdfMap) ShortcutEntry {
 	return se
 }
 
-// buildShortcutsMap converts a []ShortcutEntry into the vdfMap format
-// expected by writeVdf.
-func buildShortcutsMap(shortcuts []ShortcutEntry) vdfMap {
-	shortcutsMap := make(vdfMap)
+// shortcutFieldOrder is the canonical field order Steam itself uses when
+// writing shortcuts.vdf entries (observed in real Steam-generated files).
+// The round-trip fixture test asserts byte-exact output, so the serializer
+// must reproduce it. Unknown/raw fields follow in sorted order.
+var shortcutFieldOrder = []string{
+	"appid", "AppName", "exe", "StartDir", "icon", "ShortcutPath",
+	"LaunchOptions", "IsHidden", "AllowDesktopConfig", "AllowOverlay",
+	"OpenVR", "Devkit", "DevkitGameID", "DevkitOverrideAppID",
+	"LastPlayTime", "FlatpakAppID", "sortas", "tags",
+}
+
+// buildShortcutsMap converts a []ShortcutEntry into the ordered vdfMap
+// structure expected by writeVdfOrdered, in Steam's canonical field order.
+func buildShortcutsMap(shortcuts []ShortcutEntry) vdfOrderedMap {
+	shortcutsSeq := make(vdfOrderedMap, 0, len(shortcuts))
 	for i, s := range shortcuts {
-		sm := vdfMap{
+		fields := vdfMap{
 			"appid":              s.AppID,
 			"AppName":            s.AppName,
 			"exe":                quotePath(s.Exe),
@@ -267,18 +279,41 @@ func buildShortcutsMap(shortcuts []ShortcutEntry) vdfMap {
 			"sortas":             s.SortAs,
 			"tags":               buildTagsMap(s.Tags),
 		}
-		mergeRawFields(sm, s.RawFields)
-		shortcutsMap[fmt.Sprintf("%d", i)] = sm
+		mergeRawFields(fields, s.RawFields)
+
+		sm := make(vdfOrderedMap, 0, len(fields))
+		emitted := make(map[string]bool, len(fields))
+		for _, k := range shortcutFieldOrder {
+			if v, ok := fields[k]; ok {
+				sm = append(sm, vdfOrderedEntry{Key: k, Value: v})
+				emitted[k] = true
+			}
+		}
+		var rest []string
+		for k := range fields {
+			if !emitted[k] {
+				rest = append(rest, k)
+			}
+		}
+		sort.Strings(rest)
+		for _, k := range rest {
+			sm = append(sm, vdfOrderedEntry{Key: k, Value: fields[k]})
+		}
+
+		shortcutsSeq = append(shortcutsSeq, vdfOrderedEntry{Key: fmt.Sprintf("%d", i), Value: sm})
 	}
-	return vdfMap{"shortcuts": shortcutsMap}
+	return vdfOrderedMap{{Key: "shortcuts", Value: shortcutsSeq}}
 }
 
-func buildTagsMap(tags []string) vdfMap {
-	tm := make(vdfMap)
+func buildTagsMap(tags []string) vdfOrderedMap {
+	tm := make(vdfOrderedMap, 0, len(tags))
 	for i, t := range tags {
-		tm[fmt.Sprintf("%d", i)] = vdfMap{
-			fmt.Sprintf("%d", i): t,
-		}
+		tm = append(tm, vdfOrderedEntry{
+			Key: fmt.Sprintf("%d", i),
+			Value: vdfOrderedMap{
+				{Key: fmt.Sprintf("%d", i), Value: t},
+			},
+		})
 	}
 	return tm
 }

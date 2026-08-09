@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -27,6 +28,11 @@ const watchDebounce = 750 * time.Millisecond
 // watchSweepInterval is how often the debounce map is checked for due scans.
 const watchSweepInterval = 500 * time.Millisecond
 
+// watchStopGrace bounds how long Stop waits for in-flight goroutines before
+// giving up (a scan stuck on a slow or network-mounted path must not hang
+// application shutdown).
+const watchStopGrace = 5 * time.Second
+
 // DirectoryWatcher watches all configured scan paths for filesystem changes
 // and triggers incremental rescans so the library stays in sync without
 // manual intervention.
@@ -39,6 +45,8 @@ type DirectoryWatcher struct {
 	roots    []string // absolute, cleaned scan roots — snapshot taken at Start
 	mu       sync.Mutex
 	pending  map[string]time.Time // scan root -> last event time
+	ctx      context.Context      // cancelled by Stop; aborts in-flight scans
+	cancel   context.CancelFunc
 }
 
 // NewDirectoryWatcher creates a watcher bound to the given App.
@@ -58,6 +66,7 @@ func (w *DirectoryWatcher) Start(paths []string) error {
 		return err
 	}
 	w.watcher = watcher
+	w.ctx, w.cancel = context.WithCancel(context.Background())
 
 	// Snapshot the roots in absolute, cleaned form. Events arrive as absolute
 	// paths, so the roots we match them against must be absolute too —
@@ -86,10 +95,25 @@ func (w *DirectoryWatcher) Stop() error {
 	var err error
 	w.stopOnce.Do(func() {
 		close(w.stopCh)
+		// Cancel any in-flight scan so a stuck walk (slow/network-mounted
+		// path) does not hang shutdown.
+		if w.cancel != nil {
+			w.cancel()
+		}
 		// Join the loops before closing the fsnotify watcher so an in-flight
 		// RescanDirectory finishes its database writes first — the caller
 		// closes the database right after this returns.
-		w.wg.Wait()
+		done := make(chan struct{})
+		go func() {
+			w.wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(watchStopGrace):
+			slog.Warn("watcher goroutines did not stop within grace period; proceeding",
+				"grace", watchStopGrace)
+		}
 		if w.watcher != nil {
 			err = w.watcher.Close()
 		}
@@ -127,7 +151,9 @@ func (w *DirectoryWatcher) eventLoop() {
 			// A new directory needs a watcher registered for its subtree.
 			if ev.Op&fsnotify.Create != 0 {
 				if fi, err := os.Stat(ev.Name); err == nil && fi.IsDir() {
-					_ = w.addRecursive(ev.Name)
+					if err := w.addRecursive(ev.Name); err != nil {
+						slog.Warn("watch: could not watch new directory", "path", ev.Name, "error", err)
+					}
 				}
 			}
 			w.queueScan(ev.Name)
@@ -172,7 +198,7 @@ func (w *DirectoryWatcher) sweepLoop() {
 			}
 			w.mu.Unlock()
 			for _, root := range due {
-				w.app.RescanDirectory(root)
+				w.app.RescanDirectory(w.ctx, root)
 			}
 		}
 	}
@@ -180,11 +206,19 @@ func (w *DirectoryWatcher) sweepLoop() {
 
 // RescanDirectory runs an incremental scan of root, upserts detected games,
 // soft-deletes games whose directories vanished, and emits Wails events so
-// the frontend can refresh. It is safe to call from any goroutine.
-func (a *App) RescanDirectory(root string) {
+// the frontend can refresh. It is safe to call from any goroutine. When a
+// manual scan is already running the sweep is skipped — the manual run
+// covers the same upsert path. ctx cancels the underlying walk; a cancelled
+// scan returns without emitting error events (shutdown in progress).
+func (a *App) RescanDirectory(ctx context.Context, root string) {
 	if a.db == nil {
 		return
 	}
+	if !a.scanRunning.CompareAndSwap(false, true) {
+		slog.Debug("auto-scan skipped: manual scan in progress", "root", root)
+		return
+	}
+	defer a.scanRunning.Store(false)
 
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -223,9 +257,11 @@ func (a *App) RescanDirectory(root string) {
 		})
 	}
 
-	detected, err := scanner.ScanFiltered(abs, skipPaths, progress)
+	detected, err := scanner.ScanFiltered(ctx, abs, skipPaths, progress)
 	if err != nil {
-		runtime.EventsEmit(a.ctx, "scan:auto-error", map[string]string{"error": err.Error()})
+		if !errors.Is(err, context.Canceled) {
+			runtime.EventsEmit(a.ctx, "scan:auto-error", map[string]string{"error": err.Error()})
+		}
 		return
 	}
 
@@ -255,20 +291,24 @@ func (a *App) upsertDetected(detected []scanner.DetectedGame) (inserted, updated
 
 		now := time.Now().UTC()
 		if existing != nil {
-			// Preserve manual corrections — only fill unset/fallback fields.
-			if existing.Version == "" {
-				existing.Version = g.Version
+			// A soft-deleted game found again on disk comes back to life —
+			// otherwise the UNIQUE index on path keeps blocking re-insertion
+			// while the row stays invisible in every listing.
+			if !existing.DeletedAt.IsZero() {
+				if err := a.db.RestoreGame(existing.ID); err != nil {
+					errs = append(errs, existing.Title+": "+err.Error())
+					continue
+				}
 			}
-			if existing.Engine == "" || existing.Engine == "Unknown" {
-				existing.Engine = string(g.Engine)
-			}
-			if existing.ExePath == "" {
-				existing.ExePath = g.ExePath
-			}
-			existing.SizeBytes = g.SizeBytes
-			existing.LastScannedAt = now
-			existing.DirMTime = dirModTime(g.Path)
-			if err := a.db.UpdateGame(existing); err != nil {
+			// Narrow, atomic update: only the scanner-owned fields are
+			// written, and version/engine/exe_path only when unset (manual
+			// corrections win). The "unset" checks live inside the UPDATE,
+			// so a user edit landing between our read and write can never be
+			// clobbered with the stale record we loaded.
+			if err := a.db.UpdateGameScanFields(
+				existing.ID, g.Version, string(g.Engine), g.ExePath,
+				g.SizeBytes, now, dirModTime(g.Path),
+			); err != nil {
 				errs = append(errs, existing.Title+": "+err.Error())
 				continue
 			}

@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -16,9 +17,12 @@ import (
 )
 
 var blockedDownloadHosts = []string{
-	"169.254.169.254",
+	"169.254.169.254", // AWS/GCP/Azure IMDS (link-local)
+	"fd00:ec2::254",   // AWS IMDSv2 over IPv6
 	"metadata.google.internal",
-	"100.100.100.200",
+	"100.100.100.200", // Alibaba Cloud IMDS
+	"0.0.0.0",         // unspecified — routes to localhost on some systems
+	"::",              // IPv6 unspecified
 }
 
 // redactedURL strips query parameters from a URL for safe logging.
@@ -60,9 +64,9 @@ func isValidDownloadURL(rawURL string) bool {
 }
 
 type writeCounter struct {
-	total     int64
-	prevTotal int64
-	prevTime  time.Time
+	total      int64
+	prevTotal  int64
+	prevTime   time.Time
 	onProgress func(Progress)
 }
 
@@ -77,10 +81,10 @@ func (wc *writeCounter) Write(p []byte) (int, error) {
 		wc.prevTime = now
 		if wc.onProgress != nil {
 			wc.onProgress(Progress{
-				BytesDownloaded: wc.total,
-				TotalBytes:      0,
+				BytesDownloaded:  wc.total,
+				TotalBytes:       0,
 				SpeedBytesPerSec: speed,
-				Percent:         0,
+				Percent:          0,
 			})
 		}
 	}
@@ -91,6 +95,13 @@ func (wc *writeCounter) Write(p []byte) (int, error) {
 // The host label enables specialized handling for hosts like Buzzheavier, Pixeldrain, etc.
 // f95Cookie is an optional F95Zone session cookie used to authenticate masked redirects.
 func DownloadWithHost(urlStr, host, destDir string, expectedTotal int64, onProgress func(Progress), f95Cookie string) error {
+	return DownloadWithContext(context.Background(), urlStr, host, destDir, expectedTotal, onProgress, f95Cookie)
+}
+
+// DownloadWithContext is DownloadWithHost with cancellation: the request and
+// the body read loop both honor ctx, so shutdown can interrupt an in-flight
+// transfer instead of waiting out the full download timeout.
+func DownloadWithContext(ctx context.Context, urlStr, host, destDir string, expectedTotal int64, onProgress func(Progress), f95Cookie string) error {
 	log.Debug("download start", "url", redactedURL(urlStr), "host", host, "dest", destDir)
 	resolver := NewHostResolver()
 	if f95Cookie != "" {
@@ -102,7 +113,7 @@ func DownloadWithHost(urlStr, host, destDir string, expectedTotal int64, onProgr
 		return fmt.Errorf("resolve %s URL: %w", host, resolveErr)
 	}
 	log.Debug("download resolving via HTTP", "resolved_url", redactedURL(resolved.URL), "headers", len(resolved.Headers), "host", host)
-	return downloadWithHeaders(resolved.URL, resolved.Headers, host, destDir, expectedTotal, onProgress)
+	return downloadWithHeaders(ctx, resolved.URL, resolved.Headers, host, destDir, expectedTotal, onProgress)
 }
 
 // Download downloads a file using standard HTTP, auto-detecting the host.
@@ -113,13 +124,44 @@ func Download(urlStr, destDir string, expectedTotal int64, onProgress func(Progr
 }
 
 // globalMaxDownloadSize is the absolute maximum size for any single download
-// regardless of host-specific limits. 50 GB.
-const globalMaxDownloadSize int64 = 50 * 1024 * 1024 * 1024
+// regardless of host-specific limits. 50 GB. A var so tests can lower it.
+var globalMaxDownloadSize int64 = 50 * 1024 * 1024 * 1024
+
+// checkGlobalSizeLimit rejects downloads whose total (existing partial +
+// new bytes) exceeds the global maximum. Used for both the Content-Length
+// pre-check and the post-body check — io.LimitReader reports EOF at the cap
+// without erroring, so the latter is what actually catches overflow.
+func checkGlobalSizeLimit(total int64) error {
+	if total > globalMaxDownloadSize {
+		return fmt.Errorf("download rejected: size %d bytes exceeds global maximum of %d bytes", total, globalMaxDownloadSize)
+	}
+	return nil
+}
+
+// checkHostSizeLimit rejects downloads whose size exceeds the limit for
+// the host being used. A limit <= 0 means the host is unlimited. It is
+// applied to the expected size before the request and to the actual bytes
+// written after the body loop, mirroring checkGlobalSizeLimit.
+func checkHostSizeLimit(total, limit int64, host string) error {
+	if limit > 0 && total > limit {
+		return fmt.Errorf("download rejected: size %d bytes exceeds host limit of %d bytes for %s", total, limit, host)
+	}
+	return nil
+}
 
 // downloadTimeout is the maximum time allowed for a single download.
 const downloadTimeout = 6 * time.Hour
 
-func downloadWithHeaders(urlStr string, headers map[string]string, host string, destDir string, expectedTotal int64, onProgress func(Progress)) error {
+// sharedDownloadTransport is reused across downloads so connections are not
+// torn down and re-established for every file.
+var sharedDownloadTransport = &http.Transport{
+	ResponseHeaderTimeout: 30 * time.Second,
+	Proxy:                 http.ProxyFromEnvironment,
+	MaxIdleConns:          8,
+	IdleConnTimeout:       90 * time.Second,
+}
+
+func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]string, host string, destDir string, expectedTotal int64, onProgress func(Progress)) error {
 	if !isValidDownloadURL(urlStr) {
 		return fmt.Errorf("invalid or blocked URL: %s", urlStr)
 	}
@@ -131,12 +173,17 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 	if idx := strings.Index(base, "?"); idx >= 0 {
 		base = base[:idx]
 	}
+	// Percent-encoding in the URL path (e.g. "file%20name.zip") must not
+	// end up in the saved filename.
+	if decoded, err := url.PathUnescape(base); err == nil && decoded != "" {
+		base = decoded
+	}
 
 	// Check host-specific size limit BEFORE making the request.
 	// If expectedTotal is known (e.g., from scraped metadata), reject early.
 	hostLimit := HostSizeLimit(host)
-	if hostLimit > 0 && expectedTotal > hostLimit {
-		return fmt.Errorf("download rejected: expected size %d bytes exceeds host limit of %d bytes for %s", expectedTotal, hostLimit, host)
+	if err := checkHostSizeLimit(expectedTotal, hostLimit, host); err != nil {
+		return err
 	}
 	// Check global max early too.
 	if expectedTotal > globalMaxDownloadSize {
@@ -151,7 +198,7 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 		existingSize = fi.Size()
 	}
 
-	req, err := http.NewRequest("GET", urlStr, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -170,10 +217,12 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 		}
 	}
 
-	// Total download timeout prevents runaway transfers.
-	client := &http.Client{Timeout: downloadTimeout, Transport: &http.Transport{
-		ResponseHeaderTimeout: 30 * time.Second,
-	}}
+	// Total download timeout prevents runaway transfers. The transport is
+	// shared across downloads so TCP/TLS connections are reused.
+	client := &http.Client{
+		Timeout:   downloadTimeout,
+		Transport: sharedDownloadTransport,
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -202,22 +251,33 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
+	// Compute the resume base FIRST (it determines whether the response was
+	// a resumable 206 or a fresh 200), then enforce size limits so a
+	// server that ignored Range cannot double-count the existing partial.
+	writeMode := os.O_CREATE | os.O_WRONLY
+	if existingSize > 0 && resp.StatusCode == http.StatusPartialContent {
+		writeMode |= os.O_APPEND
+	} else {
+		existingSize = 0
+		writeMode |= os.O_TRUNC
+	}
+
 	// Enforce size limits based on Content-Length.
 	reportedLength := resp.ContentLength
 	if reportedLength > 0 {
 		totalWithExisting := reportedLength + existingSize
-		// Check global max.
-		if totalWithExisting > globalMaxDownloadSize {
-			return fmt.Errorf("download rejected: Content-Length %d bytes exceeds global maximum of %d bytes", totalWithExisting, globalMaxDownloadSize)
+		if err := checkGlobalSizeLimit(totalWithExisting); err != nil {
+			return err
 		}
 		// Check host-specific limit.
-		if hostLimit > 0 && totalWithExisting > hostLimit {
-			return fmt.Errorf("download rejected: Content-Length %d bytes exceeds host limit of %d bytes for %s", totalWithExisting, hostLimit, host)
+		if err := checkHostSizeLimit(totalWithExisting, hostLimit, host); err != nil {
+			return err
 		}
 	}
 
 	// Defense-in-depth: wrap response body with a LimitReader that caps
-	// reads at globalMaxDownloadSize + 1 so any overflow causes an error.
+	// reads at globalMaxDownloadSize + 1. LimitReader returns EOF at the
+	// cap without erroring, so the total is re-checked after the loop.
 	reader := io.LimitReader(resp.Body, globalMaxDownloadSize+1)
 
 	var totalBytes int64
@@ -227,24 +287,11 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 		totalBytes = reportedLength + existingSize
 	}
 
-	writeMode := os.O_CREATE | os.O_WRONLY
-	if existingSize > 0 && resp.StatusCode == http.StatusPartialContent {
-		writeMode |= os.O_APPEND
-	} else {
-		existingSize = 0
-		writeMode |= os.O_TRUNC
-	}
-
 	f, err := os.OpenFile(partPath, writeMode, 0600)
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
 	defer f.Close()
-
-	if existingSize == 0 {
-		if err := os.Remove(partPath + ".tmp"); err == nil {
-		}
-	}
 
 	wc := &writeCounter{
 		total:     existingSize,
@@ -264,6 +311,10 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 	buf := make([]byte, 32768)
 	var finalErr error
 	for {
+		if cerr := ctx.Err(); cerr != nil {
+			finalErr = cerr
+			break
+		}
 		n, readErr := reader.Read(buf)
 		if n > 0 {
 			wn, writeErr := f.Write(buf[:n])
@@ -290,6 +341,24 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 		return finalErr
 	}
 
+	// The LimitReader caps at globalMaxDownloadSize+1 and reports EOF at
+	// the cap; without this check an oversized download would be silently
+	// truncated and renamed to the final file as a "success".
+	if err := checkGlobalSizeLimit(wc.total); err != nil {
+		f.Close()
+		os.Remove(partPath)
+		return err
+	}
+	// Host-specific limit: the pre-request checks only see the expected or
+	// Content-Length sizes, but a server that ignores Range or misreports
+	// the length can still stream past the limit. Re-check the actual bytes
+	// written and reject (removing the .part file) if the host limit is hit.
+	if err := checkHostSizeLimit(wc.total, hostLimit, host); err != nil {
+		f.Close()
+		os.Remove(partPath)
+		return err
+	}
+
 	if err := f.Sync(); err != nil {
 		f.Close()
 		return fmt.Errorf("sync: %w", err)
@@ -313,8 +382,8 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 	if onProgress != nil {
 		onProgress(Progress{
 			BytesDownloaded: wc.total,
-			TotalBytes:     totalBytes,
-			Percent:        100,
+			TotalBytes:      totalBytes,
+			Percent:         100,
 		})
 	}
 

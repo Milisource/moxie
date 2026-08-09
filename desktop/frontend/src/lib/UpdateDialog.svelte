@@ -7,6 +7,7 @@
     DownloadUpdate,
     ApplyUpdate,
   } from '../../wailsjs/go/main/App'
+  import {safeExternalUrl} from './sanitizeUrl.js'
 
   // ── State ──────────────────────────────────────────────────
   let version = $state('')
@@ -31,7 +32,14 @@
 
     try {
       const result = await CheckForUpdate()
-      updateInfo = result
+      // CheckForUpdate never throws on API failure — the failure message is
+      // carried in the `error` field. Treat it as an error, not "up to date".
+      if (result?.error) {
+        error = result.error
+        updateInfo = null
+      } else {
+        updateInfo = result
+      }
     } catch (e) {
       error = String(e)
     } finally {
@@ -145,7 +153,7 @@
   {/if}
 
   <!-- ── Up-to-Date ──────────────────────────────────────── -->
-  {#if updateInfo && !updateInfo.hasUpdate}
+  {#if updateInfo && !updateInfo.error && !updateInfo.hasUpdate}
     <div class="status-section status-success">
       <span class="status-icon">✓</span>
       <div class="status-body">
@@ -168,10 +176,10 @@
             <span class="version-new">{updateInfo.latestVersion}</span>
           </span>
         </p>
-        {#if updateInfo.releaseUrl}
+        {#if safeExternalUrl(updateInfo.releaseUrl)}
           <a
             class="release-link"
-            href={updateInfo.releaseUrl}
+            href={safeExternalUrl(updateInfo.releaseUrl)}
             target="_blank"
             rel="noopener noreferrer"
           >

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,9 +22,9 @@ var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // blockedDownloadHosts are hosts that should never be contacted for downloads.
 var blockedDownloadHosts = []string{
-	"169.254.169.254",         // AWS metadata
+	"169.254.169.254",          // AWS metadata
 	"metadata.google.internal", // GCP metadata
-	"100.100.100.200",         // Alibaba Cloud metadata
+	"100.100.100.200",          // Alibaba Cloud metadata
 }
 
 // isValidDownloadURL validates that a URL is safe to download from.
@@ -105,6 +106,38 @@ func DownloadAndSetHorizontal(steamRoot string, userID3, appID uint32, coverURL 
 // horizontal and hero failures are silently skipped.
 //
 // If coverURL is empty, returns nil (no-op).
+// maxGridImageBytes caps how much of a grid image is read before decode.
+const maxGridImageBytes = 25 * 1024 * 1024 // 25 MB
+
+// pruneOldBackups keeps only the most recent backup files for shortcuts.vdf,
+// so a long-lived install does not accumulate one per write.
+func pruneOldBackups(path string) {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	var backups []string
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, base+".") && strings.HasSuffix(name, ".backup") {
+			backups = append(backups, name)
+		}
+	}
+	if len(backups) <= maxShortcutBackups {
+		return
+	}
+	sort.Strings(backups)
+	for _, name := range backups[:len(backups)-maxShortcutBackups] {
+		os.Remove(filepath.Join(dir, name))
+	}
+}
+
+// maxShortcutBackups is how many timestamped backups of shortcuts.vdf are
+// retained; older ones are pruned on the next write.
+const maxShortcutBackups = 5
+
 func SetAllArtwork(steamRoot string, userID3, appID uint32, coverURL string) error {
 	if coverURL == "" {
 		return nil
@@ -131,7 +164,9 @@ func SetAllArtwork(steamRoot string, userID3, appID uint32, coverURL string) err
 		return fmt.Errorf("steam: download returned HTTP %d", resp.StatusCode)
 	}
 
-	// 2. Decode the source image.
+	// 2. Decode the source image. The body read is capped — a huge or
+	// malicious image must not exhaust memory.
+	resp.Body = http.MaxBytesReader(nil, resp.Body, maxGridImageBytes)
 	src, _, err := image.Decode(resp.Body)
 	if err != nil {
 		return fmt.Errorf("steam: decode failed: %w", err)

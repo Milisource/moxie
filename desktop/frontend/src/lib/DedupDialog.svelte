@@ -1,7 +1,8 @@
 <script>
   import {onMount} from 'svelte'
-  import {FindDuplicateGames, RemoveGame, RestoreGame, GetGames} from '../../wailsjs/go/main/App'
+  import {FindDuplicateGames, RemoveGame} from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
+  import {statusLabel} from './statuses.js'
 
   let {
     onDedupDone = () => {},
@@ -33,8 +34,12 @@
       groups[groupIdx].count--
       groups = groups.filter(g => g.count >= 2)
       groups = [...groups]
+      onDedupDone()
     } catch (e) {
       console.error('Failed to remove:', e)
+      // The DB may or may not have been mutated — resync from the source
+      // of truth so the UI matches what is actually in the library.
+      await load()
     }
     resolving = {...resolving, [id]: false}
   }
@@ -61,8 +66,12 @@
       groups[groupIdx].count = 1
       groups = groups.filter(g => g.count >= 2)
       groups = [...groups]
+      onDedupDone()
     } catch (e) {
       console.error('Failed to remove duplicates:', e)
+      // A mid-loop failure may have already deleted some games from the DB
+      // while the local list was never updated — resync to reflect reality.
+      await load()
     }
 
     const clean = {}
@@ -72,11 +81,6 @@
 
   // ── Engine colors — imported from shared module ───────────────
   // See engineColors.js for the canonical palette matching TUI styles
-
-  function statusLabel(s) {
-    const labels = {active: 'Active', completed: 'Completed', abandoned: 'Abandoned', on_hold: 'On Hold', unknown: 'Unknown'}
-    return labels[s] || s || 'Unknown'
-  }
 
   function formatBytes(bytes) {
     if (!bytes) return ''

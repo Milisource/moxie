@@ -102,8 +102,12 @@ func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform stri
 	ok, failed := 0, 0
 	for i, g := range queue {
 		fmt.Fprintf(os.Stderr, "[%d/%d] %s: %s → %s\n", i+1, len(queue), g.Title, g.Version, g.LatestVersion)
-		downloadSingle(database, &g, cookie, downloadDir, targetPlatform, extract)
-		ok++
+		if err := downloadSingle(database, &g, cookie, downloadDir, targetPlatform, extract); err != nil {
+			failed++
+			fmt.Fprintf(os.Stderr, "  ✗ %v\n", err)
+		} else {
+			ok++
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "\n=== Batch download complete: %d/%d games ===\n", ok, len(queue))
@@ -113,7 +117,9 @@ func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform stri
 }
 
 // downloadSingle handles the full download flow for one game.
-func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, targetPlatform string, extract bool) {
+// Returns an error when the download did not complete; nil on success or
+// when skipped (e.g. download already in progress).
+func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, targetPlatform string, extract bool) error {
 	destDir := downloadDir
 	if destDir == "" {
 		destDir = filepath.Join(filepath.Dir(game.Path), "downloads")
@@ -121,13 +127,13 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "  ✗ Error creating download directory: %v\n", err)
-		return
+		return fmt.Errorf("create download directory: %w", err)
 	}
 
 	existing, _ := database.GetDownloadByGameID(game.ID)
 	if existing != nil && existing.Status == db.DownloadStatusDownloading {
 		fmt.Fprintf(os.Stderr, "  – Download already in progress.\n")
-		return
+		return nil
 	}
 
 	fmt.Fprintf(os.Stderr, "  Looking for %s downloads...\n", targetPlatform)
@@ -156,9 +162,11 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  Warning: Could not scrape F95Zone: %v\n", err)
 			} else if len(data.DownloadLinks) > 0 {
-				database.DeleteDownloadLinksByGameID(game.ID)
+				if err := database.DeleteDownloadLinksByGameID(game.ID); err != nil {
+					fmt.Fprintf(os.Stderr, "  ⚠ Failed to clear stale download links: %v\n", err)
+				}
 				for _, dl := range data.DownloadLinks {
-					linkPlatform := downloader.DetectPlatformFromLink(dl.Name, dl.URL)
+					linkPlatform := db.Platform(downloader.DetectPlatform(dl.Name, dl.URL))
 					link := &db.DownloadLink{
 						GameID:   game.ID,
 						URL:      dl.URL,
@@ -176,7 +184,7 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 
 	if len(links) == 0 {
 		fmt.Fprintf(os.Stderr, "  – No download links found.\n")
-		return
+		return fmt.Errorf("no download links found")
 	}
 
 	type scoredLink struct {
@@ -193,7 +201,7 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 	}
 	if len(scored) == 0 {
 		fmt.Fprintf(os.Stderr, "  – No downloadable links (all online-only).\n")
-		return
+		return fmt.Errorf("no downloadable links (all online-only)")
 	}
 	sort.SliceStable(scored, func(i, j int) bool {
 		return scored[i].score > scored[j].score
@@ -215,7 +223,7 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 	dlID, err := database.CreateDownload(dlRecord)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  ✗ Error creating download record: %v\n", err)
-		return
+		return fmt.Errorf("create download record: %w", err)
 	}
 	dlRecord.ID = dlID
 
@@ -286,7 +294,7 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 
 		log.Error("download failed (all links exhausted)", "game_id", game.ID, "links_tried", len(scored), "error", lastErr)
 		fmt.Fprintf(os.Stderr, "  ✗ Failed: %s\n", lastErr.Error())
-		return
+		return lastErr
 	}
 
 	dlRecord.Status = db.DownloadStatusCompleted
@@ -341,4 +349,5 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 	}
 
 	fmt.Fprintf(os.Stderr, "  ✓ Ready: %s\n", destDir)
+	return nil
 }

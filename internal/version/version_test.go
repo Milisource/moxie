@@ -79,6 +79,14 @@ func TestCompare(t *testing.T) {
 		{"final regresses", "0.9", "Final", Changed},
 		{"suffix only", "0.8 extra", "0.8", Changed},
 		{"non numeric", "Beta", "Alpha", Changed},
+		// One-sided build letters are hotfix bumps: "0.8.1" → "0.8.1b".
+		{"hotfix bump", "0.8.1b", "0.8.1", Newer},
+		{"hotfix older", "0.8.1", "0.8.1b", Older},
+		// Chapter-style versions order among themselves but never against
+		// plain numerics ("Ch.4 Free" must not beat "0.12.0").
+		{"chapter bump", "Ch.5 Free", "Ch.4 Free", Newer},
+		{"chapter vs numeric", "Ch.4 Free", "0.12.0", Changed},
+		{"numeric vs chapter", "0.12.0", "Ch.4 Free", Changed},
 		{"remote empty", "", "0.8", Changed},
 		{"known empty", "0.8", "", Changed},
 		{"both empty", "", "", Same},

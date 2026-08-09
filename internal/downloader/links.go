@@ -21,7 +21,7 @@ func ScoreLinkHost(host string) int {
 	switch strings.ToLower(host) {
 	case "pixeldrain", "buzzheavier", "gofile", "catbox":
 		return 25
-	case "datanodes", "google drive", "mixdrop":
+	case "datanodes", "googledrive", "mixdrop":
 		return 10
 	case "mega", "vikingfile", "workupload", "krakenfiles", "bunkrr":
 		return -200

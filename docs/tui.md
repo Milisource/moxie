@@ -17,10 +17,10 @@ Model ←─── Update ←─── View
 ```
 
 - **Model** — holds all state: the game list, table component, filter inputs, cursor position, view mode, scraped metadata cache, active download tracking, and collection filter state
-- **Update** — receives `tea.Msg` (key presses, async results, window resize events, spinner ticks) and returns a new model plus optional commands
+- **Update** — receives `tea.Msg` (key presses, async results, window resize events, spinner ticks) and returns a new model plus optional commands. Update stays pure and fast: every network operation (link resolution, scraping, downloads, extraction, merges) runs in background `tea.Cmd` goroutines that report back via messages — a rate-limited F95Zone scrape must never stall the UI
 - **View** — renders the model as a styled string for terminal output
 
-### File Structure (12 files)
+### File Structure (11 files)
 
 | File | Responsibility |
 |---|---|
@@ -30,10 +30,9 @@ Model ←─── Update ←─── View
 | `library.go` | Library list view rendering (title bar, status line with spinner, dynamic footer with hints) |
 | `detail.go` | Game detail view rendering (sectioned layout, status selector, download progress, edit/url/exe overlays) |
 | `help.go` | Help overlay with grouped keyboard shortcut reference |
-| `styles.go` | Lip Gloss style palette, engine color map, status color map, section header styles, tag styles |
+| `styles.go` | Lip Gloss style palette, engine/status color lookups (engine colors from the shared `internal/engine/engine-colors.json`), section header styles, tag styles |
 | `helpers.go` | Filter/sort logic, table row building, size formatting, delegates to `internal/launcher/` for executable listing |
 | `commands.go` | Tea commands for async DB operations (loadGames, loadMeta, startDownload, pollDownloads, loadCollections) |
-| `keys.go` | Structured key binding definitions with help text |
 
 ### Views
 
@@ -54,12 +53,12 @@ The TUI has four visual modes, switched via the `viewMode` field in the model:
 ### Filtering and Sorting
 
 - **Title filter** — `/` activates a real-time text input. Games are filtered by substring match on each keystroke (no Enter needed). `Esc` clears and exits.
-- **Engine filter** — `Ctrl+E` cycles through a 15-element array: `""` (all) → Unity → RenPy → RPGM → ... → WolfRPG.
+- **Engine filter** — `Ctrl+E` cycles through a 16-element array: `""` (all) → Unity → RenPy → RPGM → ... → WolfRPG.
 - **Status filter** — `Ctrl+S` cycles through: `""` (all) → active → completed → abandoned → on_hold → unknown.
 - **Collection filter** — `c` cycles through the user's collections (loaded from DB). Status bar shows active collection name.
 - **Sort cycling** — `s` cycles ID → Title → Engine → Version (desc). The active sort field and direction appear in the status bar as `Title ↑` or `Version ↓`.
 - **Reverse sort** — `r` reverses the current sort direction.
-- **Engine colors** — each engine type has a distinct Lip Gloss color (Unity = cyan, RenPy = magenta, RPGM = green, etc.). Applied per-row via `engineColor(e)`.
+- **Engine colors** — each engine type has a distinct color mirroring F95Zone's "Latest Updates" page palette (Unity = orange, Ren'Py = purple, Java = teal, etc.). The palette is the shared canonical map in `internal/engine/engine-colors.json` (also imported by the desktop frontend), applied per-row via `engineColor(e)`.
 - **Update indicators** — a `🔄` marker appears next to game titles where both `latest_version` and `version` are known and differ. If the local version is empty (no version found in the directory name), no indicator is shown — an unknown local version cannot confirm an update.
 - **Unknown versions** — games without a detected version show the scraped `LatestVersion` from F95Zone when available, falling back to `"unknown"` only when neither source has a version.
 
@@ -144,7 +143,7 @@ The TUI's `p` key calls into `internal/launcher/` — the same shared package us
 
 ### Spinner
 
-A Bubble Tea spinner (Dot style, purple) appears in the library view status bar when downloads are in progress. Controlled by `spinnerActive` / `spinnerInactive` model fields.
+A Bubble Tea spinner (Dot style, purple) appears in the library view status bar when downloads are in progress. Controlled by the `spinnerActive` model field.
 
 ## Why
 

@@ -1,5 +1,6 @@
 <script>
   import {onMount} from 'svelte'
+  import {LogError, LogInfo} from '../../wailsjs/runtime/runtime'
   import {
     GetGamesWithDownloadLinks,
     GetAllDownloadLinks,
@@ -18,18 +19,34 @@
   async function loadData() {
     loading = true
     error = ''
+    // Fail observably instead of spinning forever if a binding call never
+    // settles (e.g. a stuck DB query on the Go side).
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => {
+        reject(new Error('Timed out after 20s — see ~/.config/moxie/logs/'))
+        LogError('downloads: loadData timed out after 20s — binding promise never settled')
+      }, 20000)
+    )
     try {
-      const [g, links] = await Promise.all([
-        GetGamesWithDownloadLinks(),
-        GetAllDownloadLinks(),
+      LogInfo('downloads: calling GetGamesWithDownloadLinks + GetAllDownloadLinks')
+      const [g, links] = await Promise.race([
+        Promise.all([
+          GetGamesWithDownloadLinks(),
+          GetAllDownloadLinks(),
+        ]),
+        timeout,
       ])
-      games = g
-      allLinks = links
+      // Go nil slices marshal to JSON null — never let null reach the view.
+      games = g ?? []
+      allLinks = links ?? []
+      LogInfo(`downloads: loaded ${games.length} games, ${allLinks.length} links`)
     } catch (e) {
+      LogError(`downloads: loadData failed: ${e}`)
       error = String(e)
       games = []
       allLinks = []
     }
+    LogInfo('downloads: loadData finished')
     loading = false
   }
 
@@ -66,10 +83,17 @@
     return games.filter(g => g.title.toLowerCase().includes(q))
   })
 
-  // Count of links per game
-  function linksCount(gameId) {
-    return allLinks.filter(l => l.gameId === gameId).length
-  }
+  // Precompute links grouped by gameId once, instead of re-filtering allLinks
+  // for every row on every render (O(n) up front, O(1) per row).
+  let linksByGame = $derived.by(() => {
+    const map = new Map()
+    for (const link of allLinks) {
+      const arr = map.get(link.gameId)
+      if (arr) arr.push(link)
+      else map.set(link.gameId, [link])
+    }
+    return map
+  })
 
   // Determine host badge color
   function hostColor(host) {
@@ -174,8 +198,9 @@
     <!-- ── Game List ─────────────────────────────────────────── -->
     <div class="game-list">
       {#each filteredGames as game (game.id)}
-        {@const linkCount = allLinks.filter(l => l.gameId === game.id).length}
-        {@const deadCount = allLinks.filter(l => l.gameId === game.id && l.isDead).length}
+        {@const links = linksByGame.get(game.id) || []}
+        {@const linkCount = links.length}
+        {@const deadCount = links.filter(l => l.isDead).length}
 
         <div class="game-card">
           <button
@@ -191,7 +216,6 @@
           </button>
 
           {#if expandedGames.has(game.id)}
-            {@const links = allLinks.filter(l => l.gameId === game.id)}
             <div class="links-section">
               {#if links.length > 0}
                 <div class="links-header">

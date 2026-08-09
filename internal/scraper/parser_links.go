@@ -6,11 +6,28 @@ import (
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
+	"golang.org/x/net/html"
 )
 
 var (
 	steamStoreRe = regexp.MustCompile(`store\.steampowered\.com/app/\d+`)
+	// platformLabelRe matches thread row labels like "<b>Win</b>:".
+	platformLabelRe = regexp.MustCompile(`(?i)^\s*(win|windows|mac|macos|linux|android|web)\s*:?\s*$`)
+	// sectionHeadingRe matches short bold headings that name a download
+	// section ("Part 2", "Update 26", "v1.0", "DOWNLOAD", …). Anchors need a
+	// guard like this so random bold words in prose are never mistaken for
+	// section headings.
+	sectionHeadingRe = regexp.MustCompile(`(?i)\b(part|update|patch|hotfix|dlc|demo|beta|alpha|final|chapter|ch\.|version|ver|v\s?\d|download|win|windows|mac|macos|linux|android|web)\b`)
 )
+
+// platformLabels canonicalizes platform row labels.
+var platformLabels = map[string]string{
+	"win": "Win", "windows": "Win",
+	"mac": "Mac", "macos": "Mac",
+	"linux":   "Linux",
+	"android": "Android",
+	"web":     "Web",
+}
 
 // isOnlineOnlyLink returns true if the link text or URL indicates a
 // browser-playable version rather than a downloadable file. These should
@@ -53,10 +70,125 @@ func extractDownloadLinks(content *goquery.Selection) []DownloadLink {
 		links = append(links, DownloadLink{
 			URL:  href,
 			Host: host,
-			Name: text,
+			Name: downloadLinkName(a, text, host),
 		})
 	})
 	return links
+}
+
+// downloadLinkName builds a display name for a download link. Threads like
+// "Henteria Chronicles" list the same host once per part/platform row
+// ("<b>Part 2</b> … <b>Win</b>: GOFILE - MEGA - …"), so the bare anchor text
+// ("GOFILE") can't tell links apart. When the anchor text is just the host
+// name, the name becomes the section heading plus the platform label, e.g.
+// "Part 2 · Win"; real filenames in the anchor text are kept as-is.
+func downloadLinkName(a *goquery.Selection, text, host string) string {
+	section, platform := linkSectionPlatform(a)
+	label := strings.TrimSpace(section)
+	if platform != "" {
+		if label != "" {
+			label += " · " + platform
+		} else {
+			label = platform
+		}
+	}
+	if label != "" && (text == "" || strings.EqualFold(text, host)) {
+		return label
+	}
+	return text
+}
+
+// linkSectionPlatform recovers the context around a download link that the
+// flattened anchor text loses: the platform row label ("Win", "Mac", …) and
+// the nearest preceding section heading ("Part 2", "Update 26", …).
+//
+// The walk starts at the anchor and checks preceding siblings, then each
+// ancestor's preceding siblings, until a section heading is found. Platform
+// labels are recorded but never stop the walk — they belong to the row, not
+// the section, and the same block can host several labeled rows.
+func linkSectionPlatform(a *goquery.Selection) (section, platform string) {
+	an := a.Get(0)
+	for n := an; n != nil && n.Data != "article" && n.Data != "body"; n = n.Parent {
+		for sib := n.PrevSibling; sib != nil; sib = sib.PrevSibling {
+			if sib.Type != html.ElementNode {
+				continue
+			}
+			var t string
+			if isHeadingElement(sib) {
+				t = strings.TrimSpace(nodeText(sib))
+			} else {
+				// Non-heading block: only its last heading can be context.
+				if last := goquery.NewDocumentFromNode(sib).Find("b, strong, h2, h3, h4").Last(); last.Length() > 0 {
+					t = strings.TrimSpace(nodeText(last.Get(0)))
+				}
+			}
+			if t == "" {
+				continue
+			}
+			if p, ok := isPlatformLabel(t); ok {
+				if platform == "" {
+					platform = p
+				}
+				continue
+			}
+			if isSectionHeading(t) {
+				return t, platform
+			}
+		}
+	}
+	return "", platform
+}
+
+// isHeadingElement reports whether n is an element that can carry a section
+// heading in a thread post.
+func isHeadingElement(n *html.Node) bool {
+	switch n.Data {
+	case "b", "strong", "h2", "h3", "h4":
+		return true
+	}
+	return false
+}
+
+// nodeText collects the text of a node, treating <br> as a space so stacked
+// heading lines ("DOWNLOAD<br>Part 2") normalize to "DOWNLOAD Part 2".
+func nodeText(n *html.Node) string {
+	var sb strings.Builder
+	var walk func(*html.Node)
+	walk = func(m *html.Node) {
+		switch m.Type {
+		case html.TextNode:
+			sb.WriteString(m.Data)
+		case html.ElementNode:
+			if m.Data == "br" {
+				sb.WriteString(" ")
+				return
+			}
+		}
+		for c := m.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(n)
+	return strings.Join(strings.Fields(sb.String()), " ")
+}
+
+// isPlatformLabel returns the canonical platform label when t is a row label
+// like "Win:" or "Mac". Ok=false for anything else.
+func isPlatformLabel(t string) (string, bool) {
+	m := platformLabelRe.FindStringSubmatch(strings.TrimSpace(t))
+	if m == nil {
+		return "", false
+	}
+	return platformLabels[strings.ToLower(m[1])], true
+}
+
+// isSectionHeading reports whether t looks like a short section heading
+// rather than prose. Length-capped so long bold sentences never leak in.
+func isSectionHeading(t string) bool {
+	if t == "" || len(t) > 48 {
+		return false
+	}
+	return sectionHeadingRe.MatchString(t)
 }
 
 // storeLinkMatchers maps store key names to match functions that validate
@@ -127,99 +259,153 @@ func extractStoreLinks(content *goquery.Selection) map[string]string {
 
 // identifyHost returns a short host label from the F95Zone approved hosts list.
 // See: https://f95zone.to/threads/approved-file-hosts-updated-2025-02-26.3432/
-func identifyHost(url, text string) string {
-	lower := strings.ToLower(url + " " + text)
+//
+// Matching is two-phase: hostname needles are suffix-matched against the
+// parsed URL host (a short needle like "k2s" or "dp.ua" must not match an
+// unrelated URL that merely contains the substring), and text needles fall
+// back to substring matching over the link text.
+func identifyHost(rawURL, text string) string {
+	host := ""
+	var u *urlpkg.URL
+	if parsed, err := urlpkg.Parse(rawURL); err == nil && parsed.Hostname() != "" {
+		u = parsed
+		host = strings.ToLower(parsed.Hostname())
+	}
+	// F95Zone masked URLs encode the real download host in the path:
+	// f95zone.to/masked/gofile.io/134272/1 → "gofile.io". The generic
+	// substring match below would also catch it, but only by accident.
+	if u != nil && strings.Contains(strings.ToLower(u.Path), "/masked/") {
+		if parts := strings.SplitN(strings.TrimPrefix(u.Path, "/masked/"), "/", 2); len(parts) >= 1 && parts[0] != "" {
+			host = strings.ToLower(parts[0])
+		}
+	}
+	lowerURL := strings.ToLower(rawURL)
+	lowerText := strings.ToLower(text)
+
+	hostMatch := func(needles ...string) bool {
+		if host == "" {
+			return false
+		}
+		for _, n := range needles {
+			if host == n || strings.HasSuffix(host, "."+n) {
+				return true
+			}
+		}
+		return false
+	}
+	// textMatch matches against the link text only — the URL gets
+	// hostname-suffix matching above, so a needle like "k2s" appearing in
+	// an unrelated URL path must not count.
+	textMatch := func(needles ...string) bool {
+		for _, n := range needles {
+			if strings.Contains(lowerText, n) {
+				return true
+			}
+		}
+		return false
+	}
+	// pathMatch covers URL patterns that are not hostname-based
+	// (e.g. google.com/drive links).
+	pathMatch := func(needles ...string) bool {
+		for _, n := range needles {
+			if strings.Contains(lowerURL, n) {
+				return true
+			}
+		}
+		return false
+	}
+
 	switch {
 	// --- Alphabetical by canonical host name ---
-	case strings.Contains(lower, "vern.cc"):
+	case hostMatch("vern.cc"):
 		return "vern"
-	case strings.Contains(lower, "1cloudfile") || strings.Contains(lower, "1cloud"):
+	case hostMatch("1cloudfile.com", "1cloudfile.eu") || textMatch("1cloudfile", "1cloud"):
 		return "1cloudfile"
-	case strings.Contains(lower, "akirabox"):
+	case hostMatch("akirabox.com") || textMatch("akirabox"):
 		return "akirabox"
-	case strings.Contains(lower, "anontransfer"):
+	case hostMatch("anontransfer.com") || textMatch("anontransfer"):
 		return "anontransfer"
-	case strings.Contains(lower, "anonymfile"):
+	case hostMatch("anonymfile.com") || textMatch("anonymfile"):
 		return "anonymfile"
-	case strings.Contains(lower, "apkadmin"):
+	case hostMatch("apkadmin.com") || textMatch("apkadmin"):
 		return "apkadmin"
-	case strings.Contains(lower, "bowfile"):
+	case hostMatch("bowfile.com") || textMatch("bowfile"):
 		return "bowfile"
-	case strings.Contains(lower, "bunkrr") || strings.Contains(lower, "bunkr"):
+	case hostMatch("bunkrr.su", "bunkr.ru", "bunkr.is", "bunkr.si") || textMatch("bunkrr", "bunkr"):
 		return "bunkrr"
-	case strings.Contains(lower, "buzzheavier"):
+	case hostMatch("buzzheavier.com") || textMatch("buzzheavier"):
 		return "buzzheavier"
-	case strings.Contains(lower, "catbox"):
+	case hostMatch("catbox.moe") || textMatch("catbox"):
 		return "catbox"
-	case strings.Contains(lower, "cyberfile"):
+	case hostMatch("cyberfile.me") || textMatch("cyberfile"):
 		return "cyberfile"
-	case strings.Contains(lower, "datanodes"):
+	case hostMatch("datanodes.to") || textMatch("datanodes"):
 		return "datanodes"
-	case strings.Contains(lower, "delafil"):
+	case hostMatch("delafil.com") || textMatch("delafil"):
 		return "delafil"
-	case strings.Contains(lower, "download.gg"):
+	case hostMatch("download.gg") || textMatch("download.gg"):
 		return "downloadgg"
-	case strings.Contains(lower, "dropmefiles"):
+	case hostMatch("dropmefiles.com") || textMatch("dropmefiles"):
 		return "dropmefiles"
-	case strings.Contains(lower, "easyupload"):
+	case hostMatch("easyupload.io") || textMatch("easyupload"):
 		return "easyupload"
-	case strings.Contains(lower, "filemail"):
+	case hostMatch("filemail.com") || textMatch("filemail"):
 		return "filemail"
-	case strings.Contains(lower, "files.dp.ua") || strings.Contains(lower, "dp.ua"):
+	case hostMatch("files.dp.ua") || textMatch("files.dp.ua"):
 		return "filesdpua"
-	case strings.Contains(lower, "files.fm") || strings.Contains(lower, "filesfm"):
+	case hostMatch("files.fm") || textMatch("files.fm", "filesfm"):
 		return "filesfm"
-	case strings.Contains(lower, "fromsmash") || strings.Contains(lower, "from.smash"):
+	case hostMatch("fromsmash.com", "from.smash.com") || textMatch("fromsmash", "from.smash"):
 		return "fromsmash"
-	case strings.Contains(lower, "gofile"):
+	case hostMatch("gofile.io") || textMatch("gofile"):
 		return "gofile"
-	case strings.Contains(lower, "drive.google") || strings.Contains(lower, "google.com/drive"):
+	case hostMatch("drive.google.com") || pathMatch("google.com/drive"):
 		return "googledrive"
-	case strings.Contains(lower, "hexload") || strings.Contains(lower, "hexupload"):
+	case hostMatch("hexload.com", "hexupload.net") || textMatch("hexload", "hexupload"):
 		return "hexload"
-	case strings.Contains(lower, "krakenfiles"):
+	case hostMatch("krakenfiles.com") || textMatch("krakenfiles"):
 		return "krakenfiles"
-	case strings.Contains(lower, "mediafire"):
+	case hostMatch("mediafire.com") || textMatch("mediafire"):
 		return "mediafire"
-	case strings.Contains(lower, "mega.nz") || strings.Contains(lower, "mega.co"):
+	case hostMatch("mega.nz", "mega.co.nz") || textMatch("mega.nz", "mega.co"):
 		return "mega"
-	case strings.Contains(lower, "mixdrop"):
+	case hostMatch("mixdrop.co", "mixdrop.to", "m1xdrop.co") || textMatch("mixdrop", "m1xdrop"):
 		return "mixdrop"
-	case strings.Contains(lower, "pixeldrain"):
+	case hostMatch("pixeldrain.com") || textMatch("pixeldrain"):
 		return "pixeldrain"
-	case strings.Contains(lower, "proton") && strings.Contains(lower, "drive"):
+	case hostMatch("protondrive.com") || textMatch("proton") && textMatch("drive"):
 		return "protondrive"
-	case strings.Contains(lower, "qu.ax"):
+	case hostMatch("qu.ax") || textMatch("qu.ax"):
 		return "quax"
-	case strings.Contains(lower, "sendgb"):
+	case hostMatch("sendgb.com") || textMatch("sendgb"):
 		return "sendgb"
-	case strings.Contains(lower, "terminal"):
+	case hostMatch("terminal.ink") || textMatch("terminal"):
 		return "terminal"
-	case strings.Contains(lower, "transfer.sh"):
+	case hostMatch("transfer.sh") || textMatch("transfer.sh"):
 		return "transfersh"
-	case strings.Contains(lower, "transfert"):
+	case hostMatch("transfert.us") || textMatch("transfert"):
 		return "transfert"
-	case strings.Contains(lower, "uploadhaven"):
+	case hostMatch("uploadhaven.com") || textMatch("uploadhaven"):
 		return "uploadhaven"
-	case strings.Contains(lower, "uploadnow"):
+	case hostMatch("uploadnow.io") || textMatch("uploadnow"):
 		return "uploadnow"
-	case strings.Contains(lower, "vikingfile"):
+	case hostMatch("vikingfile.com") || textMatch("vikingfile"):
 		return "vikingfile"
-	case strings.Contains(lower, "wdho"):
+	case hostMatch("wdho.ru") || textMatch("wdho"):
 		return "wdho"
-	case strings.Contains(lower, "wetransfer"):
+	case hostMatch("wetransfer.com") || textMatch("wetransfer"):
 		return "wetransfer"
-	case strings.Contains(lower, "workupload"):
+	case hostMatch("workupload.com") || textMatch("workupload"):
 		return "workupload"
-	case strings.Contains(lower, "yourfilestore"):
+	case hostMatch("yourfilestore.com") || textMatch("yourfilestore"):
 		return "yourfilestore"
 
 	// --- Legacy/extra hosts ---
-	case strings.Contains(lower, "keep2share") || strings.Contains(lower, "k2s"):
+	case hostMatch("keep2share.cc", "k2s.cc") || textMatch("keep2share", "k2s"):
 		return "keep2share"
-	case strings.Contains(lower, "uploaded") || strings.Contains(lower, "ul.to"):
+	case hostMatch("uploaded.net", "ul.to") || textMatch("uploaded", "ul.to"):
 		return "uploaded"
-	case strings.Contains(lower, "dropbox"):
+	case hostMatch("dropbox.com") || textMatch("dropbox"):
 		return "dropbox"
 
 	default:

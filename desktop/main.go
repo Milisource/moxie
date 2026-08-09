@@ -15,6 +15,13 @@ import (
 var assets embed.FS
 
 func main() {
+	// On Windows the staged-update swap agent runs inside this binary (the
+	// downloaded copy); it swaps binaries and relaunches, never opening the
+	// app. On every other platform this returns false immediately.
+	if applyPendingUpdateIfRequested() {
+		return
+	}
+
 	app := NewApp()
 
 	err := wails.Run(&options.App{

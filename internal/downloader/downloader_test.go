@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -105,6 +106,9 @@ func TestIsValidDownloadURL_HostnameBlocklist(t *testing.T) {
 		"https://169.254.169.254/",
 		"https://metadata.google.internal/",
 		"https://100.100.100.200/",
+		"https://[fd00:ec2::254]/", // AWS IMDSv2 over IPv6
+		"https://0.0.0.0/",
+		"https://[::]/",
 	}
 	for _, url := range tests {
 		t.Run(url, func(t *testing.T) {
@@ -122,7 +126,7 @@ func TestIsValidDownloadURL_HostnameBlocklist(t *testing.T) {
 
 func TestDownloadWithHeaders_InvalidURL(t *testing.T) {
 	t.Parallel()
-	err := downloadWithHeaders("http://127.0.0.1/secret", nil, "test", t.TempDir(), 0, nil)
+	err := downloadWithHeaders(context.Background(), "http://127.0.0.1/secret", nil, "test", t.TempDir(), 0, nil)
 	if err == nil {
 		t.Fatal("expected error for blocked URL, got nil")
 	}
@@ -209,7 +213,7 @@ func TestWriteCounter_AccumulatesTotal(t *testing.T) {
 func TestWriteCounter_MultipleWrites(t *testing.T) {
 	t.Parallel()
 	wc := &writeCounter{
-		prevTime: time.Now().Add(-time.Second),
+		prevTime:   time.Now().Add(-time.Second),
 		onProgress: func(p Progress) {},
 	}
 
@@ -329,5 +333,68 @@ func Test_FileAppendMode(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if string(data) != "partial append content" {
 		t.Errorf("expected 'partial append content', got %q", string(data))
+	}
+}
+
+// TestCheckGlobalSizeLimit verifies downloads over the global maximum are
+// rejected. The limit is a var so the overflow path (which io.LimitReader
+// silently converts to EOF) can be exercised with a small value.
+func TestCheckGlobalSizeLimit(t *testing.T) {
+	t.Parallel()
+
+	old := globalMaxDownloadSize
+	globalMaxDownloadSize = 100
+	defer func() { globalMaxDownloadSize = old }()
+
+	err := checkGlobalSizeLimit(101)
+	if err == nil {
+		t.Fatal("expected error for size over the global maximum")
+	}
+	if !strings.Contains(err.Error(), "exceeds global maximum") {
+		t.Errorf("unexpected error text: %v", err)
+	}
+	if err := checkGlobalSizeLimit(100); err != nil {
+		t.Errorf("unexpected error at exactly the limit: %v", err)
+	}
+	if err := checkGlobalSizeLimit(0); err != nil {
+		t.Errorf("unexpected error for zero size: %v", err)
+	}
+}
+
+// TestCheckHostSizeLimit verifies the host-specific size check used both
+// before the request (expected size) and after the body loop (actual bytes
+// streamed). A limit <= 0 means the host is unlimited.
+func TestCheckHostSizeLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		total int64
+		limit int64
+		host  string
+		want  bool // true = rejected
+	}{
+		{"under limit", 100, 200, "testhost", false},
+		{"at limit", 200, 200, "testhost", false},
+		{"over limit", 201, 200, "testhost", true},
+		{"unlimited host", 1 << 40, 0, "buzzheavier", false},
+		{"unknown host", 1 << 40, -1, "unknownhost", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkHostSizeLimit(tt.total, tt.limit, tt.host)
+			if tt.want && err == nil {
+				t.Fatal("expected rejection, got nil")
+			}
+			if !tt.want && err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if tt.want && !strings.Contains(err.Error(), tt.host) {
+				t.Errorf("error should mention host %q: %v", tt.host, err)
+			}
+			if tt.want && !strings.Contains(err.Error(), "exceeds host limit") {
+				t.Errorf("unexpected error text: %v", err)
+			}
+		})
 	}
 }

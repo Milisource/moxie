@@ -2,7 +2,7 @@
 
 ## What
 
-Extracts F95Zone authentication cookies from installed browsers (primarily Firefox, fallback to Chrome/Chromium/Brave/Edge) so the scraper can send authenticated requests. Lives in `internal/browser/browser.go` — a single file of ~56 lines.
+Extracts F95Zone authentication cookies from installed browsers (Firefox, Chrome, Chromium, Brave, Edge) so the scraper can send authenticated requests. Lives in `internal/browser/browser.go` — a single file of ~210 lines covering cookie discovery with dedup and dot-domain handling (`GetF95Cookies`), a read-only SQLite fallback for non-standard Firefox paths (`GetF95CookiesFromSQLite`), and header building with control-character sanitization.
 
 ## How
 
@@ -16,12 +16,14 @@ cookies, err := kooky.ReadCookies(
 )
 ```
 
-kooky discovers installed browsers by scanning standard install paths on each platform:
+kooky discovers installed browsers by scanning standard install paths on each platform, and all five browser drivers are registered (`kooky/browser/{firefox,chrome,chromium,brave,edge}`):
 - **Linux**: `~/.mozilla/firefox/`, `~/.config/google-chrome/`, `~/.config/BraveSoftware/`, etc.
 - **macOS**: `~/Library/Application Support/Firefox/`, `~/Library/Application Support/Google/Chrome/`, etc.
 - **Windows**: `%APPDATA%/Mozilla/Firefox/`, `%LOCALAPPDATA%/Google/Chrome/`, etc.
 
 For Firefox, kooky reads `cookies.sqlite` at the binary level using its own B-tree parser — it does **not** use a SQL driver. This is critical because Firefox's `cookies.sqlite` is always in WAL mode and locked by the browser process; a SQL driver would fail with "database is locked." kooky's binary-level reading bypasses the SQLite driver entirely.
+
+**Known limitation (kooky v0.2.9):** on Windows, Chrome/Chromium/Brave/Edge **≥ 127** encrypt cookie values with App-Bound Encryption (v20) — a per-user DPAPI layer bound to the browser's own service, which kooky cannot decrypt. Those browsers yield no F95Zone cookies, so extraction degrades to the Firefox driver (whose `cookies.sqlite` format is unaffected). Firefox remains the recommended browser for moxie's cookie-based scraping on Windows.
 
 The function filters for `f95zone.to` domain cookies, sorts them by name for deterministic header construction, and joins them into a Cookie header string: `"xf_session=abc; xf_user=def; cf_clearance=ghi"`.
 

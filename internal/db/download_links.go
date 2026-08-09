@@ -148,6 +148,7 @@ func (db *Database) AllDownloadLinks(includeDead bool) ([]DownloadLinkWithGame, 
 		FROM download_links dl
 		JOIN games g ON g.id = dl.game_id
 		WHERE g.path NOT LIKE '%.old'
+		  AND g.deleted_at IS NULL
 		  AND (? = 1 OR dl.is_dead = 0)
 		ORDER BY g.title COLLATE NOCASE, dl.created_at DESC`
 	args := []any{boolToInt(includeDead)}

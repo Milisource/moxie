@@ -41,6 +41,7 @@
       label: 'Media',
       items: [
         {id: 'downloads', label: 'Downloads', icon: '↓'},
+        {id: 'covers', label: 'Covers', icon: '🖼'},
       ],
     },
     {

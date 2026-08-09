@@ -1,9 +1,13 @@
 package scanner
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mili/moxie/internal/engine"
 )
@@ -16,7 +20,7 @@ func TestScanUnityGame(t *testing.T) {
 	os.WriteFile(filepath.Join(gameDir, "TestGame.exe"), []byte("fake exe"), 0644)
 	os.WriteFile(filepath.Join(gameDir, "UnityPlayer.dll"), []byte("fake dll"), 0644)
 
-	games, err := Scan(root)
+	games, err := Scan(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +41,7 @@ func TestScanRenPyGame(t *testing.T) {
 	os.MkdirAll(filepath.Join(gameDir, "renpy"), 0755)
 	os.MkdirAll(filepath.Join(gameDir, "game"), 0755)
 
-	games, err := Scan(root)
+	games, err := Scan(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +66,7 @@ func TestScanMultipleGames(t *testing.T) {
 	os.MkdirAll(filepath.Join(root, "Notes"), 0755)
 	os.WriteFile(filepath.Join(root, "Notes", "readme.txt"), []byte("hello"), 0644)
 
-	games, err := Scan(root)
+	games, err := Scan(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +87,7 @@ func TestScanNonGameDir(t *testing.T) {
 	os.MkdirAll(filepath.Join(root, "Notes"), 0755)
 	os.WriteFile(filepath.Join(root, "Notes", "readme.txt"), []byte("hello"), 0644)
 
-	games, err := Scan(root)
+	games, err := Scan(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +98,7 @@ func TestScanNonGameDir(t *testing.T) {
 
 func TestScanEmptyDir(t *testing.T) {
 	root := t.TempDir()
-	games, err := Scan(root)
+	games, err := Scan(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,6 +313,14 @@ func TestShouldSkip(t *testing.T) {
 		{"DXSETUP.exe", true},
 		{"zsync.exe", true},
 		{"notification_helper.exe", true},
+		// Exact-match exclusions (case-insensitive).
+		{"downloads", true},
+		{"Downloads", true},
+		{"config", true},
+		{"saved", true},
+		// Substring matches must not leak into longer names (exact-only).
+		{"myDownloads", false},
+		{"downloads_extra", false},
 		{"Game.exe", false},
 		{"mygame.exe", false},
 		{"renpy.exe", false},
@@ -395,7 +407,7 @@ func TestFindGameExe(t *testing.T) {
 }
 
 func TestScanNonexistentDir(t *testing.T) {
-	_, err := Scan("/nonexistent/path/that/does/not/exist/12345")
+	_, err := Scan(context.Background(), "/nonexistent/path/that/does/not/exist/12345")
 	if err == nil {
 		t.Fatal("expected error for non-existent directory")
 	}
@@ -464,7 +476,7 @@ func TestScanCategoryDirectory(t *testing.T) {
 	os.MkdirAll(nonGame, 0755)
 	os.WriteFile(filepath.Join(nonGame, "readme.txt"), []byte("notes"), 0644)
 
-	games, err := Scan(root)
+	games, err := Scan(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +529,7 @@ func TestScanCategoryDirNested(t *testing.T) {
 	os.WriteFile(filepath.Join(rpgmGame, "Game.exe"), []byte("exe"), 0644)
 	os.WriteFile(filepath.Join(rpgmGame, "www", "package.json"), []byte(`{"name":"KADOKAWA/RPGMV"}`), 0644)
 
-	games, err := Scan(root)
+	games, err := Scan(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +570,7 @@ func TestScanPathPrefixCollision(t *testing.T) {
 	os.WriteFile(filepath.Join(someGame, "SomeGame.exe"), []byte("exe"), 0644)
 	os.WriteFile(filepath.Join(someGame, "UnityPlayer.dll"), []byte("dll"), 0644)
 
-	games, err := Scan(root)
+	games, err := Scan(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -584,5 +596,241 @@ func TestScanPathPrefixCollision(t *testing.T) {
 	}
 	if !foundSomeGame {
 		t.Error("game 'foobar/SomeGame' not found — path-prefix collision bug may still be present")
+	}
+}
+
+// TestScanSkipsDownloadsDir verifies that downloads/ subdirectories (owned
+// by the downloader, containing extracted-archive copies) are not scanned
+// as games, while normal game directories next to them still are.
+func TestScanSkipsDownloadsDir(t *testing.T) {
+	root := t.TempDir()
+
+	// downloads/ subdir containing an extracted-archive copy that looks
+	// like a game. The parent dir has no game markers itself, so the
+	// downloads dir would previously be registered as a game.
+	os.MkdirAll(filepath.Join(root, "GameA", "downloads"), 0755)
+	os.WriteFile(filepath.Join(root, "GameA", "downloads", "ArchiveCopy.exe"), []byte("exe"), 0644)
+
+	// Normal game dir next to it — must still be detected.
+	os.MkdirAll(filepath.Join(root, "GameB"), 0755)
+	os.WriteFile(filepath.Join(root, "GameB", "Game.exe"), []byte("exe"), 0644)
+
+	games, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 1 {
+		t.Fatalf("expected 1 game (GameB), got %d: %v", len(games), games)
+	}
+	if games[0].Path != filepath.Join(root, "GameB") {
+		t.Errorf("expected GameB to be the only game, got %s", games[0].Path)
+	}
+}
+
+// TestScanRootNamedOld verifies a scan root whose own name ends in ".old"
+// is still scanned. The root is exempt from the skip checks — previously
+// the ".old" suffix check ran without the root guard and SkipDir on the
+// root aborted the entire walk, silently yielding zero games.
+func TestScanRootNamedOld(t *testing.T) {
+	root := t.TempDir()
+	root = filepath.Join(root, "Games.old")
+	os.MkdirAll(root, 0755)
+	gameDir := filepath.Join(root, "TestGame")
+	os.MkdirAll(filepath.Join(gameDir, "renpy"), 0755)
+	os.MkdirAll(filepath.Join(gameDir, "game"), 0755)
+
+	games, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 1 {
+		t.Fatalf("expected 1 game in root named Games.old, got %d: %v", len(games), games)
+	}
+	if games[0].Title != "TestGame" {
+		t.Errorf("expected title TestGame, got %q", games[0].Title)
+	}
+}
+
+// TestScanRootNamedMacOSX is the __MACOSX analogue of TestScanRootNamedOld:
+// a library folder literally named "__MACOSX" must still be scanned.
+func TestScanRootNamedMacOSX(t *testing.T) {
+	root := t.TempDir()
+	root = filepath.Join(root, "__MACOSX")
+	os.MkdirAll(root, 0755)
+	gameDir := filepath.Join(root, "TestGame")
+	os.MkdirAll(filepath.Join(gameDir, "renpy"), 0755)
+	os.MkdirAll(filepath.Join(gameDir, "game"), 0755)
+
+	games, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 1 {
+		t.Fatalf("expected 1 game in root named __MACOSX, got %d: %v", len(games), games)
+	}
+	if games[0].Title != "TestGame" {
+		t.Errorf("expected title TestGame, got %q", games[0].Title)
+	}
+}
+
+// TestScanSkipsOldBackupDirs verifies that updater rollback backups (dirs
+// ending in ".old") below the scan root are still skipped, while the real
+// game next to them is detected.
+func TestScanSkipsOldBackupDirs(t *testing.T) {
+	root := t.TempDir()
+
+	// Backup dir left by the updater (suffix .old) — must be skipped.
+	os.MkdirAll(filepath.Join(root, "MyGame.old", "renpy"), 0755)
+	os.MkdirAll(filepath.Join(root, "MyGame.old", "game"), 0755)
+	// Real game next to it.
+	gameDir := filepath.Join(root, "MyGame")
+	os.MkdirAll(filepath.Join(gameDir, "renpy"), 0755)
+	os.MkdirAll(filepath.Join(gameDir, "game"), 0755)
+
+	games, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 1 {
+		t.Fatalf("expected 1 game (MyGame), got %d: %v", len(games), games)
+	}
+	if games[0].Title != "MyGame" {
+		t.Errorf("expected MyGame to be the only game, got %q", games[0].Title)
+	}
+}
+
+// TestScanFilteredSkipsKnownPaths verifies that incremental scans (passing
+// already-known game paths) skip those dirs before any directory read.
+func TestScanFilteredSkipsKnownPaths(t *testing.T) {
+	root := t.TempDir()
+	gameA := filepath.Join(root, "GameA")
+	os.MkdirAll(filepath.Join(gameA, "renpy"), 0755)
+	os.MkdirAll(filepath.Join(gameA, "game"), 0755)
+	gameB := filepath.Join(root, "GameB")
+	os.MkdirAll(filepath.Join(gameB, "renpy"), 0755)
+	os.MkdirAll(filepath.Join(gameB, "game"), 0755)
+
+	games, err := ScanFiltered(context.Background(), root, map[string]bool{gameA: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 1 {
+		t.Fatalf("expected 1 game (GameB), got %d: %v", len(games), games)
+	}
+	if games[0].Path != gameB {
+		t.Errorf("expected only GameB to be scanned, got %s", games[0].Path)
+	}
+}
+
+// TestScanToolDirNestedInGameTree verifies that a tool/utility directory
+// (e.g. "RPG Maker XP", a decrypter with SetupMenu.exe) sharing a directory
+// tree with a real game is not registered as a standalone game. Mirrors the
+// reported layout: Legend of Queen Opala/Legend of Queen Opala Origin
+// (game) + Legend of Queen Opala/RPG Maker XP (bundled tool).
+func TestScanToolDirNestedInGameTree(t *testing.T) {
+	root := t.TempDir()
+
+	// Real game subdir (RPG Maker XP game with Game.exe + Game.ini).
+	gameDir := filepath.Join(root, "Legend of Queen Opala", "Legend of Queen Opala Origin")
+	os.MkdirAll(gameDir, 0755)
+	os.WriteFile(filepath.Join(gameDir, "Game.exe"), []byte("exe"), 0644)
+	os.WriteFile(filepath.Join(gameDir, "Game.ini"), []byte("x"), 0644)
+
+	// Decrypter tool bundled in the same archive as a sibling of the game.
+	toolDir := filepath.Join(root, "Legend of Queen Opala", "RPG Maker XP")
+	os.MkdirAll(toolDir, 0755)
+	os.WriteFile(filepath.Join(toolDir, "SetupMenu.exe"), []byte("exe"), 0644)
+
+	games, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 1 {
+		t.Fatalf("expected 1 game, got %d: %v", len(games), games)
+	}
+	if games[0].Path != gameDir {
+		t.Errorf("expected only the game dir to be registered, got %s", games[0].Path)
+	}
+}
+
+// TestScanToolDirNestedInNonGameParent verifies the tool-dir exclusion also
+// applies when the immediate parent has no game markers itself but contains
+// both a game subdir and a tool subdir. The tool name sorts before the game
+// name here, so this exercises the order-independence of the sibling check.
+func TestScanToolDirNestedInNonGameParent(t *testing.T) {
+	root := t.TempDir()
+
+	parent := filepath.Join(root, "Game Collection")
+	gameDir := filepath.Join(parent, "RealGame")
+	os.MkdirAll(gameDir, 0755)
+	os.WriteFile(filepath.Join(gameDir, "Game.exe"), []byte("exe"), 0644)
+
+	// "RPG Maker XP" sorts before "RealGame" lexically — the walk visits
+	// the tool first, before the game would be registered.
+	toolDir := filepath.Join(parent, "RPG Maker XP")
+	os.MkdirAll(toolDir, 0755)
+	os.WriteFile(filepath.Join(toolDir, "SetupMenu.exe"), []byte("exe"), 0644)
+
+	games, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 1 {
+		t.Fatalf("expected 1 game, got %d: %v", len(games), games)
+	}
+	if games[0].Path != gameDir {
+		t.Errorf("expected only the real game to be registered, got %s", games[0].Path)
+	}
+}
+
+// TestScanStandaloneToolNamedDir verifies that a standalone directory named
+// like a tool (with no game sharing its tree) is still scanned as a game,
+// avoiding over-matching of the tool-name exclusion.
+func TestScanStandaloneToolNamedDir(t *testing.T) {
+	root := t.TempDir()
+
+	// A directory literally named "RPG Maker XP" containing game markers,
+	// with no other game in the tree — must be registered.
+	toolDir := filepath.Join(root, "RPG Maker XP")
+	os.MkdirAll(toolDir, 0755)
+	os.WriteFile(filepath.Join(toolDir, "Game.exe"), []byte("exe"), 0644)
+	os.WriteFile(filepath.Join(toolDir, "Game.ini"), []byte("x"), 0644)
+
+	games, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 1 {
+		t.Fatalf("expected 1 game, got %d: %v", len(games), games)
+	}
+	if games[0].Path != toolDir {
+		t.Errorf("expected standalone tool-named dir to be registered, got %s", games[0].Path)
+	}
+}
+
+// TestScanCancellation verifies the walk aborts promptly when the context
+// is cancelled — the desktop relies on this so shutdown cannot hang on a
+// slow scan path.
+func TestScanCancellation(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 50; i++ {
+		dir := filepath.Join(root, fmt.Sprintf("game%d", i))
+		os.MkdirAll(dir, 0755)
+		os.WriteFile(filepath.Join(dir, "Game.exe"), []byte("exe"), 0644)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	_, err := Scan(ctx, root)
+	if err == nil {
+		t.Fatal("expected cancellation error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("scan took %v after cancellation; walk should abort immediately", elapsed)
 	}
 }

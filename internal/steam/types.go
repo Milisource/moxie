@@ -133,10 +133,10 @@ func GenerateAppID(exe, appName string) uint32 {
 // used as a fallback when ListProtonVersions cannot scan the filesystem.
 var KnownProtonVersions = []string{
 	"proton_experimental",
-	"proton_9",
+	"proton_9.0",
 	"proton_hotfix",
-	"proton_8",
-	"proton_7",
+	"proton_8.0",
+	"proton_7.0",
 }
 
 // ---------------------------------------------------------------------------

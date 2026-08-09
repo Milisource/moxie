@@ -8,15 +8,15 @@ The scanner walks a directory tree, identifies which subdirectories are games, d
 
 ### Directory Walk
 
-`scanner.Scan(root)` calls `filepath.WalkDir` on the root directory. For each visited directory:
+`scanner.Scan(ctx, root)` calls `filepath.WalkDir` on the root directory — the walk and the parallel detection pass both check `ctx` and abort promptly on cancellation, so application shutdown can never hang on a slow or network-mounted scan path. For each visited directory:
 
-1. **Skip excluded dirs** — checks `shouldSkip(name)` against a hardcoded list of names like `unins`, `python`, `dxsetup`, `config`, `saved`, `logs`. These catch installer remnants, redistributables, and common false positives.
+1. **Skip excluded dirs** — checks `shouldSkip(name)` against a hardcoded list of names like `unins`, `python`, `dxsetup`, `config`, `saved`, `logs`. These catch installer remnants, redistributables, and common false positives. The scan root itself is exempt: a library folder literally named `config` or ending in `.old` must still be scanned.
 
 2. **Skip __MACOSX** — macOS resource fork directories are skipped entirely.
 
-3. **Skip already-detected game subdirectories** — once a directory is identified as a game root, its children are not walked. This prevents detecting engine subdirectories (like a `renpy/` folder inside a Ren'Py game) as separate games.
+3. **Skip already-detected game subdirectories** — once a directory is identified as a game root, its children are not walked. This prevents detecting engine subdirectories (like a `renpy/` folder inside a Ren'Py game) as separate games. WalkDir is depth-first, so the active game dir short-circuits all its descendants; a directory still visited afterwards is provably outside every game root, so no extra ancestor scan is needed.
 
-4. **Check if it's a game root** — `looksLikeGameRoot(path)` via `hasGameMarkers(dir)` checks for the presence of executables (`.exe`, `.sh`, `.AppImage`, `.x86_64`, `.x86`) or engine markers (`renpy/`, `www/`, `_Data/`, `package.json`, `.rpyc`, `.rpa`, `Game.rgss*`).
+4. **Check if it's a game root** — `looksLikeGameRoot(path)` via `hasGameMarkers(dir)` checks for the presence of executables (`.exe`, `.sh`, `.AppImage`, `.x86_64`, `.x86`) or engine markers (`renpy/`, `www/`, `_Data/`, a subdirectory exactly named `game`, `package.json`, `.rpyc`, `.rpa`, `Game.rgss*`). The `game` marker is an exact name match — `gamedata`/`gameplay`/`game2` folders are not promoted to game roots.
 
 5. **Check for category directories** — if the directory name matches a known engine (`Unity`, `Ren'Py`, `RPGM`, `HTML`, etc.) **and** it contains subdirectories that look like games, it's treated as a category folder (not a game itself). The walk continues into its children.
 
@@ -68,7 +68,7 @@ When the directory name yields no version, the scanner escalates through additio
 
 ### Progress Reporting
 
-`ScanFiltered(root, skipPaths, progressFn)` accepts an optional `ScanProgressFunc` callback:
+`ScanFiltered(ctx, root, skipPaths, progressFn)` accepts a context (cancellation aborts the walk) and an optional `ScanProgressFunc` callback:
 ```go
 type ScanProgressFunc func(dirsExamined, gamesFound int)
 ```
@@ -110,7 +110,10 @@ PE/ELF binary scanning would be more precise but is 10x more complex. Pattern ma
 | **HTML** | `index.html` | 0.70 |
 | | `.html` files | 0.60 |
 | **Java** | `.jar` files | 0.90 |
+| | bundled JRE dir (`jre*/` with `.jar` inside) | 0.88 |
+| **Godot** | `.pck` files | 0.85 |
 | **Flash** | `.swf` files | 0.90 |
+| | `ruffle.exe` / `ruffle` | 0.85 |
 | **WolfRPG** | `WolfRPG.exe` + `Game.ini` + `Data/` | 0.90 |
 | | `.wolf` files | 0.80 |
 | **QSP** | `.qsp` / `.qsps` files | 0.90 |

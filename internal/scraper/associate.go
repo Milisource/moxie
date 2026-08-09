@@ -182,15 +182,17 @@ func ComputeMatchScore(gameTitle, resultTitle string) float64 {
 	if a == b {
 		return 1.0
 	}
-	if strings.Contains(b, a) {
-		// Result contains game title — check if the extra words are
-		// meaningful (sequel, remaster, etc.) or just noise (version, studio).
+	if wordBoundaryContains(b, a) {
+		// Result contains game title at word boundaries — check if the
+		// extra words are meaningful (sequel, remaster, etc.) or just
+		// noise (version, studio). Substring containment ("Aurelia" in
+		// "Aurelian Nostrum") is NOT a match: those are different games.
 		if hasMeaningfulDiff(a, b) {
 			return 0.25 // below the 0.3 auto-accept threshold
 		}
 		return 0.85
 	}
-	if strings.Contains(a, b) {
+	if wordBoundaryContains(a, b) {
 		// Game title contains result — always a good match
 		// (e.g., "Corruption of Champions II" matching "Corruption of Champions").
 		return 0.85
@@ -249,6 +251,31 @@ func hasMeaningfulDiff(a, b string) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// wordBoundaryContains reports whether sub appears in s as a contiguous
+// sequence of whole words. Plain substring containment would score
+// "Aurelia" against "Aurelian Nostrum" as a match, though the tokens do
+// not nest and the titles are different games.
+func wordBoundaryContains(s, sub string) bool {
+	if sub == "" || len(sub) > len(s) {
+		return false
+	}
+	words := strings.Fields(s)
+	subWords := strings.Fields(sub)
+	if len(subWords) > len(words) {
+		return false
+	}
+outer:
+	for i := 0; i+len(subWords) <= len(words); i++ {
+		for j := range subWords {
+			if words[i+j] != subWords[j] {
+				continue outer
+			}
+		}
+		return true
 	}
 	return false
 }

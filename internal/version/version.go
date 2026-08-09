@@ -98,6 +98,7 @@ const (
 	kindDate
 	kindFinal
 	kindNumeric
+	kindChapter
 	kindOther
 )
 
@@ -110,6 +111,15 @@ func classify(v string) kind {
 	case v == "final":
 		return kindFinal
 	case strings.ContainsAny(v, "0123456789"):
+		// Chapter-style versions ("Ch.4 Free") are not orderable against
+		// plain numeric versions — classifying them numeric would compare
+		// "4" against "0.12.0" and report a nonsense Newer. They remain
+		// comparable among themselves (Ch.5 > Ch.4).
+		lv := strings.ToLower(v)
+		if strings.HasPrefix(lv, "ch.") || strings.HasPrefix(lv, "ep.") ||
+			strings.HasPrefix(lv, "chapter") || strings.HasPrefix(lv, "episode") {
+			return kindChapter
+		}
 		return kindNumeric
 	default:
 		return kindOther
@@ -155,6 +165,26 @@ func Compare(remote, known string) Diff {
 		return Older
 	case kindNumeric:
 		return compareNumeric(r, k)
+	case kindChapter:
+		// "Ch.5 Free" vs "Ch.4 Free": compare the first digit run.
+		rn := numRe.FindAllString(r, -1)
+		kn := numRe.FindAllString(k, -1)
+		if len(rn) == 0 || len(kn) == 0 {
+			return Changed
+		}
+		a, aerr := strconv.Atoi(rn[0])
+		b, berr := strconv.Atoi(kn[0])
+		if aerr != nil || berr != nil {
+			return Changed
+		}
+		switch {
+		case a > b:
+			return Newer
+		case a < b:
+			return Older
+		default:
+			return Changed
+		}
 	default:
 		return Changed
 	}
@@ -191,6 +221,14 @@ func compareNumeric(r, k string) Diff {
 	// "0.8 extra" vs "0.8", or "1.5a" vs "1.5b".
 	rl, rok := buildLetter(r)
 	kl, kok := buildLetter(k)
+	if rok != kok {
+		// Exactly one side carries a build letter: a hotfix bump
+		// ("0.8.1" → "0.8.1b") is the most common F95 release pattern.
+		if rok {
+			return Newer
+		}
+		return Older
+	}
 	if rok && kok && rl != kl {
 		if rl > kl {
 			return Newer

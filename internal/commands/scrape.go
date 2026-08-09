@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -109,14 +110,16 @@ func Scrape(args []string) {
 		}
 	}
 
-		// Save download links with platform detection.
+	// Save download links with platform detection.
 	if len(data.DownloadLinks) > 0 {
 		// Clear existing links for this game to avoid duplicates.
-		database.DeleteDownloadLinksByGameID(game.ID)
+		if err := database.DeleteDownloadLinksByGameID(game.ID); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ Failed to clear stale download links: %v\n", err)
+		}
 
 		fmt.Printf("Download links: %d found\n", len(data.DownloadLinks))
 		for _, dl := range data.DownloadLinks {
-			linkPlatform := downloader.DetectPlatformFromLink(dl.Name, dl.URL)
+			linkPlatform := db.Platform(downloader.DetectPlatform(dl.Name, dl.URL))
 			link := &db.DownloadLink{
 				GameID:   game.ID,
 				URL:      dl.URL,
@@ -203,6 +206,9 @@ func ScrapeBatch(args []string) {
 	defer database.Close()
 
 	client := scraper.NewClient(cookie)
+	// Load the association cache once before the loop; SetCachedThreadID
+	// below only mutates the in-memory entries (saved once at the end).
+	scraper.LoadAssociationCache()
 	ok, failed := 0, 0
 
 	for i, e := range entries {
@@ -235,7 +241,6 @@ func ScrapeBatch(args []string) {
 
 		// Persist to association cache.
 		if td.ThreadID > 0 {
-			scraper.LoadAssociationCache()
 			title := scraper.SanitizeTitle(game.Title)
 			if title == "" {
 				title = game.Title
@@ -299,7 +304,6 @@ func ResolveCookie(explicit, file string) string {
 	return cookie
 }
 
-
 // ScrapeAutoWrapper opens the database and runs auto-association.
 // This wrapper exists so Scrape can call it without already having a DB handle.
 func ScrapeAutoWrapper(cookie string, unsafe bool) {
@@ -313,7 +317,12 @@ func ScrapeAutoWrapper(cookie string, unsafe bool) {
 		client = scraper.NewClient(cookie)
 	}
 
-	if err := RunScrapeAuto(database, client, false, 3); err != nil {
+	if err := RunScrapeAuto(database, client, false, 3, scraper.NewPublicAPIWithCookie(cookie)); err != nil {
+		if errors.Is(err, ErrSyncInterrupted) {
+			fmt.Fprintln(os.Stderr, "\nsync interrupted — refresh session and retry")
+			os.Exit(1)
+			return
+		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

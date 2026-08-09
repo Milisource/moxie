@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/log"
@@ -18,27 +19,28 @@ type Engine string
 
 // Canonical engine names.
 const (
-	Others        Engine = "Others"
-	ADRIFT        Engine = "ADRIFT"
-	Flash         Engine = "Flash"
-	HTML          Engine = "HTML"
-	Java          Engine = "Java"
-	QSP           Engine = "QSP"
-	RAGS          Engine = "RAGS"
-	RPGM          Engine = "RPGM"
-	RenPy         Engine = "RenPy"
-	Tads          Engine = "Tads"
-	Unity         Engine = "Unity"
-	UnrealEngine  Engine = "UnrealEngine"
-	WebGL         Engine = "WebGL"
-	WolfRPG       Engine = "WolfRPG"
+	Others       Engine = "Others"
+	ADRIFT       Engine = "ADRIFT"
+	Flash        Engine = "Flash"
+	Godot        Engine = "Godot"
+	HTML         Engine = "HTML"
+	Java         Engine = "Java"
+	QSP          Engine = "QSP"
+	RAGS         Engine = "RAGS"
+	RPGM         Engine = "RPGM"
+	RenPy        Engine = "RenPy"
+	Tads         Engine = "Tads"
+	Unity        Engine = "Unity"
+	UnrealEngine Engine = "UnrealEngine"
+	WebGL        Engine = "WebGL"
+	WolfRPG      Engine = "WolfRPG"
 )
 
 // Result is the outcome of engine detection for a single directory.
 type Result struct {
-	Engine     Engine `json:"engine"`
+	Engine     Engine  `json:"engine"`
 	Confidence float64 `json:"confidence"` // 0.0 - 1.0
-	MatchedBy  string `json:"matched_by"`  // which rule matched
+	MatchedBy  string  `json:"matched_by"` // which rule matched
 }
 
 // CustomProfile represents a user-defined engine detection rule loaded from a
@@ -168,6 +170,7 @@ type profile struct {
 	confidence float64
 	subdirs    []string // at least one of these subdirs must exist
 	files      []string // file names (no path) that must be present
+	filesAll   bool     // when true, EVERY file in `files` must exist (default: any)
 	extensions []string // file extensions to look for
 	name       string   // human-readable name for the rule
 }
@@ -232,13 +235,13 @@ var builtinProfiles = []profile{
 	},
 	{
 		engine: RPGM, confidence: 0.90,
-		files:  []string{"Game.rgss2a"},
-		name:   "RPG Maker VX (Game.rgss2a)",
+		files: []string{"Game.rgss2a"},
+		name:  "RPG Maker VX (Game.rgss2a)",
 	},
 	{
 		engine: RPGM, confidence: 0.88,
-		files:  []string{"Game.rgssad"},
-		name:   "RPG Maker XP (Game.rgssad)",
+		files: []string{"Game.rgssad"},
+		name:  "RPG Maker XP (Game.rgssad)",
 	},
 	{
 		engine: RPGM, confidence: 0.75,
@@ -248,8 +251,8 @@ var builtinProfiles = []profile{
 	},
 	{
 		engine: RPGM, confidence: 0.65,
-		files:   []string{"Game.ini"},
-		name:    "Possible RPG Maker (Game.ini found)",
+		files: []string{"Game.ini"},
+		name:  "Possible RPG Maker (Game.ini found)",
 	},
 
 	// --- Other engines from the official list ---
@@ -284,6 +287,11 @@ var builtinProfiles = []profile{
 		engine: Flash, confidence: 0.90,
 		extensions: []string{".swf"},
 		name:       "Flash .swf file found",
+	},
+	{
+		engine: Flash, confidence: 0.85,
+		files: []string{"ruffle.exe", "ruffle"},
+		name:  "Flash via ruffle emulator",
 	},
 
 	// --- New engines ---
@@ -333,14 +341,18 @@ var builtinProfiles = []profile{
 	// --- Community engines mapped to Others ---
 
 	{
-		engine: Others, confidence: 0.85,
+		engine: Godot, confidence: 0.85,
 		extensions: []string{".pck"},
 		name:       "Godot .pck file found",
 	},
 	{
+		// package.json alone is far too weak — Twine source repos and RPGM
+		// bundles ship one too. resources.pak is the nw.js/Electron resource
+		// archive; require it too before claiming the nw.js family.
 		engine: Others, confidence: 0.80,
-		files: []string{"resources.pak", "package.json"},
-		name:  "Electron/nw.js resources",
+		files:    []string{"resources.pak", "package.json"},
+		filesAll: true,
+		name:     "Electron/nw.js resources",
 	},
 	{
 		engine: Others, confidence: 0.92,
@@ -354,15 +366,75 @@ var builtinProfiles = []profile{
 	},
 }
 
+var (
+	// profilesMu guards cachedProfiles and cachedProfilesSig.
+	profilesMu        sync.RWMutex
+	cachedProfiles    []profile
+	cachedProfilesSig string
+)
+
+// profilesDirSig returns a signature for the engine profiles directory:
+// its path plus mtime. getProfiles re-stats the directory on each call
+// (cheap — one stat syscall) and reloads when the signature changes, so
+// custom profiles edited while the process is running take effect without
+// a restart, and a config-dir switch (e.g. under tests) invalidates the
+// cache too. A missing directory yields a "missing" signature; creating
+// the directory later changes the signature and triggers a reload.
+// Only the directory mtime is observed: adding, removing, or replacing
+// (rename-based) profile files is detected, while truncating a file in
+// place within the same filesystem mtime tick is not. ResetProfilesForTest
+// forces an immediate reload regardless.
+func profilesDirSig() string {
+	dir := config.EngineProfilesDir()
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return dir + ":missing"
+	}
+	return fmt.Sprintf("%s:%d", dir, fi.ModTime().UnixNano())
+}
+
 // getProfiles returns the full profile list with custom profiles merged in.
-// The result is cached after first load.
+// The result is cached and keyed on the engine-profiles directory mtime;
+// the cache is reloaded when the directory changes, so a long-running
+// process (desktop app) picks up profile edits without a restart.
 func getProfiles() []profile {
+	profilesMu.RLock()
+	sig := profilesDirSig()
+	if sig == cachedProfilesSig {
+		profiles := cachedProfiles
+		profilesMu.RUnlock()
+		return profiles
+	}
+	profilesMu.RUnlock()
+
+	// Reload under the write lock. Re-check the signature: another
+	// goroutine may have reloaded (and possibly re-signed) in between.
+	profilesMu.Lock()
+	defer profilesMu.Unlock()
+	if sig == cachedProfilesSig {
+		return cachedProfiles
+	}
 	custom, err := loadCustomProfiles()
 	if err != nil {
 		log.Warn("failed to load custom engine profiles", "error", err)
-		return builtinProfiles
+		cachedProfiles = builtinProfiles
+		cachedProfilesSig = sig
+		return cachedProfiles
 	}
-	return mergeProfiles(builtinProfiles, custom)
+	cachedProfiles = mergeProfiles(builtinProfiles, custom)
+	cachedProfilesSig = sig
+	return cachedProfiles
+}
+
+// ResetProfilesForTest clears the cached profile list so the next call to
+// getProfiles reloads custom profiles from disk. Test-only: use it to
+// exercise profile changes that a directory mtime would not expose (e.g.
+// in-place content edits within the same mtime tick).
+func ResetProfilesForTest() {
+	profilesMu.Lock()
+	defer profilesMu.Unlock()
+	cachedProfiles = nil
+	cachedProfilesSig = ""
 }
 
 // Detect scans the given directory and returns the most likely engine match.
@@ -394,6 +466,14 @@ func Detect(dir string) Result {
 
 	// Check special Unity _Data folder pattern first (requires file name matching).
 	if result := detectUnityDataFolder(dir, entries); result.Engine != Others {
+		return result
+	}
+
+	// Check for a bundled Java runtime (jre*/ dir with .jar files) before the
+	// profile loop: JRE-bundled games have no root-level .jar, and the JRE
+	// signal is strong enough to outrank weak root-level matches like a stray
+	// .html file.
+	if result := detectBundledJRE(dir, entries); result.Engine != Others {
 		return result
 	}
 
@@ -442,13 +522,28 @@ func Detect(dir string) Result {
 		return Result{Engine: p.engine, Confidence: p.confidence, MatchedBy: p.name}
 	}
 
+	// Fallback: some HTML games (especially source-repo layouts) keep
+	// index.html at shallow depth instead of the root. Only fire when no
+	// profile matched at all — a wrong engine flip is worse than Others.
+	if findShallowHTML(dir) {
+		return Result{Engine: HTML, Confidence: 0.55, MatchedBy: "HTML file found at shallow depth"}
+	}
+
 	return Result{Engine: Others, Confidence: 0, MatchedBy: "no matching profile"}
 }
 
 // matchesProfile checks if a directory's contents match a detection profile.
 func matchesProfile(p profile, files, dirs, exts map[string]bool, dir string) bool {
-	if len(p.files) > 0 && !anyMatches(p.files, files) {
-		return false
+	if len(p.files) > 0 {
+		if p.filesAll {
+			for _, f := range p.files {
+				if !files[f] {
+					return false
+				}
+			}
+		} else if !anyMatches(p.files, files) {
+			return false
+		}
 	}
 	if len(p.subdirs) > 0 && !anyMatches(p.subdirs, dirs) {
 		return false
@@ -496,6 +591,106 @@ func detectUnityDataFolder(dir string, entries []os.DirEntry) Result {
 		}
 	}
 	return Result{Engine: Others}
+}
+
+// detectBundledJRE checks for a bundled Java runtime: a directory whose name
+// starts with "jre" (e.g. jre1.8.0_172) containing .jar files under it
+// (typically jre*/lib/*.jar). JRE-bundled Java games (Lilith's Throne, etc.)
+// are launched via a native wrapper (LT.exe) and keep every .jar inside the
+// runtime, so the root-level .jar profile never matches.
+func detectBundledJRE(dir string, entries []os.DirEntry) Result {
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(e.Name()), "jre") {
+			continue
+		}
+		if hasJarShallow(filepath.Join(dir, e.Name()), 0) {
+			return Result{
+				Engine:     Java,
+				Confidence: 0.88,
+				MatchedBy:  "bundled JRE directory with .jar files",
+			}
+		}
+	}
+	return Result{Engine: Others}
+}
+
+// maxJarDepth bounds the search for .jar files inside a JRE directory.
+// jre/lib/rt.jar is depth 2; jre/lib/ext/x.jar is depth 3.
+const maxJarDepth = 3
+
+// hasJarShallow reports whether dir contains a .jar file within maxJarDepth
+// levels (inclusive).
+func hasJarShallow(dir string, depth int) bool {
+	if depth > maxJarDepth {
+		return false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			if hasJarShallow(filepath.Join(dir, e.Name()), depth+1) {
+				return true
+			}
+			continue
+		}
+		if strings.EqualFold(filepath.Ext(e.Name()), ".jar") {
+			return true
+		}
+	}
+	return false
+}
+
+// maxIndexDepth bounds the fallback search for index.html below the game
+// root. Source-repo layouts typically keep it at src/index.html (depth 1)
+// or one folder deeper.
+const maxIndexDepth = 2
+
+// nonContentDirs lists directory names that never hold a game's entry HTML
+// page — asset folders, libraries, VCS metadata. They are skipped during
+// the shallow index.html search to avoid false positives.
+var nonContentDirs = map[string]bool{
+	"js": true, "css": true, "img": true, "images": true,
+	"fonts": true, "lib": true, "node_modules": true,
+	"__MACOSX": true, ".git": true,
+}
+
+// findShallowHTML reports whether an HTML entry file exists at most
+// maxIndexDepth levels below dir, ignoring non-content directories. Any
+// .html file qualifies — Twine-compiled games ship a single large file
+// (precompiled.html, game.html, ...) instead of index.html.
+func findShallowHTML(dir string) bool {
+	return findHTMLFile(dir, 0)
+}
+
+func findHTMLFile(dir string, depth int) bool {
+	if depth > maxIndexDepth {
+		return false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			if nonContentDirs[name] {
+				continue
+			}
+			if findHTMLFile(filepath.Join(dir, name), depth+1) {
+				return true
+			}
+			continue
+		}
+		if strings.EqualFold(filepath.Ext(name), ".html") {
+			return true
+		}
+	}
+	return false
 }
 
 // checkRPGMakerPackage reads package.json to identify RPG Maker variant.

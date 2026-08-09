@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -20,19 +21,19 @@ type ScanProgressFunc func(dirsExamined, gamesFound int, phase string)
 
 // DetectedGame is the result of scanning a game directory.
 type DetectedGame struct {
-	Title     string        `json:"title"`     // directory name as title fallback
-	Path      string        `json:"path"`      // absolute directory path
-	ExePath   string        `json:"exe_path"`  // path to main executable
+	Title     string        `json:"title"`    // directory name as title fallback
+	Path      string        `json:"path"`     // absolute directory path
+	ExePath   string        `json:"exe_path"` // path to main executable
 	Engine    engine.Engine `json:"engine"`
-	Version   string        `json:"version"`   // version extracted from directory name
+	Version   string        `json:"version"` // version extracted from directory name
 	SizeBytes int64         `json:"size_bytes"`
 }
 
 // Scan recursively scans a directory and returns detected games.
 // It skips known non-game paths and engine crash handlers.
 // Sizes are accumulated in a single walk — no separate dirSize pass.
-func Scan(root string) ([]DetectedGame, error) {
-	return ScanFiltered(root, nil, nil)
+func Scan(ctx context.Context, root string) ([]DetectedGame, error) {
+	return ScanFiltered(ctx, root, nil, nil)
 }
 
 // ScanFiltered is like Scan but skips game directories whose paths
@@ -40,20 +41,22 @@ func Scan(root string) ([]DetectedGame, error) {
 // identically to Scan. This allows callers to implement incremental
 // scans by passing the set of already-known game paths.
 // progress is an optional callback that reports dirs examined and games found.
-func ScanFiltered(root string, skipPaths map[string]bool, progress ScanProgressFunc) ([]DetectedGame, error) {
+// The walk and detection pass check ctx and abort promptly on cancellation
+// (e.g. application shutdown on a slow or network-mounted scan path).
+func ScanFiltered(ctx context.Context, root string, skipPaths map[string]bool, progress ScanProgressFunc) ([]DetectedGame, error) {
 	root = filepath.Clean(root)
 
 	// Single walk: detect game directories and accumulate file sizes
 	// simultaneously by tracking which game dir we're currently inside.
-	type trackedGame struct {
-		size int64
-	}
 	gameDirs := make(map[string]*trackedGame)
 	var currentGameDir string
 
 	dirsExamined := 0
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
 		if err != nil {
 			// If the root itself is inaccessible, surface the error.
 			if path == root {
@@ -88,16 +91,20 @@ func ScanFiltered(root string, skipPaths map[string]bool, progress ScanProgressF
 		}
 
 		name := d.Name()
-		// Skip __MACOSX (macOS resource fork duplicates).
-		if name == "__MACOSX" {
-			return filepath.SkipDir
-		}
-		// Skip .old directories (updater rollback backups from Merge).
-		if strings.HasSuffix(name, ".old") {
-			return filepath.SkipDir
+		// Skip __MACOSX (macOS resource fork duplicates) and .old directories
+		// (updater rollback backups from Merge). The scan root itself is
+		// exempt — a library folder literally named "__MACOSX" or ending in
+		// ".old" must still be scanned (see the shouldSkip guard below).
+		if path != root {
+			if name == "__MACOSX" {
+				return filepath.SkipDir
+			}
+			if strings.HasSuffix(name, ".old") {
+				return filepath.SkipDir
+			}
 		}
 		// Skip excluded directories.
-		if shouldSkip(name) {
+		if path != root && shouldSkip(name) {
 			return filepath.SkipDir
 		}
 		// Don't recurse into subdirectories of already-detected game dirs.
@@ -105,12 +112,20 @@ func ScanFiltered(root string, skipPaths map[string]bool, progress ScanProgressF
 		// (e.g., /games/foo must not match /games/foobar/SomeGame).
 		// This guard is only needed when currentGameDir is empty (we're
 		// between game dirs) — inside a game dir the check above catches
-		// all descendants first.
-		parent := filepath.Dir(path)
-		for dir := range gameDirs {
-			if strings.HasPrefix(parent, dir+string(filepath.Separator)) && parent != dir {
+		// all descendants first. currentGameDir short-circuits all
+		// descendants in DFS order, so any directory still seen here is
+		// provably outside every game dir — no extra scan needed.
+		if currentGameDir == "" {
+			parent := filepath.Dir(path)
+			if parent != root && isUnderAnyGameDir(parent, gameDirs) {
 				return filepath.SkipDir
 			}
+		}
+		// If --new-only is active and this path is already known, skip it.
+		// Checked before the directory read so incremental scans don't pay
+		// an os.ReadDir + marker scan for every already-known game dir.
+		if skipPaths != nil && skipPaths[path] {
+			return filepath.SkipDir
 		}
 		// Check if this directory looks like a game root using a single
 		// directory read (avoids redundant os.ReadDir in hasGameMarkers).
@@ -118,8 +133,13 @@ func ScanFiltered(root string, skipPaths map[string]bool, progress ScanProgressF
 		if readErr != nil || !hasGameMarkersFromEntries(entries) {
 			return nil
 		}
-		// If --new-only is active and this path is already known, skip it.
-		if skipPaths != nil && skipPaths[path] {
+		// Skip tool/utility directories (decrypters, unpackers, RPG Maker
+		// toolkits) that sit inside a directory tree containing a real game.
+		// Such dirs look like games because they ship executables (e.g.
+		// SetupMenu.exe), but they are bundled utilities, not games. The
+		// check is content-based, so it works regardless of walk order.
+		// Standalone tool-named dirs are still scanned to avoid over-matching.
+		if isToolDirName(name) && path != root && nestedInGameTree(path, root) {
 			return filepath.SkipDir
 		}
 		// If it's named after a known engine and has subdirectories,
@@ -143,6 +163,9 @@ func ScanFiltered(root string, skipPaths map[string]bool, progress ScanProgressF
 	sem := make(chan struct{}, runtime.NumCPU())
 	var detectedCount int64
 	for dir, tg := range gameDirs {
+		if cerr := ctx.Err(); cerr != nil {
+			break
+		}
 		wg.Add(1)
 		go func(d string, size int64) {
 			defer wg.Done()
@@ -306,6 +329,24 @@ func looksLikeGameRoot(dir string) bool {
 	return hasGameMarkers(dir)
 }
 
+// isUnderAnyGameDir reports whether parent is a subdirectory of any
+// already-detected game root.
+// trackedGame is the per-game-dir state accumulated during the single walk.
+type trackedGame struct {
+	size int64
+}
+
+// isUnderAnyGameDir reports whether parent is a subdirectory of any
+// already-detected game root.
+func isUnderAnyGameDir(parent string, gameDirs map[string]*trackedGame) bool {
+	for dir := range gameDirs {
+		if strings.HasPrefix(parent, dir+string(filepath.Separator)) && parent != dir {
+			return true
+		}
+	}
+	return false
+}
+
 // hasGameMarkersFromEntries checks a pre-read directory listing for game
 // engine files and executables. Extracted from hasGameMarkers so callers
 // can avoid redundant os.ReadDir calls.
@@ -319,7 +360,7 @@ func hasGameMarkersFromEntries(entries []os.DirEntry) bool {
 			switch {
 			case name == "renpy", name == "www", name == "Engine",
 				strings.HasSuffix(name, "_Data"),
-				strings.HasPrefix(name, "game") && !strings.HasPrefix(name, "games"):
+				name == "game":
 				hasMarkers = true
 			}
 		} else {
@@ -468,6 +509,7 @@ var (
 		"saved":     true,
 		"logs":      true,
 		"crashes":   true,
+		"downloads": true, // downloader-owned dirs; extracted archives live here
 	}
 	subExcluded = []string{
 		"unins",
@@ -481,6 +523,56 @@ var (
 		"vc_redist",
 	}
 )
+
+// toolExcluded lists directory-name patterns identifying game tool/utility
+// directories (decrypters, unpackers, RPG Maker toolkits) rather than games.
+// Matches are substring-based on the lowercased directory name. The list is
+// deliberately narrow — generic words like "setup", "patch", or "crack" are
+// not included because they appear in legit game directory names.
+var toolExcluded = []string{
+	"rpg maker", // RPG Maker XP/VX/VX Ace toolkits (decrypter/uncpacker bundles)
+	"decrypt",   // "decrypter", "decryptor", "RPG Maker Decrypter", ...
+	"uncpacker", // the decrypter tool's own (misspelled) name
+	"unpacker",
+}
+
+// isToolDirName reports whether the directory name matches a known
+// game-tool pattern.
+func isToolDirName(name string) bool {
+	lower := strings.ToLower(name)
+	for _, t := range toolExcluded {
+		if strings.Contains(lower, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// nestedInGameTree reports whether path lives inside a directory tree that
+// also contains a game directory other than path itself: some ancestor of
+// path (from its parent up to the scan root) has a child directory that
+// looks like a game root. The check reads directory contents rather than
+// the set of already-registered games, so it is independent of walk order.
+func nestedInGameTree(path, root string) bool {
+	base := filepath.Base(path)
+	for parent := filepath.Dir(path); ; parent = filepath.Dir(parent) {
+		entries, err := os.ReadDir(parent)
+		if err == nil {
+			for _, e := range entries {
+				if !e.IsDir() || e.Name() == base {
+					continue
+				}
+				if hasGameMarkers(filepath.Join(parent, e.Name())) {
+					return true
+				}
+			}
+		}
+		if parent == root || filepath.Dir(parent) == parent {
+			break
+		}
+	}
+	return false
+}
 
 // ExtractVersionFromDir tries to extract a version string from known files
 // inside the game directory when the directory name itself contains no version.

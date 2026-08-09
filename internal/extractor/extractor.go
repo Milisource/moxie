@@ -69,7 +69,13 @@ func DetectArchiveType(path string) (string, error) {
 // if the archive contains exactly one top-level directory, the returned
 // path points into that directory rather than destDir itself.
 //
-// If extraction fails mid-way, partial files are cleaned up from destDir.
+// Extraction happens in a fresh temporary subdirectory inside destDir.
+// If extraction fails mid-way, only that temporary subdirectory is
+// removed — destDir and anything the caller already placed in it (such
+// as the freshly downloaded archive) are left untouched. On success the
+// extracted files are moved into destDir, so callers see the same result
+// as before.
+//
 // Accepts a context for cancellation and an optional progress callback.
 func Extract(ctx context.Context, archivePath, destDir string, progress ProgressFunc) (string, error) {
 	if err := ctx.Err(); err != nil {
@@ -85,23 +91,57 @@ func Extract(ctx context.Context, archivePath, destDir string, progress Progress
 		return "", fmt.Errorf("create dest dir: %w", err)
 	}
 
+	// Extract into a fresh temp subdirectory so a failure mid-way can
+	// never wipe the caller's destDir (which may hold the downloaded
+	// archive). Only this subdirectory is removed on error.
+	tmpDir, err := os.MkdirTemp(destDir, ".extract-*")
+	if err != nil {
+		return "", fmt.Errorf("create temp extraction dir: %w", err)
+	}
+
 	switch typ {
 	case "zip":
-		err = extractZip(ctx, archivePath, destDir, progress)
+		err = extractZip(ctx, archivePath, tmpDir, progress)
 	case "7z":
-		err = extract7z(ctx, archivePath, destDir)
+		err = extract7z(ctx, archivePath, tmpDir)
 	case "rar":
-		err = extractRar(ctx, archivePath, destDir)
+		err = extractRar(ctx, archivePath, tmpDir)
 	default:
+		os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("%w: %s", ErrUnknownFormat, typ)
 	}
 	if err != nil {
-		// Clean up partial extraction on failure.
-		os.RemoveAll(destDir)
+		// Clean up partial extraction — only the temp subdirectory, never
+		// the caller's destDir.
+		os.RemoveAll(tmpDir)
 		return "", err
 	}
 
+	// Move the extracted files into destDir, then drop the now-empty temp
+	// subdirectory. Success semantics are unchanged: files end up in destDir.
+	if err := moveContents(tmpDir, destDir); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", err
+	}
+	os.RemoveAll(tmpDir)
+
 	return findGameRoot(destDir), nil
+}
+
+// moveContents moves every entry of src into dst via rename. Both paths
+// live on the same filesystem (src was created inside dst), so each move
+// is a metadata-only operation.
+func moveContents(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return fmt.Errorf("read extraction dir: %w", err)
+	}
+	for _, e := range entries {
+		if err := os.Rename(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+			return fmt.Errorf("move %s into destination: %w", e.Name(), err)
+		}
+	}
+	return nil
 }
 
 // findGameRoot checks if dir contains exactly one non-hidden subdirectory;

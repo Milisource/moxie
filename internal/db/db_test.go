@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"testing"
@@ -59,6 +60,40 @@ func TestOpenClose(t *testing.T) {
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
+	}
+}
+
+// TestForeignKeysEnabledOnAllConnections verifies that foreign key
+// enforcement is active on every pooled connection, not just the first
+// one opened. PRAGMA foreign_keys is a per-connection setting; if it is
+// only applied to one connection, concurrent workers silently lose
+// cascade deletes (orphaned rows) once the pool opens a second one.
+func TestForeignKeysEnabledOnAllConnections(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	c1, err := db.conn.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("pin first connection: %v", err)
+	}
+	defer c1.Close()
+
+	var fkFirst int
+	if err := c1.QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&fkFirst); err != nil {
+		t.Fatalf("query first connection: %v", err)
+	}
+
+	// c1 is checked out, so this must open a second pooled connection.
+	var fkSecond int
+	if err := db.conn.QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&fkSecond); err != nil {
+		t.Fatalf("query second connection: %v", err)
+	}
+
+	if fkFirst != 1 {
+		t.Errorf("foreign_keys = %d on the initial connection, want 1", fkFirst)
+	}
+	if fkSecond != 1 {
+		t.Errorf("foreign_keys = %d on a second pooled connection, want 1", fkSecond)
 	}
 }
 
@@ -394,12 +429,12 @@ func TestUpdateGame(t *testing.T) {
 	defer db.Close()
 
 	g := &Game{
-		Title:    "Original Title",
-		Engine:   "Unity",
-		Path:     "/update-test",
+		Title:     "Original Title",
+		Engine:    "Unity",
+		Path:      "/update-test",
 		SizeBytes: 500,
-		Tags:     []string{"original"},
-		Status:   "active",
+		Tags:      []string{"original"},
+		Status:    "active",
 	}
 	id, err := db.InsertGame(g)
 	if err != nil {
@@ -679,6 +714,46 @@ func TestScrapedMetaCascadeDelete(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatal("scraped_meta should be cascade-deleted with the game")
+	}
+}
+
+// TestRecentPlays_ParseSQLiteTimestamp verifies play history timestamps
+// round-trip: RecordPlay writes SQLite datetime('now') ("2006-01-02 15:04:05",
+// space-separated), and RecentPlays/PlaysForGame must parse that format —
+// RFC3339-only parsing yields zero times in the UI.
+func TestRecentPlays_ParseSQLiteTimestamp(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	game := &Game{Title: "Timestamp Game", Path: "/tmp/timestamp-game", Engine: "RenPy"}
+	id, err := db.InsertGame(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordPlay(id, "linux"); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := db.RecentPlays(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 play entry, got %d", len(entries))
+	}
+	if entries[0].PlayedAt.IsZero() {
+		t.Error("RecentPlays: played_at parsed as zero time (SQLite format not handled)")
+	}
+	if entries[0].PlayedAt.Year() != time.Now().Year() {
+		t.Errorf("RecentPlays: unexpected year %d", entries[0].PlayedAt.Year())
+	}
+
+	one, err := db.PlaysForGame(id, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one) != 1 || one[0].PlayedAt.IsZero() {
+		t.Error("PlaysForGame: played_at parsed as zero time")
 	}
 }
 

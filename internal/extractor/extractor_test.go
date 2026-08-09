@@ -2,9 +2,11 @@ package extractor
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -186,11 +188,10 @@ func TestDetectArchiveType_EmptyFile(t *testing.T) {
 func TestExtractZip_FilesExist(t *testing.T) {
 	t.Parallel()
 	zipPath := createTestZip(t, map[string]string{
-		"game.exe":      "binary-content",
-		"data/file.txt": "text-content",
+		"game.exe":       "binary-content",
+		"data/file.txt":  "text-content",
 		"saves/save.sav": "save-data",
 	})
-
 	dest := t.TempDir()
 	root, err := Extract(context.Background(), zipPath, dest, nil)
 	if err != nil {
@@ -223,9 +224,9 @@ func TestExtractZip_FilesExist(t *testing.T) {
 func TestExtractZip_SingleDirWrapping(t *testing.T) {
 	t.Parallel()
 	zipPath := createTestZip(t, map[string]string{
-		"MyGame/game.exe":           "binary",
-		"MyGame/saves/save01.sav":   "save-data",
-		"MyGame/data/asset.dat":     "asset",
+		"MyGame/game.exe":         "binary",
+		"MyGame/saves/save01.sav": "save-data",
+		"MyGame/data/asset.dat":   "asset",
 	})
 
 	dest := t.TempDir()
@@ -372,9 +373,9 @@ func TestExtractZip_ProgressWithDirs(t *testing.T) {
 	t.Parallel()
 	// Directories in the zip should not count toward progress.
 	zipPath := createTestZip(t, map[string]string{
-		"dir1/a.txt":            "aaa",
-		"dir1/sub/b.txt":        "bbb",
-		"dir2/c.txt":            "ccc",
+		"dir1/a.txt":     "aaa",
+		"dir1/sub/b.txt": "bbb",
+		"dir2/c.txt":     "ccc",
 	})
 
 	dest := t.TempDir()
@@ -403,7 +404,10 @@ func TestExtractZip_ProgressWithDirs(t *testing.T) {
 // Cleanup on failure
 // ---------------------------------------------------------------------------
 
-func TestExtractZip_CleanupOnFailure(t *testing.T) {
+// TestExtract_FailurePreservesDestDir verifies that an extraction failure
+// removes only the internal temp subdirectory and never the caller's
+// destDir — which typically holds the freshly downloaded archive.
+func TestExtract_FailurePreservesDestDir(t *testing.T) {
 	t.Parallel()
 	// Create a zip with a zip-slip entry to trigger failure.
 	zipPath := createTestZip(t, map[string]string{
@@ -412,14 +416,60 @@ func TestExtractZip_CleanupOnFailure(t *testing.T) {
 	})
 
 	dest := t.TempDir()
+	// Simulate the caller's destDir holding a downloaded archive.
+	sentinel := filepath.Join(dest, "MyGame_v1.0.zip")
+	if err := os.WriteFile(sentinel, []byte("archive-bytes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	_, err := Extract(context.Background(), zipPath, dest, nil)
 	if err == nil {
 		t.Fatal("expected error due to zip-slip")
 	}
 
-	// The destination directory should have been cleaned up.
-	if _, err := os.Stat(dest); !os.IsNotExist(err) {
-		t.Errorf("expected dest dir %s to be removed after failure, stat: %v", dest, err)
+	// destDir itself must survive and keep its pre-existing contents.
+	if _, err := os.Stat(dest); err != nil {
+		t.Errorf("dest dir should still exist after failure: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Errorf("sentinel file in dest dir was deleted on failure: %v", err)
+	}
+	// The temp extraction subdirectory must be cleaned up.
+	entries, err := os.ReadDir(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".extract-") {
+			t.Errorf("temp extraction dir %s left behind after failure", e.Name())
+		}
+	}
+}
+
+// TestExtract_FailurePreservesDestDir_NoSentinel is the same check without
+// a sentinel file: destDir survives, temp subdir is removed.
+func TestExtract_FailurePreservesDestDir_NoSentinel(t *testing.T) {
+	t.Parallel()
+	zipPath := createTestZip(t, map[string]string{
+		"good.txt":           "ok",
+		"foo/../../evil.txt": "bad",
+	})
+
+	dest := t.TempDir()
+	_, err := Extract(context.Background(), zipPath, dest, nil)
+	if err == nil {
+		t.Fatal("expected error due to zip-slip")
+	}
+
+	if _, err := os.Stat(dest); err != nil {
+		t.Errorf("dest dir should still exist after failure: %v", err)
+	}
+	entries, err := os.ReadDir(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected dest dir to be empty after failure, got %d entries", len(entries))
 	}
 }
 
@@ -546,5 +596,170 @@ func TestDetectArchiveType_RealZipMisnamed(t *testing.T) {
 	}
 	if typ != "zip" {
 		t.Errorf("expected zip (magic-based), got %s", typ)
+	}
+}
+
+// TestExtractZip_RejectsZipBomb verifies a crafted archive with an absurd
+// compression ratio (16 MiB of zeros → ~16 KiB on disk) is rejected before
+// anything is written.
+func TestExtractZip_RejectsZipBomb(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	zipPath := filepath.Join(tmp, "bomb.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := zip.NewWriter(f)
+	fw, err := w.CreateHeader(&zip.FileHeader{Name: "bomb.bin", Method: zip.Deflate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeros := make([]byte, 16*1024*1024)
+	if _, err := fw.Write(zeros); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	dest := t.TempDir()
+	_, err = Extract(context.Background(), zipPath, dest, nil)
+	if err == nil {
+		t.Fatal("expected zip bomb rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), "suspicious compression ratio") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	entries, err := os.ReadDir(dest)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err == nil && len(entries) != 0 {
+		t.Errorf("expected nothing extracted, got %d entries", len(entries))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// sanitizeZipPath
+// ---------------------------------------------------------------------------
+
+func TestSanitizeZipPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		path string
+		want bool // true = allowed
+	}{
+		{"plain file", "game.exe", true},
+		{"nested file", "data/file.txt", true},
+		{"deeply nested", "a/b/c/d.bin", true},
+		{"dots inside a segment", "Game v1.0..beta/file.bin", true},
+		{"ellipsis style", "..data/secret.bin", true},
+		{"trailing dots segment", "foo/.../bar.txt", true},
+		{"parent traversal", "../evil", false},
+		{"nested traversal", "foo/../../evil", false},
+		{"traversal at end", "foo/..", false},
+		{"windows traversal", `..\evil.exe`, false},
+		{"windows nested traversal", `foo\..\..\evil.exe`, false},
+		{"absolute unix", "/etc/passwd", false},
+		{"absolute windows", `C:\evil.exe`, false},
+		{"empty name", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := sanitizeZipPath(tt.path)
+			if tt.want && err != nil {
+				t.Errorf("sanitizeZipPath(%q) = %v, want allowed", tt.path, err)
+			}
+			if !tt.want && err == nil {
+				t.Errorf("sanitizeZipPath(%q) = nil, want ErrPathTraversal", tt.path)
+			}
+		})
+	}
+}
+
+// TestExtractZip_DotsInSegmentAllowed verifies that names containing ".."
+// inside a longer segment (e.g. a version like "v1.0..beta") extract fine.
+func TestExtractZip_DotsInSegmentAllowed(t *testing.T) {
+	t.Parallel()
+	zipPath := createTestZip(t, map[string]string{
+		"Game v1.0..beta/file.bin": "content",
+	})
+
+	dest := t.TempDir()
+	root, err := Extract(context.Background(), zipPath, dest, nil)
+	if err != nil {
+		t.Fatalf("extract failed: %v", err)
+	}
+
+	expected := filepath.Join(dest, "Game v1.0..beta")
+	if root != expected {
+		t.Errorf("expected root %s, got %s", expected, root)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "file.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "content" {
+		t.Errorf("expected %q, got %q", "content", string(data))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Checksum/CRC verification
+// ---------------------------------------------------------------------------
+
+// TestExtractZip_ChecksumError verifies that a zip entry whose data fails
+// its CRC check (detected by archive/zip on Close) is treated as an
+// extraction failure instead of being silently ignored.
+func TestExtractZip_ChecksumError(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	zipPath := filepath.Join(tmp, "corrupt-crc.zip")
+
+	// Write a stored (uncompressed) entry so its payload appears verbatim
+	// in the archive and can be corrupted in place.
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := zip.NewWriter(f)
+	fw, err := w.CreateHeader(&zip.FileHeader{Name: "data.bin", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("hello world, this payload must be longer than 12 bytes")
+	if _, err := fw.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	// Flip one byte of the stored payload so the CRC no longer matches.
+	raw, err := os.ReadFile(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := bytes.Index(raw, payload)
+	if idx < 0 {
+		t.Fatal("payload not found in stored zip entry")
+	}
+	raw[idx+1] ^= 0xFF
+	if err := os.WriteFile(zipPath, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := t.TempDir()
+	if _, err := Extract(context.Background(), zipPath, dest, nil); err == nil {
+		t.Fatal("expected checksum error for corrupted zip entry, got nil")
+	}
+	// The failure must not have wiped destDir.
+	if _, err := os.Stat(dest); err != nil {
+		t.Errorf("dest dir should still exist after failure: %v", err)
 	}
 }

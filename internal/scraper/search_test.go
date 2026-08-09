@@ -142,6 +142,26 @@ func TestComputeMatchScore_NoMatch(t *testing.T) {
 	}
 }
 
+// TestComputeMatchScore_WordBoundaryContainment: substring containment is
+// not a match — "Aurelia" must not score against "Aurelian Nostrum" (no
+// whole-word sequence in common). Whole-word containment and sequel
+// markers still behave as before.
+func TestComputeMatchScore_WordBoundaryContainment(t *testing.T) {
+	t.Parallel()
+
+	if score := ComputeMatchScore("Aurelia", "Aurelian Nostrum"); score != 0.0 {
+		t.Errorf("Aurelia vs Aurelian Nostrum = %f, want 0.0", score)
+	}
+	// Whole-word containment: result title contains the game title.
+	if score := ComputeMatchScore("Summer's Gone", "Summer's Gone Deluxe"); score != 0.85 {
+		t.Errorf("Summer's Gone vs Summer's Gone Deluxe = %f, want 0.85", score)
+	}
+	// Sequel marker in the extra words stays meaningful (below auto-accept).
+	if score := ComputeMatchScore("Summer's Gone", "Summer's Gone 2"); score != 0.25 {
+		t.Errorf("Summer's Gone vs Summer's Gone 2 = %f, want 0.25", score)
+	}
+}
+
 func TestComputeMatchScore_CaseInsensitive(t *testing.T) {
 	t.Parallel()
 	score := ComputeMatchScore("MY GAME", "my game")

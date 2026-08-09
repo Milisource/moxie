@@ -62,16 +62,16 @@ export function EditGame(arg1, arg2) {
   return window['go']['main']['App']['EditGame'](arg1, arg2);
 }
 
+export function FetchCovers() {
+  return window['go']['main']['App']['FetchCovers']();
+}
+
 export function FindDuplicateGames() {
   return window['go']['main']['App']['FindDuplicateGames']();
 }
 
 export function GetAllDownloadLinks() {
   return window['go']['main']['App']['GetAllDownloadLinks']();
-}
-
-export function GetCachedCovers(arg1) {
-  return window['go']['main']['App']['GetCachedCovers'](arg1);
 }
 
 export function GetCollectionGames(arg1) {
@@ -90,6 +90,10 @@ export function GetCookieStatus() {
   return window['go']['main']['App']['GetCookieStatus']();
 }
 
+export function GetCoverBaseURL() {
+  return window['go']['main']['App']['GetCoverBaseURL']();
+}
+
 export function GetDbPath() {
   return window['go']['main']['App']['GetDbPath']();
 }
@@ -100,10 +104,6 @@ export function GetGameCollections(arg1) {
 
 export function GetGameCount() {
   return window['go']['main']['App']['GetGameCount']();
-}
-
-export function GetGameCountByStatus() {
-  return window['go']['main']['App']['GetGameCountByStatus']();
 }
 
 export function GetGameDetail(arg1) {
@@ -222,8 +222,8 @@ export function SetGameWinePrefix(arg1, arg2) {
   return window['go']['main']['App']['SetGameWinePrefix'](arg1, arg2);
 }
 
-export function SyncAllGames() {
-  return window['go']['main']['App']['SyncAllGames']();
+export function SyncAllGames(arg1) {
+  return window['go']['main']['App']['SyncAllGames'](arg1);
 }
 
 export function SyncSingleGame(arg1) {

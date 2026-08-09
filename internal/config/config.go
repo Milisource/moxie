@@ -11,8 +11,22 @@ import (
 	"github.com/mili/moxie/internal/log"
 )
 
+// configDirOverride redirects ConfigDir and its derivatives. Test-only:
+// set via SetConfigDirForTest so desktop tests can exercise the cover
+// server and thumbnail pipeline without touching a real home directory.
+var configDirOverride string
+
+// SetConfigDirForTest redirects ConfigDir (and thus CoverDir, DbPath, ...)
+// to dir. Pass an empty string to restore platform-standard behaviour.
+func SetConfigDirForTest(dir string) {
+	configDirOverride = dir
+}
+
 // ConfigDir returns the platform-standard configuration directory for moxie.
 func ConfigDir() string {
+	if configDirOverride != "" {
+		return configDirOverride
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.TempDir()
@@ -20,7 +34,12 @@ func ConfigDir() string {
 	}
 	switch runtime.GOOS {
 	case "windows":
-		return filepath.Join(os.Getenv("APPDATA"), "moxie")
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			return filepath.Join(appData, "moxie")
+		}
+		// APPDATA unset (services/CI): fall back to the conventional path
+		// instead of a relative "moxie" dir under the CWD.
+		return filepath.Join(home, "AppData", "Roaming", "moxie")
 	case "darwin":
 		return filepath.Join(home, "Library", "Application Support", "moxie")
 	default:
@@ -66,9 +85,9 @@ func CoverDir() string {
 // for backward compatibility with arbitrary string-based keys.
 type Config struct {
 	// Typed fields (known schema).
-	ScanPaths         []string `json:"scan_paths,omitempty"`
-	DefaultDownloadDir string  `json:"default_download_dir,omitempty"`
-	RateLimitDelay    int      `json:"rate_limit_delay,omitempty"` // seconds between requests
+	ScanPaths          []string `json:"scan_paths,omitempty"`
+	DefaultDownloadDir string   `json:"default_download_dir,omitempty"`
+	RateLimitDelay     int      `json:"rate_limit_delay,omitempty"` // seconds between requests
 
 	// Raw holds arbitrary string key-value pairs for settings not covered by
 	// typed fields (e.g., steamgriddb-key, cookie). These are serialized
@@ -209,6 +228,12 @@ func writeConfigTo(path string, cfg *Config) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	// fsync before the rename so a crash cannot leave a truncated config
+	// at the final path (the rename is atomic, the write is not).
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return err
 	}

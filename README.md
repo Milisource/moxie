@@ -48,7 +48,7 @@ Unlike manually organizing game folders and checking announcement threads one by
 
 Key capabilities:
 
-- **Engine-aware scanning** — Detects 14 canonical engines (Unity, Ren'Py, RPG Maker, Godot, Unreal, HTML, Flash, WolfRPG, etc.) plus a fallback for Others. Reports byte-exact sizes and finds executables.
+- **Engine-aware scanning** — Detects 15 canonical engines (Unity, Ren'Py, RPG Maker, Godot, Unreal, HTML, Flash, WolfRPG, etc.) plus a fallback for Others. Reports byte-exact sizes and finds executables.
 - **Incremental by default** — `moxie scan <dir>` skips directories whose modification time hasn't changed since the last scan. Use `--force` for a full re-detection.
 - **Metadata enrichment** — Cookie-based scraping pulls version, developer, tags, overview, cover art, and store links from community game threads. Auto-association scores search results and picks the best match.
 - **Steam integration** — Add non-Steam games with deterministic AppIDs, grid artwork (F95Zone cover or SteamGridDB), and Proton version configuration. Safe VDF read/write with automatic backups.
@@ -335,7 +335,7 @@ moxie list --warnings                # quick scan for engine/exe issues
 | `d` | Library | Delete game (with confirmation) |
 | `e` | Detail | Edit game title |
 | `p` | Detail | Launch game |
-| `u` | Detail | Set F95Zone URL |
+| `Ctrl+u` | Detail | Set F95Zone URL |
 | `?` | Any | Toggle help overlay |
 
 Press `?` in the TUI for CLI quick-start commands (scan, scrape, steam add, etc.).

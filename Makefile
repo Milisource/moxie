@@ -61,15 +61,17 @@ install-desktop:
 DESKTOP_BINARY := moxie-desktop
 
 # Build desktop application with Wails (requires Wails CLI and webkit2gtk 4.1 on Linux).
-# Wails outputs to desktop/build/dist/ — copy to central dist/ after build.
+# Wails outputs the binary to desktop/build/bin/ — copy to central dist/ after
+# build. NOTE: desktop/build/dist/moxie-desktop is NOT produced by modern
+# wails builds; copying from it installs a stale July-2026 artifact.
 desktop: dist/$(DESKTOP_BINARY)
 
-dist/$(DESKTOP_BINARY): desktop/build/dist/moxie-desktop
+dist/$(DESKTOP_BINARY): desktop/build/bin/moxie
 	mkdir -p dist
-	cp -f desktop/build/dist/moxie-desktop dist/$(DESKTOP_BINARY)
+	cp -f desktop/build/bin/moxie dist/$(DESKTOP_BINARY)
 	@echo "  -> dist/$(DESKTOP_BINARY)"
 
-desktop/build/dist/moxie-desktop: desktop/frontend/src/**/* desktop/app.go desktop/main.go
+desktop/build/bin/moxie: desktop/frontend/src/**/* desktop/app.go desktop/main.go
 	cd desktop && wails build -tags webkit2_41
 
 # Run desktop in development mode with hot-reload

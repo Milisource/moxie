@@ -30,25 +30,27 @@ type ProgressEvent struct { JobID, GameID, Status, Progress, Error }
 downloader.Download(urlStr, destDir, expectedTotal, onProgress, f95Cookie)
 // or with explicit host:
 downloader.DownloadWithHost(urlStr, host, destDir, expectedTotal, onProgress, f95Cookie)
+// cancellable variant (desktop uses this so shutdown can interrupt a transfer):
+downloader.DownloadWithContext(ctx, urlStr, host, destDir, expectedTotal, onProgress, f95Cookie)
 ```
 
 The `f95Cookie` parameter is an optional F95Zone session cookie string used to authenticate HEAD requests when resolving F95Zone masked redirect URLs (`f95zone.to/masked/...`). Pass `""` if no cookie is available; masked URLs will still be attempted but may fail on hosts that require authentication.
 
-1. **SSRF check**: `isValidDownloadURL()` verifies HTTPS-only, blocks private/loopback IPs and cloud metadata endpoints (169.254.169.254, metadata.google.internal, 100.100.100.200).
+1. **SSRF check**: `isValidDownloadURL()` verifies HTTPS-only, blocks private/loopback IPs and cloud metadata endpoints (169.254.169.254, metadata.google.internal, 100.100.100.200, AWS IMDSv6 `fd00:ec2::254`, `0.0.0.0`, `::`).
 
-2. **URL resolution**: `HostResolver.Resolve()` handles host-specific protocols.
+2. **URL resolution**: `HostResolver.Resolve()` handles host-specific protocols. Resolve is recursion-bounded (masked→masked chains cap at depth 5) and normalizes host labels (legacy `"google drive"` → canonical `googledrive`, matching the scraper's labels).
    - F95Zone masked URLs (`f95zone.to/masked/...`) are first followed via HEAD redirect to get the real download URL, using the optional `f95Cookie` for authentication, then host-specific resolution is applied on the real URL.
    - Host-specific resolvers handle each provider's protocol (API calls, cookie exchange, POST forms, confirm tokens).
 
-3. **Resume**: If a `.part` file exists, sends `Range: bytes=<existingSize>-` header. On 206 Partial Content, appends to the file. Resume is skipped for host-specific resolvers that don't support range requests.
+3. **Resume**: If a `.part` file exists, sends `Range: bytes=<existingSize>-` header. On 206 Partial Content, appends to the file. Resume is skipped for host-specific resolvers that don't support range requests. Size limits are computed **after** the resume-mode decision so a server that ignores `Range` (returns a full 200 while a `.part` exists) can't double-count the existing bytes.
 
-4. **Download**: Reads response body in 32KB chunks, writes to a `.part` temp file.
+4. **Download**: Reads response body in 32KB chunks (honoring `ctx` cancellation), writes to a `.part` temp file. The body is wrapped in a LimitReader at 50 GB+1; the total is re-checked after the loop so an oversized download is **rejected** rather than silently truncated at the cap. The HTTP transport is shared across downloads (connection reuse).
 
 5. **Progress**: `writeCounter` reports progress via callback every 500ms (speed, bytes, percentage).
 
 6. **Validation**: After download completes, the caller calls `IsValidGameFile(path)` to reject files smaller than 4096 bytes or that aren't archives/executables. This catches interstitial HTML pages that some hosts serve instead of real files.
 
-7. **Finalize**: `fsync()` + rename `.part` → final filename.
+7. **Finalize**: `fsync()` + rename `.part` → final filename. The saved filename percent-decodes the URL path (`file%20name.zip` → `file name.zip`).
 
 ### Host-Specific Resolvers (`hosts.go`)
 

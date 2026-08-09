@@ -1,6 +1,10 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/mili/moxie/internal/engine"
+)
 
 // ─── Style Palette ─────────────────────────────────────────────────────────
 //
@@ -195,6 +199,7 @@ func initStyles() {
 		"RenPy":        lipgloss.NewStyle().Foreground(engineColor("RenPy")),
 		"RPGM":         lipgloss.NewStyle().Foreground(engineColor("RPGM")),
 		"UnrealEngine": lipgloss.NewStyle().Foreground(engineColor("UnrealEngine")),
+		"Godot":        lipgloss.NewStyle().Foreground(engineColor("Godot")),
 		"HTML":         lipgloss.NewStyle().Foreground(engineColor("HTML")),
 		"Flash":        lipgloss.NewStyle().Foreground(engineColor("Flash")),
 		"Java":         lipgloss.NewStyle().Foreground(engineColor("Java")),
@@ -242,38 +247,13 @@ func engineStyle(engine string) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(engineColor(engine))
 }
 
-// engineColor returns a distinct lipgloss color for the given game engine.
+// engineColor returns the canonical F95Zone-mirrored color for the given
+// game engine, falling back to the subtle default for unknown engines.
+// The palette lives in internal/engine/engine-colors.json (single source of
+// truth, shared with the desktop frontend) — see internal/engine/colors.go.
 func engineColor(e string) lipgloss.Color {
-	switch e {
-	case "Unity":
-		return cyan
-	case "RenPy":
-		return lipgloss.Color("201") // magenta
-	case "RPGM":
-		return green
-	case "UnrealEngine":
-		return yellow
-	case "HTML":
-		return lipgloss.Color("39") // blue
-	case "Flash":
-		return lipgloss.Color("208") // orange
-	case "Java":
-		return lipgloss.Color("130") // brown-ish
-	case "ADRIFT":
-		return lipgloss.Color("141") // light purple
-	case "QSP":
-		return lipgloss.Color("75") // teal
-	case "RAGS":
-		return lipgloss.Color("172") // burnt orange
-	case "Tads":
-		return lipgloss.Color("42") // dark green
-	case "WebGL":
-		return lipgloss.Color("111") // sky blue
-	case "WolfRPG":
-		return lipgloss.Color("170") // warm orange
-	case "Others":
-		return subtle
-	default:
-		return subtle
+	if c := engine.EngineColor(e); c != "" {
+		return lipgloss.Color(c)
 	}
+	return subtle
 }

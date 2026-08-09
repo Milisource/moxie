@@ -18,6 +18,7 @@ var EngineTagVariants = map[string][]string{
 	"HTML":         {"html", "html5"},
 	"Flash":        {"flash"},
 	"Java":         {"java"},
+	"Godot":        {"godot"},
 	"UnrealEngine": {"unreal", "unreal engine"},
 	"WebGL":        {"webgl"},
 	"WolfRPG":      {"wolf rpg", "wolfrpg"},

@@ -81,9 +81,10 @@ func ResolveExecutable(gameDir, exePath string) string {
 						if n < 2 || header[0] != '#' || header[1] != '!' {
 							darwinNative = append(darwinNative, filepath.Join(gameDir, name))
 						}
-					} else {
-						darwinNative = append(darwinNative, filepath.Join(gameDir, name))
 					}
+					// On open failure the file is unknown (EACCES on the
+					// candidate itself) — skip it rather than promoting a
+					// permission-denied file to launch candidate.
 				}
 			}
 		}

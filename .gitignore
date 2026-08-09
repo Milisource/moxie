@@ -25,3 +25,7 @@ EchoesVault/
 .opencode/skills/echoes-append-to-daily-log/
 .opencode/skills/echoes-create-or-update-page/
 .opencode/skills/echoes-search-vault-pages/
+
+# Scraper work products (downloaded site-theme assets, accidentally committed once)
+internal/css.css
+internal/style.css

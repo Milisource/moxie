@@ -23,10 +23,14 @@ Uses `ncruces/go-sqlite3` — a pure Go SQLite driver (no CGO). This means the b
 
 ### Connection Setup
 
+`foreign_keys` and `busy_timeout` are **per-connection** SQLite settings, so they are applied through the DSN as `_pragma` options — every connection the pool opens gets them, not just the first one:
+
 ```
-PRAGMA journal_mode = WAL     -- concurrent reads allowed
-PRAGMA foreign_keys = ON       -- cascading deletes work
+sql.Open("sqlite3", "file:<path>?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
+PRAGMA journal_mode = WAL     -- persistent, set once on the initial connection
 ```
+
+Foreign key enforcement on every pooled connection matters because desktop workers, the TUI, and the downloader run concurrently — a connection without `foreign_keys=ON` would silently skip cascade deletes and orphan rows (`scraped_meta`, `downloads`, `play_history`). The DB file is chmod 0600 **after** the first statement creates it (`sql.Open` is lazy).
 
 ### Schema
 
@@ -35,7 +39,7 @@ PRAGMA foreign_keys = ON       -- cascading deletes work
 games (
     id          INTEGER PRIMARY KEY,
     title       TEXT NOT NULL,
-    engine      TEXT NOT NULL CHECK (engine IN ('ADRIFT','Flash','HTML','Java','Others','QSP','RAGS','RPGM','RenPy','Tads','Unity','UnrealEngine','WebGL','WolfRPG','Unknown')),
+    engine      TEXT NOT NULL CHECK (engine IN ('ADRIFT','Flash','Godot','HTML','Java','Others','QSP','RAGS','RPGM','RenPy','Tads','Unity','UnrealEngine','WebGL','WolfRPG','Unknown')),
     path        TEXT NOT NULL UNIQUE,
     exe_path    TEXT,
     version     TEXT,
@@ -149,7 +153,7 @@ CREATE VIRTUAL TABLE games_fts USING fts5(
 );
 ```
 
-Content sync triggers on `games` (INSERT/UPDATE/DELETE) and `scraped_meta` (INSERT/UPDATE/DELETE) keep the FTS index in sync automatically. For simple multi-word queries, the `SearchGames()` method auto-wraps each word as a prefix query (`"term"*`). Advanced FTS5 syntax (operators, phrases) is passed through. A `LIKE` substring fallback handles queries that produce no FTS5 results.
+Content sync triggers on `games` (INSERT/UPDATE/DELETE) and `scraped_meta` (INSERT/UPDATE/DELETE) keep the FTS index in sync automatically. For simple multi-word queries, the `SearchGames()` method auto-wraps each word as a prefix query (`"term"*`). Advanced FTS5 syntax (operators, phrases) is passed through. A `LIKE` substring fallback handles queries that produce no FTS5 results — **and** queries whose FTS syntax is malformed (a stray quote or unbalanced operator raises a MATCH error, which now falls through to the same LIKE path instead of failing the search).
 
 ### Version Tracking
 
@@ -194,6 +198,7 @@ Each `migrateVersionStep` handles a specific version:
 - **v5**: Game collections (collections + game_collections tables)
 - **v6**: Repair step — ensures all schema columns exist (handles old DBs that bumped past migration steps)
 - **v7**: Per-game Wine prefix (`wine_prefix TEXT` column on games)
+- **v8**: Godot engine — `games.engine` CHECK constraint gains `'Godot'` (table rebuilt; indexes + FTS triggers recreated). The rebuild pins a single pooled connection: `PRAGMA foreign_keys` is per-connection, so the OFF/ON toggles and the rebuild transaction must land on the same connection or `DROP TABLE games` fails with an FK constraint error. A `PRAGMA foreign_key_check` runs after the rebuild.
 
 This replaces the earlier approach of running bare `ALTER TABLE` statements that ignored errors. All migration steps are idempotent (use `columnExists` checks for ALTER TABLE, `CREATE TABLE IF NOT EXISTS` for new tables).
 

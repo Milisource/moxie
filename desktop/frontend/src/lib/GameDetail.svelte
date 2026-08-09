@@ -5,9 +5,12 @@
     GetGameDetail, PlayGame, RemoveGame, SetGameStatus, RenameGame,
     SetGameWinePrefix, SyncSingleGame, EditGame,
     GetCollections, GetGameCollections, AddGameToCollection, RemoveGameFromCollection,
-    GetInstallTargets, InstallGame,
+    GetInstallTargets, InstallGame, GetCoverBaseURL,
+    DownloadGameUpdate, OpenDownloadURL,
   } from '../../wailsjs/go/main/App'
-  import {engineColor} from './engineColors.js'
+  import {engineColor, engineOptions} from './engineColors.js'
+  import {safeExternalUrl} from './sanitizeUrl.js'
+  import {GAME_STATUSES, statusLabel} from './statuses.js'
 
   let {gameId = null, onBack = () => {}, onUpdate = () => {}} = $props()
 
@@ -16,6 +19,40 @@
   let error = $state('')
   let showFullOverview = $state(false)
   let launchStatus = $state({msg: '', error: ''})
+
+  // Visible error for inline edits / actions that fail — distinct from the
+  // top-level `error` (which replaces the whole view) so a failed save shows
+  // a notice while the editor stays open with the user's value.
+  let editError = $state('')
+
+  // ── Game update (Update Available badge) ─────────────
+  let updating = $state(false)
+
+  // ── Download link rows ───────────────────────────────
+  let openingLinks = $state(new Set())   // link IDs currently being opened
+
+  function fmtErr(e) {
+    return String(e).replace(/^Error:\s*/, '')
+  }
+
+  // ── Cover ────────────────────────────────────────
+  // Local cached cover first (loopback HTTP, fast + offline), remote
+  // F95Zone URL as a fallback when nothing is cached yet.
+  let coverBase = $state('')
+  let coverSrc = $state('')
+  let coverFailed = $state(false)
+
+  function resolveCoverSrc(d) {
+    if (!d) return ''
+    if (d.hasCover && coverBase && !coverFailed) return `${coverBase}/cover/${d.id}`
+    if (d.coverUrl && !coverFailed) return d.coverUrl
+    return ''
+  }
+
+  function handleCoverError() {
+    coverFailed = true
+    coverSrc = detail?.coverUrl || ''
+  }
 
   // ── Inline rename ───────────────────────────────
   let showRenameInput = $state(false)
@@ -130,6 +167,7 @@
     if (!gameId) return
     loading = true
     error = ''
+    coverFailed = false
     try {
       detail = await GetGameDetail(gameId)
     } catch (e) {
@@ -138,10 +176,11 @@
     loading = false
   }
 
-  function statusLabel(s) {
-    const labels = {active: 'Active', completed: 'Completed', abandoned: 'Abandoned', on_hold: 'On Hold', unknown: 'Unknown'}
-    return labels[s] || s || 'Unknown'
-  }
+  // Recompute the cover source whenever the detail, the cover server base,
+  // or the error state changes.
+  $effect(() => {
+    coverSrc = resolveCoverSrc(detail)
+  })
 
   // ── Engine colors — imported from shared module ───────────────
   // See engineColors.js for the canonical palette matching TUI styles
@@ -154,31 +193,44 @@
     return `${m}m ${sec}s`
   }
 
-  // ── Stock engine list for dropdown ──────────────
-  const engines = ['ren\'py', 'unity', 'rpgmakermv', 'rpgmakermz', 'rpgmakervxace', 'html', 'wolf rpg', 'flash', 'unreal', 'godot', 'electron', 'nw.js']
+  // ── Engine options for dropdown ─────────────
+  // Derived from the canonical engineColors.js map so every engine the
+  // detector can store (Unity, RenPy, Java, QSP, Tads, ADRIFT, WebGL,
+  // Others, …) plus the manual-entry aliases appears in the list. If the
+  // game carries a custom value not in the map (typed in manually), keep it
+  // visible at the top rather than letting the browser fall back to option 1.
+  let engineChoices = $derived.by(() => {
+    const base = engineOptions()
+    if (detail?.engine && !base.includes(detail.engine)) {
+      return [detail.engine, ...base]
+    }
+    return base
+  })
 
   // ── Action handlers ─────────────────────────────
   async function handleStatusChange(e) {
     const newStatus = e.target.value
     if (!gameId || newStatus === detail.status) return
+    editError = ''
     try {
       await SetGameStatus(gameId, newStatus)
       await loadDetail()
       onUpdate()
     } catch (err) {
-      console.error('Failed to update status:', err)
+      editError = `Failed to update status: ${fmtErr(err)}`
     }
   }
 
   async function handleEngineChange(e) {
     const newEngine = e.target.value
     if (!gameId || newEngine === detail.engine) return
+    editError = ''
     try {
-      await EditGame(gameId, {engine: newEngine, version: '', exePath: '', notes: ''})
+      await EditGame(gameId, {engine: newEngine})
       await loadDetail()
       onUpdate()
     } catch (err) {
-      console.error('Failed to update engine:', err)
+      editError = `Failed to update engine: ${fmtErr(err)}`
     }
   }
 
@@ -193,14 +245,17 @@
       showRenameInput = false
       return
     }
+    editError = ''
     try {
       await RenameGame(gameId, trimmed)
       await loadDetail()
       onUpdate()
+      // Only close the editor once the backend actually saved.
+      showRenameInput = false
     } catch (err) {
-      console.error('Failed to rename:', err)
+      editError = `Failed to rename: ${fmtErr(err)}`
+      // Keep the input open with the user's value so they can retry.
     }
-    showRenameInput = false
   }
 
   function startExePathEdit() {
@@ -208,14 +263,16 @@
   }
 
   async function saveExePath() {
+    editError = ''
     try {
-      await EditGame(gameId, {engine: '', version: '', exePath: editExePath.value, notes: ''})
+      await EditGame(gameId, {exePath: editExePath.value})
       await loadDetail()
       onUpdate()
+      editExePath = {active: false, value: ''}
     } catch (err) {
-      console.error('Failed to save exe path:', err)
+      editError = `Failed to save executable path: ${fmtErr(err)}`
+      // Keep the editor open with the user's value so they can retry.
     }
-    editExePath = {active: false, value: ''}
   }
 
   function startWinePrefixEdit() {
@@ -223,29 +280,42 @@
   }
 
   async function saveWinePrefix() {
+    editError = ''
     try {
       await SetGameWinePrefix(gameId, editWinePrefix.value)
       await loadDetail()
       onUpdate()
+      editWinePrefix = {active: false, value: ''}
     } catch (err) {
-      console.error('Failed to save wine prefix:', err)
+      editError = `Failed to save wine prefix: ${fmtErr(err)}`
+      // Keep the editor open with the user's value so they can retry.
     }
-    editWinePrefix = {active: false, value: ''}
   }
 
   function startVersionEdit() {
     editVersion = {active: true, value: detail.version || ''}
   }
 
+  // Keyboard activation for the inline-edit spans: Enter or Space on the
+  // focused element invokes the same action as a click (a11y).
+  function onEditableKey(e, action) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      action()
+    }
+  }
+
   async function saveVersion() {
+    editError = ''
     try {
-      await EditGame(gameId, {engine: '', version: editVersion.value, exePath: '', notes: ''})
+      await EditGame(gameId, {version: editVersion.value})
       await loadDetail()
       onUpdate()
+      editVersion = {active: false, value: ''}
     } catch (err) {
-      console.error('Failed to save version:', err)
+      editError = `Failed to save version: ${fmtErr(err)}`
+      // Keep the editor open with the user's value so they can retry.
     }
-    editVersion = {active: false, value: ''}
   }
 
   function startNotesEdit() {
@@ -253,34 +323,39 @@
   }
 
   async function saveNotes() {
+    editError = ''
     try {
-      await EditGame(gameId, {engine: '', version: '', exePath: '', notes: editNotes.value})
+      await EditGame(gameId, {notes: editNotes.value})
       await loadDetail()
       onUpdate()
+      editNotes = {active: false, value: ''}
     } catch (err) {
-      console.error('Failed to save notes:', err)
+      editError = `Failed to save notes: ${fmtErr(err)}`
+      // Keep the editor open with the user's value so they can retry.
     }
-    editNotes = {active: false, value: ''}
   }
 
   async function handleRemove() {
     if (!window.confirm(`Are you sure you want to remove "${detail.title}" from your library?`)) return
+    editError = ''
     try {
       await RemoveGame(gameId, false)
       onBack()
       onUpdate()
     } catch (err) {
-      console.error('Failed to remove:', err)
+      editError = `Failed to remove game: ${fmtErr(err)}`
+      // Stay on the detail view — the game is still in the library.
     }
   }
 
   async function handleSync() {
+    editError = ''
     try {
       await SyncSingleGame(gameId)
       await loadDetail()
       onUpdate()
     } catch (err) {
-      console.error('Failed to sync:', err)
+      editError = `Failed to sync: ${fmtErr(err)}`
     }
   }
 
@@ -296,9 +371,46 @@
     }
   }
 
-  let unsubInstall = []
+  // Kick off an update for this game. DownloadGameUpdate returns immediately
+  // (the pipeline runs in the background); the game-update:* events below
+  // keep `updating` true until a terminal phase and refresh the badge.
+  async function handleDownloadUpdate() {
+    if (updating) return
+    updating = true
+    editError = ''
+    try {
+      await DownloadGameUpdate(gameId)
+      // Stay "downloading" until the pipeline reports complete/error.
+    } catch (err) {
+      updating = false
+      editError = `Failed to start update: ${fmtErr(err)}`
+    }
+  }
 
-  onMount(() => {
+  // Open a download link's URL in the system browser (not the webview).
+  async function handleOpenLink(linkId) {
+    if (openingLinks.has(linkId)) return
+    openingLinks = new Set([...openingLinks, linkId])
+    try {
+      await OpenDownloadURL(linkId)
+    } catch (err) {
+      editError = `Failed to open link: ${fmtErr(err)}`
+    } finally {
+      const next = new Set(openingLinks)
+      next.delete(linkId)
+      openingLinks = next
+    }
+  }
+
+  let unsubInstall = []
+  let unsubGameUpdate = []
+
+  onMount(async () => {
+    try {
+      coverBase = await GetCoverBaseURL()
+    } catch (e) {
+      console.error('Failed to get cover base URL', e)
+    }
     loadDetail()
     loadCollections()
     loadInstallTargets()
@@ -327,10 +439,37 @@
         onUpdate()
       }),
     ]
+
+    // Track the game-update pipeline for THIS game. The backend holds a
+    // single-run lock and the pipeline may be running for another game, so
+    // every event is filtered by gameID. We refresh the detail only on
+    // complete/error — progress events just keep the button disabled.
+    const busyPhases = ['syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
+
+    unsubGameUpdate = [
+      EventsOn('game-update:phase', (d) => {
+        if (!mine(d)) return
+        updating = busyPhases.includes(d.phase)
+      }),
+      EventsOn('game-update:complete', async (d) => {
+        if (!mine(d)) return
+        updating = false
+        await loadDetail()
+        onUpdate()
+      }),
+      EventsOn('game-update:error', async (d) => {
+        if (!mine(d)) return
+        updating = false
+        await loadDetail()
+        onUpdate()
+        if (d.message) editError = `Update failed: ${d.message}`
+      }),
+    ]
   })
 
   onDestroy(() => {
     for (const un of unsubInstall) if (un) un()
+    for (const un of unsubGameUpdate) if (un) un()
   })
 </script>
 
@@ -346,6 +485,13 @@
     <div class="error-state"><p>Error: {error}</p><button class="back-btn" onclick={onBack}>Go Back</button></div>
   {:else if detail}
     <div class="detail-content">
+      {#if editError}
+        <div class="edit-notice">
+          <span class="edit-notice-icon">✕</span>
+          <span>{editError}</span>
+        </div>
+      {/if}
+
       <!-- Title + Badges -->
       <div class="title-section">
         <div class="title-main">
@@ -367,6 +513,14 @@
             <h1>{detail.title}</h1>
             {#if detail.latestVersion && detail.version && detail.latestVersion !== detail.version}
               <span class="update-badge" title="Update: {detail.version} → {detail.latestVersion}">Update Available</span>
+              <button
+                class="update-btn"
+                onclick={handleDownloadUpdate}
+                disabled={updating}
+                title="Download {detail.latestVersion}"
+              >
+                {updating ? 'Downloading…' : '↓ Download Update'}
+              </button>
             {/if}
           {/if}
         </div>
@@ -382,12 +536,13 @@
       <div class="detail-grid">
         <!-- Left: Cover -->
         <div class="cover-section">
-          {#if detail.coverUrl}
+          {#if coverSrc}
             <img
               class="cover-img"
-              src={detail.coverUrl}
+              src={coverSrc}
               alt="{detail.title} cover"
               loading="lazy"
+              onerror={handleCoverError}
             />
           {:else}
             <div class="cover-placeholder">
@@ -406,20 +561,19 @@
             </div>
           {/if}
 
-          {#if detail.engine}
-            <div class="meta-row">
-              <span class="meta-label">Engine</span>
-              <span class="meta-value">
-                <span class="select-arrow">
-                  <select class="field-select" onchange={handleEngineChange}>
-                    {#each engines as eng}
-                      <option value={eng} selected={detail.engine === eng}>{eng}</option>
-                    {/each}
-                  </select>
-                </span>
+          <div class="meta-row">
+            <span class="meta-label">Engine</span>
+            <span class="meta-value">
+              <span class="select-arrow">
+                <select class="field-select" value={detail.engine || ''} onchange={handleEngineChange}>
+                  <option value="">— None —</option>
+                  {#each engineChoices as eng}
+                    <option value={eng}>{eng}</option>
+                  {/each}
+                </select>
               </span>
-            </div>
-          {/if}
+            </span>
+          </div>
 
           {#if detail.version || detail.latestVersion}
             <div class="meta-row">
@@ -435,7 +589,14 @@
                   <button class="btn btn-xs btn-primary" onclick={saveVersion}>Save</button>
                   <button class="btn btn-xs" onclick={() => editVersion = {active: false, value: ''}}>Cancel</button>
                 {:else}
-                  <span class="editable-field" onclick={startVersionEdit} title="Click to edit">
+                  <span
+                    class="editable-field"
+                    role="button"
+                    tabindex="0"
+                    onclick={startVersionEdit}
+                    onkeydown={(e) => onEditableKey(e, startVersionEdit)}
+                    title="Click to edit"
+                  >
                     {detail.version || 'unknown'}
                     {#if detail.latestVersion && detail.latestVersion !== detail.version}
                       <span class="version-update">→ {detail.latestVersion}</span>
@@ -452,7 +613,7 @@
               <span class="meta-value">
                 <span class="select-arrow">
                   <select class="field-select" onchange={handleStatusChange}>
-                    {#each ['active', 'completed', 'abandoned', 'on_hold', 'unknown'] as s}
+                    {#each GAME_STATUSES as s}
                       <option value={s} selected={detail.status === s}>{statusLabel(s)}</option>
                     {/each}
                   </select>
@@ -476,7 +637,14 @@
                   <button class="btn btn-xs btn-primary" onclick={saveExePath}>Save</button>
                   <button class="btn btn-xs" onclick={() => editExePath = {active: false, value: ''}}>Cancel</button>
                 {:else}
-                  <span class="editable-field mono" onclick={startExePathEdit} title="Click to edit">
+                  <span
+                    class="editable-field mono"
+                    role="button"
+                    tabindex="0"
+                    onclick={startExePathEdit}
+                    onkeydown={(e) => onEditableKey(e, startExePathEdit)}
+                    title="Click to edit"
+                  >
                     {detail.exePath || '—'}
                   </span>
                 {/if}
@@ -500,7 +668,14 @@
                   <button class="btn btn-xs btn-primary" onclick={saveWinePrefix}>Save</button>
                   <button class="btn btn-xs" onclick={() => editWinePrefix = {active: false, value: ''}}>Cancel</button>
                 {:else}
-                  <span class="editable-field mono" onclick={startWinePrefixEdit} title="Click to edit">
+                  <span
+                    class="editable-field mono"
+                    role="button"
+                    tabindex="0"
+                    onclick={startWinePrefixEdit}
+                    onkeydown={(e) => onEditableKey(e, startWinePrefixEdit)}
+                    title="Click to edit"
+                  >
                     {detail.winePrefix || '— (system default)'}
                   </span>
                 {/if}
@@ -576,10 +751,10 @@
             </div>
           {/if}
 
-          {#if detail.f95Url}
+          {#if detail.f95Url && safeExternalUrl(detail.f95Url)}
             <div class="meta-row">
               <span class="meta-label">F95Zone</span>
-              <span class="meta-value"><a href={detail.f95Url} target="_blank" rel="noopener">{detail.f95Url}</a></span>
+              <span class="meta-value"><a href={safeExternalUrl(detail.f95Url)} target="_blank" rel="noopener">{detail.f95Url}</a></span>
             </div>
           {/if}
 
@@ -588,7 +763,9 @@
               <span class="meta-label">Stores</span>
               <span class="meta-value store-links">
                 {#each Object.entries(detail.storeLinks) as [store, url]}
-                  <a href={url} target="_blank" rel="noopener" class="store-badge">{store}</a>
+                  {#if safeExternalUrl(url)}
+                    <a href={safeExternalUrl(url)} target="_blank" rel="noopener" class="store-badge">{store}</a>
+                  {/if}
                 {/each}
               </span>
             </div>
@@ -653,14 +830,22 @@
           {#if showDownloads}
             <div class="dl-list">
               {#each detail.downloadLinks as link}
-                <div class="dl-row">
+                <button
+                  class="dl-row"
+                  onclick={() => handleOpenLink(link.id)}
+                  disabled={openingLinks.has(link.id)}
+                  title="Open download page in your browser"
+                >
                   <span class="dl-host">{link.host}</span>
                   <span class="dl-name">{link.name}</span>
-                  <span class="dl-platform">{link.platform}</span>
+                  <span class="dl-url">{safeExternalUrl(link.url) || link.url}</span>
+                  {#if link.platform}
+                    <span class="dl-platform">{link.platform}</span>
+                  {/if}
                   {#if link.isDead}
                     <span class="dl-dead">dead</span>
                   {/if}
-                </div>
+                </button>
               {/each}
             </div>
           {/if}
@@ -811,6 +996,20 @@
     font-size: 12px;
     font-weight: 600;
   }
+  .update-btn {
+    padding: 3px 12px;
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.12s, color 0.12s;
+  }
+  .update-btn:hover:not(:disabled) { background: var(--accent); color: #fff; }
+  .update-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .badges {
     display: flex;
     gap: 8px;
@@ -1248,16 +1447,37 @@
     padding: 4px 8px;
     font-size: 12px;
     border-radius: 4px;
+    /* Button reset — the whole row is the open action */
+    background: transparent;
+    border: none;
+    width: 100%;
+    text-align: left;
+    color: inherit;
+    font-family: inherit;
+    cursor: pointer;
   }
-  .dl-row:hover { background: var(--bg-hover); }
+  .dl-row:hover:not(:disabled) { background: var(--bg-hover); }
+  .dl-row:disabled { opacity: 0.6; cursor: default; }
   .dl-host {
     font-weight: 600;
     color: var(--text-primary);
     min-width: 70px;
+    flex-shrink: 0;
   }
   .dl-name {
-    flex: 1;
     color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 160px;
+    flex-shrink: 1;
+  }
+  .dl-url {
+    flex: 1;
+    min-width: 0;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1266,12 +1486,14 @@
     font-size: 11px;
     color: var(--text-muted);
     font-family: var(--font-mono);
+    flex-shrink: 0;
   }
   .dl-dead {
     font-size: 10px;
     color: var(--danger);
     font-weight: 600;
     text-transform: uppercase;
+    flex-shrink: 0;
   }
 
   /* ── Play History ──────────────────────────── */
@@ -1341,5 +1563,24 @@
     color: var(--danger);
     background: color-mix(in srgb, var(--danger) 12%, transparent);
     border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  }
+
+  /* ── Inline Edit / Action Error Notice ─────── */
+  .edit-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  }
+  .edit-notice-icon {
+    font-weight: 700;
+    flex-shrink: 0;
+    line-height: 1.4;
   }
 </style>

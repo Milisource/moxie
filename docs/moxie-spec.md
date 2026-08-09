@@ -1,14 +1,14 @@
 # moxie — MVP Specification
 
 **Version:** 0.4.0-alpha (July 2026)
-**Status:** Alpha — 0.4.0 (moxie update fix — correct GitHub repo URL). Download: Beta (6 host resolvers: Pixeldrain, Buzzheavier, Gofile, Google Drive, DataNodes, MixDrop, VikingFile (beta))
+**Status:** Alpha — 0.4.0 (moxie update fix — correct GitHub repo URL). Download: Beta (8 host resolvers: Pixeldrain, Buzzheavier, Gofile, Google Drive, DataNodes, MixDrop, Mega, VikingFile (beta))
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
 
 ## Overview
 
-A local game library manager for adult games. Scans directories, detects engines (14 canonical + 3 community → Others), matches games to F95Zone threads for metadata, and presents results in a terminal UI. Built as a single static Go binary with embedded SQLite.
+A local game library manager for adult games. Scans directories, detects engines (15 canonical + 3 community → Others), matches games to F95Zone threads for metadata, and presents results in a terminal UI. Built as a single static Go binary with embedded SQLite.
 
 ---
 
@@ -139,10 +139,23 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] MixDrop resolver — passthrough with User-Agent header (may be blocked by interstitial file pages, classified as beta)
 - [x] Download validation (`IsValidGameFile`) — rejects files < 4096 bytes or that aren't archives/executables; catches interstitial HTML pages that fake hosts serve instead of real files
 - [x] TUI step-by-step download status — `stepMsg` field on `activeDownload` shows host-finding phase, per-host attempt, failure reasons, extract/merge progress; rendered in `downloadSection()` in real-time via 500 ms poll tick
+- [x] **Sync rework — cookie-free primary path** — version checks now run through F95Zone's public JSON endpoints instead of cookie-dependent thread scraping:
+  - `checker.php` bulk version lookup — up to 100 thread IDs per request, one or two requests cover the whole library (verified: 103 games in ~2s, vs ~1m40s of scraping)
+  - `latest_data.php?cmd=list` title search — cookie-free auto-association with stopword-stripped queries (Redis search semantics), title-based non-game rejection and cache-type-field engine validation
+  - F95Checker cache API (`/fast`, `/full`) — untracked-thread coverage, status/tags/metadata refresh, thread-missing detection (privated/deleted threads no longer surface as mysterious 403s)
+  - `StripVersionQualifier` — checker/cache versions (`"v21.0.0 wip.7944"`) normalized to numeric core before comparison; phantom updates eliminated
+  - 3-layer fallback: bulk API → cache API → direct scrape (with cookies). Cookies are no longer required for sync at all
+  - Desktop sync reworked to the same cookie-free flow with proper candidate scoring (previously took `results[0]` blindly) and the cache-API metadata refresh; phase 1 (auto-association) runs on 3 parallel workers (per-worker pacing), skips no-match games within a 24h cooldown, and reuses the persistent association cache so repeat syncs are near-instant
+  - Public endpoints now carry the session cookie when available (`NewPublicAPIWithCookie`) — F95Zone's anonymous hourly quota no longer stalls full-library syncs; cookie-free construction remains the fallback (F95-8vlc)
+  - Cache-API `type` enum drives engine detection (correct numbering) for association and the engine-consistency check; weak title matches (score < 0.7 or no token containment) never overwrite a curated title (F95-6duz, F95-ytru)
+- [x] **Desktop security hardening** — `GetThreadPreview`/`AddGameFromF95Zone` validate `https` + `f95zone.to` host before any cookie-carrying request, closing the SSRF/cookie-exfiltration hole for forged URLs (F95-vavb)
+- [x] **Scraper hardening** — retry with backoff (transient 5xx/network, single 403 retry), circuit breaker after 3 consecutive blocks (dead sessions fail fast instead of game-by-game), `Preflight()` session check, browser-identical `Sec-Fetch-*` headers, Cloudflare-marker detection inside 403/503 bodies
 - [x] Cookie wiring through download pipeline — `f95Cookie` parameter threaded through `Download()` → `DownloadWithHost()` → `HostResolver.SetF95Cookie()` → `followRedirect()` for authenticating F95Zone masked URL HEAD requests
 - [x] Archive progress improvements — `totalFiles` excludes directory entries so progress shows only real file extractions; filenames truncated to 60 chars in CLI progress output
 - [x] `internal/updater/` package — `Merge()` copies new files from extracted archive to game directory, preserves user saves/configs/mods via engine-aware glob patterns; optional `.old` backup with automatic restore
-- [x] `internal/log/` per-day log files — `log.Init(config.LogDir())` in `main()` writes structured logs to `~/.config/moxie/logs/moxie-YYYY-MM-DD.log`; instruments download attempts, fallbacks, resolve failures, and completions
+- [x] `internal/log/` per-day log files — `log.Init(config.LogDir())` writes structured logs to `~/.config/moxie/logs/moxie-YYYY-MM-DD.log`; instruments download attempts, fallbacks, resolve failures, and completions. `Init*` also re-points stdlib `slog.Default` at the same sink, so the desktop app's `slog.*` calls reach the file too. `MOXIE_LOG_LEVEL=debug|info|warn|error` raises/lowers the level at startup (default `info`); cover-fetch runs log one line per game (`cover resolved`), per-cover download results (`cover cached`/failures), and run summaries (`cover fetch started`/`complete`)
+- [x] **AVIF covers** — F95Zone's CDN serves AVIF-encoded images under `.png`/`.jpg` cover URLs (Cloudflare conversion); `knownImageFormat`/`imageMimeFromPrefix` sniff the ISOBMFF `ftyp`+`avif`/`avis` brand so AVIF covers are cached and served (`image/avif`). Thumbnails are skipped for AVIF (no pure-Go decoder; cover server falls back to the full image)
+- [x] **Security & robustness review (2026-08-09)** — 26 review findings closed: F95Zone session cookie host-scoped (no more leaks to Google/redirect chains); CLI self-update staged in 0700 dir with SHA-256 verification; zip-bomb defense; per-connection FK enforcement via DSN `_pragma`; cancellable scans & downloads (no shutdown hangs, no TUI freezes); Google Drive label fix; Proton tool-ID casing; Steam `shortcuts.vdf` validated against a real Steam-generated fixture (deterministic, canonical field order); exec-bit preservation on game merges; hostname-based download-host identification; word-boundary title matching. Full details in `CHANGELOG.md`
 
 ### Upcoming
 
@@ -191,9 +204,10 @@ A local game library manager for adult games. Scans directories, detects engines
   - [x] Game list view with search, engine/status filters, sortable columns, context menu
   - [x] Game detail view with cover art, metadata, inline editing, sync, download links
   - [x] Scan directory dialog with saved paths and live Wails event progress
-  - [x] F95Zone sync dialog with per-game progress and completion summary
+  - [x] F95Zone sync dialog with per-game progress and completion summary — sync state lives in the app shell, so progress/results survive tab switches; backend guard rejects a second concurrent run
   - [x] Dark/light mode (system preference auto-detect)
-  - [x] Cover art thumbnails in game list (lazy-loaded, local caching via data URIs)
+  - [x] Cover art thumbnails in game list — lazy-loaded from a loopback HTTP cover server (320px JPEG thumbs generated at cache time, full image in the detail view)
+  - [x] Cover art backfill — Covers view fetches missing covers in bulk (stored URL → F95Checker cache API → cookie scrape), 4-worker concurrent downloads with singleflight dedupe, live progress and completion events
   - [x] Game version update view with per-game and batch update
   - [x] F95Zone game browser with search, preview panel, add-to-library
   - [x] Download management view with expandable game cards, open-in-browser
@@ -208,9 +222,16 @@ A local game library manager for adult games. Scans directories, detects engines
   - [x] Launch games from the desktop app — Play button in detail view, play history recording, launch errors surfaced in UI
   - [x] Wine prefix support in desktop app — editable per-game prefix, `PlayGame` honors the DB-stored prefix
   - [x] Directory watcher — fsnotify watches configured scan paths; debounced file changes trigger incremental rescans (insert/update/remove) with live library refresh
+  - [x] Nullable game-field editing — EditGame fields are `null` = unchanged / `''` = clear, so wrong exe paths and stale notes can finally be cleared from the detail view without wiping other fields (F95-o3lr)
+  - [x] Update check errors surface in the UI — a failed GitHub API check shows the error instead of a false "Moxie is up to date" (F95-hbpq)
+  - [x] Single-flight update pipeline — per-run guard shared by single/batch update and install; the batch view recovers cleanly when the batch fails before starting (F95-p9xl, F95-r1sx)
+  - [x] Context menu "Set Status" submenu reachable — click propagation stopped at the menu container (F95-qxui)
 
 ### Known Limitations
 
+- **Sync public endpoints are undocumented** — `checker.php` and `latest_data.php` are F95Zone's own endpoints used by its Latest Updates page; they could change or be locked down. The 3-layer fallback (bulk API → F95Checker cache API → direct scrape) degrades gracefully, and `checker.php` hard-caps at 100 thread IDs per request.
+- **F95Checker cache API is third-party** — `api.f95checker.dev` is run by the F95Checker project (one maintainer, open source) and is the same service that project's thousands of users rely on. Its `/full` endpoint 404s transiently (handled with one retry) and returns numeric fields as strings (handled by lenient parsing). If it goes down, sync falls back to direct scraping.
+- **Threads not in the Latest Updates index** — games whose threads checker.php doesn't track (about 20% of a typical library) rely on the cache API or, failing that, cookie-based scraping. A tiny fraction of threads (deleted/privated) are unresolvable through any path.
 - **Mega downloads not supported** — Mega's proprietary encrypted protocol cannot be handled via HTTP. Mega links are deprioritized to -200 in host scoring; the downloader auto-fallbacks to the next-best link. Only when all links fail is the user informed. A native SDK/integration is planned.
 - **Download feature is BETA** — Most file hosts use anti-bot protection (Cloudflare, CAPTCHAs, JS challenges) that HTTP clients cannot bypass. Only Pixeldrain (via API) has reliable support. Other hosts may fail intermittently. The fallback loop tries all available links and shows detailed per-host errors. When all links fail, use `moxie install <id> <path>` with a manually downloaded archive.
 - **Testability** — 130+ `os.Exit(1)` calls remain in CLI wrappers; `RunPlay`, `RunScan`, `RunSync` extracted as testable logic functions; other commands still need extraction

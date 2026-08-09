@@ -116,6 +116,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cycleSort()
 			m.rebuildFiltered()
 			return m, nil
+		case "r":
+			m.sortDesc = !m.sortDesc
+			m.rebuildFiltered()
+			return m, nil
 		case "ctrl+e":
 			m.cycleEngineFilter()
 			return m, nil
@@ -185,6 +189,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case detailGameLoadedMsg:
+		msg.game.Tags = sortedTags(msg.game.Tags)
 		m.detailGame = msg.game
 		return m, nil
 
@@ -242,15 +247,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// ── Download messages ─────────────────────────────────────────
 	case downloadStartedMsg:
 		if msg.err != nil {
+			// CreateDownload failed inside startDownloadCmd, so the map
+			// still holds only our Pending reservation — release it.
+			m.releasePendingReservation(msg.gameID)
 			m.err = fmt.Errorf("download failed: %v", msg.err)
 			return m, nil
 		}
 		m.notice = fmt.Sprintf("Download started for game %d", msg.gameID)
+		// Only start the 500ms poll loop from the first downloadStartedMsg.
+		// A second download arriving while the spinner is already active
+		// must not chain a duplicate poll loop.
 		if !m.spinnerActive && m.hasActiveDownloads() {
 			m.spinnerActive = true
-			return m, tea.Batch(m.pollDownloads(), func() tea.Msg { return m.spinner.Tick() })
+			return m, tea.Batch(m.pollDownloads(), m.spinner.Tick)
 		}
-		return m, m.pollDownloads()
+		return m, nil
+
+	case downloadLinksMsg:
+		if msg.err != nil {
+			// Link resolution failed — remove the Pending reservation so
+			// the game can be retried.
+			m.releasePendingReservation(msg.gameID)
+			m.err = fmt.Errorf("Cannot find download link: %v", msg.err)
+			return m, nil
+		}
+		m.notice = fmt.Sprintf("Downloading from %s...", msg.links[0].Host)
+		return m, m.startDownloadCmd(msg.gameID, msg.links, msg.destDir, msg.gamePath, msg.engine, m.f95Cookie)
 
 	case downloadProgressMsg:
 		if m.hasActiveDownloads() {
@@ -497,34 +519,42 @@ func (m model) handleDownloadKey() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Check if already downloading
+	// Check if already downloading. The check and the reservation below
+	// happen in the same critical section (and Update is single-threaded),
+	// so a second keypress while link resolution is still in flight sees
+	// the Pending entry and is rejected instead of starting a second
+	// resolve → download flow into the same directory.
 	m.activeDownloadsMu.Lock()
 	ad, ok := m.activeDownloads[m.selectedID]
-	m.activeDownloadsMu.Unlock()
 	if ok {
 		ad.mu.Lock()
 		status := ad.status
 		ad.mu.Unlock()
 		if status == db.DownloadStatusDownloading || status == db.DownloadStatusPending {
+			m.activeDownloadsMu.Unlock()
 			m.err = fmt.Errorf("Download already in progress")
 			return m, nil
 		}
 	}
+	// Reserve the game synchronously. startDownloadCmd upgrades this
+	// entry once links are resolved; downloadLinksMsg/downloadStartedMsg
+	// error paths release it.
+	m.activeDownloads[m.selectedID] = &activeDownload{
+		gameID:  m.selectedID,
+		status:  db.DownloadStatusPending,
+		stepMsg: "Resolving download links...",
+	}
+	m.activeDownloadsMu.Unlock()
 
 	destDir := filepath.Join(filepath.Dir(game.Path), "downloads")
 	if err := os.MkdirAll(destDir, 0755); err != nil {
+		m.releasePendingReservation(m.selectedID)
 		m.err = fmt.Errorf("Cannot create download directory: %v", err)
 		return m, nil
 	}
 
-	links, resolveErr := m.resolveDownloadLinks(game)
-	if resolveErr != nil {
-		m.err = fmt.Errorf("Cannot find download link: %v", resolveErr)
-		return m, nil
-	}
-
-	m.notice = fmt.Sprintf("Downloading from %s...", links[0].Host)
-	return m, m.startDownloadCmd(m.selectedID, links, destDir, game.Path, game.Engine, m.f95Cookie)
+	m.notice = "Resolving download links..."
+	return m, m.resolveLinksCmd(game, destDir)
 }
 
 func (m model) handleFilterInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
@@ -570,7 +600,7 @@ func (m *model) cycleSort() {
 }
 
 func (m *model) cycleEngineFilter() {
-	engines := []string{"", "Unity", "RenPy", "RPGM", "UnrealEngine", "HTML", "Java", "Flash", "Others", "ADRIFT", "QSP", "RAGS", "Tads", "WebGL", "WolfRPG"}
+	engines := []string{"", "Unity", "RenPy", "RPGM", "UnrealEngine", "HTML", "Java", "Godot", "Flash", "Others", "ADRIFT", "QSP", "RAGS", "Tads", "WebGL", "WolfRPG"}
 	for i, e := range engines {
 		if e == m.engineFilter {
 			m.engineFilter = engines[(i+1)%len(engines)]

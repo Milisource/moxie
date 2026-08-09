@@ -1,10 +1,12 @@
 package steam
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -18,7 +20,7 @@ import (
 func testShortcutsVDF(t *testing.T, entries []ShortcutEntry) []byte {
 	t.Helper()
 	m := buildShortcutsMap(entries)
-	data, err := writeVdf(m)
+	data, err := writeVdfOrdered(m)
 	if err != nil {
 		t.Fatalf("vdf.WriteVdf: %v", err)
 	}
@@ -109,8 +111,8 @@ func TestArtType_Suffix(t *testing.T) {
 
 func TestArtType_Dimensions(t *testing.T) {
 	tests := []struct {
-		art      ArtType
-		w, h     int
+		art  ArtType
+		w, h int
 	}{
 		{ArtVertical, 600, 900},
 		{ArtHorizontal, 460, 215},
@@ -535,7 +537,7 @@ func TestGetUint32_Types(t *testing.T) {
 		{"uint64", uint64(100), 100},
 		{"int32", int32(-1), 0xFFFFFFFF}, // -1 wraps to max uint32
 		{"int", int(255), 255},
-		{"float64", float64(3.14), 3},            // truncation
+		{"float64", float64(3.14), 3}, // truncation
 		{"float64_large", float64(1e9), 1000000000},
 		{"string (unsupported)", "hello", 0},
 		{"nil", nil, 0},
@@ -570,8 +572,10 @@ func TestBuildTagsMap_ParseTags(t *testing.T) {
 	// Build tags map from slice.
 	tm := buildTagsMap(original)
 
-	// Parse tags back from a parent map.
-	parent := vdfMap{"tags": tm}
+	// Parse tags back from a parent map. buildTagsMap returns an ordered
+	// structure (byte-exact serialization); the parser works on vdfMap,
+	// which is what readVdf produces, so convert.
+	parent := vdfMap{"tags": orderedToVdfMap(tm)}
 	parsed := parseTags(parent)
 
 	if len(parsed) != len(original) {
@@ -597,17 +601,32 @@ func TestBuildTagsMap_ParseTags(t *testing.T) {
 
 	// Single tag.
 	single := buildTagsMap([]string{"solo"})
-	parsedSingle := parseTags(vdfMap{"tags": single})
+	parsedSingle := parseTags(vdfMap{"tags": orderedToVdfMap(single)})
 	if len(parsedSingle) != 1 || parsedSingle[0] != "solo" {
 		t.Errorf("single tag round-trip: got %v, want [solo]", parsedSingle)
 	}
 
 	// Multiple tags (4).
 	fourTags := buildTagsMap([]string{"a", "b", "c", "d"})
-	parsedFour := parseTags(vdfMap{"tags": fourTags})
+	parsedFour := parseTags(vdfMap{"tags": orderedToVdfMap(fourTags)})
 	if len(parsedFour) != 4 {
 		t.Errorf("expected 4 tags, got %d: %v", len(parsedFour), parsedFour)
 	}
+}
+
+// orderedToVdfMap converts a vdfOrderedMap into the vdfMap shape the parser
+// expects (readVdf always produces vdfMap). Test-only helper.
+func orderedToVdfMap(om vdfOrderedMap) vdfMap {
+	out := make(vdfMap, len(om))
+	for _, e := range om {
+		switch v := e.Value.(type) {
+		case vdfOrderedMap:
+			out[e.Key] = orderedToVdfMap(v)
+		default:
+			out[e.Key] = v
+		}
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -823,6 +842,100 @@ func TestReadShortcuts_WriteShortcuts_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestReadShortcuts_RealFixture validates the codec against a byte-identical
+// copy of a genuine Steam-generated shortcuts.vdf (11 entries, tags,
+// FlatpakAppID, LastPlayTime, DevkitOverrideAppID and the root terminator
+// included). The self-round-trip tests would pass even with a wire-format
+// drift that corrupts or wipes the user's real shortcuts file on the next
+// Steam launch; this fixture is the ground truth that catches such drift.
+//
+// Byte-equality with the fixture is not the contract: Steam itself quotes
+// exe/StartDir inconsistently across entries, so the serializer's canonical
+// quoting shifts bytes. The contract is (1) a correct parse of the known
+// layout, (2) deterministic serialization, and (3) a semantic round-trip
+// that loses nothing.
+func TestReadShortcuts_RealFixture(t *testing.T) {
+	t.Parallel()
+
+	fixture := filepath.Join("testdata", "shortcuts_real.vdf")
+	if _, err := os.ReadFile(fixture); err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	entries, err := ReadShortcuts(fixture)
+	if err != nil {
+		t.Fatalf("ReadShortcuts(fixture): %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected shortcuts in the real fixture")
+	}
+
+	// Parse of the known layout: 12 entries, first is Wizard101.
+	if len(entries) != 12 {
+		t.Errorf("expected 12 entries from the fixture, got %d", len(entries))
+	}
+	if entries[0].AppName != "Wizard101" {
+		t.Errorf("first entry = %q, want %q", entries[0].AppName, "Wizard101")
+	}
+	if entries[0].AppID == 0 {
+		t.Error("first entry has zero AppID")
+	}
+	if entries[0].StartDir != "/usr/bin" {
+		t.Errorf("first entry StartDir = %q, want %q", entries[0].StartDir, "/usr/bin")
+	}
+
+	// Modern Steam fields must survive somewhere in the fixture (they are
+	// schema additions Steam started writing in 2025+).
+	modern := false
+	for _, e := range entries {
+		if e.FlatpakAppID != "" || e.LastPlayTime != 0 || len(e.Tags) > 0 {
+			modern = true
+			break
+		}
+	}
+	if !modern {
+		t.Error("expected modern Steam fields (FlatpakAppID/LastPlayTime/Tags) from the fixture")
+	}
+
+	// Serialization must be deterministic: two writes produce identical bytes.
+	dir := t.TempDir()
+	out1 := filepath.Join(dir, "a.vdf")
+	out2 := filepath.Join(dir, "b.vdf")
+	if err := WriteShortcuts(out1, entries); err != nil {
+		t.Fatalf("WriteShortcuts: %v", err)
+	}
+	if err := WriteShortcuts(out2, entries); err != nil {
+		t.Fatalf("WriteShortcuts (2nd): %v", err)
+	}
+	b1, err := os.ReadFile(out1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, err := os.ReadFile(out2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(b1, b2) {
+		t.Fatalf("serialization is not deterministic: %d vs %d bytes", len(b1), len(b2))
+	}
+
+	// Round-trip: parsing the writer's output must reproduce the input
+	// entries exactly — no field dropped, no value altered.
+	reparsed, err := ReadShortcuts(out1)
+	if err != nil {
+		t.Fatalf("reparse of writer output: %v", err)
+	}
+	if len(reparsed) != len(entries) {
+		t.Fatalf("round-trip entry count %d != %d", len(reparsed), len(entries))
+	}
+	for i := range entries {
+		if !reflect.DeepEqual(entries[i], reparsed[i]) {
+			t.Errorf("entry %d (%q) changed through the round-trip:\n  before: %+v\n  after:  %+v",
+				i, entries[i].AppName, entries[i], reparsed[i])
+		}
+	}
+}
+
 // ReadShortcuts on a non-existent file returns (nil, nil) -- not an error.
 // The file path doesn't exist, so the function returns an empty result.
 
@@ -903,13 +1016,13 @@ func TestParseShortcutsMap_RawFieldsPreserved(t *testing.T) {
 	shortcuts := vdfMap{
 		"shortcuts": vdfMap{
 			"0": vdfMap{
-				"appid":        uint32(42),
-				"AppName":      "RawFields Test",
-				"exe":          `"/test"`,
-				"StartDir":     `"/test"`,
-				"tags":         vdfMap{},
-				"unknown_key":  "preserved_value",
-				"another_key":  uint32(99),
+				"appid":       uint32(42),
+				"AppName":     "RawFields Test",
+				"exe":         `"/test"`,
+				"StartDir":    `"/test"`,
+				"tags":        vdfMap{},
+				"unknown_key": "preserved_value",
+				"another_key": uint32(99),
 			},
 		},
 	}
@@ -1221,6 +1334,33 @@ func TestEncodeVDF_NestedEscaping(t *testing.T) {
 	}
 }
 
+// TestEncodeVDF_UnsupportedType guards against silent data loss: the
+// text-VDF writer must refuse to encode values that are neither strings
+// nor nested maps, because dropping them when rewriting config.vdf would
+// corrupt Steam's configuration.
+func TestEncodeVDF_UnsupportedType(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		value interface{}
+	}{
+		{"int", 42},
+		{"bool", true},
+		{"float", 1.5},
+		{"nil", nil},
+		{"slice", []string{"a"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := map[string]interface{}{"key": tc.value}
+			var buf strings.Builder
+			if err := encodeVDF(&buf, input); err == nil {
+				t.Fatalf("encodeVDF(%T) = nil error, want error", tc.value)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 21. BestGridImage
 // ---------------------------------------------------------------------------
@@ -1352,4 +1492,123 @@ func TestBestGridImage_AllSkipped(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// ListProtonVersions
+// ---------------------------------------------------------------------------
 
+func TestListProtonVersions_OfficialLowercased(t *testing.T) {
+	t.Parallel()
+	if !IsLinux() {
+		t.Skip("Proton scanning is Linux-only")
+	}
+
+	root := t.TempDir()
+	for _, dir := range []string{"Proton Experimental", "Proton Hotfix", "GE-Proton9-11"} {
+		p := filepath.Join(root, "steamapps", "common", dir)
+		if strings.HasPrefix(dir, "GE-") {
+			p = filepath.Join(root, "compatibilitytools.d", dir)
+		}
+		if err := os.MkdirAll(p, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(dir, "GE-") {
+			// Custom tools are only recognized with a compatibilitytool.vdf.
+			if err := os.WriteFile(filepath.Join(p, "compatibilitytool.vdf"), []byte("{}"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	versions, err := ListProtonVersions(root)
+	if err != nil {
+		t.Fatalf("ListProtonVersions: %v", err)
+	}
+
+	want := []string{"GE-Proton9-11", "proton_experimental", "proton_hotfix"}
+	if len(versions) != len(want) {
+		t.Fatalf("got %d versions %v, want %v", len(versions), versions, want)
+	}
+	for i, v := range versions {
+		if v != want[i] {
+			t.Errorf("versions[%d] = %q, want %q", i, v, want[i])
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// KnownProtonVersions fallback uses Steam's real tool IDs
+// ---------------------------------------------------------------------------
+
+// TestKnownProtonVersions_NumberedToolIDs guards the fallback list used when
+// ListProtonVersions cannot scan the filesystem. Steam's tool IDs for
+// numbered releases include the minor version (proton_9.0, not proton_9);
+// SetProtonVersion writes the identifier verbatim into config.vdf, so a
+// wrong ID here means the game silently gets no Proton prefix.
+func TestKnownProtonVersions_NumberedToolIDs(t *testing.T) {
+	t.Parallel()
+	for _, v := range KnownProtonVersions {
+		if !isValidProton(v) {
+			t.Errorf("KnownProtonVersions entry %q rejected by isValidProton", v)
+		}
+	}
+	// Numbered releases must carry the .0 minor, matching the identifiers
+	// ListProtonVersions produces from "Proton 9.0" directories.
+	for _, want := range []string{"proton_9.0", "proton_8.0", "proton_7.0"} {
+		found := false
+		for _, v := range KnownProtonVersions {
+			if v == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("KnownProtonVersions missing %q (got %v)", want, KnownProtonVersions)
+		}
+	}
+	// No bare numbered IDs (proton_9 / proton_8 / proton_7) are allowed.
+	for _, bad := range []string{"proton_9", "proton_8", "proton_7"} {
+		for _, v := range KnownProtonVersions {
+			if v == bad {
+				t.Errorf("KnownProtonVersions contains invalid tool ID %q", bad)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RemoveProtonVersion surfaces read errors
+// ---------------------------------------------------------------------------
+
+// TestRemoveProtonVersion_CorruptConfigError ensures a corrupted config.vdf
+// is surfaced as an error rather than being silently treated as "nothing to
+// remove" — consistent with GetProtonVersion.
+func TestRemoveProtonVersion_CorruptConfigError(t *testing.T) {
+	t.Parallel()
+	if !IsLinux() {
+		t.Skip("Proton configuration is Linux-only")
+	}
+
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config", "config.vdf")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A key without a value is not valid VDF.
+	if err := os.WriteFile(configPath, []byte(`"InstallConfigStore"`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RemoveProtonVersion(root, 12345)
+	if err == nil {
+		t.Fatal("RemoveProtonVersion on corrupt config.vdf = nil error, want error")
+	}
+	if !strings.Contains(err.Error(), "config.vdf") {
+		t.Errorf("error should mention config.vdf, got: %v", err)
+	}
+
+	// Missing config file stays a silent no-op (idempotent).
+	missingRoot := t.TempDir()
+	if err := RemoveProtonVersion(missingRoot, 12345); err != nil {
+		t.Errorf("RemoveProtonVersion without config.vdf = %v, want nil", err)
+	}
+}

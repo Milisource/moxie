@@ -48,6 +48,18 @@ type ResolveResult struct {
 // F95Zone masked URLs (f95zone.to/masked/) are resolved via HEAD redirect first,
 // then host-specific resolution is applied on the real download URL.
 func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) {
+	return r.resolveDepth(url, host, 0)
+}
+
+// resolveDepth implements Resolve with a recursion bound so a malicious
+// masked→masked redirect chain cannot recurse indefinitely.
+func (r *HostResolver) resolveDepth(url string, host string, depth int) (*ResolveResult, error) {
+	if depth > 5 {
+		return nil, fmt.Errorf("masked URL chain too deep")
+	}
+	// Normalize legacy labels (e.g. "google drive" stored by older scrapes):
+	// all canonical labels are single lowercase words.
+	host = strings.ToLower(strings.ReplaceAll(host, " ", ""))
 	log.Debug("resolving host URL", "host", host, "url", url)
 
 	// F95Zone masked URLs are redirect endpoints — unwrap them first by following
@@ -63,7 +75,7 @@ func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) 
 			// it will fail, but the caller's fallback loop will try other links.
 		} else if realURL != url {
 			log.Debug("masked URL resolved", "original", url, "real", realURL)
-			return r.Resolve(realURL, realHost)
+			return r.resolveDepth(realURL, realHost, depth+1)
 		}
 	}
 
@@ -80,7 +92,7 @@ func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) 
 		return r.resolveVikingFile(url)
 	case "mixdrop":
 		return r.resolveMixdrop(url)
-	case "google drive":
+	case "googledrive":
 		return r.resolveGoogleDrive(url)
 	case "mega":
 		return r.resolveMega(url)
@@ -195,7 +207,7 @@ func IdentifyHostInURL(rawURL string) string {
 		{"filesfm", "files.fm"},
 		{"filesfm", "filesfm"},
 		{"fromsmash", "fromsmash"},
-		{"google drive", "drive.google"},
+		{"googledrive", "drive.google"},
 		{"hexload", "hexload"},
 		{"hexload", "hexupload"},
 		{"mixdrop", "mixdrop"},
