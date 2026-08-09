@@ -37,22 +37,19 @@ Brave, Firefox) on any of the three target OSes (Linux, macOS, Windows).
   escalation (xvfb-run on display-less Linux) tested with a fake binary.
   Overrides: `MOXIE_FIREFOX_BIN`, `MOXIE_FIREFOX_PROFILE_DIR`.
 - **Selection + wiring (F95-675j): implemented + live-verified.**
-  `WithBrowser("auto"|"chrome"|"firefox")` (or `MOXIE_BROWSER` env);
-  auto order = cookie-holding browser for the host (kooky per-browser) →
-  Chrome-family → Firefox. `InstallDownloaderFallback()` wires the
-  downloader's `SetDefaultBrowserFallback` hook (TUI download, CLI
-  `download`, desktop app startup): the hook fires at most once per
-  download when the Go path hits a Cloudflare challenge (Cf-Mitigated /
-  403 challenge body at the file hop, or a challenge/captcha failure at the
-  resolver stage), and the browser performs the download itself into the
-  destination dir. Go path stays primary.
-- **Opt-in, OFF by default.** The fallback launches the user's own browser
-  on a copy of their profile, so nothing is installed without explicit
-  consent: `moxie config set browser_fallback auto|chrome|firefox` (or
-  `MOXIE_BROWSER=` per run). No browser is shipped or downloaded by moxie —
-  both engines launch the user's installed browser (`launcher.New()`, never
-  rod's `NewBrowser()` download path). Disabled → challenge errors carry
-  the enable command.
+  `WithBrowser("auto"|"chrome"|"firefox")` (or `MOXIE_BROWSER` env /
+  `browser_fallback` config key; `off` disables); auto order =
+  cookie-holding browser for the host (kooky per-browser) → Chrome-family →
+  Firefox. `InstallDownloaderFallback()` wires the downloader's
+  `SetDefaultBrowserFallback` hook (TUI download, CLI `download`, desktop
+  app startup): the hook fires at most once per download when the Go path
+  hits a Cloudflare challenge (Cf-Mitigated / 403 challenge body at the
+  file hop, or a challenge/captcha failure at the resolver stage), and the
+  browser performs the download itself into the destination dir. Go path
+  stays primary.
+- **No browser is shipped or downloaded** — both engines launch the user's
+  own installed browser (`launcher.New()`, never rod's `NewBrowser()`
+  download path); default is auto-detect on the user's own installs.
 - **Known limitation:** raw-launch Firefox only auto-downloads — hosts whose
   pages need a button click (vikingfile/datanodes free-download forms) time
   out unless the resolved URL starts the download on navigation. Click

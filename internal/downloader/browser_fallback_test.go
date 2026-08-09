@@ -113,14 +113,8 @@ func TestDownloadWithHost_FileHopChallenge_NoFallback(t *testing.T) {
 	defaultBrowserFallback = nil
 
 	err := DownloadWithHost("https://cdn.example.com/file.zip", "unknown", t.TempDir(), 0, nil, "")
-	if err == nil {
-		t.Fatal("expected error without fallback")
-	}
-	if !strings.Contains(err.Error(), "HTTP 403") {
-		t.Errorf("error = %v, want HTTP 403", err)
-	}
-	if !strings.Contains(err.Error(), "browser_fallback") {
-		t.Errorf("error = %v, want the opt-in enable hint", err)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 403") {
+		t.Fatalf("expected HTTP 403 without fallback, got %v", err)
 	}
 }
 
@@ -179,9 +173,6 @@ func TestDownloadWithHost_ResolveFailure_NoFallback(t *testing.T) {
 	if len(*calls) != 0 {
 		t.Fatalf("fallback called %d times, want 0 for a plain 404", len(*calls))
 	}
-	if strings.Contains(err.Error(), "browser_fallback") {
-		t.Errorf("plain 404 must not carry the browser-fallback hint: %v", err)
-	}
 }
 
 // TestDownloadWithHost_ResolveCaptchaFailure_Fallback verifies the captcha
@@ -217,30 +208,6 @@ func TestDownloadWithHost_ResolveCaptchaFailure_Fallback(t *testing.T) {
 	}
 	if len(*calls) != 1 {
 		t.Fatalf("fallback called %d times, want 1", len(*calls))
-	}
-}
-
-// TestDownloadWithHost_ResolveChallenge_NoFallbackHint verifies a resolve
-// challenge with the fallback disabled carries the opt-in hint.
-func TestDownloadWithHost_ResolveChallenge_NoFallbackHint(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer srv.Close()
-
-	origTransport := http.DefaultTransport
-	http.DefaultTransport = rewriteToServer("vikingfile.com", srv.URL)
-	defer func() { http.DefaultTransport = origTransport }()
-
-	saveFallback(t)
-	defaultBrowserFallback = nil
-
-	err := DownloadWithHost("https://vikingfile.com/f/abc123", "vikingfile", t.TempDir(), 0, nil, "")
-	if err == nil {
-		t.Fatal("expected error for a challenged resolve without fallback")
-	}
-	if !strings.Contains(err.Error(), "browser_fallback") {
-		t.Errorf("error = %v, want the opt-in enable hint", err)
 	}
 }
 

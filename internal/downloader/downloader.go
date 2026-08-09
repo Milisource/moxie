@@ -131,20 +131,11 @@ func DownloadWithContext(ctx context.Context, urlStr, host, destDir string, expe
 			return fmt.Errorf("resolve %s URL: %w (browser fallback also failed: %v)", host, resolveErr, fbErr)
 		}
 		log.Info("download resolve failed", "host", host, "error", resolveErr)
-		if isChallengeFailure(resolveErr) {
-			return fmt.Errorf("resolve %s URL: %w — %s", host, resolveErr, browserFallbackEnableHint)
-		}
 		return fmt.Errorf("resolve %s URL: %w", host, resolveErr)
 	}
 	log.Debug("download resolving via HTTP", "resolved_url", redactedURL(resolved.URL), "headers", len(resolved.Headers), "host", host)
 	return downloadWithHeaders(ctx, resolved.URL, resolved.Headers, urlStr, host, destDir, expectedTotal, onProgress, resolver.cookieSource, resolver.browserFallback)
 }
-
-// browserFallbackEnableHint tells users how to opt into browser-assisted
-// downloads when a Cloudflare challenge is hit with the fallback disabled.
-// Kept in sync with browserresolve's installer (the downloader cannot
-// import browserresolve — the hook is installed by the caller).
-const browserFallbackEnableHint = "enable browser-assisted downloads with `moxie config set browser_fallback auto` or MOXIE_BROWSER=auto"
 
 // challengeMarkers are error substrings that identify a Cloudflare/captcha
 // wall at the resolver stage — the trigger for the browser fallback. The
@@ -308,9 +299,9 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 			return fmt.Errorf("download rejected: %w (browser fallback also failed: %v)", ErrCFChallengeStale, fbErr)
 		}
 		if UseUTLSTransport {
-			return fmt.Errorf("download rejected: %w — %s", ErrCFChallengeStale, browserFallbackEnableHint)
+			return fmt.Errorf("download rejected: %w", ErrCFChallengeStale)
 		}
-		return fmt.Errorf("HTTP %d (Cloudflare challenge) — %s", resp.StatusCode, browserFallbackEnableHint)
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	log.Debug("download response", "url", redactedURL(urlStr), "status", resp.StatusCode, "content_length", resp.ContentLength, "content_type", resp.Header.Get("Content-Type"))

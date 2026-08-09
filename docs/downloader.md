@@ -213,17 +213,14 @@ UA + TLS fingerprint the clearance was minted to). Wiring:
 - Invoked **at most once per download**; the browser's finished file lands
   in the destination dir and the download is reported complete.
 - `browserresolve.InstallDownloaderFallback()` (TUI download, CLI `download`,
-  desktop startup) installs the hook. **Opt-in, OFF by default** — nothing
-  is installed (and no browser is ever launched) without explicit consent:
-  `moxie config set browser_fallback auto` (persistent, any of
-  `auto|chrome|firefox|off`) or `MOXIE_BROWSER=auto|chrome|firefox` per run.
-  When a challenge is hit with the fallback disabled, the error carries the
-  enable command so the feature is discovered exactly when it is needed.
-  Engine choice is per URL: the browser holding cookies for the host first
-  (kooky per-browser — a clearance only matches its minting browser), then
-  Chrome-family (rod), then Firefox (raw-launch, zero deps). No browser is
-  ever shipped or downloaded by moxie — both engines launch the user's own
-  installed browser.
+  desktop startup) installs the hook when a usable browser exists; default
+  is auto-detect, overridable per run via `MOXIE_BROWSER=auto|chrome|firefox`
+  or persistently via `moxie config set browser_fallback auto` (`off`
+  disables). Engine choice is per URL: the browser holding cookies for the
+  host first (kooky per-browser — a clearance only matches its minting
+  browser), then Chrome-family (rod), then Firefox (raw-launch, zero deps).
+  **No browser is ever shipped or downloaded by moxie** — both engines
+  launch the user's own installed browser.
 - Live-verified 2026-08-09: Firefox 153 headless through the full raw-launch
   pipeline (profiles.ini `Default=1` → copy → user.js prefs →
   `--headless -profile <copy> -no-remote` → `.part`-aware polling);

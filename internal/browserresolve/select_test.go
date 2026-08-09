@@ -141,15 +141,15 @@ func TestSelectEngine_ForcedBrowser(t *testing.T) {
 	}
 }
 
-// TestEffectiveBrowserMode covers MOXIE_BROWSER/config parsing: unset = OFF
-// (no auto-detect — the user must opt in), 1/true/auto = auto, explicit
-// engines force, unknown values are rejected.
+// TestEffectiveBrowserMode covers MOXIE_BROWSER/config parsing: unset =
+// auto-detect, 1/true/auto = auto, explicit engines force, off/unknown
+// values disable.
 func TestEffectiveBrowserMode(t *testing.T) {
 	tests := []struct {
 		env  string
 		want string
 	}{
-		{"", ""}, // OFF by default
+		{"", BrowserAuto}, // unset = auto-detect
 		{"off", ""},
 		{"0", ""},
 		{"false", ""},
@@ -189,17 +189,16 @@ func TestEffectiveBrowserMode_ConfigKey(t *testing.T) {
 	}
 }
 
-// TestInstallDownloaderFallback_DisabledByDefault verifies nothing is
-// installed (and no browser is ever launched) without explicit opt-in.
-func TestInstallDownloaderFallback_DisabledByDefault(t *testing.T) {
-	t.Setenv(browserEnvVar, "")
-	config.SetConfigDirForTest(t.TempDir()) // empty config — nothing set
+// TestInstallDownloaderFallback_ExplicitOff verifies off disables the hook
+// without touching the downloader's global state.
+func TestInstallDownloaderFallback_ExplicitOff(t *testing.T) {
+	t.Setenv(browserEnvVar, "off")
 	installed, why := InstallDownloaderFallback()
 	if installed {
-		t.Fatal("fallback must be OFF by default — no silent browser automation")
+		t.Fatal("off must not install the fallback")
 	}
-	if !strings.Contains(why, browserConfigKey) {
-		t.Errorf("reason = %q, want the opt-in command mention", why)
+	if !strings.Contains(why, "disabled") {
+		t.Errorf("reason = %q, want disabled mention", why)
 	}
 }
 
