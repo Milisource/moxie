@@ -23,26 +23,56 @@
   } = $props()
 
   // Cookie status
-  let cookieStatus = $state('')    // 'available' | 'not_found' | ''
+  let cookieStatus = $state('')       // 'available' | 'not_found' | 'error' | ''
+  let cookieError = $state('')        // human-readable failure for the error state
+  let cookieChecking = $state(false)
 
   // Add-to-library in-flight lives in viewState (browser.addingInFlight) so
   // a remount mid-add keeps the button disabled — a second click before the
   // first AddGameFromF95Zone settles would double-add the game.
 
   // ── Cookie check on mount ──────────────────────────────────
-  onMount(async () => {
+  // Search depends on the cookie status, so the check must never hang the UI:
+  // race the binding against a 20s timeout (same pattern as
+  // DownloadsView.loadData) and surface a timeout/rejection as a visible
+  // error state with a Retry button instead of leaving the Search button
+  // silently disabled forever.
+  async function checkCookieStatus() {
+    if (cookieChecking) return
+    cookieChecking = true
+    cookieError = ''
+    let timer
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error('Cookie check timed out after 20s'))
+      }, 20000)
+    })
     try {
-      cookieStatus = await GetCookieStatus()
+      cookieStatus = await Promise.race([GetCookieStatus(), timeout])
     } catch (e) {
       console.error('Failed to get cookie status:', e)
+      cookieStatus = 'error'
+      cookieError = /timed out/i.test(String(e))
+        ? 'The cookie check timed out after 20s — the app may be unresponsive. Try again.'
+        : String(e).replace(/^Error:\s*/, '')
+    } finally {
+      clearTimeout(timer)
+      cookieChecking = false
     }
-    // A hung request from a previous visit would otherwise leave the shared
-    // spinner stuck forever — nothing is in flight for this fresh instance.
-    browser.loading = false
-    browser.previewing = false
+  }
+
+  onMount(async () => {
+    // Clear inherited spinner flags only when the request they belong to has
+    // settled (or never existed). A search/preview started before navigation
+    // is still current after remount (the seq counters are shared), so its
+    // spinner must keep spinning until the backend responds — only a settled
+    // request leaves searchInFlight/previewInFlight false.
+    if (!browser.searchInFlight) browser.loading = false
+    if (!browser.previewInFlight && !browser.preview) browser.previewing = false
     // Search is explicit-only (Search button / Enter) — never auto-triggered
     // on mount, so a persisted query from a previous visit stays as-is until
     // the user asks for a new search.
+    await checkCookieStatus()
   })
 
   // ── Derived ─────────────────────────────────────────────────
@@ -58,6 +88,8 @@
     browser.searchSeq++
     browser.previewSeq++
     browser.loading = false
+    browser.searchInFlight = false
+    browser.previewInFlight = false
     browser.searched = false
     browser.results = []
     browser.error = ''
@@ -86,12 +118,14 @@
     const seq = ++browser.searchSeq
     browser.previewSeq++                    // a new search invalidates any in-flight preview
     browser.loading = true
+    browser.searchInFlight = true
     browser.error = ''
     browser.searched = true
     browser.results = []
     browser.selected = null
     browser.preview = null
     browser.previewing = false
+    browser.previewInFlight = false
     browser.addResult = null
     browser.expandedOverview = false
 
@@ -103,13 +137,17 @@
       if (seq !== browser.searchSeq) return
       browser.error = String(e)
     }
-    if (seq === browser.searchSeq) browser.loading = false
+    if (seq === browser.searchSeq) {
+      browser.loading = false
+      browser.searchInFlight = false
+    }
   }
 
   // ── Preview ────────────────────────────────────────────────
   async function handlePreview(result) {
     browser.selected = result
     browser.previewing = true
+    browser.previewInFlight = true
     browser.preview = null
     browser.previewError = ''
     browser.addResult = null
@@ -124,11 +162,13 @@
       if (seq !== browser.previewSeq) return
       browser.previewError = String(e)
     }
+    if (seq === browser.previewSeq) browser.previewInFlight = false
   }
 
   function closePreview() {
     browser.previewSeq++               // drop any in-flight preview response
     browser.previewing = false
+    browser.previewInFlight = false
     browser.preview = null
     browser.selected = null
     browser.addResult = null
@@ -197,6 +237,21 @@
           The browser needs your F95Zone session cookies to search and browse.
           Log in at <strong>f95zone.to</strong> in your browser, then restart this app.
         </p>
+      </div>
+    </div>
+  {:else if cookieStatus === 'error'}
+    <div class="cookie-status cookie-error">
+      <span class="cookie-icon">✕</span>
+      <div class="cookie-body">
+        <p class="cookie-title">Couldn't check the F95Zone connection</p>
+        <p class="cookie-detail">{cookieError}</p>
+        <button
+          class="cookie-retry"
+          onclick={checkCookieStatus}
+          disabled={cookieChecking}
+        >
+          {cookieChecking ? 'Checking…' : 'Retry'}
+        </button>
       </div>
     </div>
   {:else}
@@ -517,6 +572,32 @@
   }
   .cookie-missing .cookie-icon,
   .cookie-missing .cookie-title { color: var(--warning); }
+
+  .cookie-error {
+    border: 1px solid var(--danger);
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+  }
+  .cookie-error .cookie-icon,
+  .cookie-error .cookie-title { color: var(--danger); }
+  .cookie-retry {
+    margin-top: 8px;
+    padding: 4px 12px;
+    border: 1px solid var(--danger);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--danger);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .cookie-retry:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+  }
+  .cookie-retry:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
 
   .cookie-loading {
     border: 1px solid var(--border);

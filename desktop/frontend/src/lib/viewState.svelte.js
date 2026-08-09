@@ -53,6 +53,13 @@ export const browser = $state({
   // older one — exactly as if the view had never unmounted.
   searchSeq: 0,
   previewSeq: 0,
+
+  // Whether the most recent search/preview request is still awaiting its
+  // backend response. Survives remounts so a fresh instance can tell whether
+  // the loading/previewing flags it inherited reflect a genuinely in-flight
+  // request (spinner must keep spinning) or an orphaned flag (safe to clear).
+  searchInFlight: false,
+  previewInFlight: false,
 })
 
 // ── Downloads view ─────────────────────────────────────────────
