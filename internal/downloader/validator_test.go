@@ -145,7 +145,7 @@ func TestCheckLinkWithHost_ResolverRouting(t *testing.T) {
 		host string
 		want string // substring expected from the host resolver
 	}{
-		{"gofile", "https://example.com/file.zip", "gofile", "could not extract Gofile file ID"},
+		{"gofile", "https://example.com/file.zip", "gofile", "could not extract Gofile content ID"},
 		{"pixeldrain", "https://example.com/file.zip", "pixeldrain", "could not extract Pixeldrain file ID"},
 		{"datanodes", "https://example.com/file.zip", "datanodes", "could not extract DataNodes file code"},
 		{"googledrive", "https://example.com/file.zip", "googledrive", "could not extract Google Drive file ID"},

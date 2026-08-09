@@ -121,6 +121,8 @@ func (r *HostResolver) resolveDepth(url string, host string, depth int) (*Resolv
 		return r.resolveBuzzheavier(url)
 	case "gofile":
 		return r.resolveGofile(url)
+	case "mediafire":
+		return r.resolveMediafire(url)
 	case "datanodes":
 		return r.resolveDatanodes(url)
 	case "vikingfile":
