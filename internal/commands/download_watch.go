@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -308,7 +309,7 @@ func installDownloadedArchive(database *db.Database, game *db.Game, archivePath 
 		}
 
 		fmt.Fprintf(os.Stderr, "    Merging into %s...\n", game.Path)
-		mergeResult, mergeErr := updater.Merge(game.Path, string(game.Engine), result.Destination, true)
+		mergeResult, mergeErr := updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
 		if mergeErr != nil {
 			fmt.Fprintf(os.Stderr, "    ⚠ Merge warning: %v\n", mergeErr)
 		} else {

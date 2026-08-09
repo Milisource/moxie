@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -387,7 +388,7 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 				fmt.Fprintf(os.Stderr, "    Removed archive\n")
 
 				fmt.Fprintf(os.Stderr, "  Merging update into %s...\n", game.Path)
-				mergeResult, mergeErr := updater.Merge(game.Path, string(game.Engine), result.Destination, true)
+				mergeResult, mergeErr := updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
 				if mergeErr != nil {
 					fmt.Fprintf(os.Stderr, "    ⚠ Warning: %v\n", mergeErr)
 				} else {

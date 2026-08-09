@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -212,7 +213,7 @@ func TestMerge_PreservesSaves(t *testing.T) {
 
 	// Merge
 	parent := filepath.Dir(extractDir)
-	result, err := Merge(gameDir, "RPGM", parent, false)
+	result, err := Merge(context.Background(), gameDir, "RPGM", parent, false)
 	if err != nil {
 		t.Fatalf("merge failed: %v", err)
 	}
@@ -247,7 +248,7 @@ func TestMerge_PreservesSaves(t *testing.T) {
 func TestMerge_FirstTimeNoGame(t *testing.T) {
 	tmp := t.TempDir()
 	noGame := filepath.Join(tmp, "NoGame")
-	result, err := Merge(noGame, "RPGM", tmp, false)
+	result, err := Merge(context.Background(), noGame, "RPGM", tmp, false)
 	if err == nil {
 		t.Errorf("expected error for nonexistent game dir")
 	}
@@ -262,7 +263,7 @@ func TestMerge_BackupCreatesOldDir(t *testing.T) {
 	extractDir := t.TempDir()
 	os.WriteFile(filepath.Join(extractDir, "game.exe"), []byte("new-exe"), 0644)
 
-	result, err := Merge(gameDir, "RPGM", extractDir, true)
+	result, err := Merge(context.Background(), gameDir, "RPGM", extractDir, true)
 	if err != nil {
 		t.Fatalf("merge failed: %v", err)
 	}
@@ -293,7 +294,7 @@ func TestMerge_FailedCopyRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := Merge(gameDir, "RPGM", extractDir, true)
+	result, err := Merge(context.Background(), gameDir, "RPGM", extractDir, true)
 	if err == nil {
 		t.Fatal("expected merge to fail on broken symlink, got nil")
 	}
@@ -343,7 +344,7 @@ func TestMerge_FailedCopyPreservesStaleBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Merge(gameDir, "RPGM", extractDir, true); err == nil {
+	if _, err := Merge(context.Background(), gameDir, "RPGM", extractDir, true); err == nil {
 		t.Fatal("expected merge to fail on broken symlink, got nil")
 	}
 
@@ -392,7 +393,7 @@ func TestMerge_StaleBackupReplacedOnSuccess(t *testing.T) {
 	extractDir := t.TempDir()
 	os.WriteFile(filepath.Join(extractDir, "game.exe"), []byte("new-exe"), 0644)
 
-	result, err := Merge(gameDir, "RPGM", extractDir, true)
+	result, err := Merge(context.Background(), gameDir, "RPGM", extractDir, true)
 	if err != nil {
 		t.Fatalf("merge failed: %v", err)
 	}
@@ -426,7 +427,7 @@ func TestMerge_PreservesExecutableBits(t *testing.T) {
 	os.WriteFile(filepath.Join(extractDir, "game.sh"), []byte("new-launcher"), 0755)
 	os.WriteFile(filepath.Join(extractDir, "data.rpa"), []byte("new-data"), 0644)
 
-	_, err := Merge(gameDir, "RenPy", extractDir, true)
+	_, err := Merge(context.Background(), gameDir, "RenPy", extractDir, true)
 	if err != nil {
 		t.Fatalf("merge failed: %v", err)
 	}

@@ -151,6 +151,32 @@ func TestSelectDownloadLink_ScoresAndFilters(t *testing.T) {
 	})
 }
 
+// TestEnrichSearchThumbnails: catalog cover art replaces whatever the
+// search returned (poster avatars); unmatched results get an empty
+// thumbnail so the UI shows its placeholder instead of an avatar.
+func TestEnrichSearchThumbnails(t *testing.T) {
+	results := []F95SearchResult{
+		{Title: "Meltys Quest", URL: "https://f95zone.to/threads/meltys-quest.6004/", ThumbnailURL: "https://f95zone.to/data/avatars/s/5/5000.jpg"},
+		{Title: "Mod", URL: "https://f95zone.to/threads/meltys-quest-nude-outfits-mod.217059/", ThumbnailURL: "https://f95zone.to/data/avatars/s/2/2000.jpg"},
+		{Title: "Unknown", URL: "https://f95zone.to/threads/unknown.99999/", ThumbnailURL: ""},
+		{Title: "NonThread", URL: "https://f95zone.to/", ThumbnailURL: "https://f95zone.to/data/avatars/s/1/1000.jpg"},
+	}
+
+	enrichSearchThumbnails(results, map[int64]string{6004: "https://preview.f95zone.to/6004.jpg"})
+
+	want := []string{
+		"https://preview.f95zone.to/6004.jpg", // covered by catalog
+		"",                                    // in catalog, but no cover for that id
+		"",                                    // not in catalog
+		"",                                    // not a thread URL
+	}
+	for i, w := range want {
+		if results[i].ThumbnailURL != w {
+			t.Errorf("results[%d].ThumbnailURL = %q, want %q", i, results[i].ThumbnailURL, w)
+		}
+	}
+}
+
 func TestNormalizeTitle(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"  Corruption of Champions  ", "corruption of champions"},

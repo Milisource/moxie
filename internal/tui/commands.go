@@ -439,7 +439,7 @@ func (m model) installArchive(ad *activeDownload, dl *db.Download, archivePath, 
 	ad.mu.Lock()
 	ad.stepMsg = "Merging into game directory..."
 	ad.mu.Unlock()
-	mergeResult, mergeErr := updater.Merge(gamePath, engine, result.Destination, true)
+	mergeResult, mergeErr := updater.Merge(context.Background(), gamePath, engine, result.Destination, true)
 	if mergeErr != nil {
 		log.Warn("merge failed", "game", gamePath, "error", mergeErr)
 		return fmt.Sprintf("Download succeeded, but merging into the game directory failed: %v", mergeErr)

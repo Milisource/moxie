@@ -3,6 +3,7 @@
 package updater
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -25,8 +26,12 @@ type MergeResult struct {
 // and preserved files are restored from the backup after copying new files.
 // A failed merge is rolled back from the backup, so the live game dir is
 // never left half-updated and a previous backup is never destroyed before
-// the new merge has completed.
-func Merge(gameDir, engine, extractedDir string, backup bool) (*MergeResult, error) {
+// the new merge has completed. The context can abort the copy/restore
+// walks mid-merge; a cancelled merge is rolled back like any other failure.
+func Merge(ctx context.Context, gameDir, engine, extractedDir string, backup bool) (*MergeResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(gameDir); os.IsNotExist(err) {
 		return nil, fmt.Errorf("game directory does not exist: %s", gameDir)
 	}
@@ -112,13 +117,13 @@ func Merge(gameDir, engine, extractedDir string, backup bool) (*MergeResult, err
 	}
 
 	// Copy new files
-	if err := copyNew(srcDir, gameDir, preserve, result); err != nil {
+	if err := copyNew(ctx, srcDir, gameDir, preserve, result); err != nil {
 		return result, err
 	}
 
 	// If we have a backup, restore preserved files from it
 	if result.BackupPath != "" {
-		restorePreserved(result.BackupPath, gameDir, preserve)
+		restorePreserved(ctx, result.BackupPath, gameDir, preserve)
 	}
 
 	committed = true
@@ -129,9 +134,13 @@ func Merge(gameDir, engine, extractedDir string, backup bool) (*MergeResult, err
 }
 
 // copyNew walks srcDir and copies files to destDir, skipping any that match
-// preserve patterns AND already exist in the destination.
-func copyNew(srcDir, destDir string, preserve []string, result *MergeResult) error {
+// preserve patterns AND already exist in the destination. A non-nil ctx.Err()
+// aborts the walk early.
+func copyNew(ctx context.Context, srcDir, destDir string, preserve []string, result *MergeResult) error {
 	return filepath.Walk(srcDir, func(srcPath string, info os.FileInfo, err error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err != nil {
 			return err
 		}
@@ -165,8 +174,12 @@ func copyNew(srcDir, destDir string, preserve []string, result *MergeResult) err
 
 // restorePreserved copies files from backupDir to gameDir that match preserve
 // patterns, overwriting any defaults from the new version with the user's files.
-func restorePreserved(backupDir, gameDir string, preserve []string) {
+// A non-nil ctx.Err() stops the walk early.
+func restorePreserved(ctx context.Context, backupDir, gameDir string, preserve []string) {
 	filepath.Walk(backupDir, func(srcPath string, info os.FileInfo, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil || info.IsDir() {
 			return nil
 		}

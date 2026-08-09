@@ -33,10 +33,11 @@ import (
 	"golang.org/x/image/draw"
 	"golang.org/x/image/webp"
 
+	"github.com/mili/moxie/internal/archive"
 	"github.com/mili/moxie/internal/browser"
+	"github.com/mili/moxie/internal/browserresolve"
 	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/db"
-	"github.com/mili/moxie/internal/browserresolve"
 	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/extractor"
@@ -94,6 +95,29 @@ type App struct {
 	// the same upsert path.
 	scanRunning atomic.Bool
 
+	// syncCancel aborts the in-flight SyncAllGames run. Guarded by
+	// syncCancelMu because CancelSync arrives on a different goroutine than
+	// the one that installs it.
+	syncCancelMu sync.Mutex
+	syncCancel   context.CancelFunc
+
+	// netBusy serialises the blocking network bindings (SearchF95Zone,
+	// GetThreadPreview, AddGameFromF95Zone, SyncSingleGame, CheckForUpdate).
+	// Each runs synchronously on the Wails call goroutine; stacked concurrent
+	// calls would pile up goroutines hammering F95Zone/GitHub at once.
+	netBusy atomic.Bool
+
+	// search state coalesces repeated SearchF95Zone calls for the same
+	// query: while one search is in flight, a second call with the same
+	// query waits and returns the first's result instead of starting
+	// another request. Guarded by searchMu.
+	searchMu       sync.Mutex
+	searchInFlight bool
+	searchQuery    string
+	searchDone     chan struct{}
+	searchResults  []F95SearchResult
+	searchErr      error
+
 	// coverFetchMu guards coverFetch, which dedupes concurrent cover
 	// downloads for the same game (sync and cover backfill may overlap).
 	coverFetchMu sync.Mutex
@@ -128,6 +152,21 @@ func (a *App) startup(ctx context.Context) {
 	a.db = database
 	slog.Info("database opened successfully")
 
+	// DB-backed masked-URL unwrap cache: repeated downloads/updates of the
+	// same /masked/ link resolve from the DB instead of re-hitting
+	// F95Zone's rate-limited unwrap endpoint (which walls the second
+	// back-to-back unwrap — live 2026-08-09). Idempotent; every resolver
+	// created afterwards (including the one inside DownloadWithContext)
+	// picks it up.
+	downloader.SetDefaultResolvedCache(
+		a.db.GetResolvedURL,
+		func(maskedURL, resolved, host string) {
+			if err := a.db.PutResolvedURL(maskedURL, resolved, host); err != nil {
+				slog.Warn("failed to cache resolved masked URL", "error", err)
+			}
+		},
+	)
+
 	// Browser fallback for challenge-graded download hosts: wired when a
 	// usable browser is installed (MOXIE_BROWSER=auto|chrome|firefox).
 	if installed, reason := browserresolve.InstallDownloaderFallback(); !installed {
@@ -144,7 +183,8 @@ func (a *App) startup(ctx context.Context) {
 	// Covers cached before the thumbnailing change have no .thumb sibling;
 	// backfill them so the list view stops serving full images for those.
 	// Local-only and cheap; runs in the background to keep startup snappy.
-	go backfillCoverThumbs()
+	// The app context makes the walk cancellable at shutdown.
+	go backfillCoverThumbs(a.bgCtx)
 
 	a.startWatcher()
 }
@@ -253,9 +293,19 @@ func (a *App) shutdown(ctx context.Context) {
 // Version / Config
 // ---------------------------------------------------------------------------
 
-// appVersion is the desktop app's version. Single source of truth — the
-// update check compares against it, so a second literal would silently drift.
-const appVersion = "0.4.0-alpha"
+// appVersion is the desktop app's version. Defaults to the current release
+// line; `make desktop` stamps the full git descriptor into it via
+// wails build -ldflags "-X main.appVersion=$(VERSION)", so the sidebar shows
+// exactly which build is running (e.g. v0.4.0-alpha-34-g0000bed-dirty).
+// The update check compares against it too — isNewerVersion strips "-suffixes"
+// before comparing, so a dirty git string cannot skew that comparison.
+var appVersion = "0.4.0-alpha"
+
+// Strip a leading "v" from stamped builds: the sidebar renders v{version},
+// so keeping the prefix would show "vv0.4.0…".
+func init() {
+	appVersion = strings.TrimPrefix(appVersion, "v")
+}
 
 // GetVersion returns the current application version.
 func (a *App) GetVersion() string {
@@ -455,7 +505,9 @@ func (a *App) GetGameDetail(id int64) (*DesktopGameDetail, error) {
 
 	// Scraped metadata
 	meta, err := a.db.GetScrapedMeta(id)
-	if err == nil && meta != nil {
+	if err != nil {
+		slog.Warn("failed to load scraped metadata", "game_id", id, "error", err)
+	} else if meta != nil {
 		detail.Developer = meta.Developer
 		detail.Overview = meta.Overview
 		detail.CoverURL = meta.CoverURL
@@ -463,7 +515,9 @@ func (a *App) GetGameDetail(id int64) (*DesktopGameDetail, error) {
 
 	// Download links
 	links, err := a.db.ListDownloadLinks(id, "", true)
-	if err == nil {
+	if err != nil {
+		slog.Warn("failed to load download links", "game_id", id, "error", err)
+	} else {
 		detail.DownloadLinks = make([]DesktopDownloadLink, 0, len(links))
 		for _, l := range links {
 			detail.DownloadLinks = append(detail.DownloadLinks, DesktopDownloadLink{
@@ -479,7 +533,9 @@ func (a *App) GetGameDetail(id int64) (*DesktopGameDetail, error) {
 
 	// Play history for this game only.
 	plays, err := a.db.PlaysForGame(id, 200)
-	if err == nil {
+	if err != nil {
+		slog.Warn("failed to load play history", "game_id", id, "error", err)
+	} else {
 		detail.PlayHistory = make([]DesktopPlayEntry, 0, len(plays))
 		for _, p := range plays {
 			detail.PlayHistory = append(detail.PlayHistory, DesktopPlayEntry{
@@ -622,6 +678,15 @@ func (a *App) ScanDirectory(path string) error {
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("scan path must not be empty")
+	}
+	// Cross-guard: an in-flight update pipeline writes into game directories
+	// while it runs, and scanning mid-extract would detect (and upsert)
+	// half-written games. Refuse rather than race.
+	if a.updateRunning.Load() {
+		return fmt.Errorf("an update is in progress; cannot scan right now")
+	}
 	if !a.scanRunning.CompareAndSwap(false, true) {
 		return fmt.Errorf("a scan is already running")
 	}
@@ -683,6 +748,10 @@ func (a *App) GetScanPaths() []string {
 
 // AddScanPath saves a directory to the scan paths config.
 func (a *App) AddScanPath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("scan path must not be empty")
+	}
+
 	cfg, err := config.ReadConfig()
 	if err != nil {
 		cfg = &config.Config{}
@@ -922,82 +991,111 @@ func (a *App) downloadGameFile(ctx context.Context, evPrefix string, gameID int6
 	const maxRetries = 3
 	const retryDelay = 2 * time.Second
 
-	var lastErr error
-	downloaded := false
-
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		// Check for cancellation before each attempt.
-		select {
-		case <-ctx.Done():
-			os.RemoveAll(tempDir)
-			return "", ctx.Err()
-		default:
-		}
-
-		if attempt > 1 {
-			slog.Info("retrying game update download",
-				"gameID", gameID,
-				"attempt", attempt,
-				"maxRetries", maxRetries,
-				"host", link.Host,
+	attempts, lastErr := downloadWithRetries(ctx, tempDir, maxRetries, retryDelay,
+		func(attempt int, dir string) error {
+			return downloader.DownloadWithContext(
+				ctx,
+				link.URL,
+				link.Host,
+				dir,
+				link.Size, // expectedTotal from scraped metadata (0 = unknown; Content-Length from response is used)
+				progressCb,
+				cookie,
 			)
-
-			// Backoff before retry.
-			select {
-			case <-ctx.Done():
-				os.RemoveAll(tempDir)
-				return "", ctx.Err()
-			case <-time.After(retryDelay):
-			}
-
-			// Recreate temp dir on retry to avoid partial-file conflicts.
-			os.RemoveAll(tempDir)
-			tempDir, err = os.MkdirTemp(os.TempDir(), fmt.Sprintf("moxie-update-%d-*", gameID))
-			if err != nil {
-				return "", fmt.Errorf("create temp dir: %w", err)
-			}
-		}
-
-		err = downloader.DownloadWithContext(
-			ctx,
-			link.URL,
-			link.Host,
-			tempDir,
-			0, // expectedTotal unknown; Content-Length from response is used
-			progressCb,
-			cookie,
-		)
-		if err == nil {
-			downloaded = true
-			break
-		}
-
-		lastErr = err
-		if !isTransientDownloadError(err) {
-			break
-		}
-	}
-
-	if !downloaded {
-		errMsg := fmt.Sprintf("Download failed after %d attempts: %v", maxRetries, lastErr)
+		})
+	if lastErr != nil {
+		errMsg := fmt.Sprintf("Download failed after %d attempts: %v", attempts, lastErr)
 		runtime.EventsEmit(a.ctx, evPrefix+":error", map[string]interface{}{
 			"gameID":  gameID,
 			"step":    "download",
 			"message": errMsg,
 		})
 		os.RemoveAll(tempDir)
-		return "", fmt.Errorf("download after %d attempts: %w", maxRetries, lastErr)
+		return "", fmt.Errorf("download after %d attempts: %w", attempts, lastErr)
 	}
 
 	// Find the downloaded file in the temp directory.
+	bestFile, err := pickDownloadedFile(tempDir)
+	if err != nil {
+		os.RemoveAll(tempDir)
+		return "", err
+	}
+	bestSize, _ := os.Stat(bestFile)
+	var size int64
+	if bestSize != nil {
+		size = bestSize.Size()
+	}
+
+	slog.Info("game update download complete",
+		"gameID", gameID,
+		"file", filepath.Base(bestFile),
+		"size", size,
+	)
+
+	return bestFile, nil
+}
+
+// downloadWithRetries drives the retry loop of downloadGameFile: up to
+// maxRetries attempts with retryDelay backoff between attempts, stopping on
+// the first non-transient error, and honouring ctx cancellation (the caller
+// owns tempDir cleanup). attemptFn is invoked with the 1-based attempt
+// number and the current temp dir; the helper recreates tempDir between
+// attempts so partial files cannot poison a retry. Returns the number of
+// attempts actually made and the final error (nil when an attempt
+// succeeded). Split out from downloadGameFile so the retry/backoff/attempt-
+// counting logic is unit-testable without a live downloader.
+func downloadWithRetries(ctx context.Context, tempDir string, maxRetries int, retryDelay time.Duration, attemptFn func(attempt int, tempDir string) error) (attempts int, err error) {
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// Check for cancellation before each attempt.
+		select {
+		case <-ctx.Done():
+			return attempt - 1, ctx.Err()
+		default:
+		}
+
+		if attempt > 1 {
+			slog.Info("retrying game update download",
+				"attempt", attempt,
+				"maxRetries", maxRetries,
+			)
+
+			// Backoff before retry.
+			select {
+			case <-ctx.Done():
+				return attempt - 1, ctx.Err()
+			case <-time.After(retryDelay):
+			}
+
+			// Recreate temp dir on retry to avoid partial-file conflicts.
+			os.RemoveAll(tempDir)
+			newDir, mkErr := os.MkdirTemp(os.TempDir(), "moxie-update-*-retry")
+			if mkErr != nil {
+				return attempt, fmt.Errorf("create temp dir: %w", mkErr)
+			}
+			tempDir = newDir
+		}
+
+		attempts = attempt
+		err = attemptFn(attempt, tempDir)
+		if err == nil {
+			return attempt, nil
+		}
+		if !isTransientDownloadError(err) {
+			return attempt, err
+		}
+	}
+	return attempts, err
+}
+
+// pickDownloadedFile returns the non-directory entry with the largest file
+// size in tempDir — the downloaded file (there should be exactly one, but be
+// defensive). Errors leave the temp dir for the caller to clean up.
+func pickDownloadedFile(tempDir string) (string, error) {
 	entries, err := os.ReadDir(tempDir)
 	if err != nil || len(entries) == 0 {
-		os.RemoveAll(tempDir)
 		return "", fmt.Errorf("no file found after download in %s", tempDir)
 	}
 
-	// Pick the non-directory entry with the largest file size
-	// (there should be exactly one, but be defensive).
 	var bestFile string
 	var bestSize int64
 	for _, e := range entries {
@@ -1015,16 +1113,8 @@ func (a *App) downloadGameFile(ctx context.Context, evPrefix string, gameID int6
 	}
 
 	if bestFile == "" {
-		os.RemoveAll(tempDir)
 		return "", fmt.Errorf("no downloadable file found in temp directory")
 	}
-
-	slog.Info("game update download complete",
-		"gameID", gameID,
-		"file", filepath.Base(bestFile),
-		"size", bestSize,
-	)
-
 	return bestFile, nil
 }
 
@@ -1233,6 +1323,13 @@ func updateStagePath(assetName string) (string, error) {
 // CheckForUpdate checks GitHub for a newer release and returns structured
 // results for the frontend.
 func (a *App) CheckForUpdate() UpdateInfo {
+	// Blocking network binding — serialized like the other network calls so
+	// stacked calls cannot pile up goroutines.
+	if !a.netBusy.CompareAndSwap(false, true) {
+		return UpdateInfo{Error: "another network request is already in progress"}
+	}
+	defer a.netBusy.Store(false)
+
 	currentVersion := appVersion
 
 	req, err := http.NewRequest("GET", "https://api.github.com/repos/Milisource/moxie/releases/latest", nil)
@@ -1458,6 +1555,14 @@ func (a *App) downloadUpdateRun(ctx context.Context) error {
 // spawned as a swap agent that waits for this process to exit, swaps the
 // binaries, and relaunches the installed copy (see applyPendingUpdateIfRequested).
 func (a *App) ApplyUpdate() error {
+	// The swap and rename paths below replace the running binary while the
+	// update pipeline may be mid-download or mid-apply of game updates; it
+	// must never run concurrently with the app's own update machinery.
+	if !a.updateRunning.CompareAndSwap(false, true) {
+		return fmt.Errorf("an update is already in progress")
+	}
+	defer a.updateRunning.Store(false)
+
 	assetName := binaryName()
 	if assetName == "" {
 		return fmt.Errorf("in-app updates are not supported on %s/%s", goruntime.GOOS, goruntime.GOARCH)
@@ -1474,6 +1579,36 @@ func (a *App) ApplyUpdate() error {
 		return fmt.Errorf("no downloaded update to apply: %w", err)
 	}
 
+	// Fail closed against the release digest: the staged file must match the
+	// digest GitHub publishes for this asset, and a release with no digest at
+	// all is refused rather than applied unverified. The running binary is
+	// only ever replaced with a file whose integrity has been established
+	// against the release itself.
+	release, err := fetchLatestRelease()
+	if err != nil {
+		return fmt.Errorf("cannot verify staged update against release: %w", err)
+	}
+	var expectedDigest string
+	for _, asset := range release.Assets {
+		if asset.Name == assetName {
+			expectedDigest = asset.Digest
+			break
+		}
+	}
+	if expectedDigest == "" {
+		return fmt.Errorf("release %s publishes no digest for %s; refusing to apply unverified update — download it manually from %s",
+			release.TagName, assetName, release.HTMLURL)
+	}
+	gotSum, err := sha256File(tmpPath)
+	if err != nil {
+		return fmt.Errorf("cannot hash staged update: %w", err)
+	}
+	if !strings.EqualFold(gotSum, strings.TrimPrefix(expectedDigest, "sha256:")) {
+		os.Remove(tmpPath)
+		return fmt.Errorf("staged update failed integrity check: expected %s, got sha256:%s — download the update again", expectedDigest, gotSum)
+	}
+	slog.Info("staged update verified against release digest", "asset", assetName, "sha256", gotSum)
+
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("cannot find current binary: %w", err)
@@ -1484,6 +1619,9 @@ func (a *App) ApplyUpdate() error {
 	}
 
 	if goruntime.GOOS == "windows" {
+		// stageWindowsUpdate hashes the verified staged binary and carries
+		// the digest in the pending-update marker, so the swap agent
+		// re-verifies it before touching the installed executable.
 		if err := stageWindowsUpdate(tmpPath, exe); err != nil {
 			return fmt.Errorf("staging update: %w", err)
 		}
@@ -1696,8 +1834,77 @@ type F95DownloadLink struct {
 // ---------------------------------------------------------------------------
 
 // SearchF95Zone searches F95Zone for game threads matching the query.
-// Returns results with engine prefix extracted from thread titles.
+// Returns results with engine prefix extracted from thread titles and
+// cover art attached from the F95Checker game catalog (the XenForo search
+// results page only carries poster avatars, which make poor thumbnails).
+// SearchF95Zone searches F95Zone for game threads matching the query.
+//
+// Blocking network binding: the search runs synchronously on the Wails call
+// goroutine, so concurrent calls are serialized (netBusy). Repeated calls
+// for the same query while one search is already in flight are coalesced —
+// the waiter returns the in-flight search's result instead of starting a
+// second request — which absorbs frontend debounce misses and double clicks.
 func (a *App) SearchF95Zone(query string) ([]F95SearchResult, error) {
+	query = strings.TrimSpace(query)
+
+	// Fast path: coalesce with an in-flight search for the same query. The
+	// in-flight search already holds netBusy, so no new request would be
+	// allowed anyway — waiting and sharing its result is the win.
+	a.searchMu.Lock()
+	if a.searchInFlight {
+		if a.searchQuery == query {
+			done := a.searchDone
+			a.searchMu.Unlock()
+			<-done
+			a.searchMu.Lock()
+			res, err := a.searchResults, a.searchErr
+			a.searchMu.Unlock()
+			return res, err
+		}
+		a.searchMu.Unlock()
+		return nil, fmt.Errorf("another F95Zone search is already running")
+	}
+	a.searchMu.Unlock()
+
+	if !a.netBusy.CompareAndSwap(false, true) {
+		return nil, fmt.Errorf("another network request is already in progress")
+	}
+	defer a.netBusy.Store(false)
+
+	// Register as the in-flight search under the lock. Any waiter that
+	// observed inFlight=false above and lost the CAS was rejected, so no one
+	// can be blocked on searchDone before it is created here.
+	a.searchMu.Lock()
+	a.searchInFlight = true
+	a.searchQuery = query
+	a.searchDone = make(chan struct{})
+	a.searchMu.Unlock()
+
+	var results []F95SearchResult
+	var err error
+	// Publish results and close the coalescing channel before netBusy is
+	// released (LIFO: this defer runs first), so a waiter never races the
+	// next search's registration.
+	defer func() {
+		a.searchMu.Lock()
+		a.searchResults = results
+		a.searchErr = err
+		if a.searchDone != nil {
+			close(a.searchDone)
+		}
+		a.searchInFlight = false
+		a.searchQuery = ""
+		a.searchDone = nil
+		a.searchMu.Unlock()
+	}()
+
+	results, err = a.searchF95Zone(query)
+	return results, err
+}
+
+// searchF95Zone is the actual search work behind SearchF95Zone — the
+// cookie fetch, the F95Zone search, scoring, and thumbnail enrichment.
+func (a *App) searchF95Zone(query string) ([]F95SearchResult, error) {
 	cookie, err := browser.GetF95Cookies()
 	if err != nil || cookie == "" {
 		return nil, fmt.Errorf("F95Zone cookies not available. Log into F95Zone in your browser first")
@@ -1712,7 +1919,7 @@ func (a *App) SearchF95Zone(query string) ([]F95SearchResult, error) {
 	// Simple match scoring based on position + title quality.
 	// Results come sorted by relevance from the search engine.
 	desktop := make([]F95SearchResult, 0, len(results))
-	queryLower := strings.ToLower(strings.TrimSpace(query))
+	queryLower := strings.ToLower(query)
 	for i, r := range results {
 		prefix := engine.ExtractEngineFromTitle(r.Title)
 		score := computeSearchScore(r.Title, prefix, queryLower, i)
@@ -1725,7 +1932,30 @@ func (a *App) SearchF95Zone(query string) ([]F95SearchResult, error) {
 			MatchScore:   score,
 		})
 	}
+
+	// Enrich thumbnails with real game cover art from the F95Checker
+	// catalog, matched by thread ID. Best effort: a failed cover search
+	// leaves placeholder thumbs, never an error. Results the catalog
+	// doesn't know get their avatar thumb dropped (an unrelated poster's
+	// profile picture is worse than the placeholder).
+	covers, _ := scraper.NewPublicAPIWithCookie(cookie).SearchCovers(context.Background(), query)
+	enrichSearchThumbnails(desktop, covers)
 	return desktop, nil
+}
+
+// enrichSearchThumbnails replaces result thumbnails with catalog cover art
+// keyed by thread ID. Results without a cover get an empty thumbnail so the
+// UI shows its placeholder instead of the poster's avatar.
+func enrichSearchThumbnails(results []F95SearchResult, covers map[int64]string) {
+	for i := range results {
+		if id := scraper.ThreadIDFromURL(results[i].URL); id != 0 {
+			if cover, ok := covers[id]; ok {
+				results[i].ThumbnailURL = cover
+				continue
+			}
+		}
+		results[i].ThumbnailURL = ""
+	}
 }
 
 // computeSearchScore calculates a relevance score for a search result.
@@ -1760,6 +1990,12 @@ func computeSearchScore(title, prefix, queryLower string, position int) int {
 
 // GetThreadPreview scrapes an F95Zone thread and returns preview data.
 func (a *App) GetThreadPreview(url string) (*ThreadPreview, error) {
+	// Blocking network binding — serialized like the other F95Zone calls.
+	if !a.netBusy.CompareAndSwap(false, true) {
+		return nil, fmt.Errorf("another network request is already in progress")
+	}
+	defer a.netBusy.Store(false)
+
 	if err := scraper.ValidateThreadURL(url); err != nil {
 		return nil, fmt.Errorf("invalid thread URL: %w", err)
 	}
@@ -1814,6 +2050,11 @@ func (a *App) AddGameFromF95Zone(url, title, engineName string) (int64, error) {
 	if a.db == nil {
 		return 0, fmt.Errorf("database not initialized")
 	}
+	// Blocking network binding — serialized like the other F95Zone calls.
+	if !a.netBusy.CompareAndSwap(false, true) {
+		return 0, fmt.Errorf("another network request is already in progress")
+	}
+	defer a.netBusy.Store(false)
 
 	if err := scraper.ValidateThreadURL(url); err != nil {
 		return 0, fmt.Errorf("invalid thread URL: %w", err)
@@ -1862,7 +2103,9 @@ func (a *App) AddGameFromF95Zone(url, title, engineName string) (int64, error) {
 	if threadID > 0 {
 		virtualPath = fmt.Sprintf("/virtual/f95zone/%d/", threadID)
 	} else {
-		virtualPath = fmt.Sprintf("/virtual/f95zone/0/%s", url)
+		// No thread ID — derive a stable short-hash path so the raw URL's
+		// slashes can never leak into the filesystem-style virtual path.
+		virtualPath = fmt.Sprintf("/virtual/f95zone/0/%x", sha256.Sum256([]byte(url)))[:len("/virtual/f95zone/0/")+16]
 	}
 
 	game := &db.Game{
@@ -1889,6 +2132,13 @@ func (a *App) AddGameFromF95Zone(url, title, engineName string) (int64, error) {
 
 	id, err := a.db.InsertGame(game)
 	if err != nil {
+		// A duplicate thread URL (or a previous add with the same virtual
+		// path) surfaces here as a constraint violation — resolve it to a
+		// friendly "already in library" message instead of a raw SQL error.
+		existing, gerr := a.db.GetGameByPath(game.Path)
+		if gerr == nil && existing != nil {
+			return 0, fmt.Errorf("game already in library (ID %d)", existing.ID)
+		}
 		return 0, fmt.Errorf("inserting game: %w", err)
 	}
 
@@ -2150,7 +2400,7 @@ func (a *App) fetchCoversRun(ctx context.Context) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			ok := j.cover != "" && a.cacheCover(j.game.ID, j.cover) != ""
+			ok := j.cover != "" && a.cacheCoverCtx(ctx, j.game.ID, j.cover) != ""
 			mu.Lock()
 			done++
 			switch {
@@ -2176,8 +2426,9 @@ func (a *App) fetchCoversRun(ctx context.Context) {
 	wg.Wait()
 
 	// Self-heal: covers cached before the thumbnailing change (or any cover
-	// whose thumbnail is missing) get one locally. No network involved.
-	backfilled := backfillCoverThumbs()
+	// whose thumbnail is missing) get one locally. No network involved. The
+	// backfill's own backfillMu serializes it against the startup walk.
+	backfilled := backfillCoverThumbs(ctx)
 
 	log.Info("cover fetch complete",
 		"fetched", fetched, "failed", failed, "skipped", skipped,
@@ -2252,7 +2503,23 @@ func f95ZoneHost(rawURL string) bool {
 	return host == "f95zone.to" || strings.HasSuffix(host, ".f95zone.to")
 }
 
+// cacheCover downloads a cover image from coverURL and caches it to
+// config.CoverDir()/<gameID>. It is a no-op if the file already exists.
+// Returns the local cached path, or empty string on failure.
+//
+// Concurrent calls for the same game are coalesced: only one download runs,
+// the others wait on the singleflight channel.
 func (a *App) cacheCover(gameID int64, coverURL string) string {
+	return a.cacheCoverCtx(context.Background(), gameID, coverURL)
+}
+
+// cacheCoverCtx is cacheCover with a cancellable context: while waiting on
+// the singleflight channel for a concurrent download of the same cover, and
+// during the HTTP fetch, ctx cancellation aborts the wait/download and
+// returns "". Used by the cover backfill so cancelling it releases the
+// worker immediately instead of blocking on a cover another goroutine is
+// still fetching.
+func (a *App) cacheCoverCtx(ctx context.Context, gameID int64, coverURL string) string {
 	if coverURL == "" {
 		return ""
 	}
@@ -2273,7 +2540,11 @@ func (a *App) cacheCover(gameID int64, coverURL string) string {
 	}
 	if done, ok := a.coverFetch[gameID]; ok {
 		a.coverFetchMu.Unlock()
-		<-done
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ""
+		}
 		// The first downloader may have failed — re-check before claiming
 		// success, otherwise a failed fetch would count as cached.
 		if _, err := os.Stat(coverPath); err == nil {
@@ -2300,7 +2571,7 @@ func (a *App) cacheCover(gameID int64, coverURL string) string {
 
 	// Download the cover image.
 	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequest("GET", coverURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", coverURL, nil)
 	if err != nil {
 		slog.Error("failed to create cover request", "game_id", gameID, "url", coverURL, "error", err)
 		return ""
@@ -2351,8 +2622,14 @@ func (a *App) cacheCover(gameID int64, coverURL string) string {
 		return ""
 	}
 
-	writeCoverThumb(coverPath)
-	slog.Info("cover cached", "game_id", gameID, "bytes", len(data), "elapsed", time.Since(start))
+	switch writeCoverThumb(coverPath) {
+	case thumbSkipAVIF:
+		// No pure-Go AVIF decoder: thumbnail skipped, cover server falls
+		// back to the full image (webview renders AVIF natively).
+		slog.Info("cover cached", "game_id", gameID, "bytes", len(data), "thumb", "skipped-avif", "elapsed", time.Since(start))
+	default:
+		slog.Info("cover cached", "game_id", gameID, "bytes", len(data), "elapsed", time.Since(start))
+	}
 	return coverPath
 }
 
@@ -2361,20 +2638,58 @@ func (a *App) cacheCover(gameID int64, coverURL string) string {
 // fraction of the full image's bytes.
 const coverThumbMaxDim = 320
 
+// errCoverFormatNotThumbnailable is returned by decodeCoverImage for formats
+// Go cannot decode (AVIF). The webview renders those from the full image, so
+// callers skip the thumbnail and the cover server falls back — this typed
+// error lets them distinguish "expected, skip quietly" from a corrupt file.
+var errCoverFormatNotThumbnailable = errors.New("cover format not thumbnailable")
+
+// thumbResult classifies what writeCoverThumb did, so callers can count
+// skipped AVIF covers (expected, no decoder) separately from genuine decode
+// failures (corrupt files) and log one summary instead of per-cover Warns.
+type thumbResult int
+
+const (
+	thumbWritten     thumbResult = iota // .thumb written
+	thumbNotNeeded                      // image already at or below the cap
+	thumbSkipAVIF                       // AVIF: webview renders it, Go cannot decode
+	thumbDecodeFailed                   // corrupt/undecodable data
+)
+
+func (r thumbResult) String() string {
+	switch r {
+	case thumbWritten:
+		return "written"
+	case thumbNotNeeded:
+		return "not-needed"
+	case thumbSkipAVIF:
+		return "skipped-avif"
+	case thumbDecodeFailed:
+		return "decode-failed"
+	default:
+		return "unknown"
+	}
+}
+
 // writeCoverThumb decodes the cover at coverPath and writes a downscaled
 // JPEG thumbnail to coverPath+".thumb". Best-effort: if the image is already
-// small or fails to decode, no thumbnail is written and the cover server
-// falls back to serving the full image.
-func writeCoverThumb(coverPath string) {
+// small, is AVIF, or fails to decode, no thumbnail is written and the cover
+// server falls back to serving the full image. Corrupt-file decode failures
+// are logged as Warn here; the AVIF skip is silent (expected — there is no
+// pure-Go AVIF decoder, and the webview renders AVIF from the full image).
+func writeCoverThumb(coverPath string) thumbResult {
 	data, err := os.ReadFile(coverPath)
 	if err != nil {
-		return
+		return thumbDecodeFailed
 	}
 
 	img, err := decodeCoverImage(data)
 	if err != nil {
+		if errors.Is(err, errCoverFormatNotThumbnailable) {
+			return thumbSkipAVIF
+		}
 		slog.Warn("failed to decode cover for thumbnail", "path", coverPath, "error", err)
-		return
+		return thumbDecodeFailed
 	}
 
 	src := img.Bounds()
@@ -2383,7 +2698,7 @@ func writeCoverThumb(coverPath string) {
 		long = src.Dy()
 	}
 	if long <= coverThumbMaxDim {
-		return
+		return thumbNotNeeded
 	}
 
 	ratio := float64(coverThumbMaxDim) / float64(long)
@@ -2401,15 +2716,21 @@ func writeCoverThumb(coverPath string) {
 
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 82}); err != nil {
-		return
+		return thumbDecodeFailed
 	}
 	if err := os.WriteFile(coverPath+".thumb", buf.Bytes(), 0644); err != nil {
 		slog.Warn("failed to write cover thumbnail", "path", coverPath, "error", err)
+		return thumbDecodeFailed
 	}
+	return thumbWritten
 }
 
 // decodeCoverImage decodes image bytes by sniffing the format first, so
 // formats stdlib's generic decoder routes to the right codec (webp included).
+// AVIF is handled explicitly: there is no pure-Go AVIF decoder (libavif is
+// CGO, banned by the project's pure-Go constraint), so it returns a typed
+// errCoverFormatNotThumbnailable instead of the misleading stdlib
+// "image: unknown format" from the unregistered-format default path.
 func decodeCoverImage(data []byte) (image.Image, error) {
 	switch imageMimeFromPrefix(data) {
 	case "jpeg":
@@ -2421,6 +2742,8 @@ func decodeCoverImage(data []byte) (image.Image, error) {
 	case "gif":
 		img, err := gif.Decode(bytes.NewReader(data))
 		return img, err
+	case "avif":
+		return nil, fmt.Errorf("%w: avif has no pure-Go decoder; full image served instead", errCoverFormatNotThumbnailable)
 	default:
 		img, _, err := image.Decode(bytes.NewReader(data))
 		return img, err
@@ -2478,10 +2801,23 @@ func (a *App) AddGame(path string, title string, eng string, version string) (in
 	if a.db == nil {
 		return 0, fmt.Errorf("database not initialized")
 	}
+	if strings.TrimSpace(path) == "" {
+		return 0, fmt.Errorf("game path must not be empty")
+	}
 
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return 0, fmt.Errorf("resolving path: %w", err)
+	}
+
+	// The library entry points at a real, existing directory: refuse paths
+	// that do not exist or are not directories, mirroring DetectGame.
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return 0, fmt.Errorf("path does not exist: %w", err)
+	}
+	if !info.IsDir() {
+		return 0, fmt.Errorf("path is not a directory: %s", absPath)
 	}
 
 	if title == "" {
@@ -2578,8 +2914,14 @@ func (a *App) RenameGame(id int64, newTitle string) error {
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
-	if newTitle == "" {
+	// Reject path-traversal titles before anything touches the database:
+	// the title becomes a directory name, so it must be a bare name — no
+	// separators and no ".." — or the join below would escape the parent.
+	if strings.TrimSpace(newTitle) == "" {
 		return fmt.Errorf("new title must not be empty")
+	}
+	if strings.Contains(newTitle, "..") || filepath.Base(newTitle) != newTitle {
+		return fmt.Errorf("invalid title %q: must be a single directory name without path separators", newTitle)
 	}
 
 	game, err := a.db.GetGame(id)
@@ -2590,11 +2932,20 @@ func (a *App) RenameGame(id int64, newTitle string) error {
 		return fmt.Errorf("game with id %d not found", id)
 	}
 
-	// Rename the directory on disk if it still exists.
+	// Games added from the F95Zone browser have no directory on disk — their
+	// path is a /virtual/ placeholder. There is nothing to rename, and the
+	// placeholder encodes the thread, so refuse.
+	if strings.HasPrefix(game.Path, db.VirtualPathPrefix) {
+		return fmt.Errorf("%q was added from F95Zone and has no directory yet — rename it after installing", game.Title)
+	}
+
+	// Rename the directory on disk if it still exists. The directory name is
+	// the title sanitized for the filesystem (same helper fresh installs
+	// use), while the database keeps the user's exact title.
 	oldPath := game.Path
 	newPath := game.Path
 	if _, statErr := os.Stat(game.Path); statErr == nil {
-		newPath = filepath.Join(filepath.Dir(game.Path), newTitle)
+		newPath = filepath.Join(filepath.Dir(game.Path), sanitizeTitleForPath(newTitle))
 
 		// Skip if the new path is the same as old.
 		if newPath != game.Path {
@@ -3047,6 +3398,8 @@ func (a *App) SyncAllGames(force bool) error {
 
 	a.goBackground("sync", func(ctx context.Context) {
 		defer a.syncRunning.Store(false)
+		ctx = a.beginCancellableSync(ctx)
+		defer a.endCancellableSync()
 		client := scraper.NewClient(cookie)
 		// The shared PublicAPI serves phase 2 (bulk versions, cache-API
 		// metadata). Phase 1 workers create their own per-worker instances.
@@ -3514,7 +3867,7 @@ func (a *App) syncPhase2CheckUpdates(ctx context.Context, trackable []db.Game, p
 	prevChecks := make(map[int64]time.Time, len(trackable))
 	active := make([]db.Game, 0, len(trackable))
 	for _, g := range trackable {
-		prevChecks[g.F95ThreadID] = g.VersionCheckedAt
+		prevChecks[g.ID] = g.VersionCheckedAt
 		if !force && !g.VersionCheckedAt.IsZero() && time.Since(g.VersionCheckedAt) < syncCooldown {
 			skipped++
 			continue
@@ -3868,7 +4221,7 @@ func (a *App) syncPhase2MetadataRefresh(ctx context.Context, trackable []db.Game
 
 	for _, g := range trackable {
 		ts, ok := lastChanged[g.F95ThreadID]
-		prev := prevChecks[g.F95ThreadID]
+		prev := prevChecks[g.ID]
 		if !ok || ts <= prev.Unix() {
 			continue
 		}
@@ -3912,6 +4265,13 @@ func (a *App) SyncSingleGame(id int64) error {
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
+	// Blocking network binding — serialized like the other F95Zone calls.
+	// Also held by the update pipeline's internal per-game sync, so a
+	// concurrent interactive sync rejects rather than stacking requests.
+	if !a.netBusy.CompareAndSwap(false, true) {
+		return fmt.Errorf("another network request is already in progress")
+	}
+	defer a.netBusy.Store(false)
 
 	game, err := a.db.GetGame(id)
 	if err != nil {
@@ -4064,27 +4424,31 @@ func (a *App) GetGameDownloadLinksForUpdate(gameID int64) (*db.DownloadLink, err
 // runSingleGameUpdate executes the full update pipeline for a single game.
 // It is designed to be called from a goroutine. Errors are communicated both
 // via Wails events (game-update:error) and as the return value.
-func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) error {
+func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error) {
+	// Every pipeline termination must leave a log trail: the Wails events
+	// are the only channel the frontend sees, and step failures used to be
+	// log-silent, making live failures (extract/merge/db) undiagnosable.
+	defer func() {
+		if err != nil {
+			slog.Error("game update pipeline failed", "gameID", gameID, "error", err)
+		}
+	}()
 	title := ""
 	game := &db.Game{}
 
 	slog.Info("game update: starting pipeline", "gameID", gameID)
 
-	// Track temp dirs for deferred cleanup on error.
-	var downloadTempDir, extractDir string
+	// The downloaded archive lives in an umbrella temp dir that is removed on
+	// error. applyGameUpdateArchive owns its own extraction temp dir.
+	var downloadTempDir string
 	var needsCleanup bool
 	defer func() {
-		if needsCleanup {
-			if downloadTempDir != "" {
-				os.RemoveAll(downloadTempDir)
-			}
-			if extractDir != "" {
-				os.RemoveAll(extractDir)
-			}
+		if needsCleanup && downloadTempDir != "" {
+			os.RemoveAll(downloadTempDir)
 		}
 	}()
 
-	// Mark cleanup needed; set to false on success.
+	// Mark cleanup needed; cleared on success.
 	needsCleanup = true
 
 	// Phase: syncing
@@ -4105,7 +4469,6 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) error {
 	}
 
 	// Get the refreshed game record.
-	var err error
 	game, err = a.db.GetGame(gameID)
 	if err != nil {
 		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
@@ -4154,8 +4517,6 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) error {
 		return err
 	}
 
-	oldVersion := game.Version
-
 	// Phase: selecting-link
 	slog.Info("game update: selecting link", "gameID", gameID)
 	runtime.EventsEmit(a.ctx, "game-update:phase", map[string]interface{}{
@@ -4182,10 +4543,41 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) error {
 
 	archivePath, err := a.downloadGameFile(ctx, "game-update", gameID, *selectedLink)
 	if err != nil {
-		// downloadGameFile already emits its own error events.
+		// downloadGameFile already emits its own error events. Automatic
+		// downloads are frequently blocked by Cloudflare-protected hosts
+		// (HTTP 403/404 on the resolved file host), so additionally signal
+		// that the update can still be completed from a manually downloaded
+		// archive — the frontend then offers the file-picker fallback.
+		runtime.EventsEmit(a.ctx, "game-update:manual-required", map[string]interface{}{
+			"gameID":        gameID,
+			"title":         title,
+			"host":          selectedLink.Host,
+			"latestVersion": game.LatestVersion,
+		})
 		return fmt.Errorf("download game file: %w", err)
 	}
 	downloadTempDir = filepath.Dir(archivePath)
+
+	// Phases: extracting → merging → updating-db (shared with the manual
+	// fallback path so both routes behave identically).
+	err = a.applyGameUpdateArchive(ctx, game, archivePath)
+
+	// The downloaded archive is ours — drop it and its temp dir regardless
+	// of outcome (the user-provided fallback file is never touched).
+	os.RemoveAll(downloadTempDir)
+	needsCleanup = false
+	return err
+}
+
+// applyGameUpdateArchive runs the post-download phases of the update
+// pipeline — extract, merge, update the DB record, emit completion — for a
+// game whose new-version archive is already available at archivePath. The
+// archive itself is treated as caller-owned and is never deleted; callers
+// that downloaded it into a temp dir clean that dir up themselves.
+func (a *App) applyGameUpdateArchive(ctx context.Context, game *db.Game, archivePath string) error {
+	gameID := game.ID
+	title := game.Title
+	oldVersion := game.Version
 
 	// Phase: extracting
 	slog.Info("game update: extracting", "gameID", gameID, "archive", archivePath)
@@ -4194,15 +4586,13 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) error {
 		"phase":  "extracting",
 	})
 
-	extractDir, err = os.MkdirTemp(os.TempDir(), fmt.Sprintf("moxie-extract-%d-*", gameID))
+	extractDir, err := os.MkdirTemp(os.TempDir(), fmt.Sprintf("moxie-extract-%d-*", gameID))
 	if err != nil {
-		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
-			"gameID":  gameID,
-			"step":    "extract",
-			"message": fmt.Sprintf("Failed to create extraction temp directory: %v", err),
-		})
+		a.emitUpdateError(gameID, "extract",
+			fmt.Sprintf("Failed to create extraction temp directory: %v", err))
 		return fmt.Errorf("create extract temp dir: %w", err)
 	}
+	defer os.RemoveAll(extractDir)
 
 	extractProgressCb := func(p extractor.Progress) {
 		runtime.EventsEmit(a.ctx, "game-update:extract-progress", map[string]interface{}{
@@ -4215,13 +4605,10 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) error {
 
 	extractedRoot, err := extractor.Extract(ctx, archivePath, extractDir, extractProgressCb)
 	if err != nil {
-		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
-			"gameID":  gameID,
-			"step":    "extract",
-			"message": fmt.Sprintf("Extraction failed: %v", err),
-		})
+		a.emitUpdateError(gameID, "extract", fmt.Sprintf("Extraction failed: %v", err))
 		return fmt.Errorf("extract archive: %w", err)
 	}
+	slog.Info("game update extracted", "game", title, "root", extractedRoot)
 
 	// Phase: merging
 	slog.Info("game update: merging", "gameID", gameID, "gamePath", game.Path, "engine", game.Engine)
@@ -4230,13 +4617,9 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) error {
 		"phase":  "merging",
 	})
 
-	mergeResult, err := updater.Merge(game.Path, game.Engine, extractedRoot, true)
+	mergeResult, err := updater.Merge(ctx, game.Path, game.Engine, extractedRoot, true)
 	if err != nil {
-		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
-			"gameID":  gameID,
-			"step":    "merge",
-			"message": fmt.Sprintf("Merge failed: %v", err),
-		})
+		a.emitUpdateError(gameID, "merge", fmt.Sprintf("Merge failed: %v", err))
 		return fmt.Errorf("merge update: %w", err)
 	}
 
@@ -4253,22 +4636,14 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) error {
 	})
 
 	game.Version = game.LatestVersion
-	game.SizeBytes = updateDirSize(game.Path)
+	game.SizeBytes = updateDirSize(ctx, game.Path)
 	game.LastScannedAt = time.Now()
 
 	if err := a.db.UpdateGame(game); err != nil {
-		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
-			"gameID":  gameID,
-			"step":    "update-db",
-			"message": fmt.Sprintf("Database update failed: %v", err),
-		})
+		a.emitUpdateError(gameID, "update-db",
+			fmt.Sprintf("Database update failed: %v", err))
 		return fmt.Errorf("update game in db: %w", err)
 	}
-
-	// Clean up temp files on success.
-	os.RemoveAll(downloadTempDir)
-	os.RemoveAll(extractDir)
-	needsCleanup = false
 
 	// Emit completion.
 	runtime.EventsEmit(a.ctx, "game-update:complete", map[string]interface{}{
@@ -4282,6 +4657,15 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) error {
 	return nil
 }
 
+// emitUpdateError publishes a game-update:error event for a pipeline step.
+func (a *App) emitUpdateError(gameID int64, step, message string) {
+	runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+		"gameID":  gameID,
+		"step":    step,
+		"message": message,
+	})
+}
+
 // DownloadGameUpdate downloads and applies an update for a single game.
 // This is a Wails-bound method that runs the full update pipeline in a
 // background goroutine to avoid blocking the Wails event loop.
@@ -4293,6 +4677,10 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) error {
 //	game-update:download-progress { gameID, bytesDownloaded, totalBytes, speedBytesPerSec, percent }
 //	game-update:extract-progress  { gameID, filesExtracted, totalFiles, currentFile }
 //	game-update:error       { gameID, step, message }
+//	game-update:manual-required   { gameID, title, host, latestVersion } — auto-download
+//	                            failed (Cloudflare-blocked host, dead link, …);
+//	                            the user can complete the update by providing
+//	                            the archive via ProvideUpdateFile
 //	game-update:complete    { gameID, title, oldVersion, newVersion }
 func (a *App) DownloadGameUpdate(gameID int64) error {
 	if a.db == nil {
@@ -4302,6 +4690,11 @@ func (a *App) DownloadGameUpdate(gameID int64) error {
 		return fmt.Errorf("application context not initialized")
 	}
 
+	// Cross-guard: a running scan walks game directories; updating mid-scan
+	// would let the scanner see half-written files. Refuse rather than race.
+	if a.scanRunning.Load() {
+		return fmt.Errorf("a scan is in progress; cannot update right now")
+	}
 	if !a.updateRunning.CompareAndSwap(false, true) {
 		return fmt.Errorf("an update is already in progress")
 	}
@@ -4341,6 +4734,41 @@ func (a *App) endCancellableUpdate() {
 	a.updateCancelMu.Unlock()
 }
 
+// beginCancellableSync derives a cancellable child of ctx and publishes its
+// cancel func so CancelSync can reach it.
+func (a *App) beginCancellableSync(ctx context.Context) context.Context {
+	ctx, cancel := context.WithCancel(ctx)
+	a.syncCancelMu.Lock()
+	a.syncCancel = cancel
+	a.syncCancelMu.Unlock()
+	return ctx
+}
+
+// endCancellableSync releases the published cancel func.
+func (a *App) endCancellableSync() {
+	a.syncCancelMu.Lock()
+	if a.syncCancel != nil {
+		a.syncCancel()
+		a.syncCancel = nil
+	}
+	a.syncCancelMu.Unlock()
+}
+
+// CancelSync aborts the in-flight SyncAllGames run, if any. It returns
+// whether a run was actually cancelled so the frontend can report accurately.
+func (a *App) CancelSync() (bool, error) {
+	a.syncCancelMu.Lock()
+	cancel := a.syncCancel
+	a.syncCancelMu.Unlock()
+	if cancel == nil {
+		return false, nil
+	}
+	slog.Info("sync cancelled by user")
+	cancel()
+	runtime.EventsEmit(a.ctx, "sync:cancelled", map[string]interface{}{})
+	return true, nil
+}
+
 // CancelGameUpdate aborts the in-flight game update, if any. It returns
 // whether a run was actually cancelled so the frontend can report accurately.
 func (a *App) CancelGameUpdate() bool {
@@ -4376,6 +4804,11 @@ func (a *App) DownloadAllUpdates() error {
 		return fmt.Errorf("application context not initialized")
 	}
 
+	// Cross-guard: a running scan walks game directories; updating mid-scan
+	// would let the scanner see half-written files. Refuse rather than race.
+	if a.scanRunning.Load() {
+		return fmt.Errorf("a scan is in progress; cannot update right now")
+	}
 	if !a.updateRunning.CompareAndSwap(false, true) {
 		return fmt.Errorf("an update is already in progress")
 	}
@@ -4462,6 +4895,110 @@ func (a *App) DownloadAllUpdates() error {
 	return nil
 }
 
+// ProvideUpdateFile completes an update for a game whose automatic download
+// failed (Cloudflare-blocked hosts, dead links, missing cookies). It opens a
+// native file picker for the archive the user downloaded manually, then
+// resumes the pipeline from the extraction phase.
+//
+// This is a Wails-bound method that mirrors DownloadGameUpdate: it returns
+// immediately, runs in the background, holds the same single-run lock, and
+// drives the same game-update:* event protocol. The user-provided archive is
+// never modified or deleted. Returns an error only when the pipeline could
+// not be started (guards); failures after that surface via game-update:error.
+func (a *App) ProvideUpdateFile(gameID int64) error {
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if a.ctx == nil {
+		return fmt.Errorf("application context not initialized")
+	}
+	// Cross-guard: a running scan walks game directories; updating mid-scan
+	// would let the scanner see half-written files. Refuse rather than race.
+	if a.scanRunning.Load() {
+		return fmt.Errorf("a scan is in progress; cannot update right now")
+	}
+	if !a.updateRunning.CompareAndSwap(false, true) {
+		return fmt.Errorf("an update is already in progress")
+	}
+
+	a.goBackground("game-update", func(ctx context.Context) {
+		// Signal idle only after the lock is actually released, matching the
+		// DownloadGameUpdate protocol.
+		defer func() {
+			a.updateRunning.Store(false)
+			runtime.EventsEmit(a.ctx, "game-update:idle", map[string]interface{}{})
+		}()
+		ctx = a.beginCancellableUpdate(ctx)
+		defer a.endCancellableUpdate()
+
+		game, err := a.db.GetGame(gameID)
+		if err != nil {
+			a.emitUpdateError(gameID, "lookup", err.Error())
+			return
+		}
+		if game == nil {
+			a.emitUpdateError(gameID, "lookup", fmt.Sprintf("game with id %d not found", gameID))
+			return
+		}
+		if strings.HasPrefix(game.Path, db.VirtualPathPrefix) {
+			a.emitUpdateError(gameID, "check",
+				fmt.Sprintf("%q was added from F95Zone but not yet downloaded — install it from the Downloads view before updating", game.Title))
+			return
+		}
+		if game.LatestVersion == "" || !isGameUpdate(game.LatestVersion, game.Version) {
+			a.emitUpdateError(gameID, "check",
+				fmt.Sprintf("no update available (current version: %s)", game.Version))
+			return
+		}
+
+		// Phase: selecting-file (native dialog; blocks until the user picks
+		// a file or cancels).
+		slog.Info("game update: manual fallback, selecting file", "gameID", gameID)
+		runtime.EventsEmit(a.ctx, "game-update:phase", map[string]interface{}{
+			"gameID": gameID,
+			"phase":  "selecting-file",
+		})
+
+		archivePath, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+			Title: "Select Downloaded Update Archive",
+			Filters: []runtime.FileFilter{
+				{DisplayName: "Game Archives", Pattern: "*.zip;*.7z;*.rar;*.tar;*.gz;*.tar.gz"},
+				{DisplayName: "All Files", Pattern: "*.*"},
+			},
+		})
+		if err != nil {
+			a.emitUpdateError(gameID, "select-file",
+				fmt.Sprintf("File dialog failed: %v", err))
+			return
+		}
+		if archivePath == "" {
+			// User cancelled the dialog. Emit a terminal error event so the
+			// frontend leaves the selecting-file phase and re-enables the
+			// row's actions — the single-run lock has already been released
+			// by the goroutine's defer, so the row returns to its error
+			// state with Retry / Provide-file still available.
+			slog.Info("game update: manual file selection cancelled", "gameID", gameID)
+			a.emitUpdateError(gameID, "select-file", "No file selected — update not applied")
+			return
+		}
+		if _, err := os.Stat(archivePath); err != nil {
+			a.emitUpdateError(gameID, "select-file",
+				fmt.Sprintf("Selected file not found: %v", err))
+			return
+		}
+		if !archive.IsArchiveFile(archivePath) {
+			a.emitUpdateError(gameID, "select-file",
+				"Selected file is not a recognized archive (zip, 7z, rar, tar.gz)")
+			return
+		}
+
+		slog.Info("game update: manual archive provided", "gameID", gameID, "file", archivePath)
+		a.applyGameUpdateArchive(ctx, game, archivePath)
+	})
+
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Fresh install pipeline
 // ---------------------------------------------------------------------------
@@ -4492,9 +5029,11 @@ func (a *App) GetInstallTargets() []InstallTarget {
 	return targets
 }
 
-// installableTitle turns a game title into a directory name that is safe on
-// every supported platform.
-func installableTitle(title string) string {
+// sanitizeTitleForPath turns a game title into a directory name that is
+// safe on every supported platform. Shared by installableTitle (fresh
+// installs) and RenameGame (directory renames) so both produce the same
+// directory naming for a given title.
+func sanitizeTitleForPath(title string) string {
 	replacer := strings.NewReplacer(
 		"/", "-", "\\", "-", ":", "-", "*", "-", "?", "",
 		"\"", "", "<", "", ">", "", "|", "-",
@@ -4505,6 +5044,12 @@ func installableTitle(title string) string {
 		cleaned = "game"
 	}
 	return cleaned
+}
+
+// installableTitle turns a game title into a directory name that is safe on
+// every supported platform.
+func installableTitle(title string) string {
+	return sanitizeTitleForPath(title)
 }
 
 // runGameInstall downloads a game and installs it into destParent, then
@@ -4615,14 +5160,14 @@ func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent strin
 
 	// Reuse the updater's copy logic. backup=false because the target is a
 	// directory we just created — there is nothing to preserve.
-	if _, err := updater.Merge(targetDir, game.Engine, extractedRoot, false); err != nil {
+	if _, err := updater.Merge(ctx, targetDir, game.Engine, extractedRoot, false); err != nil {
 		return emitErr("install", fmt.Errorf("install files: %w", err))
 	}
 
 	phase("updating-db")
 	game.Path = targetDir
 	game.ExePath = launcher.ResolveExecutable(targetDir, "")
-	game.SizeBytes = updateDirSize(targetDir)
+	game.SizeBytes = updateDirSize(ctx, targetDir)
 	game.LastScannedAt = time.Now().UTC()
 	game.DirMTime = dirModTime(targetDir)
 	if game.LatestVersion != "" {
@@ -4654,6 +5199,12 @@ func (a *App) InstallGame(gameID int64, destParent string) error {
 		return fmt.Errorf("application context not initialized")
 	}
 
+	// Cross-guard: a running scan walks game directories; installing mid-scan
+	// would let the scanner see half-written files. Refuse rather than race.
+	if a.scanRunning.Load() {
+		return fmt.Errorf("a scan is in progress; cannot update right now")
+	}
+
 	// Shares the update lock: both pipelines download, extract and write into
 	// game directories, and running them together is asking for trouble.
 	if !a.updateRunning.CompareAndSwap(false, true) {
@@ -4673,10 +5224,14 @@ func (a *App) InstallGame(gameID int64, destParent string) error {
 }
 
 // updateDirSize calculates the total size of a directory and all its contents
-// recursively. It silently skips any files that cannot be read.
-func updateDirSize(dir string) int64 {
+// recursively. It silently skips any files that cannot be read, and stops
+// early when the context is cancelled.
+func updateDirSize(ctx context.Context, dir string) int64 {
 	var total int64
 	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
 			return nil // skip inaccessible entries
 		}

@@ -49,6 +49,16 @@ func TestGameUpdateGuardRejectsConcurrentRuns(t *testing.T) {
 			t.Errorf("error = %q, want mention of in-progress guard", err)
 		}
 	})
+
+	t.Run("ProvideUpdateFileSharesLock", func(t *testing.T) {
+		err := a.ProvideUpdateFile(id)
+		if err == nil {
+			t.Fatal("expected error while update in progress, got nil")
+		}
+		if !strings.Contains(err.Error(), "in progress") {
+			t.Errorf("error = %q, want mention of in-progress guard", err)
+		}
+	})
 }
 
 // Manual scans and watcher rescans are single-flight: a second ScanDirectory
