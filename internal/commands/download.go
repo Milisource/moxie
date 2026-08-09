@@ -241,64 +241,94 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 	}
 	dlRecord.ID = dlID
 
+	progressFn := func(p downloader.Progress) {
+		dlRecord.BytesDownloaded = p.BytesDownloaded
+		dlRecord.TotalBytes = p.TotalBytes
+		dlRecord.SpeedBytesPerSec = p.SpeedBytesPerSec
+		dlRecord.PercentComplete = p.Percent
+		database.UpdateDownload(dlRecord)
+		renderProgressBar(p)
+	}
+
+	// Multi-part archives: download every part of the best group (with
+	// per-part host fallback); on success skip the single-link loop and go
+	// straight to install. On failure fall back to single links.
 	var lastErr error
 	var failures []string
-	for i, sl := range scored {
-		link := sl.link
-
-		if i > 0 {
-			dlRecord.URL = link.URL
-			dlRecord.Host = link.Host
-			dlRecord.Filename = link.Name
-			dlRecord.Status = db.DownloadStatusDownloading
-			dlRecord.StartedAt = time.Now()
-			dlRecord.BytesDownloaded = 0
-			dlRecord.TotalBytes = 0
-			dlRecord.SpeedBytesPerSec = 0
-			dlRecord.PercentComplete = 0
-			dlRecord.Error = ""
-			database.UpdateDownload(dlRecord)
-
-			log.Info("download fallback", "game_id", game.ID, "attempt", i+1, "total", len(scored), "host", link.Host)
-			fmt.Fprintf(os.Stderr, "  Retrying with [%s] [%s] %s\n", link.Platform, link.Host, link.Name)
-		} else {
-			dlRecord.Status = db.DownloadStatusDownloading
-			dlRecord.StartedAt = time.Now()
-			database.UpdateDownload(dlRecord)
-		}
-
-		progressFn := func(p downloader.Progress) {
-			dlRecord.BytesDownloaded = p.BytesDownloaded
-			dlRecord.TotalBytes = p.TotalBytes
-			dlRecord.SpeedBytesPerSec = p.SpeedBytesPerSec
-			dlRecord.PercentComplete = p.Percent
-			database.UpdateDownload(dlRecord)
-			renderProgressBar(p)
-		}
-
-		err = downloader.Download(link.URL, destDir, link.Size, progressFn, cookie)
-		if err == nil {
-			downloadedFile := findDownloadedFile(destDir, dlRecord.Filename)
-			if downloadedFile != "" && !downloader.IsValidGameFile(downloadedFile) {
-				fi, _ := os.Stat(downloadedFile)
-				size := int64(0)
-				if fi != nil {
-					size = fi.Size()
-				}
-				log.Warn("downloaded file is not a valid game file (likely interstitial page)", "file", downloadedFile, "size", size)
-				os.Remove(downloadedFile)
-				err = fmt.Errorf("downloaded content is not a valid game file (%d bytes)", size)
-			}
-		}
-		if err == nil {
-			lastErr = nil
-			break
-		}
-		lastErr = err
-		failures = append(failures, err.Error())
-		log.Warn("download attempt failed", "game_id", game.ID, "host", link.Host, "error", err)
-		fmt.Fprintf(os.Stderr, "  ✗ [%s] download failed: %v\n", link.Host, err)
+	var multiPartFinal string
+	groupLinks := make([]db.DownloadLink, 0, len(scored))
+	for _, sl := range scored {
+		groupLinks = append(groupLinks, sl.link)
 	}
+	if groups := downloader.GroupMultiPartLinks(groupLinks); len(groups) > 0 {
+		group := groups[0]
+		fmt.Fprintf(os.Stderr, "  Multi-part archive: %d parts (%s)\n", len(group.Parts), group.Prefix)
+		finalFile, err := downloader.DownloadMultiPart(group, destDir, progressFn, cookie)
+		if err == nil && downloader.IsValidGameFile(finalFile) {
+			multiPartFinal = finalFile
+			dlRecord.Filename = filepath.Base(finalFile)
+			dlRecord.Status = db.DownloadStatusDownloading
+			database.UpdateDownload(dlRecord)
+		} else {
+			if err == nil {
+				os.Remove(finalFile)
+				err = fmt.Errorf("downloaded content is not a valid game file")
+			}
+			lastErr = err
+			failures = append(failures, err.Error())
+			fmt.Fprintf(os.Stderr, "  ✗ Multi-part download failed: %v (trying single links)\n", err)
+		}
+	}
+
+	if multiPartFinal == "" {
+		for i, sl := range scored {
+			link := sl.link
+
+			if i > 0 {
+				dlRecord.URL = link.URL
+				dlRecord.Host = link.Host
+				dlRecord.Filename = link.Name
+				dlRecord.Status = db.DownloadStatusDownloading
+				dlRecord.StartedAt = time.Now()
+				dlRecord.BytesDownloaded = 0
+				dlRecord.TotalBytes = 0
+				dlRecord.SpeedBytesPerSec = 0
+				dlRecord.PercentComplete = 0
+				dlRecord.Error = ""
+				database.UpdateDownload(dlRecord)
+
+				log.Info("download fallback", "game_id", game.ID, "attempt", i+1, "total", len(scored), "host", link.Host)
+				fmt.Fprintf(os.Stderr, "  Retrying with [%s] [%s] %s\n", link.Platform, link.Host, link.Name)
+			} else {
+				dlRecord.Status = db.DownloadStatusDownloading
+				dlRecord.StartedAt = time.Now()
+				database.UpdateDownload(dlRecord)
+			}
+
+			err = downloader.Download(link.URL, destDir, link.Size, progressFn, cookie)
+			if err == nil {
+				downloadedFile := findDownloadedFile(destDir, dlRecord.Filename)
+				if downloadedFile != "" && !downloader.IsValidGameFile(downloadedFile) {
+					fi, _ := os.Stat(downloadedFile)
+					size := int64(0)
+					if fi != nil {
+						size = fi.Size()
+					}
+					log.Warn("downloaded file is not a valid game file (likely interstitial page)", "file", downloadedFile, "size", size)
+					os.Remove(downloadedFile)
+					err = fmt.Errorf("downloaded content is not a valid game file (%d bytes)", size)
+				}
+			}
+			if err == nil {
+				lastErr = nil
+				break
+			}
+			lastErr = err
+			failures = append(failures, err.Error())
+			log.Warn("download attempt failed", "game_id", game.ID, "host", link.Host, "error", err)
+			fmt.Fprintf(os.Stderr, "  ✗ [%s] download failed: %v\n", link.Host, err)
+		}
+	} // end multiPartFinal == ""
 
 	if lastErr != nil {
 		dlRecord.Status = db.DownloadStatusFailed
@@ -321,7 +351,10 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 
 	// Auto-extract
 	if extract {
-		downloadedFile := findDownloadedFile(destDir, dlRecord.Filename)
+		downloadedFile := multiPartFinal
+		if downloadedFile == "" {
+			downloadedFile = findDownloadedFile(destDir, dlRecord.Filename)
+		}
 		if downloadedFile != "" && archive.IsArchiveFile(downloadedFile) {
 			fmt.Fprintf(os.Stderr, "  Extracting archive...\n")
 			dlRecord.Status = db.DownloadStatusExtracting

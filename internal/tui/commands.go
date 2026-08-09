@@ -228,6 +228,54 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 	go func() {
 		var lastErr error
 		var failures []string
+
+		// Multi-part archives: a thread may split one archive across
+		// several links (Game.part1.rar + Game.part2.rar, or split .001
+		// parts). Download the whole set before treating the game as
+		// downloaded; on failure fall back to the single-link loop below.
+		if groups := downloader.GroupMultiPartLinks(links); len(groups) > 0 {
+			group := groups[0]
+			ad.mu.Lock()
+			ad.stepMsg = fmt.Sprintf("Downloading %d parts (%s)...", len(group.Parts), group.Prefix)
+			ad.mu.Unlock()
+			log.Info("tui multi-part download", "game_id", gameID, "prefix", group.Prefix, "parts", len(group.Parts))
+			finalFile, err := downloader.DownloadMultiPart(group, destDir, func(p downloader.Progress) {
+				ad.mu.Lock()
+				if p.BytesDownloaded > 0 {
+					ad.stepMsg = "Downloading..."
+				}
+				ad.progress = p
+				ad.mu.Unlock()
+				dl.BytesDownloaded = p.BytesDownloaded
+				dl.TotalBytes = p.TotalBytes
+				dl.SpeedBytesPerSec = p.SpeedBytesPerSec
+				dl.PercentComplete = p.Percent
+				m.db.UpdateDownload(dl)
+			}, f95Cookie)
+			if err == nil && downloader.IsValidGameFile(finalFile) {
+				ad.mu.Lock()
+				ad.status = db.DownloadStatusCompleted
+				ad.progress.Percent = 100
+				ad.stepMsg = "✓ Download succeeded!"
+				dl.Status = db.DownloadStatusCompleted
+				dl.PercentComplete = 100
+				ad.mu.Unlock()
+				dl.CompletedAt = time.Now()
+				m.db.UpdateDownload(dl)
+				if errMsg := m.installArchive(ad, dl, finalFile, destDir, gamePath, engine); errMsg != "" {
+					ad.mu.Lock()
+					ad.status = db.DownloadStatusFailed
+					ad.err = errMsg
+					ad.stepMsg = "✗ Install failed"
+					ad.mu.Unlock()
+					dl.Status = db.DownloadStatusFailed
+					dl.Error = errMsg
+				}
+				return
+			}
+			log.Warn("tui multi-part download failed, falling back to single links", "game_id", gameID, "error", err)
+		}
+
 		for i, link := range links {
 			if i > 0 {
 				ad.mu.Lock()
