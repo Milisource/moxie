@@ -40,13 +40,33 @@ Brave, Firefox) on any of the three target OSes (Linux, macOS, Windows).
   `WithBrowser("auto"|"chrome"|"firefox")` (or `MOXIE_BROWSER` env /
   `browser_fallback` config key; `off` disables); auto order =
   cookie-holding browser for the host (kooky per-browser) → Chrome-family →
-  Firefox. `InstallDownloaderFallback()` wires the downloader's
-  `SetDefaultBrowserFallback` hook (TUI download, CLI `download`, desktop
-  app startup): the hook fires at most once per download when the Go path
-  hits a Cloudflare challenge (Cf-Mitigated / 403 challenge body at the
-  file hop, or a challenge/captcha failure at the resolver stage), and the
-  browser performs the download itself into the destination dir. Go path
-  stays primary.
+  Firefox. **F95Zone masked URLs (`/masked/`) prefer the rod engine** — the
+  reCAPTCHA-gated Continue interstitial needs clicks. `InstallDownloaderFallback()`
+  wires the downloader's `SetDefaultBrowserFallback` hook (TUI download,
+  CLI `download`, desktop app startup): the hook fires at most once per
+  download when the Go path hits a Cloudflare challenge (Cf-Mitigated /
+  403 challenge body at the file hop, or a challenge/captcha failure at the
+  resolver stage), and the browser performs the download itself into the
+  destination dir. Go path stays primary.
+- **Click automation + cookie injection (F95-1ng2 core): implemented +
+  live-verified 2026-08-09** with a real Chromium:
+  - `clickDownloadTriggers` drives click-required flows: F95Zone masked
+    "Continue" (`a.host_link`), file-host free-download buttons (text /
+    `href` containing download, `id` containing download — pixeldrain icon
+    buttons), and the **reCAPTCHA checkbox** inside its iframe (headless
+    sessions get the "I'm not a robot" challenge instead of the invisible
+    auto-pass). Click chain bounded (5 clicks), auto-download pages never
+    delayed (tracker `started()` bail).
+  - **Session cookies injected via CDP** (`Browser.SetCookies`) from every
+    browser store (kooky) for the target host — a Chromium session carries
+    cookies that live in the user's Firefox (and vice versa), so the masked
+    flow works on machines whose session is not in a Chrome-family profile.
+  - Live: masked Continue → host Download button → file downloaded and
+    byte-verified; reCAPTCHA-checkbox fixture likewise. The REAL Meltys
+    Quest run (2026-08-09): F95Zone's masked captcha wall is
+    **intermittent** — the Go unwrap answered `ok` on the winning attempt
+    and the whole pipeline (unwrap → pixeldrain API → 1.17 GB → extract →
+    merge) completed without a browser.
 - **No browser is shipped or downloaded** — both engines launch the user's
   own installed browser (`launcher.New()`, never rod's `NewBrowser()`
   download path); default is auto-detect on the user's own installs.

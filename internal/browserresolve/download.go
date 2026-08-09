@@ -102,6 +102,15 @@ func (t *downloadTracker) onProgress(guid string, st downloadState, received, to
 	}
 }
 
+// started reports whether any download activity was seen (WillBegin or
+// progress events) — the click phase stops searching triggers once a
+// download began.
+func (t *downloadTracker) started() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.state != downloadIdle
+}
+
 // finished reports whether the tracked download reached a terminal state.
 func (t *downloadTracker) finished() bool {
 	t.mu.Lock()

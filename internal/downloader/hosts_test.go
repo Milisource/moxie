@@ -1649,6 +1649,35 @@ func TestUnwrapMasked_CaptchaStatus(t *testing.T) {
 	}
 }
 
+// TestResolveMasked_CaptchaPropagates verifies a captcha-walled masked
+// unwrap surfaces the real (challenge-marked) error instead of falling
+// through to host resolution with the masked URL — the misleading
+// "could not extract file ID" error would also lose the challenge marker
+// the browser fallback depends on.
+func TestResolveMasked_CaptchaPropagates(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"captcha","msg":"challenge"}`)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	_, err := r.Resolve(srv.URL+"/masked/pixeldrain.com/6004/6265512/abc/def/ghi", "pixeldrain")
+	if err == nil {
+		t.Fatal("expected error for captcha-walled masked unwrap")
+	}
+	if !strings.Contains(err.Error(), "captcha") {
+		t.Errorf("error = %v, want the captcha wall to propagate", err)
+	}
+	if !isChallengeFailure(err) {
+		t.Errorf("error = %v, want challenge marker (browser fallback trigger)", err)
+	}
+	if strings.Contains(err.Error(), "could not extract") {
+		t.Errorf("error = %v, must not fall through to host resolution", err)
+	}
+}
+
 func TestUnwrapMasked_ErrorStatus(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

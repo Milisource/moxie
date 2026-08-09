@@ -57,6 +57,7 @@ Documentation lives in `docs/`. Keep it in sync with code changes — update the
 | `docs/scraper.md` | HTTP client, rate limiting, HTML parsing, auto-association |
 | `docs/database.md` | SQLite schema, version tracking, migration strategy |
 | `docs/tui.md` | Bubble Tea model/update/view, keyboard shortcuts, filters |
+| `docs/f95zone-browser-design.md` | F95Zone `/sam/latest_alpha` design reference + Moxie F95Browser.svelte data flow, covers, recommendations status |
 | `docs/browser.md` | Cross-browser cookie extraction with kooky |
 | `docs/browserresolve.md` | Browser-backed download engine: Chrome (rod) + Firefox (raw-launch) engines, OS/browser discovery matrix |
 | `docs/research-buzzheavier-cloudflare.md` | Buzzheavier/Cloudflare deep-dive: Turnstile gate, token flow, fafda.to hybrid, uTLS verdict + live verification matrix |

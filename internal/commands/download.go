@@ -397,6 +397,12 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 					}
 				}
 			}
+			// Finalize the record: the download, extraction, and merge all
+			// succeeded (extract/merge problems are warnings, not failures).
+			dlRecord.Status = db.DownloadStatusCompleted
+			dlRecord.PercentComplete = 100
+			dlRecord.CompletedAt = time.Now()
+			database.UpdateDownload(dlRecord)
 		}
 	}
 

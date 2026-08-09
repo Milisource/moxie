@@ -40,6 +40,7 @@ func TestSelectEngine_FirefoxOnly(t *testing.T) {
 	binDir := t.TempDir()
 	fakeBin(t, binDir, "firefox")
 	pathWith(t, binDir, false)
+	t.Setenv("HOME", t.TempDir()) // hide playwright-cached chromium
 
 	eng, err := selectEngine(&Options{}, "https://vikingfile.com/f/abc")
 	if err != nil {
@@ -114,6 +115,7 @@ func TestSelectEngine_ChromeCookieHolderWins(t *testing.T) {
 // installed and no cookies point at a browser.
 func TestSelectEngine_NoBrowser(t *testing.T) {
 	pathWith(t, t.TempDir(), false)
+	t.Setenv("HOME", t.TempDir()) // hide playwright-cached chromium
 	old := cookieBrowsersForHost
 	defer func() { cookieBrowsersForHost = old }()
 	cookieBrowsersForHost = func(string) []string { return nil }

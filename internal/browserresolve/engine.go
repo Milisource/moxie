@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -42,11 +43,59 @@ func (e *rodEngine) profileDir(override string) (string, error) {
 	return discoverProfileDir(override)
 }
 
-// detectBrowserBinary returns the first Chrome-family executable on PATH.
+// detectBrowserBinary returns the first Chrome-family executable on PATH,
+// in a per-OS standard install location, or in the Playwright cache
+// (rod's own launcher discovery covers the same ground at launch time;
+// this is the cheap selection-time check).
 func detectBrowserBinary() (string, error) {
 	for _, name := range browserBinaryCandidates {
 		if p, err := exec.LookPath(name); err == nil {
 			return p, nil
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		for _, app := range []string{"Google Chrome.app", "Microsoft Edge.app", "Brave Browser.app"} {
+			for _, base := range []string{"/Applications", filepath.Join(home, "Applications")} {
+				candidate := filepath.Join(base, app, "Contents", "MacOS", app[:len(app)-4])
+				if _, err := os.Stat(candidate); err == nil {
+					return candidate, nil
+				}
+			}
+		}
+	case "windows":
+		for _, root := range []string{
+			os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("LOCALAPPDATA"),
+		} {
+			if root == "" {
+				continue
+			}
+			for _, app := range []string{
+				filepath.Join("Google", "Chrome", "Application", "chrome.exe"),
+				filepath.Join("Microsoft", "Edge", "Application", "msedge.exe"),
+				filepath.Join("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+			} {
+				candidate := filepath.Join(root, app)
+				if _, err := os.Stat(candidate); err == nil {
+					return candidate, nil
+				}
+			}
+		}
+	}
+	// Playwright-cached Chromium builds (dev machines, CI, playwright users).
+	if home != "" {
+		for _, pattern := range []string{
+			filepath.Join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux64", "chrome"),
+			filepath.Join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux", "chrome"),
+			filepath.Join(home, "Library", "Caches", "ms-playwright", "chromium-*", "chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"),
+		} {
+			if matches, _ := filepath.Glob(pattern); len(matches) > 0 {
+				return matches[0], nil
+			}
 		}
 	}
 	return "", exec.ErrNotFound
@@ -121,6 +170,10 @@ func (e *rodEngine) run(ctx context.Context, req engineRequest) (engineResult, e
 	}
 	defer b.Close()
 
+	// Seed the session with the user's cookies for the target host (from
+	// every browser store) before any navigation.
+	injectCookiesForURL(b, req.url)
+
 	// EventsEnabled:true makes Chrome emit downloadWillBegin/downloadProgress
 	// so the GUID (and real progress for GB files) is observable.
 	if err := (proto.BrowserSetDownloadBehavior{
@@ -168,9 +221,15 @@ func (e *rodEngine) run(ctx context.Context, req engineRequest) (engineResult, e
 	defer pollCancel()
 	go pollDownloadDir(pollCtx, req.downloadDir, pollInterval, fileCh)
 
-	if _, err := b.Page(proto.TargetCreateTarget{URL: req.url}); err != nil {
+	page, err := b.Page(proto.TargetCreateTarget{URL: req.url})
+	if err != nil {
 		return engineResult{}, fmt.Errorf("browserresolve: opening download tab: %w", err)
 	}
+
+	// Click-required flows (F95Zone masked "Continue", free-download
+	// buttons): drive the chain until a download starts. Auto-download
+	// pages bail out via the tracker within one selector timeout.
+	clickDownloadTriggers(ctx, page, tr)
 
 	timeout := e.opts.DownloadTimeout
 	if timeout <= 0 {

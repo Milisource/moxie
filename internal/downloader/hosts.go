@@ -182,10 +182,16 @@ func (r *HostResolver) resolveDepth(url string, host string, depth int) (*Resolv
 		realHost := IdentifyHostInURL(realURL)
 		log.Debug("masked unwrap result", "real_url", realURL, "real_host", realHost, "error", err)
 		if err != nil {
+			// Surface the real unwrap failure (e.g. F95Zone's captcha wall
+			// or an expired session) instead of falling through to host
+			// resolution with the masked URL — the host resolvers cannot
+			// extract anything from a masked path (they only produce the
+			// misleading "could not extract file ID" error), and the
+			// challenge-marked error is what triggers the browser fallback.
 			log.Warn("failed to unwrap masked URL", "url", url, "error", err)
-			// Fall through to host-specific resolution with the original URL;
-			// it will fail, but the caller's fallback loop will try other links.
-		} else if realURL != url {
+			return nil, fmt.Errorf("unwrap masked URL: %w", err)
+		}
+		if realURL != url {
 			// Cache store: a successful unwrap, so the next resolve of this
 			// masked URL skips the endpoint entirely.
 			if r.resolvedCachePut != nil {

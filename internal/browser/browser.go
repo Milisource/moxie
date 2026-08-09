@@ -235,6 +235,60 @@ func browserOrderIndex(name string) int {
 	return len(cookieBrowserOrder)
 }
 
+// CookieParam is a cookie ready for injection into a browser session (CDP),
+// so a fallback engine can carry the user's session cookies even when they
+// live in a different browser's store (e.g. Firefox cookies powering a
+// Chromium session).
+type CookieParam struct {
+	Name     string
+	Value    string
+	Domain   string
+	Path     string
+	Secure   bool
+	HTTPOnly bool
+	// Expires is the unix-seconds expiry; 0 = session cookie.
+	Expires int64
+}
+
+// GetCookieParamsForHost returns the cookies valid for hostname (RFC 6265
+// domain match) as injection-ready params, drawn from every browser store.
+// Returns nil when no browser holds cookies for the host.
+func GetCookieParamsForHost(hostname string) []CookieParam {
+	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	hostname = strings.TrimSuffix(hostname, ".")
+	if hostname == "" {
+		return nil
+	}
+	cookies, _ := cachedBrowserCookies()
+	var params []CookieParam
+	for _, c := range cookies {
+		if c == nil {
+			continue
+		}
+		if !domainMatchesHostname(hostname, c.Domain) {
+			continue
+		}
+		value := sanitizeHeaderValue(c.Value)
+		if value == "" {
+			continue
+		}
+		var expires int64
+		if !c.Expires.IsZero() {
+			expires = c.Expires.Unix()
+		}
+		params = append(params, CookieParam{
+			Name:     c.Name,
+			Value:    value,
+			Domain:   c.Domain,
+			Path:     c.Path,
+			Secure:   c.Secure,
+			HTTPOnly: c.HttpOnly,
+			Expires:  expires,
+		})
+	}
+	return params
+}
+
 // GetF95CookiesFromSQLite reads f95zone.to cookies directly from a Firefox
 // cookies.sqlite file at the given path.
 func GetF95CookiesFromSQLite(path string) (string, error) {

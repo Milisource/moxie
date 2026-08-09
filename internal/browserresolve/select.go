@@ -52,6 +52,19 @@ func selectEngine(o *Options, rawURL string) (engine, error) {
 	case BrowserFirefox:
 		return newFirefoxEngine(*o), nil
 	}
+	// Auto: F95Zone masked URLs need click automation — the reCAPTCHA-
+	// gated "Continue" interstitial (F95Zone answers every unwrap POST
+	// with {"status":"captcha"}) cannot be passed by raw-launch Firefox.
+	// Prefer the rod engine: it clicks, and session cookies are injected
+	// from every browser store regardless of which browser holds them.
+	if strings.Contains(rawURL, "/masked/") {
+		if _, err := detectBrowserBinary(); err == nil {
+			return newRodEngine(*o), nil
+		}
+		// No Chrome-family binary: fall through — the cookie-holder or
+		// Firefox paths below will fail the masked flow without clicks,
+		// but nothing better is available on this machine.
+	}
 	// Auto: the cookie-holder for this host is the guaranteed fingerprint
 	// match; prefer it over any generic availability.
 	if host := urlHostname(rawURL); host != "" {
