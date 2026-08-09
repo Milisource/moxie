@@ -197,6 +197,20 @@ func (m model) buildDetailContent() string {
 		b.WriteString(accentStyle.Render("  Download"))
 		b.WriteString("\n")
 		b.WriteString(downloadSection(game.ID, progress, status, errStr, stepMsg, w))
+
+		// Browser fallback prompt: every auto-download link failed, so
+		// offer to open the best link in the user's real browser.
+		if fb := m.browserFallbacks[game.ID]; fb != nil {
+			if !fb.watching {
+				b.WriteString("\n")
+				b.WriteString(deletePromptStyle.Render("  All download links failed — open in your browser?  [y] Open  [n] Dismiss  "))
+				b.WriteString("\n")
+				b.WriteString(subtleStyle.Render(fmt.Sprintf("  Save the file into %s — moxie will detect and install it automatically", fb.destDir)))
+			} else {
+				b.WriteString("\n")
+				b.WriteString(noticeStyle.Render(fmt.Sprintf("  Watching %s for the browser download — new archives are installed automatically", fb.destDir)))
+			}
+		}
 	}
 
 	// ── Action buttons ────────────────────────────────────────────

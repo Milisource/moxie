@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/bubbles/filepicker"
@@ -131,6 +132,39 @@ type downloadLinksMsg struct {
 	err      error
 }
 
+// downloadFinishedMsg is sent by the download goroutine after it finishes.
+// A non-empty summary means every link failed; the payload then carries the
+// best link URL so the TUI can offer the browser fallback.
+type downloadFinishedMsg struct {
+	gameID   int64
+	url      string
+	summary  string
+	destDir  string
+	gamePath string
+	engine   string
+}
+
+// watcherFoundMsg reports that a new archive appeared in a game's download
+// dir (a browser-saved download picked up by the ArchiveWatcher).
+type watcherFoundMsg struct {
+	gameID   int64
+	path     string
+	destDir  string
+	gamePath string
+	engine   string
+}
+
+// watcherInstalledMsg reports the result of installing a watcher-picked
+// archive through the validate → extract → merge pipeline.
+type watcherInstalledMsg struct {
+	gameID int64
+	err    error
+}
+
+// watcherIdleMsg is the pump's heartbeat: it re-arms the pump while
+// downloads/watchers are active and stops it when none remain.
+type watcherIdleMsg struct{}
+
 // ─── Active Download ───────────────────────────────────────────────────────
 
 type activeDownload struct {
@@ -202,6 +236,20 @@ type model struct {
 	// active downloads
 	activeDownloadsMu *sync.Mutex
 	activeDownloads   map[int64]*activeDownload
+
+	// browser fallback: gameID -> pending/active fallback after all links failed
+	browserFallbacks map[int64]*browserFallback
+
+	// download-dir watchers: gameID -> ArchiveWatcher picking up
+	// browser-saved archives in the game's download dir
+	gameWatchers map[int64]*downloader.ArchiveWatcher
+
+	// watcherMsgCh carries download terminal messages and watcher events
+	// into the Update loop; armPump's pump cmd is the only reader.
+	watcherMsgCh chan tea.Msg
+
+	// pumpArmed guards the single watcher-message pump goroutine.
+	pumpArmed *atomic.Bool
 
 	// startup tip (auto-dismissed)
 	showStartupTip bool
@@ -298,6 +346,10 @@ func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) m
 		f95Cookie:         f95Cookie,
 		activeDownloadsMu: &sync.Mutex{},
 		activeDownloads:   make(map[int64]*activeDownload),
+		browserFallbacks:  make(map[int64]*browserFallback),
+		gameWatchers:      make(map[int64]*downloader.ArchiveWatcher),
+		watcherMsgCh:      make(chan tea.Msg, 16),
+		pumpArmed:         &atomic.Bool{},
 		detailViewport:    viewport.New(0, 0),
 		showStartupTip:    true,
 		spinner:           sp,

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -274,15 +276,16 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 			log.Warn("tui download attempt failed", "game_id", gameID, "host", link.Host, "error", err)
 		}
 
+		var summary string
 		ad.mu.Lock()
 		if lastErr != nil {
-			summary := fmt.Sprintf("All %d download links failed:\n", len(links))
+			summary = fmt.Sprintf("All %d download links failed:\n", len(links))
 			for _, f := range failures {
 				summary += "  " + f + "\n"
 			}
 			if len(links) > 0 {
-				summary += "\n  → Download manually and run:\n"
-				summary += fmt.Sprintf("    moxie install %d <path-to-file>", gameID)
+				summary += "\n  → Press [y] to open the link in your browser, save the file,"
+				summary += "\n    and moxie will detect and install it automatically."
 			}
 			ad.status = db.DownloadStatusFailed
 			ad.err = summary
@@ -301,58 +304,85 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 			// Auto-extract if the downloaded file is an archive
 			downloadedFile := findMostRecentFile(destDir)
 			if downloadedFile != "" && archive.IsArchiveFile(downloadedFile) {
-				ad.stepMsg = "Extracting archive..."
-				ad.status = db.DownloadStatusExtracting
-				dl.Status = db.DownloadStatusExtracting
-				m.db.UpdateDownload(dl)
-				ad.mu.Unlock()
-
-				log.Info("extracting archive", "file", filepath.Base(downloadedFile))
-				result, extractErr := archive.Extract(downloadedFile, destDir, archive.Options{})
-				ad.mu.Lock()
-				if extractErr != nil {
-					log.Warn("extraction failed", "file", filepath.Base(downloadedFile), "error", extractErr)
+				ad.mu.Unlock() // don't hold the lock across extraction/merge
+				if errMsg := m.installArchive(ad, dl, downloadedFile, destDir, gamePath, engine); errMsg != "" {
+					ad.mu.Lock()
 					ad.status = db.DownloadStatusFailed
-					ad.err = fmt.Sprintf("Download succeeded, but extraction failed: %v", extractErr)
-					ad.stepMsg = "✗ Extraction failed"
+					ad.err = errMsg
+					ad.stepMsg = "✗ Install failed"
+					ad.mu.Unlock()
 					dl.Status = db.DownloadStatusFailed
-					dl.Error = extractErr.Error()
-				} else {
-					log.Info("extraction complete", "files", result.FilesExtracted, "dest", result.Destination)
-					os.Remove(downloadedFile)
-
-					// Merge extracted files into game directory, preserving saves
-					ad.mu.Unlock()
-					ad.mu.Lock()
-					ad.stepMsg = "Merging into game directory..."
-					ad.mu.Unlock()
-					mergeResult, mergeErr := updater.Merge(gamePath, engine, result.Destination, true)
-					ad.mu.Lock()
-					if mergeErr != nil {
-						log.Warn("merge failed", "game", gamePath, "error", mergeErr)
-						ad.status = db.DownloadStatusFailed
-						ad.err = fmt.Sprintf("Download succeeded, but merging into the game directory failed: %v", mergeErr)
-						ad.stepMsg = "✗ Merge failed"
-						dl.Status = db.DownloadStatusFailed
-						dl.Error = mergeErr.Error()
-					} else {
-						log.Info("merge complete", "game", gamePath, "copied", mergeResult.FilesCopied, "preserved", mergeResult.FilesPreserved)
-						ad.status = db.DownloadStatusCompleted
-						ad.progress.Percent = 100
-						dl.Status = db.DownloadStatusCompleted
-						dl.PercentComplete = 100
-					}
+					dl.Error = errMsg
 				}
+				ad.mu.Lock() // rebalance: the final unlock below expects the lock held
 			}
 		}
 		dl.CompletedAt = time.Now()
 		m.db.UpdateDownload(dl)
 		ad.mu.Unlock()
+
+		if lastErr != nil {
+			// Universal fallback: every resolver path failed (challenge,
+			// captcha, dead host). Surface the best link so the TUI can
+			// offer to open it in the user's real browser — the browser
+			// has full clearance and can click through anything.
+			m.watcherMsgCh <- downloadFinishedMsg{
+				gameID:   gameID,
+				url:      links[0].URL,
+				summary:  summary,
+				destDir:  destDir,
+				gamePath: gamePath,
+				engine:   engine,
+			}
+		}
 	}()
 
 	return func() tea.Msg {
 		return downloadStartedMsg{gameID: gameID}
 	}
+}
+
+// installArchive extracts a downloaded archive into destDir, merges the
+// result into the game directory (preserving saves/configs) and removes
+// the archive. Progress is reported through ad, and through dl when it is
+// non-nil (the download-dir watcher path has no download record). The
+// caller must NOT hold ad.mu. Returns "" on success or a user-facing error
+// message.
+func (m model) installArchive(ad *activeDownload, dl *db.Download, archivePath, destDir, gamePath, engine string) string {
+	ad.mu.Lock()
+	ad.stepMsg = "Extracting archive..."
+	ad.status = db.DownloadStatusExtracting
+	ad.mu.Unlock()
+	if dl != nil {
+		dl.Status = db.DownloadStatusExtracting
+		dl.Error = ""
+		m.db.UpdateDownload(dl)
+	}
+
+	log.Info("extracting archive", "file", filepath.Base(archivePath))
+	result, extractErr := archive.Extract(archivePath, destDir, archive.Options{})
+	if extractErr != nil {
+		log.Warn("extraction failed", "file", filepath.Base(archivePath), "error", extractErr)
+		return fmt.Sprintf("Download succeeded, but extraction failed: %v", extractErr)
+	}
+	log.Info("extraction complete", "files", result.FilesExtracted, "dest", result.Destination)
+	os.Remove(archivePath)
+
+	ad.mu.Lock()
+	ad.stepMsg = "Merging into game directory..."
+	ad.mu.Unlock()
+	mergeResult, mergeErr := updater.Merge(gamePath, engine, result.Destination, true)
+	if mergeErr != nil {
+		log.Warn("merge failed", "game", gamePath, "error", mergeErr)
+		return fmt.Sprintf("Download succeeded, but merging into the game directory failed: %v", mergeErr)
+	}
+	log.Info("merge complete", "game", gamePath, "copied", mergeResult.FilesCopied, "preserved", mergeResult.FilesPreserved)
+
+	ad.mu.Lock()
+	ad.status = db.DownloadStatusCompleted
+	ad.progress.Percent = 100
+	ad.mu.Unlock()
+	return ""
 }
 
 // pollDownloads returns a Tick that triggers periodic re-renders while downloads are active.
@@ -496,4 +526,151 @@ func sortLinksByPlatform(links []db.DownloadLink, targetPlatform downloader.Plat
 // in a directory, or empty string if the directory is empty/unreadable.
 func findMostRecentFile(dir string) string {
 	return downloader.FindMostRecentFile(dir)
+}
+
+// ─── Browser fallback & download-dir watchers ───────────────────────────
+
+// browserFallback tracks a game whose auto-download exhausted every link.
+// The user is offered to open the best link in their real browser; a
+// download-dir watcher then picks up the browser-saved archive and the
+// existing validate → extract → merge pipeline installs it.
+type browserFallback struct {
+	gameID   int64
+	url      string
+	destDir  string
+	gamePath string
+	engine   string
+
+	watching bool                     // browser opened + watcher started
+	watcher  *downloader.ArchiveWatcher
+}
+
+// openInBrowser opens a URL in the user's default browser.
+// Platform-specific: xdg-open (linux), open (macOS), cmd /c start (windows).
+func openInBrowser(url string) error {
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", url).Start()
+	case "windows":
+		return exec.Command("cmd", "/c", "start", "", url).Start()
+	default:
+		return exec.Command("xdg-open", url).Start()
+	}
+}
+
+// openBrowser launches the platform browser. It is a package variable so
+// tests can stub it without spawning a real browser.
+var openBrowser = openInBrowser
+
+// confirmBrowserOpen opens the failed download's best link in the user's
+// real browser and starts an ArchiveWatcher on the game's download dir so
+// the browser-saved archive is detected and installed automatically.
+func (m model) confirmBrowserOpen(fb *browserFallback) (tea.Model, tea.Cmd) {
+	if err := openBrowser(fb.url); err != nil {
+		m.err = fmt.Errorf("open in browser: %v", err)
+		return m, nil
+	}
+	fb.watching = true
+
+	w := downloader.NewArchiveWatcher(fb.destDir,
+		downloader.WithDebounce(downloader.DefaultDebounce),
+		downloader.WithOnArchive(func(path string) {
+			m.watcherMsgCh <- watcherFoundMsg{
+				gameID:   fb.gameID,
+				path:     path,
+				destDir:  fb.destDir,
+				gamePath: fb.gamePath,
+				engine:   fb.engine,
+			}
+		}),
+	)
+	if err := w.Start(); err != nil {
+		fb.watching = false
+		m.err = fmt.Errorf("start download watcher: %v", err)
+		return m, nil
+	}
+	fb.watcher = w
+	m.gameWatchers[fb.gameID] = w
+
+	m.notice = fmt.Sprintf("Opened in browser — save the file into %s and moxie will install it automatically", fb.destDir)
+	return m, m.armPump()
+}
+
+// hasWatchers reports whether any download-dir watcher is active.
+func (m model) hasWatchers() bool {
+	return len(m.gameWatchers) > 0
+}
+
+// watcherPumpIdle is how long the message pump waits for an event before
+// re-evaluating whether it is still needed (downloads/watchers active).
+const watcherPumpIdle = time.Second
+
+// armPump returns the watcher-message pump cmd, or nil when a pump is
+// already in flight. Exactly one pump may run at a time: it forwards
+// download terminal messages and download-dir watcher events from
+// watcherMsgCh into the Update loop. The armed flag is reset before a
+// message is delivered so handlers can re-arm the pump.
+func (m model) armPump() tea.Cmd {
+	if !m.pumpArmed.CompareAndSwap(false, true) {
+		return nil
+	}
+	return func() tea.Msg {
+		defer m.pumpArmed.Store(false)
+		t := time.NewTimer(watcherPumpIdle)
+		defer t.Stop()
+		select {
+		case msg, ok := <-m.watcherMsgCh:
+			if !ok {
+				return nil
+			}
+			return msg
+		case <-t.C:
+			return watcherIdleMsg{}
+		}
+	}
+}
+
+// installBrowserArchiveCmd runs the validate → extract → merge pipeline for
+// an archive that appeared in a game's download dir (a browser-saved
+// download picked up by the ArchiveWatcher).
+func (m model) installBrowserArchiveCmd(msg watcherFoundMsg) tea.Cmd {
+	return func() tea.Msg {
+		if !downloader.IsValidGameFile(msg.path) {
+			log.Warn("watcher: picked-up file is not a valid game archive", "path", msg.path)
+			return watcherInstalledMsg{gameID: msg.gameID, err: fmt.Errorf("file is not a valid game archive: %s", filepath.Base(msg.path))}
+		}
+
+		ad := m.ensureActiveDownload(msg.gameID, msg.destDir)
+		if errMsg := m.installArchive(ad, nil, msg.path, msg.destDir, msg.gamePath, msg.engine); errMsg != "" {
+			ad.mu.Lock()
+			ad.status = db.DownloadStatusFailed
+			ad.err = errMsg
+			ad.stepMsg = "✗ Install failed"
+			ad.mu.Unlock()
+			return watcherInstalledMsg{gameID: msg.gameID, err: fmt.Errorf("%s", errMsg)}
+		}
+		ad.mu.Lock()
+		ad.stepMsg = "✓ Browser download installed and merged"
+		ad.mu.Unlock()
+		return watcherInstalledMsg{gameID: msg.gameID}
+	}
+}
+
+// ensureActiveDownload returns the active-download entry for gameID,
+// creating a fresh one (so the detail view reports through it) if none
+// exists.
+func (m model) ensureActiveDownload(gameID int64, destDir string) *activeDownload {
+	m.activeDownloadsMu.Lock()
+	defer m.activeDownloadsMu.Unlock()
+	if ad, ok := m.activeDownloads[gameID]; ok {
+		return ad
+	}
+	ad := &activeDownload{
+		gameID:  gameID,
+		destDir: destDir,
+		status:  db.DownloadStatusExtracting,
+		stepMsg: "Browser download detected — installing...",
+	}
+	m.activeDownloads[gameID] = ad
+	return ad
 }

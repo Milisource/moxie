@@ -256,10 +256,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.notice = fmt.Sprintf("Download started for game %d", msg.gameID)
 		// Only start the 500ms poll loop from the first downloadStartedMsg.
 		// A second download arriving while the spinner is already active
-		// must not chain a duplicate poll loop.
+		// must not chain a duplicate poll loop. armPump is CAS-guarded, so
+		// a second download cannot arm a second message pump either.
 		if !m.spinnerActive && m.hasActiveDownloads() {
 			m.spinnerActive = true
-			return m, tea.Batch(m.pollDownloads(), m.spinner.Tick)
+			return m, tea.Batch(m.pollDownloads(), m.spinner.Tick, m.armPump())
 		}
 		return m, nil
 
@@ -273,6 +274,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.notice = fmt.Sprintf("Downloading from %s...", msg.links[0].Host)
 		return m, m.startDownloadCmd(msg.gameID, msg.links, msg.destDir, msg.gamePath, msg.engine, m.f95Cookie)
+
+	case downloadFinishedMsg:
+		// The download goroutine exhausted every link — offer the browser
+		// fallback so the user can open the best link in their real browser.
+		if msg.summary != "" {
+			m.browserFallbacks[msg.gameID] = &browserFallback{
+				gameID:   msg.gameID,
+				url:      msg.url,
+				destDir:  msg.destDir,
+				gamePath: msg.gamePath,
+				engine:   msg.engine,
+			}
+		}
+		if m.hasWatchers() {
+			return m, m.armPump()
+		}
+		return m, nil
+
+	case watcherFoundMsg:
+		// A browser-saved archive appeared in the game's download dir —
+		// run the validate → extract → merge pipeline. The pump is
+		// re-armed here (not in watcherInstalledMsg) so exactly one pump
+		// stays in flight while the install runs.
+		return m, tea.Batch(m.installBrowserArchiveCmd(msg), m.armPump())
+
+	case watcherInstalledMsg:
+		if msg.err != nil {
+			m.err = fmt.Errorf("auto-install: %v", msg.err)
+		} else {
+			m.notice = fmt.Sprintf("✓ Browser download installed for game %d", msg.gameID)
+		}
+		return m, nil
+
+	case watcherIdleMsg:
+		// Pump heartbeat: keep it alive while downloads or watchers are
+		// active, otherwise let it die.
+		if m.hasWatchers() || m.hasActiveDownloads() {
+			return m, m.armPump()
+		}
+		return m, nil
 
 	case downloadProgressMsg:
 		if m.hasActiveDownloads() {
@@ -390,6 +431,19 @@ func (m model) handleUrlInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
+	// Browser fallback: when every download link failed, y opens the best
+	// link in the user's real browser and starts watching the game's
+	// download dir for the browser-saved file.
+	if fb := m.browserFallbacks[m.selectedID]; fb != nil && !fb.watching {
+		switch key {
+		case "y", "Y":
+			return m.confirmBrowserOpen(fb)
+		case "n", "N", "esc":
+			delete(m.browserFallbacks, m.selectedID)
+			return m, nil
+		}
+	}
+
 	switch key {
 	case "esc", "left", "backspace":
 		m.viewMode = LibraryView
