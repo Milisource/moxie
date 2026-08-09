@@ -1,12 +1,13 @@
 <script>
-  import {onMount, onDestroy} from 'svelte'
-  import {EventsOn} from '../../wailsjs/runtime/runtime'
+  import {onMount, onDestroy, tick} from 'svelte'
   import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCoverBaseURL} from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
+  import {library} from './viewState.svelte.js'
 
   let {
     games = [],
+    loading = false,
     onOpenDetail = (id) => {},
     onUpdate = () => {},
   } = $props()
@@ -18,40 +19,21 @@
   // back to the placeholder.
   let coverBase = $state('')
 
-  // Games whose <img> failed to load. A retry epoch appended to the src
-  // forces the webview to re-request them after a sync/backfill caches the
-  // file — the plain URL would otherwise keep returning the cached 404.
-  let failedCovers = $state(new Set())
-  let coverEpoch = $state(0)
-
-  let unsubCoversComplete = null
-  let unsubGameDone = null
+  // Games whose <img> failed to load + the retry epoch live in viewState so
+  // the failure set (and its retry logic) survives tab switches. A retry
+  // epoch appended to the src forces the webview to re-request them after a
+  // sync/backfill caches the file — the plain URL would otherwise keep
+  // returning the cached 404. Retry bookkeeping lives in App.svelte's
+  // always-subscribed handlers (covers:complete, sync:game-done) so it also
+  // fires while this view is unmounted.
 
   function coverSrc(id) {
-    const epoch = failedCovers.has(id) ? `?r=${coverEpoch}` : ''
+    const epoch = library.failedCovers.has(id) ? `?r=${library.coverEpoch}` : ''
     return `${coverBase}/cover/${id}/thumb${epoch}`
   }
 
   function markFailed(id) {
-    failedCovers = new Set([...failedCovers, id])
-  }
-
-  // A sync run cached this game's cover — retry it right away.
-  function onGameDone(data) {
-    if (data?.id && failedCovers.has(data.id)) {
-      coverEpoch++
-      const next = new Set(failedCovers)
-      next.delete(data.id)
-      failedCovers = next
-    }
-  }
-
-  // A cover backfill finished — retry everything that had failed.
-  function onCoversComplete() {
-    if (failedCovers.size > 0) {
-      coverEpoch++
-      failedCovers = new Set()
-    }
+    library.failedCovers = new Set([...library.failedCovers, id])
   }
 
   onMount(async () => {
@@ -60,24 +42,29 @@
     } catch (e) {
       console.error('Failed to get cover base URL', e)
     }
-    unsubCoversComplete = EventsOn('covers:complete', onCoversComplete)
-    unsubGameDone = EventsOn('sync:game-done', onGameDone)
+    // A persisted query (from a previous visit to this tab) re-runs the
+    // search immediately — no debounce, the user already typed it. Await it
+    // so the scroll restore below lands on the FINAL list (search results),
+    // not the full list that renders first.
+    if (library.search.trim().length >= 2) await doSearch(library.search)
+    // Restore the scroll offset after the first paint: rows render
+    // synchronously from the games prop, so a tick suffices.
+    await tick()
+    if (tableBodyEl) tableBodyEl.scrollTop = library.scrollTop
   })
 
   onDestroy(() => {
     clearTimeout(debounceTimer)
-    if (unsubCoversComplete) unsubCoversComplete()
-    if (unsubGameDone) unsubGameDone()
   })
 
   // ── Search & Filters ──────────────────────────────────────────
-  let searchQuery = $state('')
+  // library.search / filters / sort live in viewState so they survive tab
+  // switches; only the in-flight request state is local.
   let debounceTimer                        // plain var, not reactive
   let searchResults = $state(null)         // null = use full list, array = search results
   let isSearching = $state(false)
+  let tableBodyEl = $state.raw()           // scroll container, bound in markup
 
-  let activeEngine = $state('All')
-  let activeStatus = $state('')
 
   // Extract distinct engines from the game list
   let engines = $derived.by(() => {
@@ -92,8 +79,6 @@
   const statuses = ['All', ...GAME_STATUSES]
 
   // ── Sorting ───────────────────────────────────────────────────
-  let sortColumn = $state('title')
-  let sortDesc = $state(false)
 
   // Numeric-aware version comparison: "10.0" sorts after "9.0". Splits on
   // non-alphanumerics and compares token-wise — numeric tokens numerically,
@@ -126,17 +111,17 @@
   }
 
   function toggleSort(col) {
-    if (sortColumn === col) {
-      sortDesc = !sortDesc
+    if (library.sortColumn === col) {
+      library.sortDesc = !library.sortDesc
     } else {
-      sortColumn = col
-      sortDesc = false
+      library.sortColumn = col
+      library.sortDesc = false
     }
   }
 
   function sortIcon(col) {
-    if (sortColumn !== col) return '▽'
-    return sortDesc ? '▲' : '▼'
+    if (library.sortColumn !== col) return '▽'
+    return library.sortDesc ? '▲' : '▼'
   }
 
   // ── Derived: filtered + sorted list ──────────────────────────
@@ -145,20 +130,20 @@
     let list = searchResults ?? games
 
     // 2. Filter by engine
-    if (activeEngine && activeEngine !== 'All') {
-      list = list.filter(g => g.engine === activeEngine)
+    if (library.engine && library.engine !== 'All') {
+      list = list.filter(g => g.engine === library.engine)
     }
 
     // 3. Filter by status
-    if (activeStatus && activeStatus !== 'All') {
-      list = list.filter(g => g.status === activeStatus)
+    if (library.status && library.status !== 'All') {
+      list = list.filter(g => g.status === library.status)
     }
 
     // 4. Sort
     const sorted = [...list]
     sorted.sort((a, b) => {
       let cmp = 0
-      switch (sortColumn) {
+      switch (library.sortColumn) {
         case 'title':
           cmp = (a.title || '').localeCompare(b.title || '', undefined, {numeric: true})
           break
@@ -175,7 +160,7 @@
           cmp = (a.sizeBytes || 0) - (b.sizeBytes || 0)
           break
       }
-      return sortDesc ? -cmp : cmp
+      return library.sortDesc ? -cmp : cmp
     })
 
     return sorted
@@ -208,15 +193,15 @@
   }
 
   function onSearchInput(e) {
-    searchQuery = e.target.value
+    library.search = e.target.value
     clearTimeout(debounceTimer)
     // Clearing (or shortening below the threshold) must clear results right
     // away and invalidate any in-flight request — don't wait for the debounce.
-    if (!searchQuery || searchQuery.trim().length < 2) {
-      doSearch(searchQuery)
+    if (!library.search || library.search.trim().length < 2) {
+      doSearch(library.search)
       return
     }
-    debounceTimer = setTimeout(() => doSearch(searchQuery), 300)
+    debounceTimer = setTimeout(() => doSearch(library.search), 300)
   }
 
   // ── Engine colors — imported from shared module ───────────────
@@ -288,7 +273,7 @@
 </script>
 
 <div class="game-list">
-  {#if games.length === 0 && !isSearching}
+  {#if games.length === 0 && !isSearching && !loading}
     <div class="empty">
       <div class="empty-icon">📂</div>
       <p class="empty-title">No games yet</p>
@@ -297,6 +282,8 @@
   {:else}
     {#if isSearching}
       <div class="searching-indicator">Searching…</div>
+    {:else if loading && games.length === 0}
+      <div class="searching-indicator">Loading library…</div>
     {/if}
 
     <!-- Filter Bar -->
@@ -307,13 +294,13 @@
           type="text"
           class="search-input"
           placeholder="Search titles, tags, developers…"
-          value={searchQuery}
+          value={library.search}
           oninput={onSearchInput}
         />
       </div>
 
       <span class="select-arrow">
-        <select class="filter-select" bind:value={activeEngine}>
+        <select class="filter-select" bind:value={library.engine}>
           {#each engines as eng}
             <option value={eng}>{eng}</option>
           {/each}
@@ -324,8 +311,8 @@
         {#each statuses as s}
           <button
             class="chip"
-            class:chip-active={activeStatus === s}
-            onclick={() => activeStatus = activeStatus === s ? '' : s}
+            class:chip-active={library.status === s}
+            onclick={() => library.status = library.status === s ? '' : s}
           >
             {statusLabel(s)}
           </button>
@@ -354,8 +341,12 @@
     </div>
 
     <!-- Rows -->
-    <div class="table-body">
-      {#each displayed as game}
+    <div
+      class="table-body"
+      bind:this={tableBodyEl}
+      onscroll={(e) => library.scrollTop = e.currentTarget.scrollTop}
+    >
+      {#each displayed as game (game.id)}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <div
           class="table-row"
@@ -366,7 +357,7 @@
           tabindex="0"
         >
           <span class="col-cover">
-            {#if game.hasCover && coverBase && !failedCovers.has(game.id)}
+            {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
               <img
                 class="cover-thumb"
                 src={coverSrc(game.id)}
@@ -586,7 +577,7 @@
   /* ── Table ─────────────────────────────────────────── */
   .table-header {
     display: grid;
-    grid-template-columns: 50px 1fr 110px 130px 80px 100px;
+    grid-template-columns: 80px 1fr 110px 130px 80px 100px;
     gap: 8px;
     padding: 6px 12px;
     font-size: 11px;
@@ -627,7 +618,7 @@
 
   .table-row {
     display: grid;
-    grid-template-columns: 50px 1fr 110px 130px 80px 100px;
+    grid-template-columns: 80px 1fr 110px 130px 80px 100px;
     gap: 8px;
     padding: 4px 12px;
     font-size: 13px;
@@ -691,8 +682,8 @@
 
   .cover-thumb {
     display: block;
-    width: 40px;
-    height: 56px;
+    width: 72px;
+    height: 40px;
     object-fit: cover;
     border-radius: 3px;
     background: var(--bg-secondary);
@@ -703,8 +694,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 40px;
-    height: 56px;
+    width: 72px;
+    height: 40px;
     border-radius: 3px;
     background: var(--bg-tertiary);
     flex-shrink: 0;
