@@ -10,7 +10,12 @@
     result = null,            // {associated, updated, skipped, errors} or null
     syncError = '',
     onSync = () => {},
+    onCancel = () => {},
   } = $props()
+
+  // App.svelte caps the retained per-game list (last 50) so appends are
+  // O(1); slice here too as a defensive render bound.
+  let visibleGameResults = $derived(gameResults.slice(-50))
 
   // Full sync: bypasses the 24h cooldown; every associated game's thread is
   // scraped, which also refreshes download links for the Downloads tab.
@@ -92,6 +97,11 @@
         Start Sync
       {/if}
     </button>
+    {#if syncing}
+      <button class="btn btn-outline btn-cancel" onclick={onCancel} title="Stop the running sync">
+        Cancel
+      </button>
+    {/if}
   </div>
 
   <!-- ── Sync Progress ─────────────────────────────────────── -->
@@ -103,10 +113,10 @@
       <p class="progress-label">{phaseLabel}</p>
     </div>
 
-    <!-- Per-game progress list -->
-    {#if gameResults.length > 0}
+    <!-- Per-game progress list (capped — see visibleGameResults) -->
+    {#if visibleGameResults.length > 0}
       <div class="games-progress">
-        {#each gameResults as game}
+        {#each visibleGameResults as game}
           <div class="game-row">
             {#if game.status === 'error'}
               <span class="game-icon game-icon-error">✗</span>
@@ -446,4 +456,19 @@
     color: #fff;
   }
   .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+  .btn-outline {
+    background: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+  }
+  .btn-outline:hover:not(:disabled) { background: var(--bg-hover); }
+
+  .btn-cancel {
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  }
+  .btn-cancel:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+  }
 </style>

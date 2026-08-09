@@ -7,6 +7,7 @@
     GetVersion,
   } from '../../wailsjs/go/main/App'
   import ScanPaths from './ScanPaths.svelte'
+  import UpdateDialog from './UpdateDialog.svelte'
 
   let deps = $state([])
   let dbPath = $state('')
@@ -108,6 +109,18 @@
         <span class="kv-value">{version || '—'}</span>
       </div>
     </div>
+  </section>
+
+  <!-- ── Application Update ─────────────────────────────── -->
+  <!-- Full staged self-update flow (CheckForUpdate → DownloadUpdate with
+       update:progress events → ApplyUpdate → restart). Previously imported
+       in App.svelte but never mounted — this is its home. -->
+  <section class="settings-section">
+    <h3 class="section-title">Application Update</h3>
+    <p class="section-hint">
+      Download and install a new version of the Moxie desktop app.
+    </p>
+    <UpdateDialog />
   </section>
 </div>
 
