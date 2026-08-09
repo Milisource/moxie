@@ -88,7 +88,14 @@
 
     try {
       const gameId = await AddGame(directoryPath.trim(), title.trim(), engine.trim(), version.trim())
-      result = {success: true, gameId}
+      // Keep the added title for the success message, then reset detection so
+      // the same directory can't be re-added (duplicate rows) — the Add
+      // button disappears with `detection` cleared until the user re-detects.
+      result = {success: true, gameId, title: title.trim()}
+      detection = null
+      title = ''
+      engine = ''
+      version = ''
       onGameAdded()
     } catch (e) {
       result = {success: false, error: String(e)}
@@ -246,7 +253,7 @@
       <div class="result-section">
         <h3 class="result-title">Game Added Successfully</h3>
         <p class="result-detail">Game ID: {result.gameId}</p>
-        <p class="result-detail">"{title}" has been added to your library.</p>
+        <p class="result-detail">"{result.title || title}" has been added to your library.</p>
       </div>
     {:else}
       <div class="error-section">

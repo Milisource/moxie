@@ -1,5 +1,5 @@
 <script>
-  import {onMount, onDestroy} from 'svelte'
+  import {onMount} from 'svelte'
   import {
     GetCookieStatus,
     SearchF95Zone,
@@ -8,37 +8,26 @@
   } from '../../wailsjs/go/main/App'
   import {engineColor, engineStyle} from './engineColors.js'
   import {safeExternalUrl} from './sanitizeUrl.js'
+  import {browser} from './viewState.svelte.js'
 
   // ── State ──────────────────────────────────────────────────
-  let query = $state('')
-  let results = $state([])
-  let loading = $state(false)
-  let searched = $state(false)
-  let error = $state('')
+  // Query/results/preview state lives in viewState so the browser tab keeps
+  // its search (and its preview pane) when the user navigates away and back.
+  // The seq counters are module-level too: an in-flight response from a
+  // destroyed instance must not be able to overwrite a remounted view — with
+  // shared counters, only a NEWER request supersedes an older one, exactly as
+  // if the view had never unmounted.
 
-  // Preview state
-  let selectedResult = $state(null)
-  let previewing = $state(false)
-  let preview = $state(null)
-  let previewError = $state('')
-  let expandedOverview = $state(false)
-
-  // Add-to-library state
-  let adding = $state(false)
-  let addResult = $state(null)     // { success: boolean, gameId?: number, error?: string }
+  let {
+    onAdded = () => {},
+  } = $props()
 
   // Cookie status
   let cookieStatus = $state('')    // 'available' | 'not_found' | ''
 
-  // Debounce timer
-  let debounceTimer = null
-
-  // Monotonic request ids: a slower, older response (search or preview) must
-  // never overwrite a newer one — e.g. preview A rendering under selection B.
-  // Wails bindings don't support abort, so we bump a counter and bail out of
-  // stale responses instead.
-  let searchSeq = 0
-  let previewSeq = 0
+  // Add-to-library in-flight lives in viewState (browser.addingInFlight) so
+  // a remount mid-add keeps the button disabled — a second click before the
+  // first AddGameFromF95Zone settles would double-add the game.
 
   // ── Cookie check on mount ──────────────────────────────────
   onMount(async () => {
@@ -47,128 +36,134 @@
     } catch (e) {
       console.error('Failed to get cookie status:', e)
     }
-  })
-
-  // A pending debounce must never fire after the view is destroyed — it
-  // would resurrect search results (and a fetch) on a torn-down component.
-  onDestroy(() => {
-    clearTimeout(debounceTimer)
+    // A hung request from a previous visit would otherwise leave the shared
+    // spinner stuck forever — nothing is in flight for this fresh instance.
+    browser.loading = false
+    browser.previewing = false
+    // Search is explicit-only (Search button / Enter) — never auto-triggered
+    // on mount, so a persisted query from a previous visit stays as-is until
+    // the user asks for a new search.
   })
 
   // ── Derived ─────────────────────────────────────────────────
-  let canSearch = $derived(query.trim().length >= 2 && cookieStatus === 'available' && !loading)
+  let canSearch = $derived(browser.query.trim().length >= 2 && cookieStatus === 'available' && !browser.loading)
 
   // Engine display colors — imported from engineColors.js
 
-  // ── Search with debounce ───────────────────────────────────
+  // ── Search (explicit only) ─────────────────────────────────
   // Clearing the field (or typing a too-short query) must clear results AND
   // invalidate any in-flight request so it can't resurrect stale results.
+  // Typing itself never triggers a search — only the Search button or Enter.
   function resetSearchResults() {
-    searchSeq++
-    previewSeq++
-    loading = false
-    searched = false
-    results = []
-    error = ''
-    selectedResult = null
-    preview = null
-    previewing = false
-    addResult = null
-    expandedOverview = false
+    browser.searchSeq++
+    browser.previewSeq++
+    browser.loading = false
+    browser.searched = false
+    browser.results = []
+    browser.error = ''
+    browser.selected = null
+    browser.preview = null
+    browser.previewing = false
+    browser.addResult = null
+    browser.expandedOverview = false
   }
 
   function handleSearchInput(e) {
-    query = e.target.value
-    clearTimeout(debounceTimer)
+    browser.query = e.target.value
 
-    if (query.trim().length < 2) {
+    if (browser.query.trim().length < 2) {
       resetSearchResults()
-      return
     }
-
-    debounceTimer = setTimeout(() => {
-      doSearch()
-    }, 300)
   }
 
   async function doSearch() {
-    // An explicit Search click / Enter supersedes a pending debounce.
-    clearTimeout(debounceTimer)
-    const q = query.trim()
+    const q = browser.query.trim()
     if (q.length < 2) {
       resetSearchResults()
       return
     }
 
-    const seq = ++searchSeq
-    previewSeq++                    // a new search invalidates any in-flight preview
-    loading = true
-    error = ''
-    searched = true
-    results = []
-    selectedResult = null
-    preview = null
-    previewing = false
-    addResult = null
-    expandedOverview = false
+    const seq = ++browser.searchSeq
+    browser.previewSeq++                    // a new search invalidates any in-flight preview
+    browser.loading = true
+    browser.error = ''
+    browser.searched = true
+    browser.results = []
+    browser.selected = null
+    browser.preview = null
+    browser.previewing = false
+    browser.addResult = null
+    browser.expandedOverview = false
 
     try {
       const res = await SearchF95Zone(q)
-      if (seq !== searchSeq) return   // stale — a newer search owns the results
-      results = res
+      if (seq !== browser.searchSeq) return   // stale — a newer search owns the results
+      browser.results = res
     } catch (e) {
-      if (seq !== searchSeq) return
-      error = String(e)
+      if (seq !== browser.searchSeq) return
+      browser.error = String(e)
     }
-    if (seq === searchSeq) loading = false
+    if (seq === browser.searchSeq) browser.loading = false
   }
 
   // ── Preview ────────────────────────────────────────────────
   async function handlePreview(result) {
-    selectedResult = result
-    previewing = true
-    preview = null
-    previewError = ''
-    addResult = null
-    expandedOverview = false        // don't leak the previous game's expanded state
+    browser.selected = result
+    browser.previewing = true
+    browser.preview = null
+    browser.previewError = ''
+    browser.addResult = null
+    browser.expandedOverview = false        // don't leak the previous game's expanded state
 
-    const seq = ++previewSeq
+    const seq = ++browser.previewSeq
     try {
       const p = await GetThreadPreview(result.url)
-      if (seq !== previewSeq) return  // stale — a newer preview/search owns the pane
-      preview = p
+      if (seq !== browser.previewSeq) return  // stale — a newer preview/search owns the pane
+      browser.preview = p
     } catch (e) {
-      if (seq !== previewSeq) return
-      previewError = String(e)
+      if (seq !== browser.previewSeq) return
+      browser.previewError = String(e)
     }
   }
 
   function closePreview() {
-    previewing = false
-    preview = null
-    selectedResult = null
-    addResult = null
-    expandedOverview = false
+    browser.previewSeq++               // drop any in-flight preview response
+    browser.previewing = false
+    browser.preview = null
+    browser.selected = null
+    browser.addResult = null
+    browser.expandedOverview = false
   }
 
   // ── Add to Library ─────────────────────────────────────────
   async function handleAddToLibrary() {
-    if (!preview) return
+    if (!browser.preview || browser.addingInFlight) return
 
-    adding = true
-    addResult = null
+    const seq = browser.previewSeq
+    browser.addingInFlight = true
+    browser.addResult = null
 
     try {
       const gameId = await AddGameFromF95Zone(
-        selectedResult.url,
-        preview.title,
-        preview.prefix || '',
+        browser.selected.url,
+        browser.preview.title,
+        browser.preview.prefix || '',
       )
-      addResult = { success: true, gameId }
+      // Drop stale results: if the user navigated away (preview closed / new
+      // preview started) mid-add, don't let this response resurrect the pane.
+      if (seq === browser.previewSeq) {
+        browser.addResult = { success: true, gameId }
+        onAdded()
+      }
     } catch (e) {
-      addResult = { success: false, error: String(e) }
+      if (seq === browser.previewSeq) {
+        browser.addResult = { success: false, error: String(e) }
+      }
+    } finally {
+      // Cleared unconditionally: the shared flag must not stay set past the
+      // backend call settling, or a remounted view would be stuck disabled.
+      browser.addingInFlight = false
     }
-    adding = false
   }
 
   // ── Overview truncation ────────────────────────────────────
@@ -217,7 +212,7 @@
       type="text"
       class="search-input"
       placeholder="Search F95Zone games… (e.g. 'Summertime Saga')"
-      value={query}
+      value={browser.query}
       oninput={handleSearchInput}
       onkeydown={(e) => e.key === 'Enter' && doSearch()}
     />
@@ -226,7 +221,7 @@
       onclick={doSearch}
       disabled={!canSearch}
     >
-      {#if loading}
+      {#if browser.loading}
         <span class="spinner-small"></span>
       {:else}
         Search
@@ -235,26 +230,26 @@
   </div>
 
   <!-- ── Content Area: Results + Preview ──────────────────── -->
-  <div class="browser-content" class:has-preview={previewing}>
+  <div class="browser-content" class:has-preview={browser.previewing}>
     <!-- ── Results Section ──────────────────────────────── -->
     <div class="results-section">
-      {#if error}
+      {#if browser.error}
         <div class="error-section">
           <p class="error-title">Search failed:</p>
-          <p class="error-line">{error}</p>
+          <p class="error-line">{browser.error}</p>
         </div>
-      {:else if loading}
+      {:else if browser.loading}
         <div class="loading-state">
           <div class="spinner-lg"></div>
           <p>Searching F95Zone…</p>
         </div>
-      {:else if searched && results.length === 0}
+      {:else if browser.searched && browser.results.length === 0}
         <div class="empty-state">
           <p class="empty-icon">🔍</p>
           <p class="empty-title">No results found</p>
           <p class="empty-detail">Try a different search term.</p>
         </div>
-      {:else if !searched}
+      {:else if !browser.searched}
         <div class="empty-state">
           <p class="empty-icon">🌐</p>
           <p class="empty-title">Search F95Zone</p>
@@ -262,10 +257,10 @@
         </div>
       {:else}
         <div class="results-grid">
-          {#each results as result}
+          {#each browser.results as result}
             <button
               class="result-card"
-              class:selected={selectedResult?.url === result.url}
+              class:selected={browser.selected?.url === result.url}
               onclick={() => handlePreview(result)}
             >
               <div class="result-thumb">
@@ -302,16 +297,16 @@
     </div>
 
     <!-- ── Preview Section ───────────────────────────────── -->
-    {#if previewing}
+    {#if browser.previewing}
       <div class="preview-section">
         <button class="preview-close" onclick={closePreview}>✕</button>
 
-        {#if previewError}
+        {#if browser.previewError}
           <div class="error-section">
             <p class="error-title">Preview failed:</p>
-            <p class="error-line">{previewError}</p>
+            <p class="error-line">{browser.previewError}</p>
           </div>
-        {:else if !preview}
+        {:else if !browser.preview}
           <div class="loading-state">
             <div class="spinner-lg"></div>
             <p>Loading thread preview…</p>
@@ -319,49 +314,49 @@
         {:else}
           <!-- Cover Art -->
           <div class="preview-cover">
-            {#if preview.coverUrl}
-              <img src={preview.coverUrl} alt={preview.title} />
+            {#if browser.preview.coverUrl}
+              <img src={browser.preview.coverUrl} alt={browser.preview.title} />
             {:else}
               <div class="preview-cover-placeholder">
                 <span>🎮</span>
-                <span>{preview.title}</span>
+                <span>{browser.preview.title}</span>
               </div>
             {/if}
           </div>
 
           <!-- Title & Meta -->
           <div class="preview-meta">
-            <h3 class="preview-title">{preview.title}</h3>
+            <h3 class="preview-title">{browser.preview.title}</h3>
             <div class="preview-badges">
-              {#if preview.prefix}
+              {#if browser.preview.prefix}
                 <span
                   class="engine-badge"
-                  style={engineStyle(preview.prefix)}
+                  style={engineStyle(browser.preview.prefix)}
                 >
-                  {preview.prefix}
+                  {browser.preview.prefix}
                 </span>
               {/if}
-              {#if preview.status && preview.status !== 'unknown'}
-                <span class="status-badge" class:status-active={preview.status === 'active'}
-                  class:status-completed={preview.status === 'completed'}
-                  class:status-on-hold={preview.status === 'on_hold'}
-                  class:status-abandoned={preview.status === 'abandoned'}>
-                  {preview.status}
+              {#if browser.preview.status && browser.preview.status !== 'unknown'}
+                <span class="status-badge" class:status-active={browser.preview.status === 'active'}
+                  class:status-completed={browser.preview.status === 'completed'}
+                  class:status-on-hold={browser.preview.status === 'on_hold'}
+                  class:status-abandoned={browser.preview.status === 'abandoned'}>
+                  {browser.preview.status}
                 </span>
               {/if}
             </div>
 
-            {#if preview.developer}
-              <p class="preview-developer"><strong>Developer:</strong> {preview.developer}</p>
+            {#if browser.preview.developer}
+              <p class="preview-developer"><strong>Developer:</strong> {browser.preview.developer}</p>
             {/if}
-            {#if preview.version}
-              <p class="preview-version"><strong>Version:</strong> {preview.version}</p>
+            {#if browser.preview.version}
+              <p class="preview-version"><strong>Version:</strong> {browser.preview.version}</p>
             {/if}
 
             <!-- Tags -->
-            {#if preview.tags?.length > 0}
+            {#if browser.preview.tags?.length > 0}
               <div class="preview-tags">
-                {#each preview.tags as tag}
+                {#each browser.preview.tags as tag}
                   <span class="tag">{tag}</span>
                 {/each}
               </div>
@@ -369,30 +364,30 @@
           </div>
 
           <!-- Overview -->
-          {#if preview.overview}
+          {#if browser.preview.overview}
             <div class="preview-overview">
               <h4>Overview</h4>
               <p>
-                {#if expandedOverview || preview.overview.length <= 300}
-                  {preview.overview}
+                {#if browser.expandedOverview || browser.preview.overview.length <= 300}
+                  {browser.preview.overview}
                 {:else}
-                  {truncate(preview.overview)}
+                  {truncate(browser.preview.overview)}
                 {/if}
               </p>
-              {#if preview.overview.length > 300}
-                <button class="btn-link" onclick={() => expandedOverview = !expandedOverview}>
-                  {expandedOverview ? 'Show less' : 'Show more'}
+              {#if browser.preview.overview.length > 300}
+                <button class="btn-link" onclick={() => browser.expandedOverview = !browser.expandedOverview}>
+                  {browser.expandedOverview ? 'Show less' : 'Show more'}
                 </button>
               {/if}
             </div>
           {/if}
 
           <!-- Store Links -->
-          {#if preview.storeLinks && Object.keys(preview.storeLinks).length > 0}
+          {#if browser.preview.storeLinks && Object.keys(browser.preview.storeLinks).length > 0}
             <div class="preview-stores">
               <h4>Store Links</h4>
               <div class="store-links">
-                {#each Object.entries(preview.storeLinks) as [name, url]}
+                {#each Object.entries(browser.preview.storeLinks) as [name, url]}
                   {#if safeExternalUrl(url)}
                     <a href={safeExternalUrl(url)} target="_blank" rel="noopener" class="store-link">
                       {#if name === 'steam'}
@@ -411,11 +406,11 @@
           {/if}
 
           <!-- Download Links -->
-          {#if preview.downloadLinks?.length > 0}
+          {#if browser.preview.downloadLinks?.length > 0}
             <div class="preview-downloads">
               <h4>Download Links</h4>
               <div class="download-list">
-                {#each preview.downloadLinks as dl}
+                {#each browser.preview.downloadLinks as dl}
                   {#if safeExternalUrl(dl.url)}
                     <a href={safeExternalUrl(dl.url)} target="_blank" rel="noopener" class="download-link">
                       <span class="dl-host">{dl.host}</span>
@@ -432,23 +427,23 @@
 
           <!-- Add to Library Button -->
           <div class="preview-actions">
-            {#if addResult?.success}
+            {#if browser.addResult?.success}
               <div class="add-success">
                 <span>✓</span>
-                <span>Game added to library (ID: {addResult.gameId})</span>
+                <span>Game added to library (ID: {browser.addResult.gameId})</span>
               </div>
-            {:else if addResult?.error}
+            {:else if browser.addResult?.error}
               <div class="add-error">
                 <span>✗</span>
-                <span>{addResult.error}</span>
+                <span>{browser.addResult.error}</span>
               </div>
             {:else}
               <button
                 class="btn btn-primary add-btn"
                 onclick={handleAddToLibrary}
-                disabled={adding}
+                disabled={browser.addingInFlight}
               >
-                {#if adding}
+                {#if browser.addingInFlight}
                   Adding…
                 {:else}
                   + Add to Library
