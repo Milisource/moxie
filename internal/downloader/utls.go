@@ -119,12 +119,26 @@ func utlsDialTLSContext(ctx context.Context, network, addr string) (net.Conn, er
 	if err != nil {
 		return nil, err
 	}
-	uconn := utls.UClient(rawConn, &utls.Config{ServerName: host, RootCAs: utlsRootCAs}, profile)
+	uconn := utls.UClient(rawConn, &utls.Config{
+		ServerName: host,
+		RootCAs:    utlsRootCAs,
+	}, profile)
 	if err := uconn.BuildHandshakeState(); err != nil {
 		rawConn.Close()
 		return nil, fmt.Errorf("utls build handshake: %w", err)
 	}
-	uconn.HandshakeState.Hello.AlpnProtocols = []string{"http/1.1"}
+	// Force HTTP/1.1 by replacing the preset ALPN extension: Go's transport
+	// cannot hand a *utls.UConn to the h2 machinery (tlsState is only set
+	// for *tls.Conn), so negotiating h2 breaks the request with "malformed
+	// HTTP response". Mutating HandshakeState.Hello.AlpnProtocols alone is
+	// not enough — ApplyConfig re-applies the preset extension's protocols
+	// on every handshake.
+	for i, ext := range uconn.Extensions {
+		if _, ok := ext.(*utls.ALPNExtension); ok {
+			uconn.Extensions[i] = &utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}}
+			break
+		}
+	}
 	if err := uconn.HandshakeContext(ctx); err != nil {
 		rawConn.Close()
 		return nil, fmt.Errorf("utls handshake: %w", err)
