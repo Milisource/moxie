@@ -6,14 +6,16 @@
     GetAllDownloadLinks,
     OpenDownloadURL,
   } from '../../wailsjs/go/main/App'
+  import {downloads} from './viewState.svelte.js'
 
   // ── State ──────────────────────────────────────────────────
   let games = $state([])        // games with download links
   let allLinks = $state([])     // all download links with game info
   let loading = $state(true)
   let error = $state('')
-  let searchQuery = $state('')
-  let expandedGames = $state(new Set())
+  let openError = $state('')        // user-visible failure from OpenDownloadURL
+  // downloads.search + downloads.expanded live in viewState so the open/expanded rows
+  // and the filter survive tab switches (data itself reloads on mount).
   let openingLinks = $state(new Set())   // link IDs currently being opened
 
   async function loadData() {
@@ -21,12 +23,13 @@
     error = ''
     // Fail observably instead of spinning forever if a binding call never
     // settles (e.g. a stuck DB query on the Go side).
-    const timeout = new Promise((_, reject) =>
-      setTimeout(() => {
+    let timer
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
         reject(new Error('Timed out after 20s — see ~/.config/moxie/logs/'))
         LogError('downloads: loadData timed out after 20s — binding promise never settled')
       }, 20000)
-    )
+    })
     try {
       LogInfo('downloads: calling GetGamesWithDownloadLinks + GetAllDownloadLinks')
       const [g, links] = await Promise.race([
@@ -46,27 +49,33 @@
       games = []
       allLinks = []
     }
+    clearTimeout(timer)
     LogInfo('downloads: loadData finished')
     loading = false
   }
 
   function toggleGame(id) {
-    const next = new Set(expandedGames)
+    const next = new Set(downloads.expanded)
     if (next.has(id)) {
       next.delete(id)
     } else {
       next.add(id)
     }
-    expandedGames = next
+    downloads.expanded = next
   }
 
   async function handleOpenLink(linkId) {
     if (openingLinks.has(linkId)) return
     openingLinks = new Set([...openingLinks, linkId])
+    openError = ''
     try {
       await OpenDownloadURL(linkId)
     } catch (e) {
+      // Console-only failures are invisible to the user — surface the error
+      // inline (same pattern as GameDetail's editError) so a dead link or a
+      // broken browser-open is actually noticed.
       console.error('Failed to open download URL:', e)
+      openError = String(e).replace(/^Error:\s*/, '')
     } finally {
       const next = new Set(openingLinks)
       next.delete(linkId)
@@ -78,8 +87,8 @@
 
   // Filter games by search query
   let filteredGames = $derived.by(() => {
-    if (!searchQuery.trim()) return games
-    const q = searchQuery.toLowerCase().trim()
+    if (!downloads.search.trim()) return games
+    const q = downloads.search.toLowerCase().trim()
     return games.filter(g => g.title.toLowerCase().includes(q))
   })
 
@@ -141,6 +150,14 @@
     </p>
   </div>
 
+  <!-- ── Open-Link Error ──────────────────────────────────── -->
+  {#if openError}
+    <div class="error-section">
+      <p class="error-title">Failed to open download link:</p>
+      <p class="error-line">{openError}</p>
+    </div>
+  {/if}
+
   <!-- ── Summary Stats ────────────────────────────────────── -->
   {#if !loading && !error}
     <div class="stats-bar">
@@ -171,10 +188,10 @@
         type="text"
         class="search-input"
         placeholder="Search games with download links…"
-        bind:value={searchQuery}
+        bind:value={downloads.search}
       />
-      {#if searchQuery}
-        <button class="search-clear" onclick={() => searchQuery = ''}>✕</button>
+      {#if downloads.search}
+        <button class="search-clear" onclick={() => downloads.search = ''}>✕</button>
       {/if}
     </div>
   {/if}
@@ -207,7 +224,7 @@
             class="game-header"
             onclick={() => toggleGame(game.id)}
           >
-            <span class="game-expand-icon">{expandedGames.has(game.id) ? '▾' : '▸'}</span>
+            <span class="game-expand-icon">{downloads.expanded.has(game.id) ? '▾' : '▸'}</span>
             <span class="game-title">{game.title}</span>
             <span class="game-link-count">{linkCount} link{linkCount !== 1 ? 's' : ''}</span>
             {#if deadCount > 0}
@@ -215,7 +232,7 @@
             {/if}
           </button>
 
-          {#if expandedGames.has(game.id)}
+          {#if downloads.expanded.has(game.id)}
             <div class="links-section">
               {#if links.length > 0}
                 <div class="links-header">
@@ -275,14 +292,14 @@
   {:else if !loading && !error}
     <!-- ── Empty State ───────────────────────────────────────── -->
     <div class="status-section status-empty">
-      {#if searchQuery}
+      {#if downloads.search}
         <span class="status-icon">🔍</span>
         <div class="status-body">
           <p class="status-title">No matches</p>
           <p class="status-detail">
-            No games match "{searchQuery}". Try a different search term.
+            No games match "{downloads.search}". Try a different search term.
           </p>
-          <button class="btn btn-sm btn-outline" onclick={() => searchQuery = ''}>Clear Search</button>
+          <button class="btn btn-sm btn-outline" onclick={() => downloads.search = ''}>Clear Search</button>
         </div>
       {:else}
         <span class="status-icon">↓</span>
