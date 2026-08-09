@@ -105,7 +105,10 @@ func detectBrowserBinary() (string, error) {
 // defaults are kept (random --remote-debugging-port, process-group setup,
 // leakless teardown), except --enable-automation, which sets
 // navigator.webdriver=true and is removed so the session is not flagged as
-// automated.
+// automated. AutomationControlled (the blink feature behind
+// navigator.webdriver) is suppressed too — live-verified 2026-08-09 on
+// bot.sannysoft.com: webdriver=false vs true without it (30/31 checks pass;
+// the only residual failure is the headless software-GL renderer).
 func applyLaunchFlags(l *launcher.Launcher, args []string) {
 	for _, arg := range args {
 		name, val, hasVal := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
@@ -116,6 +119,7 @@ func applyLaunchFlags(l *launcher.Launcher, args []string) {
 		}
 	}
 	l.Delete(flags.Flag("enable-automation"))
+	l.Set(flags.Flag("disable-blink-features"), "AutomationControlled")
 }
 
 // toDownloadState maps CDP download-progress state strings (identical in

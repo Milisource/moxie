@@ -61,6 +61,7 @@ Documentation lives in `docs/`. Keep it in sync with code changes — update the
 | `docs/browser.md` | Cross-browser cookie extraction with kooky |
 | `docs/browserresolve.md` | Browser-backed download engine: Chrome (rod) + Firefox (raw-launch) engines, OS/browser discovery matrix |
 | `docs/research-buzzheavier-cloudflare.md` | Buzzheavier/Cloudflare deep-dive: Turnstile gate, token flow, fafda.to hybrid, uTLS verdict + live verification matrix |
+| `docs/research-f95zone-recaptcha.md` | F95Zone masked-URL reCAPTCHA reverse-engineered (sitekey, `captcha` POST param, masked.js), 2026-08-09 tool A/B round: tls-client no-win, solver design validated, stealth flag win |
 | `docs/steam-package-design.md` | Steam shortcut management, artwork, Proton, SteamGridDB |
 
 **When to update docs:**
