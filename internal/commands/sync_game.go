@@ -205,10 +205,10 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 
 		// Status and tags are scraped here too; persist them so status
 		// transitions are recorded on the update path, not just on
-		// association (where ApplyThreadData handles them).
-		if data.Status != "" {
-			game.Status = data.Status
-		}
+		// association (where ApplyThreadData handles them). ResolveStatus
+		// defaults an unknown status to active (F95Zone has no "active"
+		// tag — absence of a completion tag means in development).
+		game.Status = scraper.ResolveStatus(data.Status, game.Status)
 		if len(data.Tags) > 0 {
 			game.Tags = data.Tags
 		}

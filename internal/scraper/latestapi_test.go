@@ -597,6 +597,165 @@ func TestApplyCacheThreadData_Engine(t *testing.T) {
 	}
 }
 
+func TestBulkVersions_AllUnknownChunkNotFatal(t *testing.T) {
+	t.Parallel()
+
+	// checker.php answers "Thread not found" when EVERY requested thread is
+	// absent from its index — as an HTTP 404 carrying that JSON body. That
+	// must not error the bulk pass — it just means those threads have no
+	// tracked version.
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"status":"error","msg":"Thread not found"}`)
+	}))
+
+	versions, err := api.BulkVersions(context.Background(), []int64{43384, 13160})
+	if err != nil {
+		t.Fatalf("BulkVersions errored on all-unknown chunk: %v", err)
+	}
+	if len(versions) != 0 {
+		t.Errorf("got %d versions, want 0 for an all-unknown chunk", len(versions))
+	}
+}
+
+func TestBulkVersions_MixedChunkSkipsUnknownThreads(t *testing.T) {
+	t.Parallel()
+
+	// A mixed chunk keeps the known threads and omits the unknown ones —
+	// the response shape the live API actually produces.
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"ok","msg":{"26":"v0.4.16","177028":"Patch 4.1 Pre"}}`)
+	}))
+
+	versions, err := api.BulkVersions(context.Background(), []int64{26, 43384, 177028})
+	if err != nil {
+		t.Fatalf("BulkVersions failed: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("got %d versions, want 2", len(versions))
+	}
+	if versions[26] != "v0.4.16" {
+		t.Errorf("versions[26] = %q, want v0.4.16", versions[26])
+	}
+	if versions[177028] != "4.1" {
+		t.Errorf("versions[177028] = %q, want 4.1 (qualifier-stripped)", versions[177028])
+	}
+}
+
+func TestSearchTitle_NumericVersion(t *testing.T) {
+	t.Parallel()
+
+	// The latest-updates API sometimes emits versions as bare JSON numbers
+	// instead of strings. A single numeric version used to invalidate the
+	// whole search response; it must now parse and carry on.
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"ok","msg":{"data":[
+			{"thread_id":1001,"title":"Game A","creator":"Dev","version":1.2,"prefixes":[14]},
+			{"thread_id":1002,"title":"Game B","creator":"Dev","version":"v0.5","prefixes":[14]}
+		]}}`)
+	}))
+
+	results, err := api.SearchTitle(context.Background(), "games")
+	if err != nil {
+		t.Fatalf("SearchTitle failed on numeric version: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2 (numeric version must not drop the response)", len(results))
+	}
+	if results[0].Version != "1.2" {
+		t.Errorf("numeric version = %q, want 1.2", results[0].Version)
+	}
+	if results[1].Version != "v0.5" {
+		t.Errorf("string version = %q, want v0.5", results[1].Version)
+	}
+}
+
+func TestResolveStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		parsed  string
+		current string
+		want    string
+	}{
+		// An explicit parsed status always wins.
+		{"parsed completed beats unknown", "completed", "unknown", "completed"},
+		{"parsed abandoned beats active", "abandoned", "active", "abandoned"},
+		{"parsed on_hold beats completed", "on_hold", "completed", "on_hold"},
+		// No explicit status: unknown defaults to active (F95Zone has no
+		// "active" tag — no completion tag means in development).
+		{"unknown defaults to active", "", "unknown", "active"},
+		{"empty defaults to active", "", "", "active"},
+		// A known stored status is never clobbered by the active inference
+		// (a user-set status survives a scrape that finds no status tags).
+		{"user-set completed preserved", "", "completed", "completed"},
+		{"user-set on_hold preserved", "", "on_hold", "on_hold"},
+		{"user-set abandoned preserved", "", "abandoned", "abandoned"},
+		{"user-set active preserved", "", "active", "active"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ResolveStatus(tt.parsed, tt.current); got != tt.want {
+				t.Errorf("ResolveStatus(%q, %q) = %q, want %q", tt.parsed, tt.current, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyThreadData_StatusResolution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		data    string // data.Status
+		current string // game.Status before the call
+		want    string
+	}{
+		{"parsed status wins", "completed", "unknown", "completed"},
+		{"unknown defaults to active", "", "unknown", "active"},
+		{"empty defaults to active", "", "", "active"},
+		{"user-set status preserved", "", "completed", "completed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			game := &db.Game{Status: tt.current}
+			ApplyThreadData(game, &ThreadData{Status: tt.data}, "https://f95zone.to/threads/1/")
+			if game.Status != tt.want {
+				t.Errorf("status = %q, want %q", game.Status, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyCacheThreadData_StatusResolution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		data    string // ct.Status
+		current string // game.Status before the call
+		want    string
+	}{
+		{"parsed status wins", "completed", "unknown", "completed"},
+		{"unknown defaults to active", "", "unknown", "active"},
+		{"empty defaults to active", "", "", "active"},
+		{"user-set status preserved", "", "completed", "completed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			game := &db.Game{Status: tt.current}
+			ApplyCacheThreadData(game, &CacheThread{Status: tt.data}, 42, nil, 1.0)
+			if game.Status != tt.want {
+				t.Errorf("status = %q, want %q", game.Status, tt.want)
+			}
+		})
+	}
+}
+
 func TestNewPublicAPIWithCookie(t *testing.T) {
 	t.Parallel()
 

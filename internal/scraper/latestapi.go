@@ -342,20 +342,47 @@ func (p *PublicAPI) BulkVersions(ctx context.Context, ids []int64) (map[int64]st
 		}
 		body, err := p.Client.do(req, minDelay)
 		if err != nil {
+			// checker.php answers HTTP 404 with the same "Thread not
+			// found" body when EVERY thread in the chunk is absent from
+			// its index. Like the JSON error form, that is not a
+			// failure — the threads simply have no tracked version — so
+			// the chunk counts as empty instead of aborting the whole
+			// bulk pass (which would push every game onto the slow
+			// direct-scrape path and risk a block). A bare 404 (endpoint
+			// gone, no such body) still surfaces as an error.
+			var statusErr *HTTPStatusError
+			if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusNotFound && strings.Contains(statusErr.Body, "Thread not found") {
+				continue
+			}
 			return nil, err
 		}
 
 		var resp struct {
-			Status string            `json:"status"`
-			Msg    map[string]string `json:"msg"`
+			Status string          `json:"status"`
+			Msg    json.RawMessage `json:"msg"`
 		}
 		if err := json.Unmarshal([]byte(body), &resp); err != nil {
 			return nil, fmt.Errorf("scraper: bulk versions: invalid response: %w", err)
 		}
 		if resp.Status != "ok" {
-			return nil, fmt.Errorf("scraper: bulk versions: api error: %s", resp.Msg["msg"])
+			// Error responses carry msg as a plain string; success
+			// responses carry a map. checker.php answers "Thread not
+			// found" when EVERY thread in the chunk is absent from its
+			// index — that is not a failure, those threads simply have no
+			// tracked version. Treat the chunk as empty instead of
+			// erroring the whole bulk pass, which would push every game
+			// onto the slow direct-scrape path (and risk a block).
+			if msg := bulkErrorMsg(resp.Msg); msg == "Thread not found" {
+				continue
+			} else {
+				return nil, fmt.Errorf("scraper: bulk versions: api error: %s", msg)
+			}
 		}
-		for idStr, v := range resp.Msg {
+		var msgMap map[string]string
+		if err := json.Unmarshal(resp.Msg, &msgMap); err != nil {
+			return nil, fmt.Errorf("scraper: bulk versions: invalid response: %w", err)
+		}
+		for idStr, v := range msgMap {
 			id, err := strconv.ParseInt(idStr, 10, 64)
 			if err != nil || id <= 0 {
 				continue
@@ -407,12 +434,12 @@ func (p *PublicAPI) SearchTitle(ctx context.Context, query string) ([]LatestSear
 		Status string `json:"status"`
 		Msg    struct {
 			Data []struct {
-				ThreadID int64  `json:"thread_id"`
-				Title    string `json:"title"`
-				Creator  string `json:"creator"`
-				Version  string `json:"version"`
-				Prefixes []int  `json:"prefixes"`
-				Cover    string `json:"cover"`
+				ThreadID int64           `json:"thread_id"`
+				Title    string          `json:"title"`
+				Creator  string          `json:"creator"`
+				Version  json.RawMessage `json:"version"`
+				Prefixes []int           `json:"prefixes"`
+				Cover    string          `json:"cover"`
 			} `json:"data"`
 		} `json:"msg"`
 	}
@@ -432,7 +459,7 @@ func (p *PublicAPI) SearchTitle(ctx context.Context, query string) ([]LatestSear
 			Title:    d.Title,
 			URL:      ThreadURL(d.ThreadID),
 			ThreadID: d.ThreadID,
-			Version:  d.Version,
+			Version:  rawJSONString(d.Version),
 			Prefixes: d.Prefixes,
 			CoverURL: d.Cover,
 			Creator:  d.Creator,
@@ -606,6 +633,39 @@ func rawJSONFloat(raw json.RawMessage) (float64, error) {
 	return strconv.ParseFloat(s, 64)
 }
 
+// rawJSONString converts a JSON string or number to its string form.
+// The latest-updates API sometimes emits versions as bare numbers
+// (e.g. 1.2 instead of "v1.2"), which would otherwise break the whole
+// search response unmarshal.
+func rawJSONString(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	if raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return ""
+		}
+		return s
+	}
+	return string(raw)
+}
+
+// bulkErrorMsg extracts the human-readable message from a checker.php
+// error response. The msg field is a plain string on error responses and
+// a map on success responses, so parse it leniently.
+func bulkErrorMsg(raw json.RawMessage) string {
+	var msgMap map[string]string
+	if err := json.Unmarshal(raw, &msgMap); err == nil {
+		return msgMap["msg"]
+	}
+	var msgStr string
+	if err := json.Unmarshal(raw, &msgStr); err == nil {
+		return msgStr
+	}
+	return string(raw)
+}
+
 // strongTitleMatchScore is the minimum ComputeMatchScore confidence for the
 // cache API's thread name to replace a game's local title. Below it — or
 // without token containment — the local title is kept: weak substring
@@ -632,9 +692,7 @@ func ApplyCacheThreadData(game *db.Game, ct *CacheThread, threadID int64, prefix
 	if ct.Version != "" {
 		game.LatestVersion = ct.Version
 	}
-	if ct.Status != "" {
-		game.Status = ct.Status
-	}
+	game.Status = ResolveStatus(ct.Status, game.Status)
 	if ct.Name != "" && game.Title != ct.Name && matchScore >= strongTitleMatchScore && titlesContain(game.Title, ct.Name) {
 		// Cache names are the clean thread title (no version brackets);
 		// applying it matches what a thread scrape would produce. Only

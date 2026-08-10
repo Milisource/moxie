@@ -206,8 +206,8 @@ func runBulkVersionCheck(database *db.Database, games []db.Game, public *scraper
 		res, entry, isNew := processBulkGame(database, g, ct.Version)
 		// Persist the richer cache data (status, developer, cover).
 		g2 := res.Game
-		if ct.Status != "" && ct.Status != g2.Status {
-			g2.Status = ct.Status
+		if newStatus := scraper.ResolveStatus(ct.Status, g2.Status); newStatus != g2.Status {
+			g2.Status = newStatus
 			if err := database.UpdateGame(&g2); err != nil {
 				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save cache data for %q: %v\n", g.Title, err)
 			}
@@ -316,7 +316,12 @@ func refreshStatusViaCache(database *db.Database, entries []bulkGameEntry, publi
 	for _, e := range entries {
 		g := e.game
 		ts, ok := lastChanged[g.F95ThreadID]
-		if !ok || ts <= e.prevChecked.Unix() {
+		// Refresh when the thread changed since the previous check — or
+		// whenever the stored status is still unknown, so games whose
+		// association predated status data get it on the next sync even
+		// if their thread has not changed since.
+		needsStatus := g.Status == "" || g.Status == "unknown"
+		if !ok || (ts <= e.prevChecked.Unix() && !needsStatus) {
 			continue
 		}
 		ct, err := public.CacheFullThread(ctx, g.F95ThreadID)
@@ -328,9 +333,9 @@ func refreshStatusViaCache(database *db.Database, entries []bulkGameEntry, publi
 		}
 
 		var statusChange string
-		if ct.Status != "" && ct.Status != g.Status {
-			statusChange = fmt.Sprintf(" [%s → %s]", g.Status, ct.Status)
-			g.Status = ct.Status
+		if newStatus := scraper.ResolveStatus(ct.Status, g.Status); newStatus != g.Status {
+			statusChange = fmt.Sprintf(" [%s → %s]", g.Status, newStatus)
+			g.Status = newStatus
 		}
 		// An empty cache version must not wipe the stored latest version.
 		if ct.Version != "" {
@@ -440,11 +445,12 @@ func runDirectUpdateCheck(database *db.Database, client *scraper.Client, games [
 
 			// Status and tags are scraped on every check; persist them so a
 			// game going Completed/Abandoned is recorded here and not only
-			// on the association path.
+			// on the association path. Scrapes carry no explicit "active"
+			// signal — ResolveStatus defaults an unknown status to active.
 			var statusChange string
-			if data.Status != "" && data.Status != g.Status {
-				statusChange = fmt.Sprintf(" [%s → %s]", g.Status, data.Status)
-				g.Status = data.Status
+			if newStatus := scraper.ResolveStatus(data.Status, g.Status); newStatus != g.Status {
+				statusChange = fmt.Sprintf(" [%s → %s]", g.Status, newStatus)
+				g.Status = newStatus
 			}
 			if len(data.Tags) > 0 {
 				g.Tags = data.Tags

@@ -3976,9 +3976,7 @@ func (a *App) checkGameVersion(ctx context.Context, game *db.Game, public *scrap
 			return false, false
 		}
 		latest = ct.Version
-		if ct.Status != "" && ct.Status != game.Status {
-			game.Status = ct.Status
-		}
+		game.Status = scraper.ResolveStatus(ct.Status, game.Status)
 		a.saveScrapedMeta(*game, ct.Developer, ct.Description, ct.ImageURL)
 	} else {
 		// Thread-ID-less (legacy association) — cookie scrape.
@@ -4028,9 +4026,11 @@ func (a *App) syncPhase2ScrapeOne(ctx context.Context, game *db.Game, client *sc
 		*allErrors = append(*allErrors, fmt.Sprintf("%s: version check failed: %v", game.Title, scrapeErr))
 		return false, false
 	}
-	if data.Status != "" && data.Status != game.Status {
-		game.Status = data.Status
-	}
+	// Status and tags are scraped on every check; persist them so a game
+	// going Completed/Abandoned is recorded here too. Scrapes carry no
+	// explicit "active" signal — ResolveStatus defaults an unknown
+	// status to active (F95Zone has no "active" tag).
+	game.Status = scraper.ResolveStatus(data.Status, game.Status)
 	if len(data.Tags) > 0 {
 		game.Tags = data.Tags
 	}
@@ -4222,7 +4222,12 @@ func (a *App) syncPhase2MetadataRefresh(ctx context.Context, trackable []db.Game
 	for _, g := range trackable {
 		ts, ok := lastChanged[g.F95ThreadID]
 		prev := prevChecks[g.ID]
-		if !ok || ts <= prev.Unix() {
+		// Refresh when the thread changed since the previous check — or
+		// whenever the stored status is still unknown, so games whose
+		// association predated status data get it on the next sync even
+		// if their thread has not changed since.
+		needsStatus := g.Status == "" || g.Status == "unknown"
+		if !ok || (ts <= prev.Unix() && !needsStatus) {
 			continue
 		}
 		ct, err := public.CacheFullThread(ctx, g.F95ThreadID)
@@ -4238,8 +4243,8 @@ func (a *App) syncPhase2MetadataRefresh(ctx context.Context, trackable []db.Game
 			g.LatestVersion = ct.Version
 			changed = true
 		}
-		if ct.Status != "" && ct.Status != g.Status {
-			g.Status = ct.Status
+		if newStatus := scraper.ResolveStatus(ct.Status, g.Status); newStatus != g.Status {
+			g.Status = newStatus
 			changed = true
 		}
 		if changed {

@@ -111,6 +111,8 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] TUI `🔄` update indicator fixed — requires both `Version` and `LatestVersion` non-empty (previously triggered on empty local version, falsely marking every game with scraped metadata as having an update)
 - [x] Empty versions display as `"unknown"` in TUI table, detail view, and `moxie list` CLI output (replaces bare `-`)
 - [x] Stale `? no version detected` output suppressed in `RunUpdateCheck()` and `SyncGame()` during sync — no action needed from user
+- [x] Status backfill (F95-v9lz) — `ResolveStatus` defaults unknown statuses to `active` on every association/update path (F95Zone has no "active" tag; absence of Completed/Abandoned/On-Hold tags means in development), never clobbering user-set statuses; cache-API metadata refresh now also re-fetches threads whose status is unknown even when unchanged
+- [x] Search/version-API hardening (F95-v9lz) — `latest_data.php` search tolerates numeric `version` values (previously invalidated the whole search response); checker.php all-unknown chunks (404 + "Thread not found") count as empty instead of aborting the bulk pass
 - [x] Bracketed-title version extraction expanded per F95Zone title format rules — supports `[YYYY-MM-DD]`, `[X.Y]` bare versions, `[Final]` sentinel, `[Ch. 2 v3.0]` embedded chapter+version, and `[v1.0 Alpha]` prerelease suffixes
 - [x] Display-layer fallback shows `LatestVersion` when `Version` is empty (instead of backfilling DB) — preserves update detection while eliminating "unknown" display
 - [x] Parent directory name fallback for nested games (e.g. `Game v1.0/Game Windows/` detects `1.0` from parent)

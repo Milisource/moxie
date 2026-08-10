@@ -272,7 +272,9 @@ func TestRunUpdateCheck_BulkStatusRefresh(t *testing.T) {
 }
 
 // TestRunUpdateCheck_BulkNoRefreshWhenUnchanged: threads whose last change
-// predates the previous check are not fetched in full.
+// predates the previous check are not fetched in full — when the stored
+// status is already known. Unknown-status games are fetched anyway to
+// backfill (see TestRunUpdateCheck_BulkStatusBackfillWhenUnchanged).
 func TestRunUpdateCheck_BulkNoRefreshWhenUnchanged(t *testing.T) {
 	t.Parallel()
 	database := setupTestDB(t)
@@ -285,6 +287,7 @@ func TestRunUpdateCheck_BulkNoRefreshWhenUnchanged(t *testing.T) {
 	game := &db.Game{Title: "Game", Engine: "RenPy", Path: "/game",
 		F95URL: "https://f95zone.to/threads/x.100/", F95ThreadID: 100,
 		Version: "v1.0", LatestVersion: "v1.0",
+		Status:          "active",
 		VersionCheckedAt: time.Now().Add(-24 * time.Hour)}
 	if _, err := database.InsertGame(game); err != nil {
 		t.Fatal(err)
@@ -293,6 +296,43 @@ func TestRunUpdateCheck_BulkNoRefreshWhenUnchanged(t *testing.T) {
 	RunUpdateCheck(database, nil, []db.Game{*game}, true, api)
 
 	if state.fullCalls.Load() != 0 {
-		t.Errorf("expected 0 full cache fetches (thread unchanged), got %d", state.fullCalls.Load())
+		t.Errorf("expected 0 full cache fetches (thread unchanged, status known), got %d", state.fullCalls.Load())
+	}
+}
+
+// TestRunUpdateCheck_BulkStatusBackfillWhenUnchanged: a game whose status is
+// still unknown gets a full cache fetch even when its thread has not changed
+// since the previous check — stale statuses must not stay unknown forever.
+func TestRunUpdateCheck_BulkStatusBackfillWhenUnchanged(t *testing.T) {
+	t.Parallel()
+	database := setupTestDB(t)
+	defer database.Close()
+
+	api, state := newBulkTestAPI(t)
+	state.bulkResponse = `{"status":"ok","msg":{"100":"v1.0"}}`
+	state.fastResponse = `{"100":1700000000}` // changed long before last check
+	state.fullResponse = `{"name":"Game","version":"v1.0","status":1,"developer":"DevCo",
+		"description":"desc","image_url":"https://example.com/c.png"}`
+
+	game := &db.Game{Title: "Game", Engine: "RenPy", Path: "/game",
+		F95URL: "https://f95zone.to/threads/x.100/", F95ThreadID: 100,
+		Version: "v1.0", LatestVersion: "v1.0",
+		Status:          "unknown",
+		VersionCheckedAt: time.Now().Add(-24 * time.Hour)}
+	if _, err := database.InsertGame(game); err != nil {
+		t.Fatal(err)
+	}
+
+	RunUpdateCheck(database, nil, []db.Game{*game}, true, api)
+
+	if state.fullCalls.Load() != 1 {
+		t.Fatalf("expected 1 full cache fetch (status backfill), got %d", state.fullCalls.Load())
+	}
+	got, err := database.GetGame(game.ID)
+	if err != nil || got == nil {
+		t.Fatalf("failed to reload game: %v", err)
+	}
+	if got.Status != "active" {
+		t.Errorf("status = %q, want active (backfilled from cache)", got.Status)
 	}
 }

@@ -442,6 +442,48 @@ func TestCheckGameVersion(t *testing.T) {
 		}
 	})
 
+	t.Run("cache API backfills unknown status to active", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/full/210", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"name":"My Game","version":"v1.0","status":1}`)
+		})
+		api := testPublicAPI(t, mux)
+		a := newTestApp(t)
+		game := &db.Game{ID: 1, F95ThreadID: 210, Title: "My Game",
+			Version: "v1.0", Status: "unknown"}
+		var allErrors []string
+		isUpdate, blocked := a.checkGameVersion(ctx, game, api, nil, "",
+			map[int64]string{}, &allErrors)
+		if isUpdate || blocked {
+			t.Errorf("isUpdate = %v blocked = %v, want false/false", isUpdate, blocked)
+		}
+		if game.Status != "active" {
+			t.Errorf("status = %q, want active (backfilled from cache)", game.Status)
+		}
+	})
+
+	t.Run("cache API without status keeps user-set status", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/full/220", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"name":"My Game","version":"v1.0"}`)
+		})
+		api := testPublicAPI(t, mux)
+		a := newTestApp(t)
+		game := &db.Game{ID: 1, F95ThreadID: 220, Title: "My Game",
+			Version: "v1.0", Status: "completed"}
+		var allErrors []string
+		isUpdate, blocked := a.checkGameVersion(ctx, game, api, nil, "",
+			map[int64]string{}, &allErrors)
+		if isUpdate || blocked {
+			t.Errorf("isUpdate = %v blocked = %v, want false/false", isUpdate, blocked)
+		}
+		if game.Status != "completed" {
+			t.Errorf("status = %q, want completed preserved", game.Status)
+		}
+	})
+
 	t.Run("cache API thread-not-found is not an update", func(t *testing.T) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/full/300", func(w http.ResponseWriter, r *http.Request) {

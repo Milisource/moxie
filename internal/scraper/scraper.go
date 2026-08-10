@@ -57,9 +57,13 @@ func platformUserAgent() string {
 
 // HTTPStatusError reports a non-OK HTTP response status (other than the
 // block statuses, which surface as BlockedError). Typed so callers can
-// branch on the code instead of matching error strings.
+// branch on the code instead of matching error strings. Body carries the
+// response body when one was read (callers like checker.php discriminate
+// on it — a 404 whose body says "Thread not found" means "no tracked
+// threads", not "endpoint gone").
 type HTTPStatusError struct {
 	StatusCode int
+	Body       string
 }
 
 func (e *HTTPStatusError) Error() string {
@@ -390,7 +394,7 @@ func (c *Client) doOnce(req *http.Request, baseDelay time.Duration) (bodyStr str
 
 	// Check for non-OK status codes (429/403/503 already caught above).
 	if resp.StatusCode != http.StatusOK {
-		return "", &HTTPStatusError{StatusCode: resp.StatusCode}
+		return "", &HTTPStatusError{StatusCode: resp.StatusCode, Body: bodyStr}
 	}
 
 	// Request succeeded — reset the block counter and gradually reduce delay.
