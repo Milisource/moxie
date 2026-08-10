@@ -245,10 +245,9 @@ func SanitizeSearchQuery(query string) string {
 	for _, w := range kept {
 		tok := " " + w
 		if len(query)+len(tok) > 30 {
-			truncated := tok[:30-len(query)]
-			if len(truncated) > 3 && !searchStopwords[strings.ToLower(strings.TrimSpace(truncated))] {
-				query += truncated
-			}
+			// Cut at a word boundary — never emit a partial token.
+			// A truncated fragment ("Chronicl" from "Chronicle") only
+			// adds search noise and can never match a real title.
 			break
 		}
 		query += tok

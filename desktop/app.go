@@ -3499,12 +3499,13 @@ type queryMemo struct {
 	searchErr error
 }
 
-// search runs the cookie-free title search once for the memo's query.
+// search runs the cookie-free title search once for the memo's query,
+// walking query variants when the primary search finds nothing.
 func (m *queryMemo) search(ctx context.Context, public *scraper.PublicAPI) ([]scraper.LatestSearchResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.done {
-		m.latestRes, m.searchErr = public.SearchTitle(ctx, m.query)
+		m.latestRes, m.searchErr = public.SearchTitleFirstHit(ctx, m.query)
 		m.done = true
 	}
 	return m.latestRes, m.searchErr
@@ -4114,6 +4115,12 @@ func (a *App) pickBestLatestResult(game db.Game, detEngine engine.Result, result
 	bestScore := 0.0
 	for i, r := range results {
 		score := scraper.ComputeMatchScore(game.Title, r.Title)
+		// Version alignment breaks sequel ties ("SiNiSistar2" local v1.3.0
+		// vs "SiNiSistar 2" v1.3.1 over the original "SiNiSistar" v3.0.1).
+		score += scraper.VersionMatchBonus(game.Version, r.Version)
+		if score > 1.0 {
+			score = 1.0
+		}
 		if hasEngVariants {
 			titleLower := strings.ToLower(r.Title)
 			for _, variant := range engVariants {

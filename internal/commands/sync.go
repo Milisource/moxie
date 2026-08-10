@@ -413,8 +413,10 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 					searchMeta = []scraper.LatestSearchResult{{Title: game.Title, URL: cachedURL, ThreadID: cachedID}}
 					fmt.Fprintf(os.Stderr, "  (cached thread %d)\n", cachedID)
 				} else if public != nil {
-					// Cookie-free search: F95Zone's latest-updates endpoint.
-					latestRes, err := public.SearchTitle(ctx, query)
+					// Cookie-free search: F95Zone's latest-updates endpoint,
+					// with query variants when the primary search finds
+					// nothing (camelCase/versioned/noisy directory names).
+					latestRes, err := public.SearchTitleFirstHit(ctx, query)
 					if err != nil {
 						if util.IsBlocked(err) {
 							log.Error("blocked during auto-association", "error", err)
@@ -484,6 +486,12 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 				var bestScore float64
 				for j, r := range searchRes {
 					score := scraper.ComputeMatchScore(game.Title, r.Title)
+					// Version alignment breaks sequel ties: "SiNiSistar2"
+					// (local v1.3.0) must beat the original "SiNiSistar"
+					// (v3.0.1) with "SiNiSistar 2" (v1.3.1).
+					if j < len(searchMeta) {
+						score += scraper.VersionMatchBonus(game.Version, searchMeta[j].Version)
+					}
 					if hasEngVariants {
 						titleLower := strings.ToLower(r.Title)
 						for _, variant := range engVariants {

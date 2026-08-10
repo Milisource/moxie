@@ -28,9 +28,11 @@ func TestSanitizeSearchQuery(t *testing.T) {
 		{"a is the of and", ""},
 		{"", ""},
 		{"  spaced   out  ", "spaced out"},
-		{"this is a very long title that exceeds thirty characters easily", "very long title exceeds thirt"},
+		{"this is a very long title that exceeds thirty characters easily", "very long title exceeds"},
 		{"Sphilia's Familiar", "Sphilia Familiar"},
 		{"Ren’Py game", "RenPy game"},
+		// Long titles cut at word boundaries — never mid-token ("Chronicl").
+		{"Suzuka's Sexual Battle Chronicle", "Suzuka Sexual Battle"},
 	}
 	for _, tt := range tests {
 		got := SanitizeSearchQuery(tt.in)
