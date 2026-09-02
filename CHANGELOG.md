@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Fixed
+
+- **`scan --force` actually forces a full rescan** — three defects that made the flag a no-op are fixed:
+  - **Flags written after the directory no longer get swallowed.** Go's stdlib `flag` stops parsing at the first positional arg, so `moxie scan <dir> --force` used to treat `--force` as a scan directory (incremental scan of the real dir + a hard error on a literal `--force` path). `hoistFlags` reorders args so flags (and their values) always precede positionals — applied to `scan`, `sync`, and `check-updates`.
+  - **`--force` now reaches the save path.** `db.UpdateGameScanFields(..., force)` overwrites the scanner-owned fields (version/engine/exe_path) with fresh detection when force is set, instead of only filling them when unset. A forced rescan truly "re-detects all games"; non-force upserts (desktop watcher, plain `scan`) still preserve manual corrections.
+  - **CLI scan relocates moved games.** `runScanDir` now runs the same `RemoveMissingUnder` relocation the desktop watcher uses: a game folder renamed/moved within the scan root keeps its row (path updated in place, curation preserved) instead of being duplicated under the new path with the old record left as a ghost; directories definitively gone are soft-deleted.
+- **Scan upsert consolidated** — the CLI and desktop (manual scan + watcher) now share one `UpsertDetected`/`RemoveMissingUnder` implementation in `internal/commands` instead of two divergent copies (the CLI's was non-atomic read-modify-write with no soft-delete restore).
+- **Desktop manual scan gains a force option** — the Scan dialog has a "Full rescan (refresh version/exe/engine)" checkbox wired to `App.ScanDirectory(path, force)`; the watcher keeps non-destructive auto-upserts.
+- **Flaky pacing test hardened** — `TestUnwrapMasked_Pacing` asserted the 120 ms unwrap-pacing floor at sub-ms precision, flaking under load (~0.01 ms short); the assertion now tolerates scheduling jitter (a genuinely missing sleep still fails loudly).
+
 ### Added
 
 - **Browser fallback for challenge-graded downloads (F95-675j)** — when the Go path hits a Cloudflare challenge it cannot pass, moxie hands the download to the user's real browser, which performs the download itself on a copy of the live profile (same IP + UA + TLS fingerprint the clearance was minted to):

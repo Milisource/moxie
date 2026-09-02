@@ -216,6 +216,7 @@ COMMON FLAGS
     --no-save                 Print detected games without saving to library
     --engine <type>           Filter by engine (Unity, RenPy, RPGM, etc.)
     --json                    Output as JSON
+    (flags may appear before or after the directory)
 
   list:
     --engine <type>           Filter by engine

@@ -2,7 +2,7 @@
 
 ## What
 
-The scanner walks a directory tree, identifies which subdirectories are games, detects the engine for each one, and computes total size and executable path. It lives in `internal/scanner/scanner.go` (one file, ~250 lines) and calls into `internal/engine/detector.go` for engine identification.
+The scanner walks a directory tree, identifies which subdirectories are games, detects the engine for each one, and computes total size and executable path. It lives in `internal/scanner/scanner.go` and calls into `internal/engine/detector.go` for engine identification.
 
 ## How
 
@@ -16,7 +16,7 @@ The scanner walks a directory tree, identifies which subdirectories are games, d
 
 3. **Skip already-detected game subdirectories** — once a directory is identified as a game root, its children are not walked. This prevents detecting engine subdirectories (like a `renpy/` folder inside a Ren'Py game) as separate games. WalkDir is depth-first, so the active game dir short-circuits all its descendants; a directory still visited afterwards is provably outside every game root, so no extra ancestor scan is needed.
 
-4. **Check if it's a game root** — `looksLikeGameRoot(path)` via `hasGameMarkers(dir)` checks for the presence of executables (`.exe`, `.sh`, `.AppImage`, `.x86_64`, `.x86`) or engine markers (`renpy/`, `www/`, `_Data/`, a subdirectory exactly named `game`, `package.json`, `.rpyc`, `.rpa`, `Game.rgss*`). The `game` marker is an exact name match — `gamedata`/`gameplay`/`game2` folders are not promoted to game roots.
+4. **Check if it's a game root** — `looksLikeGameRoot(path)` via `hasGameMarkers(dir)` checks for the presence of executables (`.exe`, `.sh`, `.app`, `.x86_64`, `.x86`) or engine markers (`renpy/`, `www/`, `_Data/`, a subdirectory exactly named `game`, `package.json`, `.rpyc`, `.rpa`, `Game.rgss*`). The `game` marker is an exact name match — `gamedata`/`gameplay`/`game2` folders are not promoted to game roots.
 
 5. **Check for category directories** — if the directory name matches a known engine (`Unity`, `Ren'Py`, `RPGM`, `HTML`, etc.) **and** it contains subdirectories that look like games, it's treated as a category folder (not a game itself). The walk continues into its children.
 
@@ -68,20 +68,21 @@ When the directory name yields no version, the scanner escalates through additio
 
 ### Progress Reporting
 
-`ScanFiltered(ctx, root, skipPaths, progressFn)` accepts a context (cancellation aborts the walk) and an optional `ScanProgressFunc` callback:
+`ScanFiltered(ctx, root, skipPaths, progressFn)` accepts a context (cancellation aborts the walk), a map of already-known game paths to skip (nil or empty = scan everything — the CLI's `--force` mode), and an optional `ScanProgressFunc` callback:
 ```go
-type ScanProgressFunc func(dirsExamined, gamesFound int)
+type ScanProgressFunc func(dirsExamined, gamesFound int, phase string)
 ```
+`phase` is `"walk"` (first pass, finding game directories) or `"detect"` (second pass, engine detection).
 
 The CLI calls this to display live progress on stderr using `\r` (carriage return) for in-place updates, showing directories examined and games found so far.
 
 ### Size Calculation
 
-`dirSize(dir)` does a secondary `WalkDir` over the game directory to sum all file sizes. This is independent of the primary scan walk.
+`ScanFiltered` accumulates size inline during its single `WalkDir`: every file visited while inside a detected game directory is added to that game's total — no separate pass. `dirSize(dir)` still exists for single-directory analysis (`ScanSingle`/`analyzeDir`), where it runs its own `WalkDir` over the directory.
 
 ### Executable Discovery
 
-`findGameExe(dir)` scans for the largest executable (`.exe`, `.sh`, `.x86_64`, `.x86`) after filtering out crash handlers, uninstallers, and setup utilities. On Linux this also finds AppImage files.
+`findGameExe(dir)` scans for the largest executable (`.exe`, `.sh`, `.x86_64`, `.x86`) after filtering out crash handlers, uninstallers, and setup utilities. AppImage files are not matched by the extension check; games that ship them are usually detected via engine markers instead.
 
 ## Why Pattern Matching Over Binary Parsing
 
