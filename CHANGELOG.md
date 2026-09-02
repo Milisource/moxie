@@ -9,6 +9,7 @@
 - **Scan upsert consolidated** — the CLI and desktop (manual scan + watcher) now share one `UpsertDetected`/`RemoveMissingUnder` implementation in `internal/commands` instead of two divergent copies (the CLI's was non-atomic read-modify-write with no soft-delete restore).
 - **Desktop manual scan gains a force option** — the Scan dialog has a "Full rescan (refresh version/exe/engine)" checkbox wired to `App.ScanDirectory(path, force)`; the watcher keeps non-destructive auto-upserts.
 - **Flaky pacing test hardened** — `TestUnwrapMasked_Pacing` asserted the 120 ms unwrap-pacing floor at sub-ms precision, flaking under load (~0.01 ms short); the assertion now tolerates scheduling jitter (a genuinely missing sleep still fails loudly).
+- **Desktop background operations keep their state across tab switches** — three flows still owned their in-flight state inside views that are destroyed on every tab switch (the `{#key activeView}` remount): the app self-update download (Settings), the game install pipeline (detail view), and the detail view's per-game update button. Leaving those views mid-run reset the buttons to their default while the backend kept working unseen. All event subscriptions now live in the app shell (`App.svelte`), `UpdateDialog`/`GameDetail` are presentational renderers of that shared state, and every update/install action respects the backend's global single-run lock (install and update share it) — so no button can start a second concurrent run, and the status bar shows the running pipeline from any tab (F95-4y1k).
 
 ### Added
 

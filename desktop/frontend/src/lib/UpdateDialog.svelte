@@ -1,103 +1,23 @@
 <script>
-  import {onMount, onDestroy} from 'svelte'
-  import {EventsOn} from '../../wailsjs/runtime/runtime'
-  import {
-    GetVersion,
-    CheckForUpdate,
-    DownloadUpdate,
-    ApplyUpdate,
-  } from '../../wailsjs/go/main/App'
   import {safeExternalUrl} from './sanitizeUrl.js'
 
-  // ── State ──────────────────────────────────────────────────
-  let version = $state('')
-  let updateInfo = $state(null)   // CheckForUpdate result or null
-  let checking = $state(false)    // loading during check
-  let downloading = $state(false) // loading during download
-  let downloadProgress = $state({ downloaded: 0, total: 0 })
-  let downloadComplete = $state(false) // download finished, show Apply
-  let error = $state('')
+  // Presentational only — the app self-update flow (check → download → apply)
+  // and its update:* event subscriptions live in App.svelte so the download
+  // keeps its UI across tab switches. This component renders that shared state
+  // and calls back into the shell for actions.
 
-  // Unsubscribe fns
-  let unsubProgress = null
-  let unsubComplete = null
-  let unsubError = null
-
-  async function handleCheck() {
-    checking = true
-    error = ''
-    updateInfo = null
-    downloadComplete = false
-    downloadProgress = { downloaded: 0, total: 0 }
-
-    try {
-      const result = await CheckForUpdate()
-      // CheckForUpdate never throws on API failure — the failure message is
-      // carried in the `error` field. Treat it as an error, not "up to date".
-      if (result?.error) {
-        error = result.error
-        updateInfo = null
-      } else {
-        updateInfo = result
-      }
-    } catch (e) {
-      error = String(e)
-    } finally {
-      checking = false
-    }
-  }
-
-  async function handleDownload() {
-    downloading = true
-    error = ''
-    downloadComplete = false
-    downloadProgress = { downloaded: 0, total: 0 }
-
-    try {
-      await DownloadUpdate()
-    } catch (e) {
-      error = String(e)
-      downloading = false
-    }
-  }
-
-  async function handleApply() {
-    try {
-      await ApplyUpdate()
-    } catch (e) {
-      error = String(e)
-    }
-  }
-
-  onMount(async () => {
-    // Load current version on mount
-    try {
-      version = await GetVersion()
-    } catch (e) {
-      console.error('Failed to get version:', e)
-    }
-
-    // Listen for Wails events from the Go backend
-    unsubProgress = EventsOn('update:progress', (data) => {
-      downloadProgress = data
-    })
-
-    unsubComplete = EventsOn('update:complete', () => {
-      downloading = false
-      downloadComplete = true
-    })
-
-    unsubError = EventsOn('update:error', (data) => {
-      error = data.error || 'Update failed'
-      downloading = false
-    })
-  })
-
-  onDestroy(() => {
-    if (unsubProgress) unsubProgress()
-    if (unsubComplete) unsubComplete()
-    if (unsubError) unsubError()
-  })
+  let {
+    version = '',
+    checking = false,
+    info = null,                       // CheckForUpdate result or null
+    downloading = false,
+    downloadProgress = {downloaded: 0, total: 0},
+    downloadComplete = false,
+    error = '',
+    onCheck = () => {},
+    onDownload = () => {},
+    onApply = () => {},
+  } = $props()
 
   // ── Derived ─────────────────────────────────────────────────
   let downloadPct = $derived.by(() => {
@@ -133,7 +53,7 @@
   <div class="action-bar">
     <button
       class="btn btn-primary"
-      onclick={handleCheck}
+      onclick={onCheck}
       disabled={checking || downloading}
     >
       {#if checking}
@@ -153,7 +73,7 @@
   {/if}
 
   <!-- ── Up-to-Date ──────────────────────────────────────── -->
-  {#if updateInfo && !updateInfo.error && !updateInfo.hasUpdate}
+  {#if info && !info.error && !info.hasUpdate}
     <div class="status-section status-success">
       <span class="status-icon">✓</span>
       <div class="status-body">
@@ -164,22 +84,22 @@
   {/if}
 
   <!-- ── Update Available ────────────────────────────────── -->
-  {#if updateInfo && updateInfo.hasUpdate}
+  {#if info && info.hasUpdate}
     <div class="status-section status-update">
       <span class="status-icon">⟳</span>
       <div class="status-body">
         <p class="status-title">Update Available</p>
         <p class="status-detail">
           <span class="version-diff">
-            <span class="version-old">{updateInfo.currentVersion}</span>
+            <span class="version-old">{info.currentVersion}</span>
             <span class="version-arrow">→</span>
-            <span class="version-new">{updateInfo.latestVersion}</span>
+            <span class="version-new">{info.latestVersion}</span>
           </span>
         </p>
-        {#if safeExternalUrl(updateInfo.releaseUrl)}
+        {#if safeExternalUrl(info.releaseUrl)}
           <a
             class="release-link"
-            href={safeExternalUrl(updateInfo.releaseUrl)}
+            href={safeExternalUrl(info.releaseUrl)}
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -194,7 +114,7 @@
       <div class="action-bar">
         <button
           class="btn btn-primary"
-          onclick={handleDownload}
+          onclick={onDownload}
           disabled={checking || downloading}
         >
           Download Update
@@ -226,7 +146,7 @@
     <div class="action-bar">
       <button
         class="btn btn-primary"
-        onclick={handleApply}
+        onclick={onApply}
       >
         Restart &amp; Apply
       </button>

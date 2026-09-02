@@ -9,6 +9,21 @@
   import ScanPaths from './ScanPaths.svelte'
   import UpdateDialog from './UpdateDialog.svelte'
 
+  let {
+    appVersion = '',
+    appUpdateState = {
+      checking: false,
+      info: null,
+      downloading: false,
+      downloadProgress: {downloaded: 0, total: 0},
+      downloadComplete: false,
+      error: '',
+    },
+    onCheckAppUpdate = () => {},
+    onDownloadAppUpdate = () => {},
+    onApplyAppUpdate = () => {},
+  } = $props()
+
   let deps = $state([])
   let dbPath = $state('')
   let configDir = $state('')
@@ -120,7 +135,18 @@
     <p class="section-hint">
       Download and install a new version of the Moxie desktop app.
     </p>
-    <UpdateDialog />
+    <UpdateDialog
+      version={appVersion}
+      checking={appUpdateState.checking}
+      info={appUpdateState.info}
+      downloading={appUpdateState.downloading}
+      downloadProgress={appUpdateState.downloadProgress}
+      downloadComplete={appUpdateState.downloadComplete}
+      error={appUpdateState.error}
+      onCheck={onCheckAppUpdate}
+      onDownload={onDownloadAppUpdate}
+      onApply={onApplyAppUpdate}
+    />
   </section>
 </div>
 

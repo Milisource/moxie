@@ -3,10 +3,8 @@
   import {
     GetUpdatableGames,
     GetVersion,
-    CheckForUpdate,
   } from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
-  import {safeExternalUrl} from './sanitizeUrl.js'
 
   // Presentational view: the game-update pipeline state (gameStates,
   // batchState) and its event subscriptions live in App.svelte so they
@@ -17,6 +15,7 @@
     gameStates = {},
     batchState = null,
     lastUpdate = 0,
+    installRunning = false,
     onNavigate = () => {},
     onUpdateGame = () => {},
     onUpdateAll = () => {},
@@ -31,10 +30,11 @@
   let error = $state('')
 
   // ── App Update State ─────────────────────────────────────────
+  // The Moxie app self-update flow lives in Settings (full check → download →
+  // apply, backed by App-level state that survives tab switches). This tab
+  // only shows the installed version and points there — one canonical UI
+  // instead of two checkers that could disagree.
   let appVersion = $state('')
-  let appUpdateInfo = $state(null)
-  let appChecking = $state(false)
-  let appError = $state('')
 
   // ── Utility Formatting ───────────────────────────────────────
   function formatBytes(bytes) {
@@ -114,26 +114,6 @@
   })
 
   // ── App Update ───────────────────────────────────────────────
-  async function handleCheckAppUpdate() {
-    appChecking = true
-    appError = ''
-    appUpdateInfo = null
-    try {
-      const result = await CheckForUpdate()
-      // CheckForUpdate carries API failures in the `error` field instead of
-      // throwing — surface it rather than rendering "up to date".
-      if (result?.error) {
-        appError = result.error
-        appUpdateInfo = null
-      } else {
-        appUpdateInfo = result
-      }
-    } catch (e) {
-      appError = String(e)
-    }
-    appChecking = false
-  }
-
   onMount(async () => {
     // Load version
     try {
@@ -149,8 +129,10 @@
     Object.values(gameStates).some(s => s && s.phase && s.phase !== 'idle' && s.phase !== 'done' && s.phase !== 'error')
   )
 
-  // The backend holds a single-run lock for the whole pipeline.
-  let updateInFlight = $derived(isUpdatingAny || !!batchState?.running)
+  // The backend holds a single-run lock for the whole pipeline (updates and
+  // installs share it), so the view must also reflect an in-flight install
+  // started from a game's detail page.
+  let updateInFlight = $derived(isUpdatingAny || !!batchState?.running || installRunning)
 
   let count = $derived(games.length)
   let doneCount = $derived(
@@ -278,7 +260,7 @@
         <button
           class="btn btn-primary"
           onclick={() => onUpdateAll(games)}
-          disabled={isUpdatingAny || batchState?.running}
+          disabled={updateInFlight}
         >
           {#if batchState?.running}
             Updating…
@@ -289,12 +271,16 @@
         <button
           class="btn btn-outline"
           onclick={() => onNavigate('sync')}
-          disabled={isUpdatingAny || batchState?.running}
+          disabled={updateInFlight}
         >
           Sync Now
         </button>
         {#if updateInFlight}
-          <button class="btn btn-outline btn-cancel" onclick={onCancel}>
+          <button
+            class="btn btn-outline btn-cancel"
+            onclick={onCancel}
+            title="Cancel the running update or install"
+          >
             Cancel
           </button>
         {/if}
@@ -359,7 +345,7 @@
                 <button
                   class="btn btn-sm btn-accent"
                   onclick={() => onUpdateGame(game.id)}
-                  disabled={isUpdatingAny || batchState?.running}
+                  disabled={updateInFlight}
                 >
                   Update
                 </button>
@@ -435,7 +421,7 @@
                       <button
                         class="btn btn-sm btn-primary"
                         onclick={() => onProvideFile(game.id)}
-                        disabled={isUpdatingAny || batchState?.running}
+                        disabled={updateInFlight}
                       >
                         Provide file…
                       </button>
@@ -444,7 +430,7 @@
                   <button
                     class="btn btn-sm btn-warning"
                     onclick={() => onUpdateGame(game.id)}
-                    disabled={isUpdatingAny || batchState?.running}
+                    disabled={updateInFlight}
                   >
                     Retry
                   </button>
@@ -479,66 +465,21 @@
 
     <!-- ── App Update Section ───────────────────────────────── -->
     <div class="app-update-section">
-      <details class="app-update-details">
-        <summary class="app-update-summary">
+      <div class="app-update-card">
+        <div class="app-update-card-body">
           <span class="app-update-icon">⟳</span>
-          <span>App Update Checker</span>
+          <div>
+            <p class="app-update-card-title">Application update</p>
+            <p class="app-update-card-desc">
+              Check for a new Moxie desktop release and download it in Settings.
+            </p>
+          </div>
           <span class="version-tag">{appVersion || '…'}</span>
-        </summary>
-
-        <div class="app-update-body">
-          <p class="app-update-desc">
-            Check if a newer version of the Moxie desktop app is available.
-          </p>
-
-          <button
-            class="btn btn-sm btn-outline"
-            onclick={handleCheckAppUpdate}
-            disabled={appChecking}
-          >
-            {#if appChecking}
-              Checking…
-            {:else}
-              Check for App Update
-            {/if}
-          </button>
-
-          {#if appUpdateInfo && !appUpdateInfo.error && !appUpdateInfo.hasUpdate}
-            <div class="inline-status inline-ok">
-              <span>✓</span>
-              <span>Moxie is up to date ({appVersion}).</span>
-            </div>
-          {/if}
-
-          {#if appUpdateInfo && appUpdateInfo.hasUpdate}
-            <div class="inline-status inline-update">
-              <span>⟳</span>
-              <span>
-                Update available:
-                <code class="version-tag">{appUpdateInfo.currentVersion}</code>
-                → <code class="version-tag">{appUpdateInfo.latestVersion}</code>
-              </span>
-              {#if safeExternalUrl(appUpdateInfo.releaseUrl)}
-                <a
-                  href={safeExternalUrl(appUpdateInfo.releaseUrl)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="release-link"
-                >
-                  View Release →
-                </a>
-              {/if}
-            </div>
-          {/if}
-
-          {#if appError}
-            <div class="inline-status inline-error">
-              <span>✕</span>
-              <span>{appError}</span>
-            </div>
-          {/if}
         </div>
-      </details>
+        <button class="btn btn-sm btn-outline" onclick={() => onNavigate('settings')}>
+          Open Settings
+        </button>
+      </div>
     </div>
   {/if}
 </div>
@@ -1008,41 +949,45 @@
     border-top: 1px solid var(--border);
   }
 
-  .app-update-details {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    overflow: hidden;
-  }
-
-  .app-update-summary {
+  .app-update-card {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 10px 14px;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-primary);
-    cursor: pointer;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
     background: var(--bg-secondary);
-    user-select: none;
-    list-style: none;
+    flex-wrap: wrap;
   }
-  .app-update-summary::-webkit-details-marker {
-    display: none;
-  }
-  .app-update-summary::before {
-    content: '▶';
-    font-size: 10px;
-    color: var(--text-muted);
-    transition: transform 0.15s;
-  }
-  details[open] .app-update-summary::before {
-    transform: rotate(90deg);
+
+  .app-update-card-body {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
   }
 
   .app-update-icon {
-    font-size: 14px;
+    font-size: 16px;
+    flex-shrink: 0;
   }
+
+  .app-update-card-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 2px;
+  }
+
+  .app-update-card-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 0;
+    line-height: 1.4;
+  }
+
   .version-tag {
     margin-left: auto;
     font-family: var(--font-mono);
@@ -1051,53 +996,21 @@
     background: color-mix(in srgb, var(--accent) 12%, transparent);
     padding: 1px 6px;
     border-radius: 4px;
+    flex-shrink: 0;
   }
 
-  .app-update-body {
-    padding: 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    background: var(--bg-primary);
-  }
-
-  .app-update-desc {
+  .btn-sm {
+    padding: 4px 10px;
     font-size: 12px;
-    color: var(--text-secondary);
-    margin: 0;
   }
 
-  .inline-status {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12px;
-    padding: 8px 12px;
-    border-radius: 6px;
-    flex-wrap: wrap;
+  .btn-outline {
+    background: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    flex-shrink: 0;
   }
-  .inline-ok {
-    border: 1px solid var(--success);
-    background: color-mix(in srgb, var(--success) 8%, transparent);
-    color: var(--success);
-  }
-  .inline-update {
-    border: 1px solid var(--warning);
-    background: color-mix(in srgb, var(--warning) 8%, transparent);
-    color: var(--warning);
-  }
-  .inline-error {
-    border: 1px solid var(--danger);
-    background: color-mix(in srgb, var(--danger) 8%, transparent);
-    color: var(--danger);
-  }
-
-  .release-link {
-    color: var(--accent);
-    text-decoration: none;
-    font-weight: 500;
-  }
-  .release-link:hover {
-    text-decoration: underline;
+  .btn-outline:hover:not(:disabled) {
+    background: var(--bg-hover);
   }
 </style>

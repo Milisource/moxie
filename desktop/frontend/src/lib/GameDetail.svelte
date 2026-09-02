@@ -1,18 +1,36 @@
 <script>
-  import {onMount, onDestroy} from 'svelte'
-  import {EventsOn} from '../../wailsjs/runtime/runtime'
+  import {onMount} from 'svelte'
   import {
     GetGameDetail, PlayGame, RemoveGame, SetGameStatus, RenameGame,
     SetGameWinePrefix, SyncSingleGame, EditGame,
     GetCollections, GetGameCollections, AddGameToCollection, RemoveGameFromCollection,
-    GetInstallTargets, InstallGame, GetCoverBaseURL,
-    DownloadGameUpdate, ProvideUpdateFile, OpenDownloadURL,
+    GetInstallTargets, GetCoverBaseURL,
+    OpenDownloadURL,
   } from '../../wailsjs/go/main/App'
   import {engineColor, engineOptions} from './engineColors.js'
   import {safeExternalUrl} from './sanitizeUrl.js'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
 
-  let {gameId = null, onBack = () => {}, onUpdate = () => {}} = $props()
+  // The game-update and game-install pipelines (and their event subscriptions)
+  // live in App.svelte so they survive tab switches. This view derives its
+  // buttons from that shared state and routes actions back through the shell's
+  // handlers — one source of truth for the backend's single-run lock (updates
+  // and installs share it), instead of local flags that reset on remount while
+  // the backend keeps running.
+
+  let {
+    gameId = null,
+    onBack = () => {},
+    onUpdate = () => {},
+    gameState = null,            // gameStates[gameId] || null — shared pipeline state for this game
+    pipelineBusy = false,        // true when ANY update/install holds the backend lock
+    installState = null,         // shared install pipeline state
+    onUpdateGame = () => {},
+    onProvideFile = () => {},
+    onInstall = () => {},
+  } = $props()
+
+  const UPDATE_BUSY_PHASES = ['syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
 
   let detail = $state(null)
   let loading = $state(true)
@@ -26,12 +44,30 @@
   let editError = $state('')
 
   // ── Game update (Update Available badge) ─────────────
-  let updating = $state(false)
+  // Derived from the shared App-level gameStates entry: a busy phase means the
+  // pipeline for THIS game is running. Because the backend lock is global, the
+  // button must also stay disabled while another game's pipeline runs.
+  let updating = $derived(!!gameState && UPDATE_BUSY_PHASES.includes(gameState.phase))
   // Auto-download failed (Cloudflare-blocked host, …); the backend asked the
   // user to provide the archive manually via ProvideUpdateFile.
-  let manualRequired = $state(false)
-  let manualHost = $state('')
-  let providingFile = $state(false)
+  let manualRequired = $derived(!!gameState?.manualRequired)
+  let manualHost = $derived(gameState?.manualHost || '')
+  let updateError = $derived(gameState?.phase === 'error' ? (gameState.error || 'Update failed') : '')
+  let providingFile = $state(false)   // transient — the native file picker is modal
+
+  // ── Install (browser-added games with no local copy) ──
+  let installTargets = $state([])
+  let installDest = $state('')
+  let installBusy = $derived(!!installState?.running)
+  let installForThis = $derived(installState?.gameId === Number(gameId))
+  let installing = $derived(installForThis && installBusy)
+  let installPhase = $derived(installForThis ? installState.phase : '')
+  let installProgress = $derived(installForThis ? installState.progress : 0)
+  let installError = $derived(installForThis ? installState.error : '')
+
+  // The shared single-run lock is busy with a pipeline that is NOT this game's
+  // update and NOT this game's install — action buttons must reflect it.
+  let lockBusyElsewhere = $derived(pipelineBusy && !updating && !installing)
 
   // ── Download link rows ───────────────────────────────
   let openingLinks = $state(new Set())   // link IDs currently being opened
@@ -82,13 +118,6 @@
   let showPlayHistory = $state(false)
 
   // ── Install (browser-added games with no local copy) ──
-  let installTargets = $state([])
-  let installDest = $state('')
-  let installing = $state(false)
-  let installPhase = $state('')
-  let installProgress = $state(0)
-  let installError = $state('')
-
   // A /virtual/ path means the game exists only as an F95Zone reference.
   let needsInstall = $derived(!!detail?.path?.startsWith('/virtual/'))
 
@@ -110,20 +139,6 @@
       if (firstAvailable && !installDest) installDest = firstAvailable.path
     } catch (e) {
       installTargets = []
-    }
-  }
-
-  async function handleInstall() {
-    if (!installDest || installing) return
-    installing = true
-    installError = ''
-    installPhase = 'selecting-link'
-    installProgress = 0
-    try {
-      await InstallGame(gameId, installDest)
-    } catch (e) {
-      installError = String(e)
-      installing = false
     }
   }
 
@@ -392,43 +407,6 @@
     }
   }
 
-  // Kick off an update for this game. DownloadGameUpdate returns immediately
-  // (the pipeline runs in the background); the game-update:* events below
-  // keep `updating` true until a terminal phase and refresh the badge.
-  async function handleDownloadUpdate() {
-    if (updating) return
-    updating = true
-    manualRequired = false
-    manualHost = ''
-    editError = ''
-    try {
-      await DownloadGameUpdate(gameId)
-      // Stay "downloading" until the pipeline reports complete/error.
-    } catch (err) {
-      updating = false
-      editError = `Failed to start update: ${fmtErr(err)}`
-    }
-  }
-
-  // Manual fallback: the automatic download was blocked (Cloudflare 403/404
-  // on the file host). The backend opens a native file picker for the archive
-  // the user downloaded by hand, then resumes the pipeline from extraction.
-  async function handleProvideFile() {
-    if (providingFile) return
-    providingFile = true
-    editError = ''
-    try {
-      await ProvideUpdateFile(gameId)
-      // Pipeline continues in the background; game-update:* events drive the
-      // button state. The dialog itself is modal, so this resolves once the
-      // user picks a file or cancels.
-    } catch (err) {
-      editError = `Failed to start update from file: ${fmtErr(err)}`
-    } finally {
-      providingFile = false
-    }
-  }
-
   // Open a download link's URL in the system browser (not the webview).
   async function handleOpenLink(linkId) {
     if (openingLinks.has(linkId)) return
@@ -444,9 +422,6 @@
     }
   }
 
-  let unsubInstall = []
-  let unsubGameUpdate = []
-
   onMount(async () => {
     try {
       coverBase = await GetCoverBaseURL()
@@ -456,74 +431,34 @@
     loadDetail()
     loadCollections()
     loadInstallTargets()
-
-    // Only react to events for the game currently on screen — the install
-    // pipeline is app-wide and could be running for a different game.
-    const mine = (data) => Number(data?.gameID) === Number(gameId)
-
-    unsubInstall = [
-      EventsOn('game-install:phase', (d) => {
-        if (mine(d)) installPhase = d.phase || ''
-      }),
-      EventsOn('game-install:download-progress', (d) => {
-        if (mine(d)) installProgress = Math.round(d.percent || 0)
-      }),
-      EventsOn('game-install:error', (d) => {
-        if (!mine(d)) return
-        installError = d.message || 'Install failed'
-        installing = false
-      }),
-      EventsOn('game-install:complete', async (d) => {
-        if (!mine(d)) return
-        installing = false
-        installProgress = 100
-        await loadDetail()
-        onUpdate()
-      }),
-    ]
-
-    // Track the game-update pipeline for THIS game. The backend holds a
-    // single-run lock and the pipeline may be running for another game, so
-    // every event is filtered by gameID. We refresh the detail only on
-    // complete/error — progress events just keep the button disabled.
-    const busyPhases = ['syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
-
-    unsubGameUpdate = [
-      EventsOn('game-update:phase', (d) => {
-        if (!mine(d)) return
-        updating = busyPhases.includes(d.phase)
-        // A fresh pipeline phase clears any stale manual-fallback offer.
-        if (busyPhases.includes(d.phase)) manualRequired = false
-      }),
-      EventsOn('game-update:manual-required', (d) => {
-        if (!mine(d)) return
-        manualRequired = true
-        manualHost = d.host || ''
-      }),
-      EventsOn('game-update:complete', async (d) => {
-        if (!mine(d)) return
-        updating = false
-        manualRequired = false
-        await loadDetail()
-        onUpdate()
-      }),
-      EventsOn('game-update:error', async (d) => {
-        if (!mine(d)) return
-        updating = false
-        await loadDetail()
-        onUpdate()
-        if (d.message) {
-          // select-file messages are self-describing (cancelled dialog,
-          // bad archive) — no "Update failed:" prefix needed.
-          editError = d.step === 'select-file' ? d.message : `Update failed: ${d.message}`
-        }
-      }),
-    ]
   })
 
-  onDestroy(() => {
-    for (const un of unsubInstall) if (un) un()
-    for (const un of unsubGameUpdate) if (un) un()
+  // The App shell owns the game-update:* / game-install:* subscriptions and the
+  // shared gameStates/installState. When a pipeline for THIS game lands in a
+  // terminal phase we just re-fetch the detail and nudge the library — no
+  // local event copies that can die on navigation.
+  let prevUpdatePhase = $state('')
+  $effect(() => {
+    const phase = gameState?.phase || 'idle'
+    if (phase !== prevUpdatePhase) {
+      if (prevUpdatePhase !== '' && (phase === 'done' || phase === 'error')) {
+        loadDetail()
+        onUpdate()
+      }
+      prevUpdatePhase = phase
+    }
+  })
+
+  let prevInstallPhase = $state('')
+  $effect(() => {
+    const phase = installForThis ? installState.phase : ''
+    if (phase !== prevInstallPhase) {
+      if (prevInstallPhase !== '' && (phase === 'done' || phase === 'error')) {
+        loadDetail()
+        onUpdate()
+      }
+      prevInstallPhase = phase
+    }
   })
 </script>
 
@@ -569,12 +504,15 @@
               <span class="update-badge" title="Update: {detail.version} → {detail.latestVersion}">Update Available</span>
               <button
                 class="update-btn"
-                onclick={handleDownloadUpdate}
-                disabled={updating}
+                onclick={() => onUpdateGame(gameId)}
+                disabled={updating || lockBusyElsewhere}
                 title="Download {detail.latestVersion}"
               >
-                {updating ? 'Downloading…' : '↓ Download Update'}
+                {updating ? 'Downloading…' : lockBusyElsewhere ? 'Updating…' : '↓ Download Update'}
               </button>
+              {#if updateError}
+                <span class="update-error" title={updateError}>{updateError}</span>
+              {/if}
               {#if manualRequired && !updating}
                 <div class="manual-fallback">
                   <span class="manual-fallback-text">
@@ -583,8 +521,8 @@
                   </span>
                   <button
                     class="btn btn-sm btn-primary"
-                    onclick={handleProvideFile}
-                    disabled={providingFile}
+                    onclick={() => onProvideFile(gameId)}
+                    disabled={providingFile || pipelineBusy}
                   >
                     {providingFile ? 'Selecting…' : 'Choose Downloaded Archive…'}
                   </button>
@@ -968,7 +906,7 @@
               </p>
             {:else}
               <div class="install-row">
-                <select class="install-select" bind:value={installDest} disabled={installing}>
+                <select class="install-select" bind:value={installDest} disabled={installing || pipelineBusy}>
                   {#each installTargets as t}
                     <option value={t.path} disabled={!t.available}>
                       {t.path}{t.available ? '' : ' (unavailable)'}
@@ -977,10 +915,11 @@
                 </select>
                 <button
                   class="btn btn-primary"
-                  onclick={handleInstall}
-                  disabled={installing || !installDest}
+                  onclick={() => onInstall(gameId, installDest)}
+                  disabled={installing || !installDest || pipelineBusy}
+                  title={pipelineBusy && !installing ? 'An update or install is already running' : undefined}
                 >
-                  {installing ? installPhaseLabel : '↓ Install'}
+                  {installing ? installPhaseLabel : pipelineBusy ? 'Busy…' : '↓ Install'}
                 </button>
               </div>
               {#if installing && installProgress}
@@ -1079,6 +1018,12 @@
   }
   .update-btn:hover:not(:disabled) { background: var(--accent); color: #fff; }
   .update-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .update-error {
+    font-size: 11px;
+    color: var(--danger);
+    font-family: var(--font-mono);
+    max-width: 420px;
+  }
   .manual-fallback {
     display: flex;
     align-items: center;

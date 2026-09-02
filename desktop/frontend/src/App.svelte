@@ -2,7 +2,7 @@
   import {onMount} from 'svelte'
   import {fly} from 'svelte/transition'
   import {EventsOn} from '../wailsjs/runtime/runtime'
-  import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted, GetCookieStatus, SyncAllGames, DownloadGameUpdate, DownloadAllUpdates, CancelGameUpdate, CancelSync, ProvideUpdateFile, ScanDirectory, FetchCovers, GetGameCount} from '../wailsjs/go/main/App'
+  import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted, GetCookieStatus, SyncAllGames, DownloadGameUpdate, DownloadAllUpdates, CancelGameUpdate, CancelSync, ProvideUpdateFile, ScanDirectory, FetchCovers, GetGameCount, CheckForUpdate, DownloadUpdate, ApplyUpdate, InstallGame} from '../wailsjs/go/main/App'
   import Sidebar from './lib/Sidebar.svelte'
   import GameList from './lib/GameList.svelte'
   import GameDetail from './lib/GameDetail.svelte'
@@ -56,6 +56,85 @@
     result: null,              // {fetched, failed, skipped, total, backfilled} or null
     coverError: '',
   })
+
+  // ── App self-update state (App level) ─────────────────
+  // The DownloadUpdate pipeline runs in the background. UpdateDialog used to
+  // own this state and its update:* subscriptions, so leaving the Settings
+  // tab mid-download killed the progress UI and reset the button while the
+  // backend kept downloading unseen. State and subscriptions live here so the
+  // whole check→download→apply flow survives tab switches.
+  let appUpdateState = $state({
+    checking: false,
+    info: null,              // CheckForUpdate result or null
+    downloading: false,
+    downloadProgress: {downloaded: 0, total: 0},
+    downloadComplete: false,
+    error: '',
+  })
+
+  async function checkAppUpdate() {
+    if (appUpdateState.checking || appUpdateState.downloading) return
+    appUpdateState.checking = true
+    appUpdateState.error = ''
+    appUpdateState.info = null
+    appUpdateState.downloadComplete = false
+    appUpdateState.downloadProgress = {downloaded: 0, total: 0}
+    try {
+      const result = await CheckForUpdate()
+      // CheckForUpdate carries API failures in `error` instead of throwing —
+      // surface it rather than rendering "up to date".
+      if (result?.error) {
+        appUpdateState.error = result.error
+        appUpdateState.info = null
+      } else {
+        appUpdateState.info = result
+      }
+    } catch (e) {
+      appUpdateState.error = String(e)
+    }
+    appUpdateState.checking = false
+  }
+
+  async function downloadAppUpdate() {
+    if (appUpdateState.downloading) return
+    appUpdateState.downloading = true
+    appUpdateState.error = ''
+    appUpdateState.downloadComplete = false
+    appUpdateState.downloadProgress = {downloaded: 0, total: 0}
+    try {
+      await DownloadUpdate()
+    } catch (e) {
+      appUpdateState.error = String(e)
+      appUpdateState.downloading = false
+    }
+  }
+
+  async function applyAppUpdate() {
+    try {
+      await ApplyUpdate()
+    } catch (e) {
+      appUpdateState.error = String(e)
+    }
+  }
+
+  // ── Install pipeline state (App level) ─────────────────
+  // InstallGame shares the update single-run lock with the game-update
+  // pipeline and runs in the background. GameDetail used to own this state
+  // and its game-install:* subscriptions, so navigating back to the library
+  // mid-install reset the Install button to its default while the backend
+  // kept going (and a second click could start a redundant second run).
+  /** @type {{running:boolean, gameId:number|null, phase:string, progress:number, error:string}} */
+  let installState = $state({running: false, gameId: null, phase: '', progress: 0, error: ''})
+
+  async function startInstall(gameId, dest) {
+    if (installState.running) return
+    installState = {running: true, gameId, phase: 'selecting-link', progress: 0, error: ''}
+    try {
+      await InstallGame(gameId, dest)
+    } catch (e) {
+      installState = {...installState, running: false, phase: 'error', error: String(e)}
+    }
+  }
 
   function syncPhaseLabel(phase) {
     if (phase === 'associating') return 'Associating games'
@@ -137,6 +216,38 @@
   let retryInFlight = $state(null)
 
   const UPDATE_BUSY_PHASES = ['syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
+
+  // True when ANY update/install pipeline holds the backend single-run lock —
+  // the global truth every action (Updates view, detail update/install)
+  // respects, since updates and installs share that lock.
+  let pipelineBusy = $derived(
+    installState.running ||
+    !!batchState?.running ||
+    Object.values(gameStates).some(s => s && UPDATE_BUSY_PHASES.includes(s.phase))
+  )
+
+  // One-line description of the running pipeline for the status bar, so a
+  // background update/install stays visible from any tab.
+  let pipelineLabel = $derived.by(() => {
+    if (installState.running) {
+      const g = games.find(x => Number(x.id) === installState.gameId)
+      return `Installing ${g?.title || 'game'}…`
+    }
+    if (batchState?.running) {
+      return batchState.retrying
+        ? `Retrying updates… (${batchState.current}/${batchState.total})`
+        : `Updating ${batchState.current} of ${batchState.total} games…`
+    }
+    const busyId = Object.keys(gameStates).find(id => {
+      const s = gameStates[id]
+      return s && UPDATE_BUSY_PHASES.includes(s.phase)
+    })
+    if (busyId) {
+      const g = games.find(x => Number(x.id) === Number(busyId))
+      return `Updating ${g?.title || 'game'}…`
+    }
+    return ''
+  })
 
   function updateGS(gameId, patch) {
     gameStates = {...gameStates, [gameId]: {...(gameStates[gameId] || {}), ...patch}}
@@ -465,6 +576,13 @@
   let unsubGameBatchComplete
   let unsubGameCancelled
   let unsubGameIdle
+  let unsubAppUpdateProgress
+  let unsubAppUpdateComplete
+  let unsubAppUpdateError
+  let unsubInstallPhase
+  let unsubInstallProgress
+  let unsubInstallError
+  let unsubInstallComplete
   onMount(() => {
     init()
     // Live library refresh when the directory watcher finishes an auto-scan.
@@ -722,6 +840,45 @@
       coverState.coverError = r?.error || 'Cover fetch failed'
       coverState.fetching = false
     })
+    // App self-update flow events (App level so the download keeps its UI
+    // across tab switches — the backend pipeline runs in the background).
+    unsubAppUpdateProgress = EventsOn('update:progress', (data) => {
+      appUpdateState.downloadProgress = data || appUpdateState.downloadProgress
+    })
+    unsubAppUpdateComplete = EventsOn('update:complete', () => {
+      appUpdateState.downloading = false
+      appUpdateState.downloadComplete = true
+    })
+    unsubAppUpdateError = EventsOn('update:error', (data) => {
+      appUpdateState.error = data?.error || 'Update failed'
+      appUpdateState.downloading = false
+    })
+    // Install pipeline events (App level so the install keeps its UI across
+    // navigation; GameDetail just renders installState). InstallGame shares
+    // the update lock, so the shell must also know when it is running.
+    unsubInstallPhase = EventsOn('game-install:phase', (data) => {
+      if (Number(data?.gameID) === Number(installState.gameId)) {
+        installState = {...installState, phase: data.phase || ''}
+      }
+    })
+    unsubInstallProgress = EventsOn('game-install:download-progress', (data) => {
+      if (Number(data?.gameID) === Number(installState.gameId)) {
+        installState = {...installState, progress: Math.round(data.percent ?? 0)}
+      }
+    })
+    unsubInstallError = EventsOn('game-install:error', (data) => {
+      if (Number(data?.gameID) === Number(installState.gameId)) {
+        installState = {...installState, running: false, phase: 'error', error: data?.message || 'Install failed'}
+        refreshGames()
+      }
+    })
+    unsubInstallComplete = EventsOn('game-install:complete', (data) => {
+      if (Number(data?.gameID) === Number(installState.gameId)) {
+        installState = {...installState, running: false, phase: 'done', progress: 100}
+        refreshGames()
+        lastUpdate++
+      }
+    })
     return () => {
       if (unsubAutoScan) unsubAutoScan()
       if (unsubAutoScanError) unsubAutoScanError()
@@ -749,6 +906,13 @@
       if (unsubCoversProgress) unsubCoversProgress()
       if (unsubCoversComplete) unsubCoversComplete()
       if (unsubCoversError) unsubCoversError()
+      if (unsubAppUpdateProgress) unsubAppUpdateProgress()
+      if (unsubAppUpdateComplete) unsubAppUpdateComplete()
+      if (unsubAppUpdateError) unsubAppUpdateError()
+      if (unsubInstallPhase) unsubInstallPhase()
+      if (unsubInstallProgress) unsubInstallProgress()
+      if (unsubInstallError) unsubInstallError()
+      if (unsubInstallComplete) unsubInstallComplete()
     }
   })
 </script>
@@ -773,7 +937,17 @@
       {#key activeView}
         <div class="view" transition:fly={viewMotion()}>
           {#if activeView === 'detail' && selectedGameId !== null}
-            <GameDetail gameId={selectedGameId} onBack={closeDetail} onUpdate={refreshGames}/>
+            <GameDetail
+              gameId={selectedGameId}
+              onBack={closeDetail}
+              onUpdate={refreshGames}
+              gameState={gameStates[selectedGameId]}
+              pipelineBusy={pipelineBusy}
+              installState={installState}
+              onUpdateGame={startUpdateGame}
+              onProvideFile={provideUpdateFile}
+              onInstall={startInstall}
+            />
           {:else if activeView === 'library'}
             <GameList {games} {loading} onOpenDetail={openDetail} onUpdate={refreshGames}/>
           {:else if activeView === 'scan'}
@@ -787,12 +961,19 @@
               onScan={startScan}
             />
           {:else if activeView === 'settings'}
-            <SettingsView />
+            <SettingsView
+              appVersion={version}
+              appUpdateState={appUpdateState}
+              onCheckAppUpdate={checkAppUpdate}
+              onDownloadAppUpdate={downloadAppUpdate}
+              onApplyAppUpdate={applyAppUpdate}
+            />
           {:else if activeView === 'updates'}
             <GameUpdatesView
               gameStates={gameStates}
               batchState={batchState}
               {lastUpdate}
+              installRunning={installState.running}
               onNavigate={(id) => activeView = id}
               onUpdateGame={startUpdateGame}
               onUpdateAll={startUpdateAll}
@@ -866,7 +1047,13 @@
       {/key}
     {/if}
 
-    <StatusBar {statusMsg} gameCount={games.length}/>
+    <StatusBar
+      {statusMsg}
+      gameCount={games.length}
+      {pipelineBusy}
+      {pipelineLabel}
+      appUpdateDownloading={appUpdateState.downloading}
+    />
   </main>
 </div>
 
