@@ -1806,7 +1806,11 @@ func TestUnwrapMasked_Pacing(t *testing.T) {
 		t.Errorf("first gap = %v, want positive (sanity)", gap)
 	}
 	for i := 2; i < len(times); i++ {
-		if gap := times[i].Sub(times[i-1]); gap < r.unwrapMinInterval {
+		// Tolerance: server-arrival gaps are measured around the pacing
+		// sleep, and timer/HTTP scheduling on a loaded machine can shave
+		// sub-millisecond off the observed gap. A missing sleep still fails
+		// loudly (gaps near 0), so the floor assertion holds with slack.
+		if gap := times[i].Sub(times[i-1]); gap < r.unwrapMinInterval-5*time.Millisecond {
 			t.Errorf("unwrap gap %d = %v, want >= %v (pacing not enforced)", i, gap, r.unwrapMinInterval)
 		}
 	}

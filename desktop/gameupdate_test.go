@@ -67,7 +67,7 @@ func TestScanDirectoryGuardRejectsConcurrent(t *testing.T) {
 	a := newTestApp(t)
 
 	a.scanRunning.Store(true)
-	err := a.ScanDirectory(t.TempDir())
+	err := a.ScanDirectory(t.TempDir(), false)
 	if err == nil {
 		t.Fatal("expected error while scan in progress, got nil")
 	}

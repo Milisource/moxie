@@ -28,7 +28,7 @@ func TestUpsertDetected_InsertsNew(t *testing.T) {
 	dir := t.TempDir()
 	g := detected("New Game", filepath.Join(dir, "New Game"))
 
-	inserted, updated, errs := a.upsertDetected([]scanner.DetectedGame{g})
+	inserted, updated, errs := a.upsertDetected([]scanner.DetectedGame{g}, false)
 	if inserted != 1 || updated != 0 || len(errs) != 0 {
 		t.Fatalf("upsert = inserted %d updated %d errs %v, want 1/0/none", inserted, updated, errs)
 	}
@@ -45,7 +45,7 @@ func TestUpsertDetected_UpdatePreservesCuratedFields(t *testing.T) {
 	a := newTestApp(t)
 	dir := t.TempDir()
 	g := detected("Curated Game", filepath.Join(dir, "Curated Game"))
-	a.upsertDetected([]scanner.DetectedGame{g})
+	a.upsertDetected([]scanner.DetectedGame{g}, false)
 
 	// User curates version + exe path; a rescan detects different ones.
 	existing, err := a.db.GetGameByPath(g.Path)
@@ -68,7 +68,7 @@ func TestUpsertDetected_UpdatePreservesCuratedFields(t *testing.T) {
 	re.Version = "2.0"
 	re.ExePath = "/detected/other.exe"
 	re.Engine = engine.Unity
-	inserted, updated, errs := a.upsertDetected([]scanner.DetectedGame{re})
+	inserted, updated, errs := a.upsertDetected([]scanner.DetectedGame{re}, false)
 	if inserted != 0 || updated != 1 || len(errs) != 0 {
 		t.Fatalf("upsert = inserted %d updated %d errs %v, want 0/1/none", inserted, updated, errs)
 	}
@@ -95,7 +95,7 @@ func TestUpsertDetected_ResurrectsSoftDeleted(t *testing.T) {
 	a := newTestApp(t)
 	dir := t.TempDir()
 	g := detected("Back From Dead", filepath.Join(dir, "Back From Dead"))
-	a.upsertDetected([]scanner.DetectedGame{g})
+	a.upsertDetected([]scanner.DetectedGame{g}, false)
 
 	existing, _ := a.db.GetGameByPath(g.Path)
 	if err := a.db.DeleteGame(existing.ID); err != nil {
@@ -106,7 +106,7 @@ func TestUpsertDetected_ResurrectsSoftDeleted(t *testing.T) {
 		t.Fatalf("ListActiveGames after delete = %d games (%v), want 0", len(games), err)
 	}
 
-	inserted, updated, errs := a.upsertDetected([]scanner.DetectedGame{g})
+	inserted, updated, errs := a.upsertDetected([]scanner.DetectedGame{g}, false)
 	if inserted != 0 || updated != 1 || len(errs) != 0 {
 		t.Fatalf("upsert = inserted %d updated %d errs %v, want 0/1/none", inserted, updated, errs)
 	}
@@ -210,7 +210,7 @@ func TestScanUpsertRemovePipeline(t *testing.T) {
 	}
 
 	// A stale DB row whose directory never existed on disk.
-	a.upsertDetected([]scanner.DetectedGame{detected("Ghost Game", filepath.Join(root, "Ghost Game"))})
+	a.upsertDetected([]scanner.DetectedGame{detected("Ghost Game", filepath.Join(root, "Ghost Game"))}, false)
 
 	detected, err := scanner.ScanFiltered(context.Background(), root, nil, nil)
 	if err != nil {
@@ -223,13 +223,13 @@ func TestScanUpsertRemovePipeline(t *testing.T) {
 		t.Errorf("detected = %+v, want the Good Game dir", detected[0])
 	}
 
-	inserted, updated, errs := a.upsertDetected(detected)
+	inserted, updated, errs := a.upsertDetected(detected, false)
 	if inserted != 1 || updated != 0 || len(errs) != 0 {
 		t.Fatalf("upsert = inserted %d updated %d errs %v, want 1/0/none", inserted, updated, errs)
 	}
 
 	// Rescan: same result, now an update.
-	inserted, updated, errs = a.upsertDetected(detected)
+	inserted, updated, errs = a.upsertDetected(detected, false)
 	if inserted != 0 || updated != 1 || len(errs) != 0 {
 		t.Fatalf("re-upsert = inserted %d updated %d errs %v, want 0/1/none", inserted, updated, errs)
 	}
