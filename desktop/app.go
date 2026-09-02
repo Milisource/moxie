@@ -673,8 +673,10 @@ type ScanResult struct {
 	Errors     []string `json:"errors"`
 }
 
-// ScanDirectory scans a directory and emits progress events.
-func (a *App) ScanDirectory(path string) error {
+// ScanDirectory scans a directory and emits progress events. force selects a
+// full rescan: scanner-owned fields (version/engine/exe_path) are overwritten
+// with fresh detection instead of only filled when unset.
+func (a *App) ScanDirectory(path string, force bool) error {
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
@@ -724,7 +726,12 @@ func (a *App) ScanDirectory(path string) error {
 		if ctx.Err() != nil {
 			return
 		}
-		inserted, updated, errs := a.upsertDetected(detected)
+		// Relocate moved-within-root rows before upserting so a renamed game
+		// keeps its row (and curation) instead of being duplicated, exactly
+		// like the watcher's sweep does — this was previously missing from the
+		// manual scan (F95). Then upsert with the caller's force intent.
+		a.removeMissingUnder(abs)
+		inserted, updated, errs := a.upsertDetected(detected, force)
 
 		runtime.EventsEmit(a.ctx, "scan:complete", ScanResult{
 			GamesFound: len(detected),

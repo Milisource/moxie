@@ -10,8 +10,13 @@
     showProgress = false,
     lastResult = null,           // { gamesFound, inserted, updated, errors } or null
     scanError = '',
-    onScan = () => {},
+    onScan = (path, force) => {},
   } = $props()
+
+  // Full rescan: overwrite scanner-owned fields (version/exe/engine) with
+  // fresh detection instead of only filling unset ones. Mirrors the CLI's
+  // `scan --force`.
+  let force = $state(false)
 
   // ── Derived ─────────────────────────────────────────────────
   let progressPct = $derived.by(() => {
@@ -36,7 +41,13 @@
     <p class="scan-subtitle">Add game folders to scan for new titles.</p>
   </div>
 
-  <ScanPaths onScan={onScan} {scanning} {currentPath} />
+  <ScanPaths onScan={(path) => onScan(path, force)} {scanning} {currentPath} />
+
+  <!-- ── Scan Mode ─────────────────────────────────────────── -->
+  <label class="scan-force" title="Full rescan: re-detect every game and overwrite scan-owned fields (version, engine, exe path) with fresh detection. Off keeps manual corrections.">
+    <input type="checkbox" bind:checked={force} disabled={scanning} />
+    Full rescan (refresh version/exe/engine)
+  </label>
 
   <!-- ── Scan Progress ──────────────────────────────────── -->
   {#if showProgress && scanning}
@@ -99,6 +110,25 @@
     font-size: 13px;
     color: var(--text-secondary);
     margin: 0;
+  }
+
+  .scan-force {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 14px 0 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+  }
+  .scan-force input {
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .scan-force:has(input:disabled) {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   /* ── Progress ──────────────────────── */

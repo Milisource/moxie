@@ -71,7 +71,9 @@ func Scan(args []string) {
 	cookieStr := fs.String("cookie", "", "Cookie header (required with --sync/--scrape)")
 	cookieFile := fs.String("cookie-file", "", "Read cookie from file")
 	unsafe := fs.Bool("unsafe", false, "Skip rate limiting")
-	fs.Parse(args)
+	// hoistFlags keeps flags written after the directory (e.g. `scan <dir>
+	// --force`) from being swallowed as directories by stdlib flag parsing.
+	fs.Parse(hoistFlags(args, scanValueFlags))
 
 	var dirs []string
 	if fs.NArg() < 1 {
@@ -210,65 +212,19 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 		return nil
 	}
 
-	saved := 0
-	updated := 0
-	for _, g := range games {
-		// Check if already exists by path.
-		existing, err := database.GetGameByPath(g.Path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  Error checking %s: %v\n", g.Path, err)
-			return fmt.Errorf("checking game path %q: %w", g.Path, err)
-		}
-		if existing != nil {
-			// Update existing record with newly detected scan data.
-			// Only overwrite fields the user may have curated if they're
-			// still empty or set to fallback values — preserves manual
-			// corrections (engine re-classification, custom exe, etc.).
-			if existing.Version == "" {
-				existing.Version = g.Version
-			}
-			if existing.Engine == "" || existing.Engine == "Unknown" {
-				existing.Engine = string(g.Engine)
-			}
-			if existing.ExePath == "" {
-				existing.ExePath = g.ExePath
-			}
-			existing.SizeBytes = g.SizeBytes
-			existing.LastScannedAt = time.Now().UTC()
-			existing.DirMTime = dirModTime(g.Path)
-			if err := database.UpdateGame(existing); err != nil {
-				return fmt.Errorf("updating %q: %w", g.Title, err)
-			}
-			fmt.Fprintf(os.Stderr, "  Updated: %s (%s, v%s)\n", g.Title, g.Engine, g.Version)
-			updated++
-			continue
-		}
-
-		cleanTitle := scraper.SanitizeTitle(g.Title)
-		if cleanTitle == "" {
-			cleanTitle = g.Title
-		}
-
-		now := time.Now().UTC()
-		newGame := &db.Game{
-			Title:         cleanTitle,
-			Engine:        string(g.Engine),
-			Path:          g.Path,
-			ExePath:       g.ExePath,
-			Version:       g.Version,
-			SizeBytes:     g.SizeBytes,
-			Status:        "unknown",
-			LastScannedAt: now,
-			DirMTime:      dirModTime(g.Path),
-		}
-		if _, err := database.InsertGame(newGame); err != nil {
-			fmt.Fprintf(os.Stderr, "  Error saving %s: %v\n", cleanTitle, err)
-		} else {
-			fmt.Fprintf(os.Stderr, "  Saved: %s (%s)\n", cleanTitle, g.Engine)
-			saved++
-		}
+	// Relocate rows whose directory moved within this scan root before
+	// upserting, so a renamed game keeps its row (and user curation) instead
+	// of being duplicated under the new path. Only the confirmed save path
+	// mutates the library — a declined save must not delete anything.
+	removed := RemoveMissingUnder(database, absDir)
+	saved, updated, errs := UpsertDetected(database, games, cfg.Force)
+	for _, e := range errs {
+		fmt.Fprintf(os.Stderr, "  Error: %s\n", e)
 	}
 	fmt.Fprintf(os.Stderr, "\nSaved %d games, updated %d.\n", saved, updated)
+	if removed > 0 {
+		fmt.Fprintf(os.Stderr, "Removed %d game directories missing from disk.\n", removed)
+	}
 
 	// Post-scan action hooks: auto-sync or auto-scrape.
 	if cfg.DoSync || cfg.DoScrape {

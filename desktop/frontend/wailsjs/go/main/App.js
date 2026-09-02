@@ -210,8 +210,8 @@ export function RestoreGame(arg1) {
   return window['go']['main']['App']['RestoreGame'](arg1);
 }
 
-export function ScanDirectory(arg1) {
-  return window['go']['main']['App']['ScanDirectory'](arg1);
+export function ScanDirectory(arg1, arg2) {
+  return window['go']['main']['App']['ScanDirectory'](arg1, arg2);
 }
 
 export function SearchF95Zone(arg1) {

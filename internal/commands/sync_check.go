@@ -536,7 +536,9 @@ func CheckUpdates(args []string) {
 	jsonOut := fs.Bool("json", false, "JSON output")
 	unsafe := fs.Bool("unsafe", false, "⚠ Skip rate limiting")
 	force := fs.Bool("force", false, "Force re-check even if checked within 24h")
-	fs.Parse(args)
+	// hoistFlags keeps flags written after positional args from being
+	// ignored (check-updates currently takes none, but stay consistent).
+	fs.Parse(hoistFlags(args, syncValueFlags))
 
 	cookie := ResolveCookie(*cookieStr, *cookieFile)
 

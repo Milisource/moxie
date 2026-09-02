@@ -108,7 +108,7 @@ export function RescanDirectory(arg1:context.Context,arg2:string):Promise<void>;
 
 export function RestoreGame(arg1:number):Promise<void>;
 
-export function ScanDirectory(arg1:string):Promise<void>;
+export function ScanDirectory(arg1:string, arg2:boolean):Promise<void>;
 
 export function SearchF95Zone(arg1:string):Promise<Array<main.F95SearchResult>>;
 

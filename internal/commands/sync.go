@@ -214,7 +214,9 @@ func Sync(args []string) {
 	unsafe := fs.Bool("unsafe", false, "⚠ Skip rate limiting")
 	force := fs.Bool("force", false, "Force re-check even if checked within 24h")
 	parallel := fs.Int("parallel", 3, "Number of concurrent scrapers (default 3)")
-	fs.Parse(args)
+	// hoistFlags keeps flags written after an id (e.g. `sync <id> --force`)
+	// from being ignored as positional args by stdlib flag parsing.
+	fs.Parse(hoistFlags(args, syncValueFlags))
 
 	cookie := ResolveCookie(*cookieStr, *cookieFile)
 

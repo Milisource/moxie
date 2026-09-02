@@ -507,21 +507,36 @@ func (db *Database) UpdateGame(g *Game) error {
 
 // UpdateGameScanFields atomically applies scanner-detected values to an
 // existing game without touching columns the user may be editing right now
-// (title, status, notes, f95_url, ...). Version/engine/exe_path are only
-// filled when currently unset, preserving manual corrections; size, scan
-// time, and directory mtime are always refreshed.
+// (title, status, notes, f95_url, ...). Unless force is set, version/engine/
+// exe_path are only filled when currently unset, preserving manual
+// corrections; size, scan time, and directory mtime are always refreshed.
+// force distinguishes an explicit full rescan (the scanner's fresh detection
+// wins for the scanner-owned fields) from background watcher upserts (user
+// curation wins).
 //
 // Unlike UpdateGame (read-modify-write of the whole row), the "is it set?"
 // checks run inside the UPDATE statement itself, so a manual edit landing
 // between the scanner's read and write can never be clobbered with stale
 // data — SQLite executes the statement against the row's current state.
-func (db *Database) UpdateGameScanFields(id int64, version, engine, exePath string, sizeBytes int64, lastScannedAt, dirMTime time.Time) error {
+func (db *Database) UpdateGameScanFields(id int64, version, engine, exePath string, sizeBytes int64, lastScannedAt, dirMTime time.Time, force bool) error {
 	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Force overwrites the scanner-owned columns outright; otherwise they are
+	// only written when unset. Either way the placeholder count stays the
+	// same, so the argument list below is shared.
+	verSet := "CASE WHEN version IS NULL OR version = '' THEN ? ELSE version END"
+	engSet := "CASE WHEN engine IS NULL OR engine IN ('', 'Unknown') THEN ? ELSE engine END"
+	exeSet := "CASE WHEN exe_path IS NULL OR exe_path = '' THEN ? ELSE exe_path END"
+	if force {
+		verSet = "?"
+		engSet = "?"
+		exeSet = "?"
+	}
 	_, err := db.conn.Exec(`
 		UPDATE games SET
-			version = CASE WHEN version IS NULL OR version = '' THEN ? ELSE version END,
-			engine = CASE WHEN engine IS NULL OR engine IN ('', 'Unknown') THEN ? ELSE engine END,
-			exe_path = CASE WHEN exe_path IS NULL OR exe_path = '' THEN ? ELSE exe_path END,
+			version = `+verSet+`,
+			engine = `+engSet+`,
+			exe_path = `+exeSet+`,
 			size_bytes = ?,
 			last_scanned_at = ?,
 			dir_mtime = ?,

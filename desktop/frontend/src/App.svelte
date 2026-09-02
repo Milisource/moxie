@@ -105,7 +105,7 @@
     scanError: '',
   })
 
-  async function startScan(path) {
+  async function startScan(path, force = false) {
     if (scanState.scanning) return   // prevent duplicate concurrent runs
     scanState.scanning = true
     scanState.currentPath = path
@@ -114,7 +114,7 @@
     scanState.scanError = ''
     scanState.progress = {dirsExamined: 0, gamesFound: 0, phase: ''}
     try {
-      await ScanDirectory(path)
+      await ScanDirectory(path, force)
     } catch (e) {
       scanState.scanError = String(e)
       scanState.scanning = false

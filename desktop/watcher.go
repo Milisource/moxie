@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,9 +15,8 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/commands"
 	"github.com/mili/moxie/internal/scanner"
-	"github.com/mili/moxie/internal/scraper"
 )
 
 // watchDebounce is the quiet period after a filesystem event before an
@@ -340,7 +338,9 @@ func (a *App) RescanDirectory(ctx context.Context, root string, triggerPaths []s
 	// the upsert would insert a fresh, uncurated row and the old one would be
 	// soft-deleted.
 	removed := a.removeMissingUnder(abs)
-	inserted, updated, errs := a.upsertDetected(detected)
+	// Watcher auto-upserts stay non-destructive: force=false preserves manual
+	// corrections to version/engine/exe_path.
+	inserted, updated, errs := a.upsertDetected(detected, false)
 
 	result := map[string]interface{}{
 		"gamesFound": len(detected),
@@ -367,200 +367,21 @@ func triggeredInside(dir string, triggerPaths []string) bool {
 	return false
 }
 
-// upsertDetected inserts new games and updates existing records, preserving
-// fields the user may have curated. Returns counts and per-game errors.
-func (a *App) upsertDetected(detected []scanner.DetectedGame) (inserted, updated int, errs []string) {
-	for _, g := range detected {
-		existing, err := a.db.GetGameByPath(g.Path)
-		if err != nil {
-			errs = append(errs, g.Title+": "+err.Error())
-			continue
-		}
-
-		now := time.Now().UTC()
-		if existing != nil {
-			// A soft-deleted game found again on disk comes back to life —
-			// otherwise the UNIQUE index on path keeps blocking re-insertion
-			// while the row stays invisible in every listing.
-			if !existing.DeletedAt.IsZero() {
-				if err := a.db.RestoreGame(existing.ID); err != nil {
-					errs = append(errs, existing.Title+": "+err.Error())
-					continue
-				}
-			}
-			// Narrow, atomic update: only the scanner-owned fields are
-			// written, and version/engine/exe_path only when unset (manual
-			// corrections win). The "unset" checks live inside the UPDATE,
-			// so a user edit landing between our read and write can never be
-			// clobbered with the stale record we loaded.
-			if err := a.db.UpdateGameScanFields(
-				existing.ID, g.Version, string(g.Engine), g.ExePath,
-				g.SizeBytes, now, dirModTime(g.Path),
-			); err != nil {
-				errs = append(errs, existing.Title+": "+err.Error())
-				continue
-			}
-			updated++
-			continue
-		}
-
-		title := scraper.SanitizeTitle(g.Title)
-		if title == "" {
-			title = g.Title
-		}
-		newGame := &db.Game{
-			Title:         title,
-			Engine:        string(g.Engine),
-			Path:          g.Path,
-			ExePath:       g.ExePath,
-			Version:       g.Version,
-			SizeBytes:     g.SizeBytes,
-			Status:        "unknown",
-			LastScannedAt: now,
-			DirMTime:      dirModTime(g.Path),
-		}
-		if _, err := a.db.InsertGame(newGame); err != nil {
-			errs = append(errs, title+": "+err.Error())
-			continue
-		}
-		inserted++
-	}
-	return inserted, updated, errs
+// upsertDetected delegates to the shared scan upsert (internal/commands),
+// keeping the desktop's auto-upserts non-destructive: version/engine/exe_path
+// are only filled when unset so manual corrections survive. Returns counts and
+// per-game errors.
+func (a *App) upsertDetected(detected []scanner.DetectedGame, force bool) (inserted, updated int, errs []string) {
+	return commands.UpsertDetected(a.db, detected, force)
 }
 
-// vanishedGame is a game row whose directory is definitively gone from disk,
-// collected by removeMissingUnder.
-type vanishedGame struct {
-	path string
-	game *db.Game
-}
-
-// removeMissingUnder soft-deletes games under root whose directory no longer
-// exists on disk, after first giving vanished directories a chance to be a
-// move-within-root: a game folder renamed inside the same scan root keeps its
-// row (path and dir mtime updated in place) so user curation — status, title,
-// tags — survives. Returns the number of rows soft-deleted.
+// removeMissingUnder delegates to the shared relocation logic in
+// internal/commands: game rows whose directories are definitively gone under
+// root are soft-deleted, after giving same-basename moves-within-root a
+// chance to keep their row (path updated in place, curation preserved).
+// Returns the number of rows soft-deleted.
 func (a *App) removeMissingUnder(root string) int {
-	entries, err := a.db.AllGamePaths()
-	if err != nil {
-		return 0
-	}
-
-	// Collect the rows whose directories are definitively gone. Only a
-	// definitive "not there" justifies action; any other stat failure — an
-	// unmounted drive, EACCES on a parent, EMFILE — means we do not know,
-	// and guessing "gone" would trash the whole library on the next sweep.
-	var gone []vanishedGame
-	for _, e := range entries {
-		if !isPathUnder(root, e.Path) {
-			continue
-		}
-		if _, serr := os.Stat(e.Path); !errors.Is(serr, fs.ErrNotExist) {
-			continue
-		}
-		game, gerr := a.db.GetGameByPath(e.Path)
-		if gerr != nil || game == nil {
-			continue
-		}
-		// Already in the trash — re-deleting would reset deleted_at on every
-		// sweep, so the 30-day auto-purge would never come due, and the UI
-		// would report a phantom removal each time.
-		if !game.DeletedAt.IsZero() {
-			continue
-		}
-		gone = append(gone, vanishedGame{path: e.Path, game: game})
-	}
-	if len(gone) == 0 {
-		return 0
-	}
-
-	// Match vanished directories to same-basename directories that now exist
-	// under the root — the signature of a move-within-root.
-	moved := a.matchMovedWithinRoot(root, gone, entries)
-
-	removed := 0
-	for _, v := range gone {
-		if newPath, ok := moved[v.path]; ok {
-			if err := a.relocateGameRow(v.game, v.path, newPath); err != nil {
-				slog.Warn("watch: could not relocate moved game",
-					"from", v.path, "to", newPath, "error", err)
-				removed++
-			}
-			continue
-		}
-		if derr := a.db.DeleteGame(v.game.ID); derr == nil {
-			removed++
-		}
-	}
-	return removed
-}
-
-// matchMovedWithinRoot finds, for each vanished game directory, a directory
-// under the same root with the same basename — the signature of a
-// move-within-root. Candidates nested inside another known game's directory
-// are rejected: the scanner treats those as part of the parent game, so they
-// cannot be the new home of a standalone game row. Returns vanished path ->
-// new path.
-func (a *App) matchMovedWithinRoot(root string, gone []vanishedGame, allRows []db.GamePathEntry) map[string]string {
-	wantBase := make(map[string]string) // basename -> vanished path
-	for _, v := range gone {
-		wantBase[filepath.Base(v.path)] = v.path
-	}
-	found := make(map[string]string)
-
-	nestedInRow := func(p string) bool {
-		for _, r := range allRows {
-			if p != r.Path && isPathUnder(r.Path, p) {
-				return true
-			}
-		}
-		return false
-	}
-
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || !d.IsDir() || path == root {
-			return nil
-		}
-		old, ok := wantBase[d.Name()]
-		if !ok || path == old {
-			return nil
-		}
-		if nestedInRow(path) {
-			return nil
-		}
-		if _, taken := found[old]; !taken {
-			found[old] = path
-		}
-		return nil
-	})
-	if err != nil {
-		slog.Warn("watch: move-match walk failed", "root", root, "error", err)
-	}
-	return found
-}
-
-// relocateGameRow updates a game row whose directory moved within the scan
-// root: path and dir mtime are refreshed in place, and a scanner-owned
-// exe_path that pointed into the old directory is cleared so the following
-// upsert pass refills it from detection. Everything the user curated (title,
-// status, tags, notes, f95 URL) is preserved — the row is never deleted and
-// re-inserted.
-func (a *App) relocateGameRow(game *db.Game, oldPath, newPath string) error {
-	// A row already exists at the new path (a previous scan inserted it
-	// before the move was recognised): the old row is a duplicate and the
-	// caller falls back to soft-deleting it.
-	if existing, err := a.db.GetGameByPath(newPath); err == nil && existing != nil {
-		return fmt.Errorf("a row already exists at the moved path")
-	}
-	game.Path = newPath
-	game.DirMTime = dirModTime(newPath)
-	game.LastScannedAt = time.Now().UTC()
-	if game.ExePath != "" && isPathUnder(oldPath, game.ExePath) {
-		// Points into the old directory — stale after the move. Clear it so
-		// the upsert pass refills it from the new location.
-		game.ExePath = ""
-	}
-	return a.db.UpdateGame(game)
+	return commands.RemoveMissingUnder(a.db, root)
 }
 
 // matchRoot returns the watched scan root that path lives under, or an empty
