@@ -79,3 +79,51 @@ func TestGetGamesInCollectionExcludesDeleted(t *testing.T) {
 		t.Fatalf("got %d games, want 0 (soft-deleted)", len(games))
 	}
 }
+
+// TestCollectionMemberGameIDs verifies member IDs come back grouped by
+// collection and ordered by title, with soft-deleted games excluded.
+func TestCollectionMemberGameIDs(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	favorites, err := db.CreateCollection("Favorites")
+	if err != nil {
+		t.Fatalf("CreateCollection failed: %v", err)
+	}
+	empty, err := db.CreateCollection("Empty")
+	if err != nil {
+		t.Fatalf("CreateCollection failed: %v", err)
+	}
+
+	zebra, err := db.InsertGame(&Game{Title: "Zebra", Engine: "RenPy", Path: "/games/zebra", Status: "unknown"})
+	if err != nil {
+		t.Fatalf("InsertGame failed: %v", err)
+	}
+	apple, err := db.InsertGame(&Game{Title: "Apple", Engine: "RenPy", Path: "/games/apple", Status: "unknown"})
+	if err != nil {
+		t.Fatalf("InsertGame failed: %v", err)
+	}
+	trashed, err := db.InsertGame(&Game{Title: "Trashed", Engine: "RenPy", Path: "/games/trashed", Status: "unknown"})
+	if err != nil {
+		t.Fatalf("InsertGame failed: %v", err)
+	}
+	for _, gid := range []int64{zebra, apple, trashed} {
+		if err := db.AddGameToCollection(gid, favorites.ID); err != nil {
+			t.Fatalf("AddGameToCollection failed: %v", err)
+		}
+	}
+	if err := db.DeleteGame(trashed); err != nil {
+		t.Fatalf("DeleteGame failed: %v", err)
+	}
+
+	ids, err := db.CollectionMemberGameIDs()
+	if err != nil {
+		t.Fatalf("CollectionMemberGameIDs failed: %v", err)
+	}
+	if got := ids[favorites.ID]; len(got) != 2 || got[0] != apple || got[1] != zebra {
+		t.Errorf("ids[favorites] = %v, want [%d, %d] (title order, trashed excluded)", got, apple, zebra)
+	}
+	if _, ok := ids[empty.ID]; ok {
+		t.Errorf("ids[empty] present, want absent for a collection with no active members")
+	}
+}

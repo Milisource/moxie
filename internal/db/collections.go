@@ -77,6 +77,34 @@ func (db *Database) CountGamesPerCollection() (map[int64]int, error) {
 	return counts, rows.Err()
 }
 
+// CollectionMemberGameIDs returns collection ID -> ordered list of active
+// member game IDs (by title). One grouped query so building cover-collage
+// previews for a list of collections does not cost an extra per-collection
+// query (mirrors CountGamesPerCollection's approach).
+func (db *Database) CollectionMemberGameIDs() (map[int64][]int64, error) {
+	rows, err := db.conn.Query(`
+		SELECT gc.collection_id, g.id
+		FROM game_collections gc
+		JOIN games g ON g.id = gc.game_id
+		WHERE g.deleted_at IS NULL
+		  AND g.path NOT LIKE '%.old'
+		ORDER BY gc.collection_id, g.title COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make(map[int64][]int64)
+	for rows.Next() {
+		var collectionID, gameID int64
+		if err := rows.Scan(&collectionID, &gameID); err != nil {
+			return nil, err
+		}
+		ids[collectionID] = append(ids[collectionID], gameID)
+	}
+	return ids, rows.Err()
+}
+
 // GetCollection retrieves a collection by ID. Returns nil, nil when no
 // matching row exists.
 func (db *Database) GetCollection(id int64) (*Collection, error) {
