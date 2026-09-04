@@ -1513,3 +1513,179 @@ func TestCookieTransport_HostScoped(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// hasAuthenticatedSession
+// ---------------------------------------------------------------------------
+
+func TestHasAuthenticatedSession(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		cookie string
+		want   bool
+	}{
+		{"empty", "", false},
+		{"guest cookie header", "xf_session=abc; xf_csrf=tok", false},
+		{"logged in cookie header", "xf_user=1%2Csecret; xf_csrf=tok", true},
+		{
+			"logged in netscape",
+			"f95zone.to\tFALSE\t/\tTRUE\t0\txf_user\t1%2Csecret",
+			true,
+		},
+		{
+			"guest netscape",
+			"f95zone.to\tFALSE\t/\tTRUE\t0\txf_csrf\ttok",
+			false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasAuthenticatedSession(tc.cookie); got != tc.want {
+				t.Errorf("hasAuthenticatedSession(%q) = %v, want %v", tc.cookie, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseRetryAfter
+// ---------------------------------------------------------------------------
+
+func TestParseRetryAfter(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{"empty", "", 0},
+		{"seconds", "5", 5 * time.Second},
+		{"zero seconds", "0", 0},
+		{"negative seconds", "-5", 0},
+		{"garbage", "not-a-date", 0},
+		{"future http-date", time.Now().Add(10 * time.Second).UTC().Format(http.TimeFormat), 0}, // checked below with tolerance
+	}
+	for _, tc := range cases[:len(cases)-1] {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseRetryAfter(tc.header); got != tc.want {
+				t.Errorf("parseRetryAfter(%q) = %v, want %v", tc.header, got, tc.want)
+			}
+		})
+	}
+
+	// HTTP-date case: allow a small tolerance since time.Until() is evaluated
+	// a moment after the header was formatted.
+	dateHeader := time.Now().Add(10 * time.Second).UTC().Format(http.TimeFormat)
+	got := parseRetryAfter(dateHeader)
+	if got <= 0 || got > 11*time.Second {
+		t.Errorf("parseRetryAfter(%q) = %v, want ~10s", dateHeader, got)
+	}
+}
+
+// TestClientDo_RetryAfterHeader verifies that a 429 response carrying a
+// Retry-After header sets the client's standing delay to that value rather
+// than the fixed exponential-backoff schedule.
+func TestClientDo_RetryAfterHeader(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	client := NewClientWithHTTP("test=1", srv.Client())
+
+	// Every attempt 429s, so do() exhausts its retries and returns an
+	// error — but the standing delay must reflect the server's Retry-After
+	// guidance, not the fixed exponential-backoff schedule.
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	if _, err := client.do(req, 0); err == nil {
+		t.Fatal("expected error after repeated 429 responses, got nil")
+	}
+
+	if d := client.Delay(); d != 5*time.Second {
+		t.Errorf("Delay() after 429 with Retry-After: 5 = %v, want 5s", d)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// JSON-LD supplemental extraction
+// ---------------------------------------------------------------------------
+
+func TestExtractJSONLD_MergesAndSkipsMalformed(t *testing.T) {
+	t.Parallel()
+
+	html := `<html><body>
+<script type="application/ld+json">{"@type":"BreadcrumbList","name":"forum"}</script>
+<script type="application/ld+json">not json</script>
+<script type="application/ld+json">{"image":"https://example.com/cover.jpg","datePublished":"2024-01-01T00:00:00Z"}</script>
+</body></html>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatalf("goquery: %v", err)
+	}
+
+	ld := extractJSONLD(doc)
+	if ld["name"] != "forum" {
+		t.Errorf("ld[name] = %v, want %q", ld["name"], "forum")
+	}
+	if ld["image"] != "https://example.com/cover.jpg" {
+		t.Errorf("ld[image] = %v, want cover URL", ld["image"])
+	}
+	if ld["datePublished"] != "2024-01-01T00:00:00Z" {
+		t.Errorf("ld[datePublished] = %v, want date", ld["datePublished"])
+	}
+}
+
+func TestParseThreadHTML_JSONLDFallback(t *testing.T) {
+	t.Parallel()
+
+	// No <img> in the body, so CoverURL can only come from JSON-LD.
+	html := `<html><body>
+<h1 class="p-title-value">JSON-LD Game [v1.0] [Studio]</h1>
+<script type="application/ld+json">{"image":"https://example.com/cover.jpg","datePublished":"2024-01-01T00:00:00Z","dateModified":"2024-06-01T00:00:00Z"}</script>
+<article class="message-content"><div class="bbWrapper">Overview
+A game with no post images.</div></article>
+</body></html>`
+
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/jsonld.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	if td.CoverURL != "https://example.com/cover.jpg" {
+		t.Errorf("CoverURL = %q, want JSON-LD fallback image", td.CoverURL)
+	}
+	if td.PublishedAt != "2024-01-01T00:00:00Z" {
+		t.Errorf("PublishedAt = %q, want JSON-LD datePublished", td.PublishedAt)
+	}
+	if td.UpdatedAt != "2024-06-01T00:00:00Z" {
+		t.Errorf("UpdatedAt = %q, want JSON-LD dateModified", td.UpdatedAt)
+	}
+}
+
+func TestParseThreadHTML_JSONLDDoesNotOverrideBodyCover(t *testing.T) {
+	t.Parallel()
+
+	// The body has a real cover image — JSON-LD's image must NOT override it.
+	html := `<html><body>
+<h1 class="p-title-value">Body Cover Game [v1.0] [Studio]</h1>
+<script type="application/ld+json">{"image":"https://example.com/wrong.jpg"}</script>
+<article class="message-content"><div class="bbWrapper">
+<img class="bbImage" src="https://example.com/real-cover.jpg" width="600">
+Overview
+A game with a real post image.</div></article>
+</body></html>`
+
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/bodycover.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	if td.CoverURL != "https://example.com/real-cover.jpg" {
+		t.Errorf("CoverURL = %q, want body image to win over JSON-LD", td.CoverURL)
+	}
+}

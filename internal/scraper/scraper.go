@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -74,6 +75,11 @@ func (e *HTTPStatusError) Error() string {
 type BlockedError struct {
 	Reason     string
 	StatusCode int
+	// RetryAfter is the server-provided wait time from a Retry-After
+	// header on 429/503 responses, when present. Zero means the server
+	// gave no guidance and the caller should fall back to its own backoff
+	// schedule.
+	RetryAfter time.Duration
 }
 
 func (e *BlockedError) Error() string {
@@ -161,6 +167,7 @@ func newClient(cookieStr string, unsafe bool) *Client {
 	if unsafe {
 		delay = 0
 	}
+	log.Debug("scraper session", "authenticated", hasAuthenticatedSession(cookieStr))
 	return &Client{
 		http: &http.Client{
 			Timeout: defaultTimeout,
@@ -214,6 +221,39 @@ func extractCSRFToken(cookieStr string) string {
 	return ""
 }
 
+// hasAuthenticatedSession reports whether the cookie string carries a
+// logged-in XenForo session (xf_user) rather than a guest-only session
+// (xf_session/xf_csrf with no xf_user). Purely diagnostic — logged once at
+// client creation so block-rate comparisons between authenticated and guest
+// sessions are visible in the logs without a special build.
+func hasAuthenticatedSession(cookieStr string) bool {
+	s := strings.TrimSpace(cookieStr)
+	if s == "" {
+		return false
+	}
+
+	// Netscape format: tab-separated lines with 7 fields, field 5 is the name.
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) >= 7 && fields[5] == "xf_user" {
+			return true
+		}
+	}
+
+	// Cookie header format: semicolon-separated key=value pairs.
+	for _, pair := range strings.Split(s, ";") {
+		if strings.HasPrefix(strings.TrimSpace(pair), "xf_user=") {
+			return true
+		}
+	}
+
+	return false
+}
+
 // Delay returns the current inter-request delay.
 func (c *Client) Delay() time.Duration {
 	c.mu.Lock()
@@ -242,7 +282,12 @@ func (c *Client) do(req *http.Request, baseDelay time.Duration) (bodyStr string,
 		lastErr = err
 
 		var blockedErr *BlockedError
+		retryAfter := time.Duration(0)
 		if errors.As(err, &blockedErr) {
+			retryAfter = blockedErr.RetryAfter
+			if retryAfter > maxBackoff {
+				retryAfter = maxBackoff
+			}
 			c.mu.Lock()
 			c.consecutiveBlocks++
 			if c.consecutiveBlocks >= maxConsecutiveBlocks {
@@ -253,7 +298,14 @@ func (c *Client) do(req *http.Request, baseDelay time.Duration) (bodyStr string,
 				)
 			}
 			if blockedErr.StatusCode == 429 {
-				c.delay = time.Duration(float64(c.delay) * backoffMultiplier)
+				// Prefer the server's own Retry-After guidance for the
+				// standing inter-request delay when it gave one; otherwise
+				// fall back to the fixed exponential schedule.
+				if retryAfter > 0 {
+					c.delay = retryAfter
+				} else {
+					c.delay = time.Duration(float64(c.delay) * backoffMultiplier)
+				}
 				if c.delay > maxBackoff {
 					c.delay = maxBackoff
 				}
@@ -264,9 +316,14 @@ func (c *Client) do(req *http.Request, baseDelay time.Duration) (bodyStr string,
 		if attempt == maxAttempts || !retryable(err) {
 			return "", err
 		}
-		// Pause between attempts: 2s, 4s, ... with jitter, so retries look
+		// Pause between attempts. Prefer the server's Retry-After value
+		// when present — it's an explicit signal, not a guess; otherwise
+		// use the fixed schedule (2s, 4s, ... with jitter) so retries look
 		// like a human re-trying rather than a bot hammering.
-		wait := time.Duration(attempt)*retryBackoffBase + time.Duration(rand.Int63n(int64(time.Second)))
+		wait := retryAfter
+		if wait == 0 {
+			wait = time.Duration(attempt)*retryBackoffBase + time.Duration(rand.Int63n(int64(time.Second)))
+		}
 		select {
 		case <-time.After(wait):
 		case <-req.Context().Done():
@@ -433,6 +490,30 @@ func applyBrowserHeaders(req *http.Request) {
 	}
 }
 
+// parseRetryAfter parses a Retry-After header value per RFC 9110: either an
+// integer number of delta-seconds, or an HTTP-date. Returns 0 (meaning "no
+// guidance") when the header is absent, empty, unparseable, or would produce
+// a non-positive or absurd wait — a hostile/misconfigured header must never
+// stall the client; callers cap the result against maxBackoff regardless.
+func parseRetryAfter(header string) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(header); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		if wait := time.Until(t); wait > 0 {
+			return wait
+		}
+	}
+	return 0
+}
+
 // checkBlocked inspects the response for Cloudflare or anti-bot signals.
 // It reads the response body once and returns it so callers can use
 // the body directly without a second read. The read is capped — a hostile
@@ -452,9 +533,11 @@ func (c *Client) checkBlocked(resp *http.Response) (bodyStr string, err error) {
 		strings.Contains(bodyStr, "cf-challenge-running") ||
 		strings.Contains(bodyStr, "_cf_chl_opt")
 
+	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+
 	switch resp.StatusCode {
 	case 429:
-		return "", &BlockedError{Reason: "rate limited", StatusCode: 429}
+		return "", &BlockedError{Reason: "rate limited", StatusCode: 429, RetryAfter: retryAfter}
 	case 403:
 		if cf {
 			return "", &BlockedError{
@@ -471,11 +554,13 @@ func (c *Client) checkBlocked(resp *http.Response) (bodyStr string, err error) {
 			return "", &BlockedError{
 				Reason:     "Cloudflare challenge (HTTP 503) — refresh your browser session and re-import cookies",
 				StatusCode: 503,
+				RetryAfter: retryAfter,
 			}
 		}
 		return "", &BlockedError{
 			Reason:     "service unavailable (HTTP 503) — possible Cloudflare challenge",
 			StatusCode: 503,
+			RetryAfter: retryAfter,
 		}
 	}
 

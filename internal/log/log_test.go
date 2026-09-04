@@ -13,6 +13,7 @@ func TestSlogDefaultWiredToFile(t *testing.T) {
 	dir := t.TempDir()
 	InitWithConsole(dir)
 	slog.Info("desktop-style log", "key", "value")
+	Flush()
 
 	logPath := filepath.Join(dir, "moxie-"+timeNow()+".log")
 	data, err := os.ReadFile(logPath)
@@ -30,6 +31,7 @@ func TestMOXIELogLevelEnv(t *testing.T) {
 	InitWithConsole(dir)
 	Debug("debug-line")
 	slog.Debug("debug-line-slog")
+	Flush()
 
 	logPath := filepath.Join(dir, "moxie-"+timeNow()+".log")
 	data, err := os.ReadFile(logPath)
@@ -46,6 +48,7 @@ func TestSetLevelKeepsFileOutput(t *testing.T) {
 	Init(dir)
 	SetLevel(slog.LevelDebug)
 	Debug("debug-after-setlevel")
+	Flush()
 
 	logPath := filepath.Join(dir, "moxie-"+timeNow()+".log")
 	data, err := os.ReadFile(logPath)

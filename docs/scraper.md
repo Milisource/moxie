@@ -24,6 +24,8 @@ Cookie sources, in priority order:
 2. `--cookie-file` path (file read — Firefox `cookies.sqlite` via the read-only SQLite fallback)
 3. Browser auto-detection via `browserutils/kooky` (Firefox, Chrome, Chromium, Brave, Edge — reads cookie stores at the binary level; Firefox is the reliable default, see `docs/browser.md` for the Windows Chrome ≥127 caveat)
 
+`hasAuthenticatedSession()` checks whether the cookie carries a logged-in `xf_user` value (vs. guest-only) and logs it once at client creation (`log.Debug("scraper session", "authenticated", …)`) — purely diagnostic, so block/captcha rates can be compared between authenticated and guest sessions from the logs without a special build. Nothing in the client currently *behaves* differently based on this signal; it's instrumentation for a future decision, not a policy.
+
 ### Rate Limiting Design
 
 The scraper is designed to be a polite guest. The `Client.do()` method enforces:
@@ -36,7 +38,7 @@ cooldown       = pause 10s every 35 requests
 backoff        = delay × 2 on 429, cap at 2min
 ```
 
-On each successful request, the delay decays by 5% back to `minDelay` — but only when it is already above the floor, so `--unsafe` (delay 0) and the unpaced F95Checker `CacheClient` stay unpaced instead of snapping up to 1.5s after the first success. On HTTP 429, it doubles (exponential backoff). Non-2xx statuses surface as a typed `HTTPStatusError` (or `BlockedError` for 403/429/503) so callers can branch on the code instead of matching error strings.
+On each successful request, the delay decays by 5% back to `minDelay` — but only when it is already above the floor, so `--unsafe` (delay 0) and the unpaced F95Checker `CacheClient` stay unpaced instead of snapping up to 1.5s after the first success. On HTTP 429, the standing delay prefers the server's own `Retry-After` header (`parseRetryAfter` — delta-seconds or an HTTP-date, RFC 9110) when present, since that's an explicit signal rather than a guess; only when the header is absent does it fall back to doubling (exponential backoff). Either way the delay is capped at `maxBackoff` (2 min) so a malicious or misconfigured header can't stall the client indefinitely. Non-2xx statuses surface as a typed `HTTPStatusError` (or `BlockedError` for 403/429/503) so callers can branch on the code instead of matching error strings.
 
 ### Retries, Circuit Breaker, and Preflight
 
@@ -107,6 +109,9 @@ F95Zone exposes several JSON endpoints that require **no login and no cookies** 
 | **Cover URL** | First `img.bbImage` in the first post, falling back to first large `<img>` |
 | **Download Links** | All `<a href>` anchors hosting on 40+ approved file hosts |
 | **Thread ID** | Regex from URL: `/threads/slug.12345/` → `12345` |
+| **Cover URL (fallback)**, **Published/Updated at** | `script[type="application/ld+json"]` schema.org blocks (`extractJSONLD`), merged across multiple blocks (XenForo emits several small ones — breadcrumb, discussion posting, …) |
+
+**JSON-LD is supplemental only.** It never overrides title/version/tags/status — those already have F95Zone-specific sources (prefixes, tags, the Overview block) that outrank generic schema.org data. It fills in two things the BBCode parsing above doesn't produce at all: a cover-image fallback for threads whose first post has no usable `<img>`, and `PublishedAt`/`UpdatedAt` timestamps (`ThreadData`, raw ISO 8601 strings) independent of whether the OP filled in the `thread_updated` metadata field. Not every thread embeds JSON-LD; a missing or malformed block is treated as "nothing extra available," never an error.
 
 Version extraction is three-tiered, in descending order of reliability:
 
@@ -164,3 +169,5 @@ Download links are classified against 40+ F95Zone-approved file hosts. Links fro
 **Structured metadata block parsing over full-text regex** — The structured block (key: value pairs in the Overview section) is more reliable than regex-scraping the entire post body. Release thread authors maintain this section; parsing it with known key normalization gives higher quality version and developer extraction. Full-text regex is the fallback for threads without a structured block.
 
 **Conservative rate limiting** — a single `scrape --auto` run of 80 games takes ~8 minutes sequentially (all workers share one rate-limited client, so `--parallel` helps CPU/DB-bound work and fallback scrapes but does not multiply the request rate). The desktop sync instead gives each of its 3 workers its own client, which genuinely parallelizes search throughput. F95Zone runs behind Cloudflare and aggressive scraping gets you blocked — rate limiting per-worker is still enforced even in parallel mode.
+
+**Data sources considered and rejected** — F95Zone has no official public API: XenForo's REST API (`docs.xenforo.com/api`) exists but requires a super-administrator-issued key, which F95Zone doesn't offer third parties. `sam/latest_alpha/latest_data.php` (used above for search and RSS) remains session/rate-gated rather than a stable public API — a fresh unauthenticated request to it 403'd during the research for this section — so it stays a supplementary signal inside the existing fallback chain, not a replacement for cookie-based scraping or the F95Checker cache API. JSON-LD (added above) was the one genuine gap found by comparing against the reference F95API project; everything else that project does (prefix/tag-based engine and status parsing, cookie-session auth, rate-limit backoff) this codebase already did.

@@ -20,6 +20,16 @@ type ThreadData struct {
 	DownloadLinks []DownloadLink    `json:"download_links,omitempty"`
 	StoreLinks    map[string]string `json:"store_links,omitempty"`
 	Status        string            `json:"status,omitempty"` // completed, abandoned, on_hold
+
+	// PublishedAt/UpdatedAt come from the thread page's JSON-LD structured
+	// data (schema.org "datePublished"/"dateModified"), when present. They
+	// are a supplemental signal — not every thread embeds JSON-LD, and
+	// where the BBCode "Overview" metadata block already has a
+	// "thread_updated" value that one takes precedence. Left as raw ISO
+	// 8601 strings (as F95Zone emits them) rather than time.Time so a
+	// malformed value never fails the whole scrape; parse on read if needed.
+	PublishedAt string `json:"published_at,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
 }
 
 // DownloadLink represents a download link found in the thread.

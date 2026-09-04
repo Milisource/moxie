@@ -1,6 +1,7 @@
 package scraper
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -102,7 +103,44 @@ func parseThreadHTML(html string, threadURL string) (*ThreadData, error) {
 	td.DownloadLinks = extractDownloadLinks(contentSel)
 	td.StoreLinks = extractStoreLinks(contentSel)
 
+	// JSON-LD is a supplemental, DOM-structure-independent source — it
+	// never overrides F95Zone-specific fields (title/version/tags/status),
+	// only fills in fields the BBCode parsing above left empty.
+	ld := extractJSONLD(doc)
+	if td.CoverURL == "" {
+		if img, ok := ld["image"].(string); ok && isValidCoverURL(img) {
+			td.CoverURL = img
+		}
+	}
+	if v, ok := ld["datePublished"].(string); ok {
+		td.PublishedAt = v
+	}
+	if v, ok := ld["dateModified"].(string); ok {
+		td.UpdatedAt = v
+	}
+
 	return td, nil
+}
+
+// extractJSONLD collects and merges all application/ld+json script blocks
+// on the page. Multiple blocks are merged last-wins on key collision, since
+// XenForo commonly emits several small JSON-LD objects (breadcrumb list,
+// discussion forum posting, …) rather than one combined object. A missing
+// or unparseable block is not an error — JSON-LD is optional supplemental
+// data, absent on some threads, and callers must treat an empty map as
+// "nothing extra available."
+func extractJSONLD(doc *goquery.Document) map[string]any {
+	merged := make(map[string]any)
+	doc.Find(`script[type="application/ld+json"]`).Each(func(_ int, s *goquery.Selection) {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(s.Text()), &obj); err != nil {
+			return // malformed block — skip, not fatal
+		}
+		for k, v := range obj {
+			merged[k] = v
+		}
+	})
+	return merged
 }
 
 // ---------------------------------------------------------------------------

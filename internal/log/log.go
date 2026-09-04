@@ -21,6 +21,8 @@
 package log
 
 import (
+	"bufio"
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -45,6 +47,13 @@ var (
 
 	// fileWriter is the open daily log file, set by Init/InitWithConsole.
 	fileWriter io.Writer
+
+	// bufWriter wraps fileWriter to batch disk writes — a bulk operation
+	// (cover backfill, sync) can emit thousands of log lines, and an
+	// unbuffered O_APPEND write is a syscall per line. Warn/Error flush
+	// immediately so anything worth investigating still hits disk promptly;
+	// Debug/Info ride the buffer.
+	bufWriter *bufio.Writer
 
 	// console mirrors InitWithConsole: write to stderr in addition to the file.
 	console bool
@@ -89,12 +98,18 @@ func initLogger(dir string, alsoStderr bool) {
 		return
 	}
 	mu.Lock()
+	if bufWriter != nil {
+		// Flush anything still buffered against the old file before we
+		// swap it out from under the writer.
+		bufWriter.Flush()
+	}
 	if old, ok := fileWriter.(io.Closer); ok {
 		// Repeated Init calls (documented as safe) replace the file
 		// writer — close the previous handle so it is not leaked.
 		old.Close()
 	}
 	fileWriter = f
+	bufWriter = bufio.NewWriterSize(f, 8192)
 	console = alsoStderr
 	mu.Unlock()
 	// Clean up old log files after opening today's. Non-fatal if it fails.
@@ -127,14 +142,29 @@ func rebuildLogger() {
 	mu.Lock()
 	defer mu.Unlock()
 	var w io.Writer = os.Stderr
-	if fileWriter != nil {
-		w = fileWriter
+	if bufWriter != nil {
+		w = bufWriter
 		if console {
-			w = io.MultiWriter(fileWriter, os.Stderr)
+			w = io.MultiWriter(bufWriter, os.Stderr)
 		}
 	}
-	Logger = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level}))
+	var handler slog.Handler = slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})
+	if bufWriter != nil {
+		handler = &flushingHandler{Handler: handler}
+	}
+	Logger = slog.New(handler)
 	slog.SetDefault(Logger)
+}
+
+// Flush writes any buffered log lines to disk. Call this before the process
+// exits (e.g. from an OnShutdown hook) so the tail of the log isn't lost;
+// it's a no-op if Init/InitWithConsole was never called.
+func Flush() {
+	mu.Lock()
+	defer mu.Unlock()
+	if bufWriter != nil {
+		bufWriter.Flush()
+	}
 }
 
 // rotateOldLogs removes log files older than logRetentionDays from the log directory.
@@ -199,3 +229,28 @@ func Warn(msg string, args ...any) { Logger.Warn(msg, args...) }
 
 // Error logs at error level with the given message and key-value pairs.
 func Error(msg string, args ...any) { Logger.Error(msg, args...) }
+
+// flushingHandler wraps a slog.Handler and flushes the buffered file writer
+// after any Warn/Error record. Debug/Info ride the buffer for throughput;
+// Warn/Error still hit disk immediately, whether logged via this package's
+// Warn/Error or directly via slog.Warn/slog.Error (both land on the same
+// Logger/slog.Default after rebuildLogger).
+type flushingHandler struct {
+	slog.Handler
+}
+
+func (h *flushingHandler) Handle(ctx context.Context, r slog.Record) error {
+	err := h.Handler.Handle(ctx, r)
+	if r.Level >= slog.LevelWarn {
+		Flush()
+	}
+	return err
+}
+
+func (h *flushingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &flushingHandler{Handler: h.Handler.WithAttrs(attrs)}
+}
+
+func (h *flushingHandler) WithGroup(name string) slog.Handler {
+	return &flushingHandler{Handler: h.Handler.WithGroup(name)}
+}
