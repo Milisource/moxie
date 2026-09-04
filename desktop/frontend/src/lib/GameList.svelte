@@ -1,6 +1,6 @@
 <script>
   import {onMount, onDestroy, tick} from 'svelte'
-  import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCoverBaseURL} from '../../wailsjs/go/main/App'
+  import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCoverBaseURL, PlayGame} from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
   import {library} from './viewState.svelte.js'
@@ -8,9 +8,69 @@
   let {
     games = [],
     loading = false,
+    gameStates = {},
     onOpenDetail = (id) => {},
     onUpdate = () => {},
+    onLaunched = (msg) => {},
   } = $props()
+
+  // ── Play-state model (P0-3) ─────────────────────────────────
+  // The library renders a play affordance per card/row that switches state
+  // while a launch is happening/most recent — Steam's play-bar pattern. We
+  // cannot know when the launched process exits (PlayGame detaches), so the
+  // "playing" state is optimistic and reverts after a short timeout. A
+  // successful launch also nudges the recency arrangement (the mock backend
+  // records a play entry; the real one does via db.RecordPlay).
+  const PLAY_REVERT_MS = 6000
+  const PLAY_ERROR_REVERT_MS = 3500
+  let playState = $state({})   // gameId → {state:'launching'|'playing'|'error', msg}
+
+  function playControl(g) {
+    return playState[g.id] ?? {state: 'idle', msg: ''}
+  }
+
+  async function handlePlay(e, game) {
+    e.stopPropagation()
+    e.preventDefault()
+    const cur = playState[game.id]
+    if (cur && (cur.state === 'launching' || cur.state === 'playing')) return
+    playState = {...playState, [game.id]: {state: 'launching', msg: ''}}
+    try {
+      const msg = await PlayGame(game.id)
+      const clean = String(msg || '').replace(/^Error:\s*/, '')
+      playState = {...playState, [game.id]: {state: 'playing', msg: clean}}
+      onLaunched(clean)
+      // The real backend records the play entry server-side; the mock does
+      // too — refresh so the recency arrangement reflects the new entry.
+      await onUpdate()
+      setTimeout(() => {
+        playState = {...playState, [game.id]: {state: 'idle', msg: ''}}
+      }, PLAY_REVERT_MS)
+    } catch (err) {
+      const msg = String(err).replace(/^Error:\s*/, '')
+      playState = {...playState, [game.id]: {state: 'error', msg}}
+      setTimeout(() => {
+        playState = {...playState, [game.id]: {state: 'idle', msg: ''}}
+      }, PLAY_ERROR_REVERT_MS)
+    }
+  }
+
+  // ── Play-state derivation (P0-4 quick views) ────────────────
+  // Orthogonal to `status` (the user's curation axis): a game is "installed"
+  // when it has a real local path (not a /virtual/ F95Zone reference) and
+  // "ready to play" when it is installed and nothing (update/install
+  // pipeline) is currently mutating it.
+  const VIRTUAL_PATH = '/virtual/'
+  const UPDATE_BUSY_PHASES = ['syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
+
+  function isVirtual(g) {
+    return !!g?.path?.startsWith(VIRTUAL_PATH)
+  }
+
+  function isUpdatingGame(g) {
+    const s = gameStates?.[g.id]
+    return !!(s && UPDATE_BUSY_PHASES.includes(s.phase))
+  }
 
   // ── Cover loading ─────────────────────────────────────────────
   // Covers are served by the backend over loopback HTTP (see GetCoverBaseURL)
@@ -27,9 +87,9 @@
   // always-subscribed handlers (covers:complete, sync:game-done) so it also
   // fires while this view is unmounted.
 
-  function coverSrc(id) {
+  function coverSrc(id, variant = 'thumb') {
     const epoch = library.failedCovers.has(id) ? `?r=${library.coverEpoch}` : ''
-    return `${coverBase}/cover/${id}/thumb${epoch}`
+    return `${coverBase}/cover/${id}/${variant}${epoch}`
   }
 
   function markFailed(id) {
@@ -51,6 +111,7 @@
     // synchronously from the games prop, so a tick suffices.
     await tick()
     if (tableBodyEl) tableBodyEl.scrollTop = library.scrollTop
+    if (gridEl) gridEl.scrollTop = library.gridScrollTop
   })
 
   onDestroy(() => {
@@ -63,8 +124,8 @@
   let debounceTimer                        // plain var, not reactive
   let searchResults = $state(null)         // null = use full list, array = search results
   let isSearching = $state(false)
-  let tableBodyEl = $state.raw()           // scroll container, bound in markup
-
+  let tableBodyEl = $state.raw()           // list scroll container, bound in markup
+  let gridEl = $state.raw()                // grid scroll container, bound in markup
 
   // Extract distinct engines from the game list
   let engines = $derived.by(() => {
@@ -78,7 +139,40 @@
   // Available statuses (shared with the context menu via lib/statuses.js)
   const statuses = ['All', ...GAME_STATUSES]
 
-  // ── Sorting ───────────────────────────────────────────────────
+  // ── Quick views (P0-4) ────────────────────────────────────────
+  // Primary play-state tabs; engine/status filters below stay secondary.
+  const QUICK_VIEWS = [
+    {value: 'all',       label: 'All'},
+    {value: 'installed', label: 'Installed'},
+    {value: 'ready',     label: 'Ready to play'},
+    {value: 'recent',    label: 'Recently played'},
+  ]
+
+  function quickViewMatches(v, g) {
+    switch (v) {
+      case 'installed': return !isVirtual(g)
+      case 'ready':     return !isVirtual(g) && !isUpdatingGame(g)
+      case 'recent':    return tsVal(g, 'lastPlayed') !== null
+      default:          return true
+    }
+  }
+
+  // ── Sorting / arrangement ─────────────────────────────────────
+  // Default arrangement is recency-first (P0-2): games with a last-played
+  // timestamp sort most-recent first, never-played games group last (title
+  // asc). "Date added" is a first-class option — moxie owns created_at,
+  // which competitors like Heroic can't even offer. Timestamp fields are
+  // optional on the summary (see mock-data.js enrichment note); missing
+  // values degrade to stable fallbacks instead of breaking the sort.
+  const SORT_OPTIONS = [
+    {value: 'recent', label: 'Recently played'},
+    {value: 'added',  label: 'Date added'},
+    {value: 'title',  label: 'Title A–Z'},
+    {value: 'engine', label: 'Engine'},
+    {value: 'version',label: 'Version'},
+    {value: 'size',   label: 'Size'},
+    {value: 'status', label: 'Status'},
+  ]
 
   // Numeric-aware version comparison: "10.0" sorts after "9.0". Splits on
   // non-alphanumerics and compares token-wise — numeric tokens numerically,
@@ -110,6 +204,13 @@
     return 0
   }
 
+  function tsVal(g, key) {
+    const s = g?.[key]
+    if (!s) return null
+    const t = Date.parse(s)
+    return Number.isNaN(t) ? null : t
+  }
+
   function toggleSort(col) {
     if (library.sortColumn === col) {
       library.sortDesc = !library.sortDesc
@@ -124,45 +225,73 @@
     return library.sortDesc ? '▲' : '▼'
   }
 
-  // ── Derived: filtered + sorted list ──────────────────────────
+  function onSortSelect(e) {
+    library.sortColumn = e.target.value
+    // Recency & date-added default to most-recent-first; column sorts start
+    // ascending (clicking a header toggles direction).
+    library.sortDesc = e.target.value === 'added'
+  }
+
+  function sortCompare(a, b) {
+    switch (library.sortColumn) {
+      case 'recent': {
+        const ta = tsVal(a, 'lastPlayed')
+        const tb = tsVal(b, 'lastPlayed')
+        if (ta === null && tb === null) {
+          return (a.title || '').localeCompare(b.title || '', undefined, {numeric: true})
+        }
+        if (ta === null) return 1
+        if (tb === null) return -1
+        return tb - ta                     // most recent first
+      }
+      case 'added': {
+        const ta = tsVal(a, 'createdAt')
+        const tb = tsVal(b, 'createdAt')
+        let cmp
+        if (ta === null && tb === null) cmp = (a.id || 0) - (b.id || 0)
+        else if (ta === null) cmp = 1
+        else if (tb === null) cmp = -1
+        else cmp = ta - tb
+        return library.sortDesc ? -cmp : cmp
+      }
+      case 'title':
+        return (a.title || '').localeCompare(b.title || '', undefined, {numeric: true})
+      case 'engine':
+        return (a.engine || '').localeCompare(b.engine || '')
+      case 'version':
+        return compareVersions(a.version, b.version)
+      case 'status':
+        return (a.status || '').localeCompare(b.status || '')
+      case 'size':
+        return (a.sizeBytes || 0) - (b.sizeBytes || 0)
+      default:
+        return 0
+    }
+  }
+
+  // ── Derived: quick-view-filtered + sorted list ───────────────
   let displayed = $derived.by(() => {
     // 1. Use search results if available, else full list
     let list = searchResults ?? games
 
-    // 2. Filter by engine
+    // 2. Filter by quick view (primary axis)
+    if (library.quickView !== 'all') {
+      list = list.filter(g => quickViewMatches(library.quickView, g))
+    }
+
+    // 3. Filter by engine (secondary)
     if (library.engine && library.engine !== 'All') {
       list = list.filter(g => g.engine === library.engine)
     }
 
-    // 3. Filter by status
+    // 4. Filter by status (secondary, curation axis)
     if (library.status && library.status !== 'All') {
       list = list.filter(g => g.status === library.status)
     }
 
-    // 4. Sort
+    // 5. Sort / arrangement
     const sorted = [...list]
-    sorted.sort((a, b) => {
-      let cmp = 0
-      switch (library.sortColumn) {
-        case 'title':
-          cmp = (a.title || '').localeCompare(b.title || '', undefined, {numeric: true})
-          break
-        case 'engine':
-          cmp = (a.engine || '').localeCompare(b.engine || '')
-          break
-        case 'version':
-          cmp = compareVersions(a.version, b.version)
-          break
-        case 'status':
-          cmp = (a.status || '').localeCompare(b.status || '')
-          break
-        case 'size':
-          cmp = (a.sizeBytes || 0) - (b.sizeBytes || 0)
-          break
-      }
-      return library.sortDesc ? -cmp : cmp
-    })
-
+    sorted.sort(sortCompare)
     return sorted
   })
 
@@ -210,6 +339,24 @@
   function hasUpdate(game) {
     return game.latestVersion && game.version &&
            game.latestVersion !== game.version
+  }
+
+  function lastPlayedDate(g) {
+    const t = tsVal(g, 'lastPlayed')
+    return t === null ? null : new Date(t)
+  }
+
+  function relativePlayed(d) {
+    const mins = Math.floor((Date.now() - d.getTime()) / 60000)
+    if (mins < 1) return 'just now'
+    if (mins < 60) return `${mins}m ago`
+    const hours = Math.floor(mins / 60)
+    if (hours < 24) return `${hours}h ago`
+    const days = Math.floor(hours / 24)
+    if (days < 30) return `${days}d ago`
+    const months = Math.floor(days / 30)
+    if (months < 12) return `${months}mo ago`
+    return `${Math.floor(months / 12)}y ago`
   }
 
   // ── Context Menu ──────────────────────────────────────────────
@@ -270,6 +417,27 @@
       console.error('Failed to remove:', e)
     }
   }
+
+  // ── Curated empty-state text per quick view ──────────────────
+  let emptyTitle = $derived.by(() => {
+    if (library.search.trim().length >= 2) return 'No matches'
+    switch (library.quickView) {
+      case 'recent':     return 'Nothing played recently'
+      case 'installed':  return 'Nothing installed yet'
+      case 'ready':      return 'Nothing ready to play'
+      default:           return 'No games match'
+    }
+  })
+
+  let emptyHint = $derived.by(() => {
+    if (library.search.trim().length >= 2) return 'Try a different title, tag, or developer.'
+    switch (library.quickView) {
+      case 'recent':     return 'Games you launch from the library will appear here.'
+      case 'installed':  return 'Scan or add a directory to install titles, or grab one from the F95Zone browser.'
+      case 'ready':      return 'Install a not-yet-downloaded title or let a running update finish.'
+      default:           return 'Relax the engine or status filters.'
+    }
+  })
 </script>
 
 <div class="game-list">
@@ -286,7 +454,40 @@
       <div class="searching-indicator">Loading library…</div>
     {/if}
 
-    <!-- Filter Bar -->
+    <!-- Quick view tabs (primary play-state axis, P0-4) + grid/list toggle -->
+    <div class="quick-bar">
+      <div class="quick-tabs">
+        {#each QUICK_VIEWS as qv}
+          <button
+            class="quick-tab"
+            class:active={library.quickView === qv.value}
+            aria-pressed={library.quickView === qv.value}
+            onclick={() => library.quickView = qv.value}
+          >
+            {qv.label}
+          </button>
+        {/each}
+      </div>
+
+      <div class="view-toggle" role="group" aria-label="Library layout">
+        <button
+          class="vbtn"
+          class:active={library.viewMode === 'grid'}
+          aria-pressed={library.viewMode === 'grid'}
+          title="Grid view"
+          onclick={() => library.viewMode = 'grid'}
+        ><span class="vbtn-icon">▦</span>Grid</button>
+        <button
+          class="vbtn"
+          class:active={library.viewMode === 'list'}
+          aria-pressed={library.viewMode === 'list'}
+          title="List view"
+          onclick={() => library.viewMode = 'list'}
+        ><span class="vbtn-icon">☰</span>List</button>
+      </div>
+    </div>
+
+    <!-- Secondary filters: search · engine · arrangement · status chips -->
     <div class="filter-bar">
       <div class="search-wrapper">
         <span class="search-icon">🔍</span>
@@ -307,6 +508,14 @@
         </select>
       </span>
 
+      <span class="select-arrow">
+        <select class="filter-select sort-select" aria-label="Arrangement" value={library.sortColumn} onchange={onSortSelect}>
+          {#each SORT_OPTIONS as o}
+            <option value={o.value}>{o.label}</option>
+          {/each}
+        </select>
+      </span>
+
       <div class="status-chips">
         {#each statuses as s}
           <button
@@ -320,97 +529,205 @@
       </div>
     </div>
 
-    <!-- Column Headers -->
-    <div class="table-header">
-      <span class="col-cover">Cover</span>
-      <button class="col-title col-sortable" onclick={() => toggleSort('title')}>
-        Title <span class="sort-arrow">{sortIcon('title')}</span>
-      </button>
-      <button class="col-engine col-sortable" onclick={() => toggleSort('engine')}>
-        Engine <span class="sort-arrow">{sortIcon('engine')}</span>
-      </button>
-      <button class="col-version col-sortable" onclick={() => toggleSort('version')}>
-        Version <span class="sort-arrow">{sortIcon('version')}</span>
-      </button>
-      <button class="col-size col-sortable" onclick={() => toggleSort('size')}>
-        Size <span class="sort-arrow">{sortIcon('size')}</span>
-      </button>
-      <button class="col-status col-sortable" onclick={() => toggleSort('status')}>
-        Status <span class="sort-arrow">{sortIcon('status')}</span>
-      </button>
-    </div>
+    {#if displayed.length === 0}
+      <div class="empty small">
+        <p class="empty-title">{emptyTitle}</p>
+        <p class="empty-desc">{emptyHint}</p>
+      </div>
+    {:else if library.viewMode === 'grid'}
+      <!-- ── Cover grid (default library presentation, P0-1) ── -->
+      <div
+        class="grid-scroll"
+        bind:this={gridEl}
+        onscroll={(e) => library.gridScrollTop = e.currentTarget.scrollTop}
+      >
+        <div class="grid">
+          {#each displayed as game (game.id)}
+            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_tabindex -->
+            {@const ctl = playControl(game)}
+            <div
+              class="card"
+              role="button"
+              tabindex="0"
+              onclick={() => onOpenDetail(game.id)}
+              onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenDetail(game.id); } }}
+              oncontextmenu={(e) => onRowContextMenu(e, game)}
+            >
+              <div class="cover-frame">
+                {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
+                  <img
+                    class="cover-img"
+                    src={coverSrc(game.id, 'full')}
+                    alt="{game.title} cover"
+                    loading="lazy"
+                    onerror={() => markFailed(game.id)}
+                  />
+                {:else if game.hasCover && coverBase}
+                  <span class="cover-ph" title="Cover unavailable — retries after the next sync or cover fetch">
+                    <span class="cover-ph-icon">🖼</span>
+                  </span>
+                {:else}
+                  <span class="cover-ph" title="No cover — use Covers in the sidebar to fetch one">
+                    <span class="cover-ph-icon">🎮</span>
+                  </span>
+                {/if}
 
-    <!-- Rows -->
-    <div
-      class="table-body"
-      bind:this={tableBodyEl}
-      onscroll={(e) => library.scrollTop = e.currentTarget.scrollTop}
-    >
-      {#each displayed as game (game.id)}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <div
-          class="table-row"
-          onclick={() => onOpenDetail(game.id)}
-          oncontextmenu={(e) => onRowContextMenu(e, game)}
-          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenDetail(game.id); } }}
-          role="button"
-          tabindex="0"
-        >
-          <span class="col-cover">
-            {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
-              <img
-                class="cover-thumb"
-                src={coverSrc(game.id)}
-                alt="{game.title} cover"
-                loading="lazy"
-                onerror={() => markFailed(game.id)}
-              />
-            {:else if game.hasCover && coverBase}
-              <span class="cover-placeholder" title="Cover unavailable — retries after the next sync or cover fetch">
-                <span class="cover-icon">🖼</span>
-              </span>
-            {:else}
-              <span class="cover-placeholder" title="No cover — use Covers in the sidebar to fetch one">
-                <span class="cover-icon">🎮</span>
-              </span>
-            {/if}
-          </span>
-          <span class="col-title game-title">
-            {game.title}
-            {#if hasUpdate(game)}
-              <span class="update-dot" title="Update available: {game.latestVersion}">●</span>
-            {/if}
-          </span>
-          <span class="col-engine">
-            {#if game.engine}
-              <span class="engine-badge" style="--ec: {engineColor(game.engine)}">
-                {game.engine}
-              </span>
-            {:else}
-              <span class="text-muted">—</span>
-            {/if}
-          </span>
-          <span class="col-version">
-            {#if hasUpdate(game)}
-              <span class="version-old">{game.version}</span>
-              <span class="version-new" title="Latest: {game.latestVersion}">→ {game.latestVersion}</span>
-            {:else}
-              {game.version || '—'}
-            {/if}
-          </span>
-          <span class="col-size">{game.sizeLabel || '—'}</span>
-          <span class="col-status">
-            <span class="status-badge status-{game.status || 'unknown'}">
-              {statusLabel(game.status)}
+                {#if hasUpdate(game)}
+                  <span class="card-badge badge-update" title="Update available: {game.latestVersion}">
+                    ⇪ {game.version} → {game.latestVersion}
+                  </span>
+                {/if}
+                {#if isVirtual(game)}
+                  <span class="card-badge badge-virtual">Not installed</span>
+                {/if}
+
+                <button
+                  class="card-play"
+                  class:state-launching={ctl.state === 'launching'}
+                  class:state-playing={ctl.state === 'playing'}
+                  class:state-error={ctl.state === 'error'}
+                  disabled={ctl.state === 'launching'}
+                  title={ctl.msg || 'Play'}
+                  onclick={(e) => handlePlay(e, game)}
+                >
+                  {#if ctl.state === 'launching'}
+                    <span class="play-spinner"></span><span>Launching…</span>
+                  {:else if ctl.state === 'playing'}
+                    <span>⏸ Playing</span>
+                  {:else if ctl.state === 'error'}
+                    <span>↻ Retry</span>
+                  {:else}
+                    <span>▶ Play</span>
+                  {/if}
+                </button>
+              </div>
+
+              <div class="card-title" title={game.title}>{game.title}</div>
+              <div class="card-meta">
+                {#if game.engine}
+                  <span class="card-engine" style="--ec: {engineColor(game.engine)}">{game.engine}</span>
+                {/if}
+                {#if lastPlayedDate(game)}
+                  <span class="card-last-played" title="Last played {lastPlayedDate(game).toLocaleString()}">
+                    ▶ {relativePlayed(lastPlayedDate(game))}
+                  </span>
+                {/if}
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {:else}
+      <!-- ── List / table view (kept as an explicit toggle) ── -->
+      <div class="table-header">
+        <span class="col-cover">Cover</span>
+        <button class="col-title col-sortable" onclick={() => toggleSort('title')}>
+          Title <span class="sort-arrow">{sortIcon('title')}</span>
+        </button>
+        <button class="col-engine col-sortable" onclick={() => toggleSort('engine')}>
+          Engine <span class="sort-arrow">{sortIcon('engine')}</span>
+        </button>
+        <button class="col-version col-sortable" onclick={() => toggleSort('version')}>
+          Version <span class="sort-arrow">{sortIcon('version')}</span>
+        </button>
+        <button class="col-size col-sortable" onclick={() => toggleSort('size')}>
+          Size <span class="sort-arrow">{sortIcon('size')}</span>
+        </button>
+        <button class="col-status col-sortable" onclick={() => toggleSort('status')}>
+          Status <span class="sort-arrow">{sortIcon('status')}</span>
+        </button>
+        <span class="col-play">Play</span>
+      </div>
+
+      <div
+        class="table-body"
+        bind:this={tableBodyEl}
+        onscroll={(e) => library.scrollTop = e.currentTarget.scrollTop}
+      >
+        {#each displayed as game (game.id)}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          {@const ctl = playControl(game)}
+          <div
+            class="table-row"
+            onclick={() => onOpenDetail(game.id)}
+            oncontextmenu={(e) => onRowContextMenu(e, game)}
+            onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenDetail(game.id); } }}
+            role="button"
+            tabindex="0"
+          >
+            <span class="col-cover">
+              {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
+                <img
+                  class="cover-thumb"
+                  src={coverSrc(game.id)}
+                  alt="{game.title} cover"
+                  loading="lazy"
+                  onerror={() => markFailed(game.id)}
+                />
+              {:else if game.hasCover && coverBase}
+                <span class="cover-placeholder" title="Cover unavailable — retries after the next sync or cover fetch">
+                  <span class="cover-icon">🖼</span>
+                </span>
+              {:else}
+                <span class="cover-placeholder" title="No cover — use Covers in the sidebar to fetch one">
+                  <span class="cover-icon">🎮</span>
+                </span>
+              {/if}
             </span>
-          </span>
-        </div>
-      {:else}
-        <div class="empty small">
-          <p>No games match your filters.</p>
-        </div>
-      {/each}
-    </div>
+            <span class="col-title game-title">
+              {game.title}
+              {#if hasUpdate(game)}
+                <span class="update-dot" title="Update available: {game.latestVersion}">●</span>
+              {/if}
+            </span>
+            <span class="col-engine">
+              {#if game.engine}
+                <span class="engine-badge" style="--ec: {engineColor(game.engine)}">
+                  {game.engine}
+                </span>
+              {:else}
+                <span class="text-muted">—</span>
+              {/if}
+            </span>
+            <span class="col-version">
+              {#if hasUpdate(game)}
+                <span class="version-old">{game.version}</span>
+                <span class="version-new" title="Latest: {game.latestVersion}">→ {game.latestVersion}</span>
+              {:else}
+                {game.version || '—'}
+              {/if}
+            </span>
+            <span class="col-size">{game.sizeLabel || '—'}</span>
+            <span class="col-status">
+              <span class="status-badge status-{game.status || 'unknown'}">
+                {statusLabel(game.status)}
+              </span>
+            </span>
+            <span class="col-play">
+              <button
+                class="row-play"
+                class:state-launching={ctl.state === 'launching'}
+                class:state-playing={ctl.state === 'playing'}
+                class:state-error={ctl.state === 'error'}
+                disabled={ctl.state === 'launching'}
+                title={ctl.msg || 'Play'}
+                onclick={(e) => handlePlay(e, game)}
+              >
+                {#if ctl.state === 'launching'}
+                  <span class="play-spinner small"></span>
+                {:else if ctl.state === 'playing'}
+                  ⏸
+                {:else if ctl.state === 'error'}
+                  ↻
+                {:else}
+                  ▶ Play
+                {/if}
+              </button>
+            </span>
+          </div>
+        {/each}
+      </div>
+    {/if}
 
     <!-- Context Menu -->
     {#if contextMenu}
@@ -462,12 +779,79 @@
     gap: 8px;
     color: var(--text-muted);
   }
-  .empty.small { height: 200px; }
+  .empty.small { height: 100%; padding: 24px; }
   .empty-icon { font-size: 40px; opacity: 0.5; }
   .empty-title { font-size: 16px; font-weight: 600; color: var(--text-secondary); }
   .empty-desc { font-size: 13px; }
 
-  /* ── Filter Bar ────────────────────────────────────── */
+  /* ── Quick view tabs + layout toggle (P0-4 / P0-1) ── */
+  .quick-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px 0;
+    background: var(--bg-secondary);
+    flex-shrink: 0;
+  }
+
+  .quick-tabs {
+    display: flex;
+    gap: 2px;
+    background: var(--bg-tertiary);
+    padding: 3px;
+    border-radius: 9px;
+  }
+
+  .quick-tab {
+    padding: 5px 14px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.12s;
+    white-space: nowrap;
+  }
+  .quick-tab:hover { color: var(--text-primary); }
+  .quick-tab.active {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+
+  .view-toggle {
+    display: flex;
+    gap: 2px;
+  }
+  .vbtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .vbtn + .vbtn { border-left: none; border-radius: 6px 0 0 6px; }
+  .vbtn:first-of-type { border-radius: 6px 0 0 6px; }
+  .vbtn:last-of-type { border-radius: 0 6px 6px 0; }
+  .vbtn:hover { color: var(--text-primary); background: var(--bg-hover); }
+  .vbtn.active {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-color: var(--accent-dim);
+  }
+  .vbtn-icon { font-size: 12px; line-height: 1; }
+
+  /* ── Filter / secondary filter bar ──────────────────── */
   .filter-bar {
     display: flex;
     align-items: center;
@@ -542,6 +926,7 @@
     background: var(--bg-primary);
     color: var(--text-primary);
   }
+  .sort-select { min-width: 132px; }
 
   .status-chips {
     display: flex;
@@ -574,10 +959,195 @@
     border-bottom: 1px solid var(--border);
   }
 
-  /* ── Table ─────────────────────────────────────────── */
+  /* ── Cover grid (P0-1) ──────────────────────────────── */
+  .grid-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+    gap: 18px 16px;
+  }
+
+  .card {
+    cursor: pointer;
+    border-radius: 12px;
+    outline: none;
+    transition: background 0.1s;
+    padding: 6px;
+    margin: -6px;
+  }
+  .card:hover { background: var(--bg-hover); }
+  .card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .cover-frame {
+    position: relative;
+    border-radius: 10px;
+    overflow: hidden;
+    aspect-ratio: 16 / 9;
+    background: var(--bg-tertiary);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  }
+  .cover-frame::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.65), transparent 55%);
+    opacity: 0;
+    transition: opacity 0.15s;
+    pointer-events: none;
+  }
+  .card:hover .cover-frame::after,
+  .card:focus-visible .cover-frame::after,
+  .cover-frame:has(.card-play.state-playing)::after,
+  .cover-frame:has(.card-play.state-error)::after {
+    opacity: 1;
+  }
+
+  .cover-img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .cover-ph {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    background: var(--bg-tertiary);
+  }
+  .cover-ph-icon { font-size: 28px; opacity: 0.3; }
+
+  /* Play-state badges on the cover (update / not installed) */
+  .card-badge {
+    position: absolute;
+    top: 8px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .badge-update {
+    left: 8px;
+    background: var(--warning);
+    color: #1a1a10;
+  }
+  .badge-virtual {
+    right: 8px;
+    background: color-mix(in srgb, var(--text-muted) 85%, transparent);
+    color: #fff;
+  }
+
+  /* Hover Play (Steam/itch card pattern) */
+  .card-play {
+    position: absolute;
+    left: 50%;
+    top: 56%;
+    transform: translate(-50%, -50%);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 18px;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    z-index: 3;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s, transform 0.15s, background 0.12s;
+  }
+  .card:hover .card-play,
+  .card:focus-visible .card-play,
+  .card-play.state-playing,
+  .card-play.state-error {
+    opacity: 1;
+    visibility: visible;
+  }
+  .card:hover .card-play { transform: translate(-50%, -50%) scale(1.04); }
+  .card-play:hover { background: var(--accent-hover); }
+  .card-play:disabled { opacity: 0.85; cursor: default; }
+  .card-play.state-launching { background: var(--accent-dim); }
+  .card-play.state-playing {
+    background: var(--success);
+    color: #07140b;
+    opacity: 1;
+    visibility: visible;
+    animation: pulse-success 1.2s ease-in-out infinite;
+  }
+  .card-play.state-error { background: var(--danger); opacity: 1; visibility: visible; }
+
+  @keyframes pulse-success {
+    0%, 100% { box-shadow: 0 4px 18px rgba(74, 222, 128, 0.35); }
+    50%      { box-shadow: 0 4px 26px rgba(74, 222, 128, 0.7); }
+  }
+
+  .play-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(255, 255, 255, 0.5);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+  .play-spinner.small { width: 10px; height: 10px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .card-title {
+    margin-top: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    line-height: 1.25;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    min-height: 2.5em;
+  }
+
+  .card-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+    min-height: 18px;
+  }
+  .card-engine {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    background: color-mix(in srgb, var(--ec) 15%, transparent);
+    color: var(--ec);
+  }
+  .card-last-played {
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  /* ── List / table view ─────────────────────────────── */
   .table-header {
     display: grid;
-    grid-template-columns: 80px 1fr 110px 130px 80px 100px;
+    grid-template-columns: 80px 1fr 110px 130px 80px 100px 64px;
     gap: 8px;
     padding: 6px 12px;
     font-size: 11px;
@@ -618,7 +1188,7 @@
 
   .table-row {
     display: grid;
-    grid-template-columns: 80px 1fr 110px 130px 80px 100px;
+    grid-template-columns: 80px 1fr 110px 130px 80px 100px 64px;
     gap: 8px;
     padding: 4px 12px;
     font-size: 13px;
@@ -671,6 +1241,31 @@
 
   .col-size { font-size: 12px; color: var(--text-secondary); }
 
+  .col-play {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+  }
+  .row-play {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border: 1px solid var(--accent-dim);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.12s;
+    white-space: nowrap;
+  }
+  .row-play:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .row-play:disabled { opacity: 0.7; cursor: default; }
+  .row-play.state-playing { background: var(--success); color: #07140b; border-color: var(--success); }
+  .row-play.state-error { background: var(--danger); color: #fff; border-color: var(--danger); }
+
   /* ── Cover Column ───────────────────────────────────── */
   .col-cover {
     display: flex;
@@ -713,10 +1308,6 @@
     border-top-color: var(--accent);
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
   }
 
   .status-badge {

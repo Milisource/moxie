@@ -17,9 +17,23 @@ export const library = $state({
   search: '',
   engine: 'All',
   status: '',
-  sortColumn: 'title',
+
+  // P0 library-as-a-collection surface (docs/desktop-ui-research.md §7):
+  //   quickView — primary play-state tabs
+  //     'all' | 'installed' | 'ready' | 'recent'
+  //   viewMode — grid is the default (Heroic/Playnite-style); list stays as
+  //     an explicit toggle for the data-table crowd.
+  //     'grid' | 'list'
+  //   sortColumn — arrangement. Defaults to 'recent' (recency first, §7 P0-2);
+  //     'added' sorts by date added (moxie owns created_at); the rest are the
+  //     classic column sorts kept for the list view's header.
+  //     'recent' | 'added' | 'title' | 'engine' | 'version' | 'size' | 'status'
+  quickView: 'all',
+  viewMode: 'grid',
+  sortColumn: 'recent',
   sortDesc: false,
   scrollTop: 0,
+  gridScrollTop: 0,
 
   // Games whose cover <img> failed to load + a retry epoch: a remounted list
   // re-renders cached 404s from the webview without re-requesting them, so

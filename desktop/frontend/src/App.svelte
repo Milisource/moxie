@@ -949,7 +949,14 @@
               onInstall={startInstall}
             />
           {:else if activeView === 'library'}
-            <GameList {games} {loading} onOpenDetail={openDetail} onUpdate={refreshGames}/>
+            <GameList
+              {games}
+              {loading}
+              {gameStates}
+              onOpenDetail={openDetail}
+              onUpdate={refreshGames}
+              onLaunched={(msg) => statusMsg = msg}
+            />
           {:else if activeView === 'scan'}
             <ScanDialog
               scanning={scanState.scanning}
