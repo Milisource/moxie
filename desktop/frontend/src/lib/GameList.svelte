@@ -1,5 +1,6 @@
 <script>
   import {onMount, onDestroy, tick} from 'svelte'
+  import {createVirtualizer} from '@tanstack/svelte-virtual'
   import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCoverBaseURL, PlayGame} from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
@@ -67,10 +68,23 @@
     return !!g?.path?.startsWith(VIRTUAL_PATH)
   }
 
-  function isUpdatingGame(g) {
-    const s = gameStates?.[g.id]
-    return !!(s && UPDATE_BUSY_PHASES.includes(s.phase))
-  }
+  // `gameStates` is replaced wholesale on every download/extract progress
+  // tick (up to 5x/sec while any update is running), but only phase
+  // *transitions* actually change which games are "busy". Without this
+  // guard, the 'ready' quick view's `displayed` derived below would
+  // re-filter + re-sort the entire library on every percent tick. Track just
+  // the busy-id membership and only touch this $state (and thus retrigger
+  // `displayed`) when that membership set actually changes.
+  let busyIds = $state(new Set())
+  $effect(() => {
+    const next = new Set()
+    for (const id in gameStates) {
+      const s = gameStates[id]
+      if (s && UPDATE_BUSY_PHASES.includes(s.phase)) next.add(id)
+    }
+    const unchanged = next.size === busyIds.size && [...next].every(id => busyIds.has(id))
+    if (!unchanged) busyIds = next
+  })
 
   // ── Cover loading ─────────────────────────────────────────────
   // Covers are served by the backend over loopback HTTP (see GetCoverBaseURL)
@@ -116,6 +130,8 @@
 
   onDestroy(() => {
     clearTimeout(debounceTimer)
+    unsubGridVirtualizer()
+    unsubTableVirtualizer()
   })
 
   // ── Search & Filters ──────────────────────────────────────────
@@ -151,7 +167,7 @@
   function quickViewMatches(v, g) {
     switch (v) {
       case 'installed': return !isVirtual(g)
-      case 'ready':     return !isVirtual(g) && !isUpdatingGame(g)
+      case 'ready':     return !isVirtual(g) && !busyIds.has(String(g.id))
       case 'recent':    return tsVal(g, 'lastPlayed') !== null
       default:          return true
     }
@@ -293,6 +309,123 @@
     const sorted = [...list]
     sorted.sort(sortCompare)
     return sorted
+  })
+
+  // ── Grid/table virtualization (perf follow-up) ────────────────
+  // Neither view windowed its rows before this — a library of a few hundred+
+  // games built a proportionally large DOM (worse for the grid, since many
+  // cards sit above-the-fold at once). @tanstack/svelte-virtual renders only
+  // the visible range (+ overscan) and pads the rest with a sized spacer so
+  // the scrollbar still reflects the true content height.
+  //
+  // The grid's card width is fluid (`auto-fill, minmax(176px, 1fr)`), so the
+  // number of columns per row — and thus row height, since the cover keeps a
+  // 16:9 aspect ratio off that width — depends on container width. A
+  // ResizeObserver on the scroll container recomputes both whenever it
+  // changes (window resize, sidebar toggle, view-mode switch).
+  const GRID_CARD_MIN = 176
+  const GRID_GAP = 16
+  const GRID_PAD = 32                // 16px horizontal padding, both sides
+  const GRID_TEXT_HEIGHT = 8 + 40 + 4 + 18   // title margin + 2-line title + meta margin + meta row
+  let gridColumns = $state(1)
+  let gridRowHeight = $state(280)
+
+  function updateGridLayout() {
+    if (!gridEl) return
+    const avail = Math.max(gridEl.clientWidth - GRID_PAD, GRID_CARD_MIN)
+    const cols = Math.max(1, Math.floor((avail + GRID_GAP) / (GRID_CARD_MIN + GRID_GAP)))
+    const cardWidth = (avail - GRID_GAP * (cols - 1)) / cols
+    const coverHeight = cardWidth * 9 / 16
+    gridColumns = cols
+    gridRowHeight = coverHeight + GRID_TEXT_HEIGHT + GRID_GAP
+  }
+
+  $effect(() => {
+    if (!gridEl) return
+    updateGridLayout()
+    const ro = new ResizeObserver(() => updateGridLayout())
+    ro.observe(gridEl)
+    return () => ro.disconnect()
+  })
+
+  // Chunk the flat `displayed` list into fixed-size rows so the virtualizer
+  // only has to window rows, not think about wrapping.
+  let gridRows = $derived.by(() => {
+    const rows = []
+    for (let i = 0; i < displayed.length; i += gridColumns) {
+      rows.push(displayed.slice(i, i + gridColumns))
+    }
+    return rows
+  })
+
+  // NOTE on the subscribe-by-hand pattern below: `setOptions()` unconditionally
+  // force-emits a new store value on every call (see the library's source —
+  // it re-sets the writable even when the visible range didn't change, so
+  // count-only updates still notify). Reading the store reactively (`$store`)
+  // from *inside* the same $effect that calls `.setOptions()` would make that
+  // effect depend on its own output and spin forever
+  // (`effect_update_depth_exceeded`). So: `.setOptions()`/`.measure()` are
+  // called on a plain (non-reactive) reference to the instance, and a
+  // hand-rolled `.subscribe()` mirrors the current virtual items/total size
+  // into actual `$state` for the template to read.
+  let gridVirtualizerApi        // plain ref — same singleton instance every emit
+  let gridVirtualRows = $state.raw([])
+  let gridTotalSize = $state(0)
+  const unsubGridVirtualizer = createVirtualizer({
+    count: 0,
+    getScrollElement: () => gridEl,
+    estimateSize: () => gridRowHeight,
+    overscan: 3,
+  }).subscribe(v => {
+    gridVirtualizerApi = v
+    gridVirtualRows = v.getVirtualItems()
+    gridTotalSize = v.getTotalSize()
+  })
+
+  $effect(() => {
+    const el = gridEl
+    const rows = gridRows
+    const rowHeight = gridRowHeight
+    gridVirtualizerApi?.setOptions({
+      count: rows.length,
+      getScrollElement: () => el,
+      estimateSize: () => rowHeight,
+      overscan: 3,
+      getItemKey: (i) => rows[i]?.map(g => g.id).join(',') ?? i,
+    })
+    gridVirtualizerApi?.measure()
+  })
+
+  // Table rows are uniform height, so windowing is simpler — one measurement
+  // for the whole list. Matches the row's rendered height: 40px cover thumb
+  // + 4px top/bottom padding + 1px border.
+  const TABLE_ROW_HEIGHT = 49
+
+  let tableVirtualizerApi
+  let tableVirtualRows = $state.raw([])
+  let tableTotalSize = $state(0)
+  const unsubTableVirtualizer = createVirtualizer({
+    count: 0,
+    getScrollElement: () => tableBodyEl,
+    estimateSize: () => TABLE_ROW_HEIGHT,
+    overscan: 8,
+  }).subscribe(v => {
+    tableVirtualizerApi = v
+    tableVirtualRows = v.getVirtualItems()
+    tableTotalSize = v.getTotalSize()
+  })
+
+  $effect(() => {
+    const el = tableBodyEl
+    const rows = displayed
+    tableVirtualizerApi?.setOptions({
+      count: rows.length,
+      getScrollElement: () => el,
+      estimateSize: () => TABLE_ROW_HEIGHT,
+      overscan: 8,
+      getItemKey: (i) => rows[i]?.id ?? i,
+    })
+    tableVirtualizerApi?.measure()
   })
 
   // ── Search with debounce ──────────────────────────────────────
@@ -541,78 +674,85 @@
         bind:this={gridEl}
         onscroll={(e) => library.gridScrollTop = e.currentTarget.scrollTop}
       >
-        <div class="grid">
-          {#each displayed as game (game.id)}
-            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_tabindex -->
-            {@const ctl = playControl(game)}
+        <div class="grid-spacer" style="height: {gridTotalSize}px">
+          {#each gridVirtualRows as vRow (vRow.key)}
             <div
-              class="card"
-              role="button"
-              tabindex="0"
-              onclick={() => onOpenDetail(game.id)}
-              onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenDetail(game.id); } }}
-              oncontextmenu={(e) => onRowContextMenu(e, game)}
+              class="grid-row"
+              style="grid-template-columns: repeat({gridColumns}, 1fr); height: {gridRowHeight - GRID_GAP}px; transform: translateY({vRow.start + GRID_GAP}px)"
             >
-              <div class="cover-frame">
-                {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
-                  <img
-                    class="cover-img"
-                    src={coverSrc(game.id, 'full')}
-                    alt="{game.title} cover"
-                    loading="lazy"
-                    onerror={() => markFailed(game.id)}
-                  />
-                {:else if game.hasCover && coverBase}
-                  <span class="cover-ph" title="Cover unavailable — retries after the next sync or cover fetch">
-                    <span class="cover-ph-icon">🖼</span>
-                  </span>
-                {:else}
-                  <span class="cover-ph" title="No cover — use Covers in the sidebar to fetch one">
-                    <span class="cover-ph-icon">🎮</span>
-                  </span>
-                {/if}
-
-                {#if hasUpdate(game)}
-                  <span class="card-badge badge-update" title="Update available: {game.latestVersion}">
-                    ⇪ {game.version} → {game.latestVersion}
-                  </span>
-                {/if}
-                {#if isVirtual(game)}
-                  <span class="card-badge badge-virtual">Not installed</span>
-                {/if}
-
-                <button
-                  class="card-play"
-                  class:state-launching={ctl.state === 'launching'}
-                  class:state-playing={ctl.state === 'playing'}
-                  class:state-error={ctl.state === 'error'}
-                  disabled={ctl.state === 'launching'}
-                  title={ctl.msg || 'Play'}
-                  onclick={(e) => handlePlay(e, game)}
+              {#each gridRows[vRow.index] ?? [] as game (game.id)}
+                <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_tabindex -->
+                {@const ctl = playControl(game)}
+                <div
+                  class="card"
+                  role="button"
+                  tabindex="0"
+                  onclick={() => onOpenDetail(game.id)}
+                  onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenDetail(game.id); } }}
+                  oncontextmenu={(e) => onRowContextMenu(e, game)}
                 >
-                  {#if ctl.state === 'launching'}
-                    <span class="play-spinner"></span><span>Launching…</span>
-                  {:else if ctl.state === 'playing'}
-                    <span>⏸ Playing</span>
-                  {:else if ctl.state === 'error'}
-                    <span>↻ Retry</span>
-                  {:else}
-                    <span>▶ Play</span>
-                  {/if}
-                </button>
-              </div>
+                  <div class="cover-frame">
+                    {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
+                      <img
+                        class="cover-img"
+                        src={coverSrc(game.id)}
+                        alt="{game.title} cover"
+                        loading="lazy"
+                        onerror={() => markFailed(game.id)}
+                      />
+                    {:else if game.hasCover && coverBase}
+                      <span class="cover-ph" title="Cover unavailable — retries after the next sync or cover fetch">
+                        <span class="cover-ph-icon">🖼</span>
+                      </span>
+                    {:else}
+                      <span class="cover-ph" title="No cover — use Covers in the sidebar to fetch one">
+                        <span class="cover-ph-icon">🎮</span>
+                      </span>
+                    {/if}
 
-              <div class="card-title" title={game.title}>{game.title}</div>
-              <div class="card-meta">
-                {#if game.engine}
-                  <span class="card-engine" style="--ec: {engineColor(game.engine)}">{game.engine}</span>
-                {/if}
-                {#if lastPlayedDate(game)}
-                  <span class="card-last-played" title="Last played {lastPlayedDate(game).toLocaleString()}">
-                    ▶ {relativePlayed(lastPlayedDate(game))}
-                  </span>
-                {/if}
-              </div>
+                    {#if hasUpdate(game)}
+                      <span class="card-badge badge-update" title="Update available: {game.latestVersion}">
+                        ⇪ {game.version} → {game.latestVersion}
+                      </span>
+                    {/if}
+                    {#if isVirtual(game)}
+                      <span class="card-badge badge-virtual">Not installed</span>
+                    {/if}
+
+                    <button
+                      class="card-play"
+                      class:state-launching={ctl.state === 'launching'}
+                      class:state-playing={ctl.state === 'playing'}
+                      class:state-error={ctl.state === 'error'}
+                      disabled={ctl.state === 'launching'}
+                      title={ctl.msg || 'Play'}
+                      onclick={(e) => handlePlay(e, game)}
+                    >
+                      {#if ctl.state === 'launching'}
+                        <span class="play-spinner"></span><span>Launching…</span>
+                      {:else if ctl.state === 'playing'}
+                        <span>⏸ Playing</span>
+                      {:else if ctl.state === 'error'}
+                        <span>↻ Retry</span>
+                      {:else}
+                        <span>▶ Play</span>
+                      {/if}
+                    </button>
+                  </div>
+
+                  <div class="card-title" title={game.title}>{game.title}</div>
+                  <div class="card-meta">
+                    {#if game.engine}
+                      <span class="card-engine" style="--ec: {engineColor(game.engine)}">{game.engine}</span>
+                    {/if}
+                    {#if lastPlayedDate(game)}
+                      <span class="card-last-played" title="Last played {lastPlayedDate(game).toLocaleString()}">
+                        ▶ {relativePlayed(lastPlayedDate(game))}
+                      </span>
+                    {/if}
+                  </div>
+                </div>
+              {/each}
             </div>
           {/each}
         </div>
@@ -644,88 +784,94 @@
         bind:this={tableBodyEl}
         onscroll={(e) => library.scrollTop = e.currentTarget.scrollTop}
       >
-        {#each displayed as game (game.id)}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          {@const ctl = playControl(game)}
-          <div
-            class="table-row"
-            onclick={() => onOpenDetail(game.id)}
-            oncontextmenu={(e) => onRowContextMenu(e, game)}
-            onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenDetail(game.id); } }}
-            role="button"
-            tabindex="0"
-          >
-            <span class="col-cover">
-              {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
-                <img
-                  class="cover-thumb"
-                  src={coverSrc(game.id)}
-                  alt="{game.title} cover"
-                  loading="lazy"
-                  onerror={() => markFailed(game.id)}
-                />
-              {:else if game.hasCover && coverBase}
-                <span class="cover-placeholder" title="Cover unavailable — retries after the next sync or cover fetch">
-                  <span class="cover-icon">🖼</span>
-                </span>
-              {:else}
-                <span class="cover-placeholder" title="No cover — use Covers in the sidebar to fetch one">
-                  <span class="cover-icon">🎮</span>
-                </span>
-              {/if}
-            </span>
-            <span class="col-title game-title">
-              {game.title}
-              {#if hasUpdate(game)}
-                <span class="update-dot" title="Update available: {game.latestVersion}">●</span>
-              {/if}
-            </span>
-            <span class="col-engine">
-              {#if game.engine}
-                <span class="engine-badge" style="--ec: {engineColor(game.engine)}">
-                  {game.engine}
-                </span>
-              {:else}
-                <span class="text-muted">—</span>
-              {/if}
-            </span>
-            <span class="col-version">
-              {#if hasUpdate(game)}
-                <span class="version-old">{game.version}</span>
-                <span class="version-new" title="Latest: {game.latestVersion}">→ {game.latestVersion}</span>
-              {:else}
-                {game.version || '—'}
-              {/if}
-            </span>
-            <span class="col-size">{game.sizeLabel || '—'}</span>
-            <span class="col-status">
-              <span class="status-badge status-{game.status || 'unknown'}">
-                {statusLabel(game.status)}
-              </span>
-            </span>
-            <span class="col-play">
-              <button
-                class="row-play"
-                class:state-launching={ctl.state === 'launching'}
-                class:state-playing={ctl.state === 'playing'}
-                class:state-error={ctl.state === 'error'}
-                disabled={ctl.state === 'launching'}
-                title={ctl.msg || 'Play'}
-                onclick={(e) => handlePlay(e, game)}
+        <div class="table-spacer" style="height: {tableTotalSize}px">
+          {#each tableVirtualRows as vItem (vItem.key)}
+            {@const game = displayed[vItem.index]}
+            {#if game}
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              {@const ctl = playControl(game)}
+              <div
+                class="table-row"
+                style="height: {TABLE_ROW_HEIGHT}px; transform: translateY({vItem.start}px)"
+                onclick={() => onOpenDetail(game.id)}
+                oncontextmenu={(e) => onRowContextMenu(e, game)}
+                onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenDetail(game.id); } }}
+                role="button"
+                tabindex="0"
               >
-                {#if ctl.state === 'launching'}
-                  <span class="play-spinner small"></span>
-                {:else if ctl.state === 'playing'}
-                  ⏸
-                {:else if ctl.state === 'error'}
-                  ↻
-                {:else}
-                  ▶ Play
-                {/if}
-              </button>
-            </span>
-          </div>
-        {/each}
+                <span class="col-cover">
+                  {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
+                    <img
+                      class="cover-thumb"
+                      src={coverSrc(game.id)}
+                      alt="{game.title} cover"
+                      loading="lazy"
+                      onerror={() => markFailed(game.id)}
+                    />
+                  {:else if game.hasCover && coverBase}
+                    <span class="cover-placeholder" title="Cover unavailable — retries after the next sync or cover fetch">
+                      <span class="cover-icon">🖼</span>
+                    </span>
+                  {:else}
+                    <span class="cover-placeholder" title="No cover — use Covers in the sidebar to fetch one">
+                      <span class="cover-icon">🎮</span>
+                    </span>
+                  {/if}
+                </span>
+                <span class="col-title game-title">
+                  {game.title}
+                  {#if hasUpdate(game)}
+                    <span class="update-dot" title="Update available: {game.latestVersion}">●</span>
+                  {/if}
+                </span>
+                <span class="col-engine">
+                  {#if game.engine}
+                    <span class="engine-badge" style="--ec: {engineColor(game.engine)}">
+                      {game.engine}
+                    </span>
+                  {:else}
+                    <span class="text-muted">—</span>
+                  {/if}
+                </span>
+                <span class="col-version">
+                  {#if hasUpdate(game)}
+                    <span class="version-old">{game.version}</span>
+                    <span class="version-new" title="Latest: {game.latestVersion}">→ {game.latestVersion}</span>
+                  {:else}
+                    {game.version || '—'}
+                  {/if}
+                </span>
+                <span class="col-size">{game.sizeLabel || '—'}</span>
+                <span class="col-status">
+                  <span class="status-badge status-{game.status || 'unknown'}">
+                    {statusLabel(game.status)}
+                  </span>
+                </span>
+                <span class="col-play">
+                  <button
+                    class="row-play"
+                    class:state-launching={ctl.state === 'launching'}
+                    class:state-playing={ctl.state === 'playing'}
+                    class:state-error={ctl.state === 'error'}
+                    disabled={ctl.state === 'launching'}
+                    title={ctl.msg || 'Play'}
+                    onclick={(e) => handlePlay(e, game)}
+                  >
+                    {#if ctl.state === 'launching'}
+                      <span class="play-spinner small"></span>
+                    {:else if ctl.state === 'playing'}
+                      ⏸
+                    {:else if ctl.state === 'error'}
+                      ↻
+                    {:else}
+                      ▶ Play
+                    {/if}
+                  </button>
+                </span>
+              </div>
+            {/if}
+          {/each}
+        </div>
       </div>
     {/if}
 
@@ -960,16 +1106,34 @@
   }
 
   /* ── Cover grid (P0-1) ──────────────────────────────── */
+  /* Windowed (perf follow-up): .grid-spacer is sized to the full,
+     un-rendered content height so the scrollbar stays accurate; only the
+     rows within the viewport (+ overscan) exist in the DOM, each absolutely
+     positioned via transform: translateY() to its virtual offset. Padding
+     lives on the row itself (not the scroll container) because an
+     absolutely-positioned element's containing block is its ancestor's
+     padding box, not content box — container padding would otherwise be
+     ignored for positioning. */
   .grid-scroll {
     flex: 1;
     overflow-y: auto;
-    padding: 16px;
+    position: relative;
   }
 
-  .grid {
+  .grid-spacer {
+    position: relative;
+    width: 100%;
+  }
+
+  .grid-row {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
     gap: 18px 16px;
+    padding: 0 16px;
+    box-sizing: border-box;
   }
 
   .card {
@@ -1184,9 +1348,22 @@
   .table-body {
     flex: 1;
     overflow-y: auto;
+    position: relative;
   }
 
+  .table-spacer {
+    position: relative;
+    width: 100%;
+  }
+
+  /* Windowed (perf follow-up): rows are uniform height, so each is just
+     absolutely positioned at its virtual offset — see .grid-row above for
+     why the spacer/transform pattern is needed instead of a plain list. */
   .table-row {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
     display: grid;
     grid-template-columns: 80px 1fr 110px 130px 80px 100px 64px;
     gap: 8px;
@@ -1196,6 +1373,7 @@
     cursor: pointer;
     transition: background 0.08s;
     align-items: center;
+    box-sizing: border-box;
   }
   .table-row:hover { background: var(--bg-hover); }
   .table-row:focus-visible {
