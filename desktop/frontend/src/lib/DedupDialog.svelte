@@ -3,6 +3,9 @@
   import {FindDuplicateGames, RemoveGame} from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
   import {statusLabel} from './statuses.js'
+  import {formatBytes} from './format.js'
+  import Button from './Button.svelte'
+  import Spinner from './Spinner.svelte'
 
   let {
     onDedupDone = () => {},
@@ -82,15 +85,6 @@
   // ── Engine colors — imported from shared module ───────────────
   // See engineColors.js for the canonical palette matching TUI styles
 
-  function formatBytes(bytes) {
-    if (!bytes) return ''
-    const units = ['B', 'KB', 'MB', 'GB']
-    let i = 0
-    let val = bytes
-    while (val >= 1024 && i < units.length - 1) { val /= 1024; i++ }
-    return `${val.toFixed(1)} ${units[i]}`
-  }
-
   onMount(load)
 </script>
 
@@ -101,13 +95,13 @@
       Games with similar titles detected across different directories.
       Keep one and remove the rest.
     </p>
-    <button class="btn btn-sm" onclick={load} disabled={loading}>
+    <Button size="sm" onclick={load} disabled={loading}>
       {loading ? 'Scanning…' : '⟳ Refresh'}
-    </button>
+    </Button>
   </div>
 
   {#if loading}
-    <div class="loading-state"><div class="spinner"></div><p>Scanning for duplicates…</p></div>
+    <div class="loading-state"><Spinner /><p>Scanning for duplicates…</p></div>
   {:else if error}
     <div class="error-section"><p class="error-title">Error:</p><p class="error-line">{error}</p></div>
   {:else if groups.length === 0}
@@ -145,21 +139,23 @@
                 <span class="entry-path" title={game.path}>{game.path}</span>
               </div>
               <div class="entry-actions">
-                <button
-                  class="btn btn-xs btn-primary"
+                <Button
+                  size="xs"
+                  variant="primary"
                   onclick={() => handleKeep(game.id, groupIdx)}
                   disabled={resolving[game.id]}
                   title="Remove all other copies, keep this one"
                 >
                   {resolving[game.id] ? '…' : 'Keep'}
-                </button>
-                <button
-                  class="btn btn-xs btn-danger"
+                </Button>
+                <Button
+                  size="xs"
+                  variant="danger"
                   onclick={() => handleRemove(game.id, groupIdx)}
                   disabled={resolving[game.id]}
                 >
                   {resolving[game.id] ? '…' : 'Remove'}
-                </button>
+                </Button>
               </div>
             </div>
           {/each}
@@ -203,14 +199,6 @@
     gap: 8px;
     color: var(--text-muted);
   }
-  .spinner {
-    width: 24px; height: 24px;
-    border: 2px solid var(--border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
   .empty-icon { font-size: 32px; opacity: 0.6; }
   .empty-title { font-size: 16px; font-weight: 600; color: var(--text-secondary); }
   .empty-desc { font-size: 13px; }
@@ -363,25 +351,4 @@
     gap: 4px;
     flex-shrink: 0;
   }
-
-  /* ── Shared utility styles ─────────── */
-  .btn {
-    padding: 7px 16px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--text-primary);
-    font-size: 13px;
-    cursor: pointer;
-    transition: background 0.12s;
-    white-space: nowrap;
-  }
-  .btn:hover { background: var(--bg-hover); }
-  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-sm { padding: 4px 10px; font-size: 12px; }
-  .btn-xs { padding: 2px 8px; font-size: 11px; border-radius: 4px; }
-  .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-  .btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
-  .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 10%, transparent); }
 </style>

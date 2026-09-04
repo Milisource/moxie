@@ -52,8 +52,21 @@ const delay = (ms = 15) => new Promise((r) => setTimeout(r, ms))
 // ?empty=1 → empty library (empty-state screenshots)
 const EMPTY = new URLSearchParams(location.search).has('empty')
 
+// ?stress=N → pad the library to N games (clones of the fixtures with
+// unique ids/titles) for virtualization/keyboard-nav verification against a
+// realistic-size library — see docs/desktop-perf-virtualization-handoff.md
+// and the Phase 6 keyboard-nav verification, both of which exercise this
+// against ~400+ games.
+const STRESS = Number(new URLSearchParams(location.search).get('stress')) || 0
+const STRESS_GAMES = STRESS > GAMES.length
+  ? Array.from({length: STRESS}, (_, i) => {
+      const base = GAMES[i % GAMES.length]
+      return {...base, id: 100000 + i, title: `${base.title} #${i + 1}`}
+    })
+  : GAMES
+
 function gameOf(id) {
-  return GAMES.find((g) => g.id === Number(id))
+  return STRESS_GAMES.find((g) => g.id === Number(id)) ?? GAMES.find((g) => g.id === Number(id))
 }
 function detailOf(id) {
   const summary = gameOf(id)
@@ -89,12 +102,17 @@ const App = {
   GetCookieStatus:     () => delay().then(() => COOKIE_STATUS),
   GetCoverBaseURL:     () => delay(1).then(() => `${location.origin}/mock/covers`),
   CheckDependencies:   () => delay().then(() => ({ok: true})),
-  CheckForUpdate:      () => delay().then(() => ({current: false, latest: 'v0.4.1', url: 'https://github.com/example/moxie/releases'})),
+  // Shape mirrors desktop/app.go's UpdateInfo (hasUpdate/currentVersion/
+  // latestVersion/releaseUrl) — UpdateDialog.svelte reads exactly those keys.
+  CheckForUpdate:      () => delay().then(() => ({
+    hasUpdate: true, currentVersion: APP_VERSION, latestVersion: 'v0.4.1',
+    releaseUrl: 'https://github.com/example/moxie/releases',
+  })),
   DownloadUpdate:      () => delay().then(() => {}),
   ApplyUpdate:         () => delay().then(() => {}),
 
   // ── Games
-  GetGames:            () => delay().then(() => (EMPTY ? [] : GAMES)),
+  GetGames:            () => delay().then(() => (EMPTY ? [] : STRESS_GAMES)),
   GetGameCount:        () => delay().then(() => (EMPTY ? 0 : GAME_COUNT)),
   GetGameDetail:       (id) => delay().then(() => detailOf(id)),
   SearchGames:         (q) => delay(80).then(() => searchGames(q)),
@@ -123,7 +141,16 @@ const App = {
   }),
 
   // ── Collections
-  GetCollections:      () => delay().then(() => (EMPTY ? [] : COLLECTIONS)),
+  // coverIds mirrors desktop/app.go's GetCollections: first COLLAGE_LIMIT
+  // member games with a cover, in COLLECTION_GAMES order.
+  GetCollections:      () => delay().then(() => (EMPTY ? [] : COLLECTIONS.map((c) => ({
+    ...c,
+    coverIds: (COLLECTION_GAMES[c.id] || [])
+      .map((gid) => gameOf(gid))
+      .filter((g) => g?.hasCover)
+      .slice(0, 4)
+      .map((g) => g.id),
+  })))),
   GetCollectionGames:  (id) => delay().then(() => (COLLECTION_GAMES[id] || []).map((gid) => gameOf(gid))),
   GetGameCollections:  () => delay().then(() => [{gameId: 1, collectionIds: [1, 2]}]),
   CreateCollection:    (name) => delay().then(() => ({id: 99, name, gameCount: 0})),

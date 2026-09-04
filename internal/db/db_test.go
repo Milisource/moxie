@@ -757,6 +757,46 @@ func TestRecentPlays_ParseSQLiteTimestamp(t *testing.T) {
 	}
 }
 
+// TestLastPlayedTimes verifies the grouped per-game query the desktop
+// backend uses to populate DesktopGameSummary.LastPlayed for an entire list
+// in one query — a game with multiple plays must report its latest, a game
+// with none must be absent from the map, and it must parse the SQLite
+// datetime format like RecentPlays/PlaysForGame do (see the test above).
+func TestLastPlayedTimes(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	played := &Game{Title: "Played Game", Path: "/tmp/played-game", Engine: "RenPy"}
+	playedID, err := db.InsertGame(played)
+	if err != nil {
+		t.Fatal(err)
+	}
+	neverPlayed := &Game{Title: "Never Played", Path: "/tmp/never-played", Engine: "RenPy"}
+	neverPlayedID, err := db.InsertGame(neverPlayed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.RecordPlay(playedID, "linux"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordPlay(playedID, "linux"); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := db.LastPlayedTimes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, ok := m[playedID]
+	if !ok || last.IsZero() {
+		t.Error("LastPlayedTimes: expected a non-zero entry for the played game")
+	}
+	if _, ok := m[neverPlayedID]; ok {
+		t.Error("LastPlayedTimes: never-played game should not appear in the map")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Aggregates
 // ---------------------------------------------------------------------------

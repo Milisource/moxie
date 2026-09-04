@@ -104,11 +104,11 @@ export function RemoveScanPath(arg1:string):Promise<void>;
 
 export function RenameGame(arg1:number,arg2:string):Promise<void>;
 
-export function RescanDirectory(arg1:context.Context,arg2:string):Promise<void>;
+export function RescanDirectory(arg1:context.Context,arg2:string,arg3:Array<string>):Promise<boolean>;
 
 export function RestoreGame(arg1:number):Promise<void>;
 
-export function ScanDirectory(arg1:string, arg2:boolean):Promise<void>;
+export function ScanDirectory(arg1:string,arg2:boolean):Promise<void>;
 
 export function SearchF95Zone(arg1:string):Promise<Array<main.F95SearchResult>>;
 

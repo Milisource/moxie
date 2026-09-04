@@ -32,6 +32,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/image/draw"
 	"golang.org/x/image/webp"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/mili/moxie/internal/archive"
 	"github.com/mili/moxie/internal/browser"
@@ -107,21 +108,17 @@ type App struct {
 	// calls would pile up goroutines hammering F95Zone/GitHub at once.
 	netBusy atomic.Bool
 
-	// search state coalesces repeated SearchF95Zone calls for the same
-	// query: while one search is in flight, a second call with the same
-	// query waits and returns the first's result instead of starting
-	// another request. Guarded by searchMu.
-	searchMu       sync.Mutex
-	searchInFlight bool
-	searchQuery    string
-	searchDone     chan struct{}
-	searchResults  []F95SearchResult
-	searchErr      error
+	// sfSearch coalesces repeated SearchF95Zone calls for the same query:
+	// while one search is in flight, a second call with the same query
+	// waits and shares the first's result instead of starting another
+	// request. A different query while one is in flight still hits
+	// netBusy's CAS below and is rejected — singleflight only dedupes
+	// identical keys, so it doesn't need to know about that case itself.
+	sfSearch singleflight.Group
 
-	// coverFetchMu guards coverFetch, which dedupes concurrent cover
-	// downloads for the same game (sync and cover backfill may overlap).
-	coverFetchMu sync.Mutex
-	coverFetch   map[int64]chan struct{}
+	// sfCover dedupes concurrent cover downloads for the same game (sync
+	// and cover backfill may overlap).
+	sfCover singleflight.Group
 }
 
 // NewApp creates a new App instance.
@@ -287,6 +284,9 @@ func (a *App) shutdown(ctx context.Context) {
 		a.coverServer.Close()
 	}
 	slog.Info("moxie desktop shutting down")
+	// Buffered log writes (see internal/log) must hit disk before the
+	// process exits, or the tail of the shutdown sequence is lost.
+	log.Flush()
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +345,13 @@ type DesktopGameSummary struct {
 	SizeBytes     int64  `json:"sizeBytes"`
 	SizeLabel     string `json:"sizeLabel"`
 	HasCover      bool   `json:"hasCover"`
+	// CreatedAt/LastPlayed are RFC3339, empty when unknown/never played. The
+	// desktop library's recency-first sort and "Recently played" quick view
+	// (89b6359) read these — until this change they only worked against the
+	// frontend mock's synthetic timestamps, not real data (see
+	// docs/desktop-perf-virtualization-handoff.md's backend-track note).
+	CreatedAt  string `json:"createdAt,omitempty"`
+	LastPlayed string `json:"lastPlayed,omitempty"`
 }
 
 // DesktopGameDetail is the full game data for the detail view.
@@ -405,8 +412,9 @@ func (a *App) GetGames() ([]DesktopGameSummary, error) {
 
 	result := make([]DesktopGameSummary, 0, len(games))
 	covers := coverSetFromDir()
+	lastPlayed := lastPlayedMap(a)
 	for _, g := range games {
-		result = append(result, gameToSummaryCovers(&g, covers))
+		result = append(result, gameToSummaryCovers(&g, covers, lastPlayed))
 	}
 	return result, nil
 }
@@ -424,8 +432,9 @@ func (a *App) SearchGames(query string) ([]DesktopGameSummary, error) {
 
 	result := make([]DesktopGameSummary, 0, len(games))
 	covers := coverSetFromDir()
+	lastPlayed := lastPlayedMap(a)
 	for _, g := range games {
-		result = append(result, gameToSummaryCovers(&g, covers))
+		result = append(result, gameToSummaryCovers(&g, covers, lastPlayed))
 	}
 	return result, nil
 }
@@ -456,8 +465,9 @@ func (a *App) GetUpdatableGames() ([]DesktopGameSummary, error) {
 
 	result := make([]DesktopGameSummary, 0, len(games))
 	covers := coverSetFromDir()
+	lastPlayed := lastPlayedMap(a)
 	for _, g := range games {
-		result = append(result, gameToSummaryCovers(&g, covers))
+		result = append(result, gameToSummaryCovers(&g, covers, lastPlayed))
 	}
 	return result, nil
 }
@@ -543,6 +553,11 @@ func (a *App) GetGameDetail(id int64) (*DesktopGameDetail, error) {
 				Platform:  p.Platform,
 				DurationS: p.DurationS,
 			})
+		}
+		// PlaysForGame orders most-recent-first, so the first entry (if any)
+		// is the last-played time — reuse it instead of a second query.
+		if len(plays) > 0 {
+			detail.LastPlayed = plays[0].PlayedAt.Format(time.RFC3339)
 		}
 	}
 
@@ -1208,13 +1223,17 @@ func isTransientDownloadError(err error) bool {
 
 // gameToSummary converts a db.Game to DesktopGameSummary. HasCover is
 // resolved with a single stat — fine for one-off calls like GetGameDetail.
+// LastPlayed is left empty; callers that already have play history (e.g.
+// GetGameDetail, which loads it anyway for the detail view) should set it
+// from that instead of triggering a second query here.
 func gameToSummary(g *db.Game) DesktopGameSummary {
-	return gameToSummaryCovers(g, nil)
+	return gameToSummaryCovers(g, nil, nil)
 }
 
-// gameToSummaryCovers is gameToSummary with a precomputed cover set, so list
-// endpoints check one directory read instead of N per-game stats.
-func gameToSummaryCovers(g *db.Game, covers map[int64]bool) DesktopGameSummary {
+// gameToSummaryCovers is gameToSummary with a precomputed cover set and
+// last-played-per-game map, so list endpoints check one directory read and
+// one grouped query instead of N per-game lookups.
+func gameToSummaryCovers(g *db.Game, covers map[int64]bool, lastPlayed map[int64]time.Time) DesktopGameSummary {
 	s := DesktopGameSummary{
 		ID:            g.ID,
 		Title:         g.Title,
@@ -1238,13 +1257,70 @@ func gameToSummaryCovers(g *db.Game, covers map[int64]bool) DesktopGameSummary {
 		}
 	}
 
+	if !g.CreatedAt.IsZero() {
+		s.CreatedAt = g.CreatedAt.Format(time.RFC3339)
+	}
+	if t, ok := lastPlayed[g.ID]; ok && !t.IsZero() {
+		s.LastPlayed = t.Format(time.RFC3339)
+	}
+
 	return s
+}
+
+// lastPlayedMap fetches the most-recent play_history entry per game as a
+// single grouped query. Errors are logged and swallowed — a missing
+// last-played map degrades the recency sort/"Recently played" quick view to
+// title-order fallback (see GameList.svelte's sortCompare), not a hard
+// failure of the whole list.
+func lastPlayedMap(a *App) map[int64]time.Time {
+	if a.db == nil {
+		return nil
+	}
+	m, err := a.db.LastPlayedTimes()
+	if err != nil {
+		slog.Warn("failed to load last-played times", "error", err)
+		return nil
+	}
+	return m
+}
+
+// coverSetCacheTTL bounds how often the cover directory is re-read from
+// disk. GetGames/SearchGames/GetUpdatableGames each call coverSetFromDir on
+// every invocation (e.g. every keystroke while searching, or every list
+// refresh after an unrelated backend event); the set rarely changes between
+// calls that close together, so a short cache avoids a redundant ReadDir.
+// Mirrors the cookie-cache pattern in internal/browser/browser.go.
+const coverSetCacheTTL = 2 * time.Second
+
+// coverSetCache holds the last coverSetFromDir result, refreshed at most
+// once per coverSetCacheTTL or immediately after a cover is written via
+// invalidateCoverSetCache, so a freshly fetched cover shows up right away
+// instead of waiting out the TTL.
+var coverSetCache = struct {
+	mu  sync.Mutex
+	set map[int64]bool
+	at  time.Time
+}{}
+
+// invalidateCoverSetCache forces the next coverSetFromDir call to re-read
+// the cover directory. Call after writing a new cover file.
+func invalidateCoverSetCache() {
+	coverSetCache.mu.Lock()
+	coverSetCache.at = time.Time{}
+	coverSetCache.mu.Unlock()
 }
 
 // coverSetFromDir lists the cover directory once and returns the set of game
 // IDs that have a cached cover file. One directory read beats N stats, and
-// directory reads are cheap even on network mounts.
+// directory reads are cheap even on network mounts — but repeated callers in
+// a tight window (see coverSetCacheTTL) share one read via coverSetCache.
 func coverSetFromDir() map[int64]bool {
+	coverSetCache.mu.Lock()
+	defer coverSetCache.mu.Unlock()
+	if !coverSetCache.at.IsZero() && time.Since(coverSetCache.at) <= coverSetCacheTTL {
+		return coverSetCache.set
+	}
+
 	entries, err := os.ReadDir(config.CoverDir())
 	if err != nil {
 		return nil
@@ -1259,6 +1335,8 @@ func coverSetFromDir() map[int64]bool {
 			set[id] = true
 		}
 	}
+	coverSetCache.set = set
+	coverSetCache.at = time.Now()
 	return set
 }
 
@@ -1854,59 +1932,21 @@ type F95DownloadLink struct {
 func (a *App) SearchF95Zone(query string) ([]F95SearchResult, error) {
 	query = strings.TrimSpace(query)
 
-	// Fast path: coalesce with an in-flight search for the same query. The
-	// in-flight search already holds netBusy, so no new request would be
-	// allowed anyway — waiting and sharing its result is the win.
-	a.searchMu.Lock()
-	if a.searchInFlight {
-		if a.searchQuery == query {
-			done := a.searchDone
-			a.searchMu.Unlock()
-			<-done
-			a.searchMu.Lock()
-			res, err := a.searchResults, a.searchErr
-			a.searchMu.Unlock()
-			return res, err
+	// Coalesce with an in-flight search for the same query: sfSearch.Do
+	// shares one call's result across every waiter keyed on that query. A
+	// different query arriving while one is in flight isn't deduped — it
+	// falls through to the netBusy CAS below and is rejected there instead.
+	v, err, _ := a.sfSearch.Do(query, func() (any, error) {
+		if !a.netBusy.CompareAndSwap(false, true) {
+			return nil, fmt.Errorf("another network request is already in progress")
 		}
-		a.searchMu.Unlock()
-		return nil, fmt.Errorf("another F95Zone search is already running")
+		defer a.netBusy.Store(false)
+		return a.searchF95Zone(query)
+	})
+	if err != nil {
+		return nil, err
 	}
-	a.searchMu.Unlock()
-
-	if !a.netBusy.CompareAndSwap(false, true) {
-		return nil, fmt.Errorf("another network request is already in progress")
-	}
-	defer a.netBusy.Store(false)
-
-	// Register as the in-flight search under the lock. Any waiter that
-	// observed inFlight=false above and lost the CAS was rejected, so no one
-	// can be blocked on searchDone before it is created here.
-	a.searchMu.Lock()
-	a.searchInFlight = true
-	a.searchQuery = query
-	a.searchDone = make(chan struct{})
-	a.searchMu.Unlock()
-
-	var results []F95SearchResult
-	var err error
-	// Publish results and close the coalescing channel before netBusy is
-	// released (LIFO: this defer runs first), so a waiter never races the
-	// next search's registration.
-	defer func() {
-		a.searchMu.Lock()
-		a.searchResults = results
-		a.searchErr = err
-		if a.searchDone != nil {
-			close(a.searchDone)
-		}
-		a.searchInFlight = false
-		a.searchQuery = ""
-		a.searchDone = nil
-		a.searchMu.Unlock()
-	}()
-
-	results, err = a.searchF95Zone(query)
-	return results, err
+	return v.([]F95SearchResult), nil
 }
 
 // searchF95Zone is the actual search work behind SearchF95Zone — the
@@ -2540,36 +2580,21 @@ func (a *App) cacheCoverCtx(ctx context.Context, gameID int64, coverURL string) 
 		return coverPath
 	}
 
-	// Coalesce concurrent downloads of the same cover.
-	a.coverFetchMu.Lock()
-	if a.coverFetch == nil {
-		a.coverFetch = make(map[int64]chan struct{})
-	}
-	if done, ok := a.coverFetch[gameID]; ok {
-		a.coverFetchMu.Unlock()
-		select {
-		case <-done:
-		case <-ctx.Done():
-			return ""
-		}
-		// The first downloader may have failed — re-check before claiming
-		// success, otherwise a failed fetch would count as cached.
-		if _, err := os.Stat(coverPath); err == nil {
-			return coverPath
-		}
-		return ""
-	}
-	done := make(chan struct{})
-	a.coverFetch[gameID] = done
-	a.coverFetchMu.Unlock()
+	// Coalesce concurrent downloads of the same cover: every caller for this
+	// gameID shares the one in-flight download's result (including a ""
+	// on failure), so a waiter never needs to re-check the file itself.
+	key := strconv.FormatInt(gameID, 10)
+	v, _, _ := a.sfCover.Do(key, func() (any, error) {
+		return a.fetchAndCacheCover(ctx, gameID, coverURL, coverPath, coverDir, start), nil
+	})
+	return v.(string)
+}
 
-	defer func() {
-		a.coverFetchMu.Lock()
-		delete(a.coverFetch, gameID)
-		close(done)
-		a.coverFetchMu.Unlock()
-	}()
-
+// fetchAndCacheCover downloads coverURL, validates and caches it at
+// coverPath, and writes a thumbnail. Split out of cacheCoverCtx so the
+// download body can run inside sfCover.Do's closure. Returns "" on any
+// failure (logged at the call site), coverPath on success.
+func (a *App) fetchAndCacheCover(ctx context.Context, gameID int64, coverURL, coverPath, coverDir string, start time.Time) string {
 	// Ensure the cover directory exists.
 	if err := os.MkdirAll(coverDir, 0755); err != nil {
 		slog.Error("failed to create cover directory", "game_id", gameID, "error", err)
@@ -2628,6 +2653,7 @@ func (a *App) cacheCoverCtx(ctx context.Context, gameID int64, coverURL string) 
 		slog.Error("failed to write cover file", "game_id", gameID, "path", coverPath, "error", err)
 		return ""
 	}
+	invalidateCoverSetCache()
 
 	switch writeCoverThumb(coverPath) {
 	case thumbSkipAVIF:
@@ -3018,7 +3044,7 @@ func (a *App) ListDeletedGames() ([]DesktopGameSummary, error) {
 	result := make([]DesktopGameSummary, 0, len(games))
 	covers := coverSetFromDir()
 	for _, g := range games {
-		result = append(result, gameToSummaryCovers(&g, covers))
+		result = append(result, gameToSummaryCovers(&g, covers, nil))
 	}
 	return result, nil
 }
@@ -3075,14 +3101,21 @@ func (a *App) EditGame(id int64, fields EditGameFields) error {
 // Collections
 // ---------------------------------------------------------------------------
 
+// collectionCoverLimit caps how many member covers GetCollections reports
+// per collection — just enough to fill a 2x2 collage tile.
+const collectionCoverLimit = 4
+
 // DesktopCollection is a collection with its active-game count.
 type DesktopCollection struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	GameCount int    `json:"gameCount"`
+	ID        int64   `json:"id"`
+	Name      string  `json:"name"`
+	GameCount int     `json:"gameCount"`
+	CoverIDs  []int64 `json:"coverIds"` // first covered member games, for collage tiles
 }
 
-// GetCollections returns all collections with their active-game counts.
+// GetCollections returns all collections with their active-game counts and,
+// for the collapsed-view cover-collage tile, up to collectionCoverLimit
+// member game IDs known to have a cached cover.
 func (a *App) GetCollections() ([]DesktopCollection, error) {
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
@@ -3096,13 +3129,29 @@ func (a *App) GetCollections() ([]DesktopCollection, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to count collection members: %w", err)
 	}
+	memberIDs, err := a.db.CollectionMemberGameIDs()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list collection members: %w", err)
+	}
+	covers := coverSetFromDir()
 
 	result := make([]DesktopCollection, 0, len(collections))
 	for _, c := range collections {
+		coverIDs := make([]int64, 0, collectionCoverLimit)
+		for _, gid := range memberIDs[c.ID] {
+			if !covers[gid] {
+				continue
+			}
+			coverIDs = append(coverIDs, gid)
+			if len(coverIDs) == collectionCoverLimit {
+				break
+			}
+		}
 		result = append(result, DesktopCollection{
 			ID:        c.ID,
 			Name:      c.Name,
 			GameCount: counts[c.ID],
+			CoverIDs:  coverIDs,
 		})
 	}
 	return result, nil
@@ -3152,11 +3201,12 @@ func (a *App) GetCollectionGames(collectionID int64) ([]DesktopGameSummary, erro
 
 	result := make([]DesktopGameSummary, 0, len(games))
 	covers := coverSetFromDir()
+	lastPlayed := lastPlayedMap(a)
 	for _, g := range games {
 		if g == nil || !g.DeletedAt.IsZero() {
 			continue
 		}
-		result = append(result, gameToSummaryCovers(g, covers))
+		result = append(result, gameToSummaryCovers(g, covers, lastPlayed))
 	}
 	return result, nil
 }

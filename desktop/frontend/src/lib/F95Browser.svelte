@@ -300,19 +300,19 @@
         </div>
       {:else if browser.searched && browser.results.length === 0}
         <div class="empty-state">
-          <p class="empty-icon">🔍</p>
+          <p class="empty-icon">⌕</p>
           <p class="empty-title">No results found</p>
           <p class="empty-detail">Try a different search term.</p>
         </div>
       {:else if !browser.searched}
         <div class="empty-state">
-          <p class="empty-icon">🌐</p>
+          <p class="empty-icon">⊙</p>
           <p class="empty-title">Search F95Zone</p>
           <p class="empty-detail">Enter at least 2 characters to start searching.</p>
         </div>
       {:else}
         <div class="results-grid">
-          {#each browser.results as result}
+          {#each browser.results as result (result.url)}
             <button
               class="result-card"
               class:selected={browser.selected?.url === result.url}
@@ -320,10 +320,10 @@
             >
               <div class="result-thumb">
                 {#if result.thumbnailUrl}
-                  <img src={result.thumbnailUrl} alt={result.title} />
+                  <img src={result.thumbnailUrl} alt={result.title} loading="lazy" />
                 {:else}
                   <div class="result-thumb-placeholder">
-                    <span class="placeholder-icon">🎮</span>
+                    <span class="placeholder-icon">▭</span>
                   </div>
                 {/if}
               </div>
@@ -373,7 +373,7 @@
               <img src={browser.preview.coverUrl} alt={browser.preview.title} />
             {:else}
               <div class="preview-cover-placeholder">
-                <span>🎮</span>
+                <span>▭</span>
                 <span>{browser.preview.title}</span>
               </div>
             {/if}
@@ -402,10 +402,16 @@
             </div>
 
             {#if browser.preview.developer}
-              <p class="preview-developer"><strong>Developer:</strong> {browser.preview.developer}</p>
+              <div class="preview-meta-row">
+                <span class="preview-meta-label">Developer</span>
+                <span class="preview-meta-value">{browser.preview.developer}</span>
+              </div>
             {/if}
             {#if browser.preview.version}
-              <p class="preview-version"><strong>Version:</strong> {browser.preview.version}</p>
+              <div class="preview-meta-row">
+                <span class="preview-meta-label">Version</span>
+                <span class="preview-meta-value">{browser.preview.version}</span>
+              </div>
             {/if}
 
             <!-- Tags -->
@@ -447,10 +453,8 @@
                     <a href={safeExternalUrl(url)} target="_blank" rel="noopener" class="store-link">
                       {#if name === 'steam'}
                         ◈
-                      {:else if name === 'patreon'}
-                        ⚡
                       {:else}
-                        🔗
+                        →
                       {/if}
                       {name}
                     </a>
@@ -940,14 +944,25 @@
     margin-bottom: 12px;
     flex-wrap: wrap;
   }
-  .preview-developer,
-  .preview-version {
-    font-size: 13px;
-    color: var(--text-secondary);
+  /* Same label/value pattern as GameDetail's .meta-row/.meta-label/.meta-value
+     (docs/desktop-ui-research.md §7 item 9) — this preview used to be an
+     inline "<strong>Label:</strong> value" one-off that didn't match. */
+  .preview-meta-row {
+    display: flex;
+    gap: 8px;
     margin: 0 0 4px;
   }
-  .preview-developer strong,
-  .preview-version strong {
+  .preview-meta-label {
+    min-width: 70px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+  }
+  .preview-meta-value {
+    font-size: 13px;
     color: var(--text-primary);
   }
 

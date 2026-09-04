@@ -71,16 +71,26 @@ export const GAME_TAGSETS = {
   22: ['Visual Novel', 'Fantasy', 'Female Protagonist'],
 }
 
+// Collage-tile edge cases (Phase 3, desktop/desktop-ui-research.md §7 item 6):
+// 'Visual Novels' has 6 members (> the 4-cover collage cap, exercises the
+// "+N" overlay), 'Need Progress' has exactly 2, 'Solo Pick' has exactly 1
+// (single cover fills the whole tile), 'Someday' has 0 (empty-tile
+// placeholder). gameCount intentionally mirrors COLLECTION_GAMES length
+// rather than being independently made up, like the real backend's count.
 export const COLLECTIONS = [
-  {id: 1, name: 'Visual Novels',  description: 'Story-first games',   gameCount: 8},
-  {id: 2, name: 'Finished',       description: 'Playable start to finish', gameCount: 5},
+  {id: 1, name: 'Visual Novels',  description: 'Story-first games',   gameCount: 6},
+  {id: 2, name: 'Finished',       description: 'Playable start to finish', gameCount: 4},
   {id: 3, name: 'Need Progress',  description: 'Downloads in progress', gameCount: 2},
+  {id: 4, name: 'Solo Pick',      description: 'Just the one, for now', gameCount: 1},
+  {id: 5, name: 'Someday',        description: 'Nothing added yet',    gameCount: 0},
 ]
 
 export const COLLECTION_GAMES = {
   1: [1, 6, 9, 13, 16, 20],
   2: [3, 8, 13, 16],
   3: [2, 15],
+  4: [12],
+  5: [],
 }
 
 export const DOWNLOAD_LINKS = [
@@ -108,9 +118,9 @@ export const DUPLICATES = [
 ]
 
 export const SEARCH_RESULTS = [
-  {threadId: 101500, title: 'Midnight Protocol [v2.0.5]', engine: 'Unity', version: 'v2.0.5', daysAgo: 2, views: '1.2M', rating: 4.2, category: 'Unity'},
-  {threadId: 101499, title: 'Midnight Protocol [Ch. 5] [v2.0.0]', engine: 'Unity', version: 'v2.0.0', daysAgo: 12, views: '980K', rating: 4.1, category: 'Unity'},
-  {threadId: 99991,  title: 'Paper Crowns [v1.0]', engine: 'RPGM', version: 'v1.0', daysAgo: 3, views: '45K', rating: 3.8, category: 'RPGM'},
+  {title: 'Midnight Protocol [v2.0.5]', url: 'https://f95zone.to/threads/midnight-protocol.101500/', prefix: "[Unity]", thumbnailUrl: '', matchScore: 98},
+  {title: "Midnight Protocol [Ch. 5] [v2.0.0]", url: 'https://f95zone.to/threads/midnight-protocol.101499/', prefix: "[Unity]", thumbnailUrl: '', matchScore: 91},
+  {title: 'Paper Crowns [v1.0]', url: 'https://f95zone.to/threads/paper-crowns.99991/', prefix: "[RPGM]", thumbnailUrl: '', matchScore: 74},
 ]
 
 export const THREAD_PREVIEW = {

@@ -5,6 +5,7 @@
     GetVersion,
   } from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
+  import {formatBytes, formatSpeed} from './format.js'
 
   // Presentational view: the game-update pipeline state (gameStates,
   // batchState) and its event subscriptions live in App.svelte so they
@@ -35,23 +36,6 @@
   // only shows the installed version and points there — one canonical UI
   // instead of two checkers that could disagree.
   let appVersion = $state('')
-
-  // ── Utility Formatting ───────────────────────────────────────
-  function formatBytes(bytes) {
-    if (!bytes || bytes === 0) return '0 B'
-    const units = ['B', 'KB', 'MB', 'GB']
-    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-    const val = (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)
-    return `${val} ${units[i]}`
-  }
-
-  function formatSpeed(bps) {
-    if (!bps || bps === 0) return ''
-    const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
-    const i = Math.min(Math.floor(Math.log(bps) / Math.log(1024)), units.length - 1)
-    const val = (bps / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)
-    return `${val} ${units[i]}`
-  }
 
   function getGS(gameId) {
     return gameStates[gameId] || {phase: 'idle'}

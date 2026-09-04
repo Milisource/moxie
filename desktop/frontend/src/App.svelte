@@ -1,5 +1,5 @@
 <script>
-  import {onMount} from 'svelte'
+  import {onMount, tick} from 'svelte'
   import {fly} from 'svelte/transition'
   import {EventsOn} from '../wailsjs/runtime/runtime'
   import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted, GetCookieStatus, SyncAllGames, DownloadGameUpdate, DownloadAllUpdates, CancelGameUpdate, CancelSync, ProvideUpdateFile, ScanDirectory, FetchCovers, GetGameCount, CheckForUpdate, DownloadUpdate, ApplyUpdate, InstallGame} from '../wailsjs/go/main/App'
@@ -17,7 +17,7 @@
   import CoversView from './lib/CoversView.svelte'
   import SettingsView from './lib/SettingsView.svelte'
   import StatusBar from './lib/StatusBar.svelte'
-  import {library} from './lib/viewState.svelte.js'
+  import {library, appMeta, setLastSyncAt} from './lib/viewState.svelte.js'
 
   let version = $state('')
   let games = $state([])
@@ -26,6 +26,7 @@
   let lastUpdate = $state(0)
   let selectedGameId = $state(null)
   let loading = $state(true)
+  let gameListRef = $state.raw()   // bound to GameList; exposes focusSearch() for the global shortcut below
   let deletedGames = $state([])
   // Non-empty when the backend failed to start (usually the database). Without
   // this every bound call just answers "database not initialized" and the user
@@ -249,6 +250,13 @@
     return ''
   })
 
+  // Surfaced in the status bar (P2 item 11 — "free space for ... upgrade
+  // suggests") once the user has manually checked from Settings; this app
+  // never auto-checks on startup, so there's no extra network call here.
+  let updateAvailable = $derived(
+    !appUpdateState.downloading && appUpdateState.info?.hasUpdate ? appUpdateState.info : null
+  )
+
   function updateGS(gameId, patch) {
     gameStates = {...gameStates, [gameId]: {...(gameStates[gameId] || {}), ...patch}}
   }
@@ -455,9 +463,12 @@
     loading = true
     try {
       games = await GetGames()
-      statusMsg = `${games.length} game${games.length !== 1 ? 's' : ''} loaded`
+      // No count here — the status bar's own game-count span (StatusBar.svelte)
+      // already shows it persistently; repeating it in the transient message
+      // was both redundant and read like a console log line ("N games loaded").
+      statusMsg = 'Library ready'
     } catch (e) {
-      statusMsg = `Error: ${e}`
+      statusMsg = `Couldn't load your library — ${e}`
     }
     loading = false
   }
@@ -537,7 +548,7 @@
       await loadTrash()
       await refreshGames()
       statusMsg = 'Game restored'
-    } catch (e) { statusMsg = `Error: ${e}` }
+    } catch (e) { statusMsg = `Couldn't restore that game — ${e}` }
   }
 
   async function handlePurge() {
@@ -547,7 +558,7 @@
       await loadTrash()
       await refreshGames()
       statusMsg = 'Trash emptied'
-    } catch (e) { statusMsg = `Error: ${e}` }
+    } catch (e) { statusMsg = `Couldn't empty the trash — ${e}` }
   }
 
   let unsubAutoScan
@@ -583,8 +594,31 @@
   let unsubInstallProgress
   let unsubInstallError
   let unsubInstallComplete
+
+  // Global search shortcut (P1 item 8): "/" or Ctrl/Cmd+F jumps to the
+  // library and focuses its search field, Steam/Playnite-style. "/" is only
+  // intercepted when nothing is already accepting text input, so it doesn't
+  // clobber typing elsewhere (e.g. the F95 browser's own search box).
+  function isTypingTarget(el) {
+    if (!el) return false
+    const tag = el.tagName
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable
+  }
+
+  function handleGlobalKeydown(e) {
+    const isSlash = e.key === '/' && !isTypingTarget(e.target)
+    const isFindCombo = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f'
+    if (!isSlash && !isFindCombo) return
+    e.preventDefault()
+    activeView = 'library'
+    // GameList is destroyed/remounted on tab switch (see the {#if} below), so
+    // its search field may not exist yet on this same tick.
+    tick().then(() => gameListRef?.focusSearch())
+  }
+
   onMount(() => {
     init()
+    window.addEventListener('keydown', handleGlobalKeydown)
     // Live library refresh when the directory watcher finishes an auto-scan.
     unsubAutoScan = EventsOn('scan:auto-complete', async (r) => {
       let msg = ''
@@ -599,15 +633,15 @@
       }
       try {
         await refreshGames()
-        // refreshGames sets its own "N games loaded" message — restore the
+        // refreshGames sets its own "Library ready" message — restore the
         // auto-scan result afterwards so the user actually sees it.
         if (msg) statusMsg = msg
       } catch (e) {
-        statusMsg = `Error: ${e}`
+        statusMsg = `Auto-scan finished, but the library refresh failed — ${e}`
       }
     })
     unsubAutoScanError = EventsOn('scan:auto-error', (r) => {
-      statusMsg = `Auto-scan error: ${r?.error || 'unknown'}`
+      statusMsg = `Auto-scan failed — ${r?.error || 'unknown error'}`
     })
     // The directory watcher's auto-scans emit these but nothing displayed
     // them — surface them in the status bar so background scanning is
@@ -650,9 +684,10 @@
         // A sync can discover new game versions: bump lastUpdate so the
         // updates view (and sidebar badge) refresh even while it's open.
         lastUpdate++
+        setLastSyncAt(new Date().toISOString())
         statusMsg = 'Sync complete — library refreshed'
       } catch (e) {
-        statusMsg = `Error: ${e}`
+        statusMsg = `Sync finished, but the library refresh failed — ${e}`
       }
     })
     unsubSyncError = EventsOn('sync:error', (data) => {
@@ -833,7 +868,7 @@
         if (r?.total === 0) statusMsg = 'All games already have covers'
         else statusMsg = `Cover fetch complete — ${r?.fetched ?? 0} cached`
       } catch (e) {
-        statusMsg = `Error: ${e}`
+        statusMsg = `Covers fetched, but the library refresh failed — ${e}`
       }
     })
     unsubCoversError = EventsOn('covers:error', (r) => {
@@ -880,6 +915,7 @@
       }
     })
     return () => {
+      window.removeEventListener('keydown', handleGlobalKeydown)
       if (unsubAutoScan) unsubAutoScan()
       if (unsubAutoScanError) unsubAutoScanError()
       if (unsubAutoScanStarted) unsubAutoScanStarted()
@@ -950,6 +986,7 @@
             />
           {:else if activeView === 'library'}
             <GameList
+              bind:this={gameListRef}
               {games}
               {loading}
               {gameStates}
@@ -1060,6 +1097,9 @@
       {pipelineBusy}
       {pipelineLabel}
       appUpdateDownloading={appUpdateState.downloading}
+      lastSyncAt={appMeta.lastSyncAt}
+      {updateAvailable}
+      onGoToUpdate={() => activeView = 'settings'}
     />
   </main>
 </div>

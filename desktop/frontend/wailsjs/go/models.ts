@@ -77,6 +77,7 @@ export namespace main {
 	    id: number;
 	    name: string;
 	    gameCount: number;
+	    coverIds: number[];
 	
 	    static createFrom(source: any = {}) {
 	        return new DesktopCollection(source);
@@ -87,6 +88,7 @@ export namespace main {
 	        this.id = source["id"];
 	        this.name = source["name"];
 	        this.gameCount = source["gameCount"];
+	        this.coverIds = source["coverIds"];
 	    }
 	}
 	export class DesktopDownloadLink {
@@ -167,6 +169,8 @@ export namespace main {
 	    sizeBytes: number;
 	    sizeLabel: string;
 	    hasCover: boolean;
+	    createdAt?: string;
+	    lastPlayed?: string;
 	    developer: string;
 	    overview: string;
 	    coverUrl: string;
@@ -196,6 +200,8 @@ export namespace main {
 	        this.sizeBytes = source["sizeBytes"];
 	        this.sizeLabel = source["sizeLabel"];
 	        this.hasCover = source["hasCover"];
+	        this.createdAt = source["createdAt"];
+	        this.lastPlayed = source["lastPlayed"];
 	        this.developer = source["developer"];
 	        this.overview = source["overview"];
 	        this.coverUrl = source["coverUrl"];
@@ -239,6 +245,8 @@ export namespace main {
 	    sizeBytes: number;
 	    sizeLabel: string;
 	    hasCover: boolean;
+	    createdAt?: string;
+	    lastPlayed?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new DesktopGameSummary(source);
@@ -257,6 +265,8 @@ export namespace main {
 	        this.sizeBytes = source["sizeBytes"];
 	        this.sizeLabel = source["sizeLabel"];
 	        this.hasCover = source["hasCover"];
+	        this.createdAt = source["createdAt"];
+	        this.lastPlayed = source["lastPlayed"];
 	    }
 	}
 	

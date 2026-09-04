@@ -975,6 +975,32 @@ func (db *Database) PlaysForGame(gameID int64, limit int) ([]PlayHistoryWithGame
 	return entries, rows.Err()
 }
 
+// LastPlayedTimes returns the most recent play_history timestamp per game, as
+// a single grouped query — the desktop UI's recency-first sort and
+// "Recently played" quick view need this for every game in a list at once,
+// not one game at a time (that's what PlaysForGame is for).
+func (db *Database) LastPlayedTimes() (map[int64]time.Time, error) {
+	rows, err := db.conn.Query(`
+		SELECT game_id, MAX(played_at)
+		FROM play_history
+		GROUP BY game_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	m := make(map[int64]time.Time)
+	for rows.Next() {
+		var gameID int64
+		var playedAtStr string
+		if err := rows.Scan(&gameID, &playedAtStr); err != nil {
+			return nil, err
+		}
+		m[gameID] = parseTime(playedAtStr)
+	}
+	return m, rows.Err()
+}
+
 // CountGamesByStatus returns the number of active games per status. Games with
 // no status recorded are grouped under "unknown".
 func (db *Database) CountGamesByStatus() (map[string]int, error) {

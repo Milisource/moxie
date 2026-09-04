@@ -202,8 +202,8 @@ export function RenameGame(arg1, arg2) {
   return window['go']['main']['App']['RenameGame'](arg1, arg2);
 }
 
-export function RescanDirectory(arg1, arg2) {
-  return window['go']['main']['App']['RescanDirectory'](arg1, arg2);
+export function RescanDirectory(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RescanDirectory'](arg1, arg2, arg3);
 }
 
 export function RestoreGame(arg1) {

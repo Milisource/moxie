@@ -1,5 +1,6 @@
 <script>
   import {safeExternalUrl} from './sanitizeUrl.js'
+  import {formatBytes} from './format.js'
 
   // Presentational only — the app self-update flow (check → download → apply)
   // and its update:* event subscriptions live in App.svelte so the download
@@ -31,14 +32,6 @@
     const total = formatBytes(downloadProgress.total)
     return `Downloaded ${downloaded} of ${total}`
   })
-
-  function formatBytes(bytes) {
-    if (!bytes || bytes === 0) return '0 B'
-    const units = ['B', 'KB', 'MB', 'GB']
-    const i = Math.floor(Math.log(bytes) / Math.log(1024))
-    const val = (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)
-    return `${val} ${units[i]}`
-  }
 </script>
 
 <div class="update-dialog">

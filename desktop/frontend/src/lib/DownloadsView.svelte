@@ -2,7 +2,6 @@
   import {onMount} from 'svelte'
   import {LogError, LogInfo} from '../../wailsjs/runtime/runtime'
   import {
-    GetGamesWithDownloadLinks,
     GetAllDownloadLinks,
     OpenDownloadURL,
   } from '../../wailsjs/go/main/App'
@@ -31,17 +30,20 @@
       }, 20000)
     })
     try {
-      LogInfo('downloads: calling GetGamesWithDownloadLinks + GetAllDownloadLinks')
-      const [g, links] = await Promise.race([
-        Promise.all([
-          GetGamesWithDownloadLinks(),
-          GetAllDownloadLinks(),
-        ]),
-        timeout,
-      ])
+      LogInfo('downloads: calling GetAllDownloadLinks')
+      const links = await Promise.race([GetAllDownloadLinks(), timeout])
       // Go nil slices marshal to JSON null — never let null reach the view.
-      games = g ?? []
       allLinks = links ?? []
+      // Derive the distinct-games list client-side instead of issuing a
+      // second, identical backend query (GetGamesWithDownloadLinks ran the
+      // exact same DB join as GetAllDownloadLinks — see F95-perf).
+      const seen = new Set()
+      games = []
+      for (const l of allLinks) {
+        if (seen.has(l.gameId)) continue
+        seen.add(l.gameId)
+        games.push({id: l.gameId, title: l.gameTitle, path: l.gamePath})
+      }
       LogInfo(`downloads: loaded ${games.length} games, ${allLinks.length} links`)
     } catch (e) {
       LogError(`downloads: loadData failed: ${e}`)
@@ -183,7 +185,7 @@
   <!-- ── Search ─────────────────────────────────────────────── -->
   {#if !loading && games.length > 0}
     <div class="search-bar">
-      <span class="search-icon">🔍</span>
+      <span class="search-icon">⌕</span>
       <input
         type="text"
         class="search-input"
@@ -293,7 +295,7 @@
     <!-- ── Empty State ───────────────────────────────────────── -->
     <div class="status-section status-empty">
       {#if downloads.search}
-        <span class="status-icon">🔍</span>
+        <span class="status-icon">⌕</span>
         <div class="status-body">
           <p class="status-title">No matches</p>
           <p class="status-detail">

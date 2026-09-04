@@ -4,7 +4,7 @@
   import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCoverBaseURL, PlayGame} from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
-  import {library} from './viewState.svelte.js'
+  import {library, setViewMode, setDensity} from './viewState.svelte.js'
 
   let {
     games = [],
@@ -142,6 +142,15 @@
   let isSearching = $state(false)
   let tableBodyEl = $state.raw()           // list scroll container, bound in markup
   let gridEl = $state.raw()                // grid scroll container, bound in markup
+  let searchInputEl = $state.raw()         // search field, bound in markup
+
+  // Exposed to App.svelte via bind:this so a global "/" / Ctrl+F shortcut
+  // (P1 item 8) can jump into this field even when this view is being
+  // freshly mounted (the tab switch happens first, then this runs).
+  export function focusSearch() {
+    searchInputEl?.focus()
+    searchInputEl?.select()
+  }
 
   // Extract distinct engines from the game list
   let engines = $derived.by(() => {
@@ -323,21 +332,28 @@
   // 16:9 aspect ratio off that width — depends on container width. A
   // ResizeObserver on the scroll container recomputes both whenever it
   // changes (window resize, sidebar toggle, view-mode switch).
-  const GRID_CARD_MIN = 176
+  // Density (P1 item 7): compact trades card/row size for more items
+  // per screen. Grid card width and table row height are read by the
+  // virtualizers below, so they're reactive to `library.density`, not
+  // just CSS — CSS alone wouldn't change how many rows the virtualizer
+  // windows in.
   const GRID_GAP = 16
   const GRID_PAD = 32                // 16px horizontal padding, both sides
-  const GRID_TEXT_HEIGHT = 8 + 40 + 4 + 18   // title margin + 2-line title + meta margin + meta row
+  let gridCardMin = $derived(library.density === 'compact' ? 132 : 176)
+  // title margin + 2-line title + meta margin + meta row
+  let gridTextHeight = $derived(library.density === 'compact' ? 6 + 32 + 3 + 16 : 8 + 40 + 4 + 18)
   let gridColumns = $state(1)
   let gridRowHeight = $state(280)
 
   function updateGridLayout() {
     if (!gridEl) return
-    const avail = Math.max(gridEl.clientWidth - GRID_PAD, GRID_CARD_MIN)
-    const cols = Math.max(1, Math.floor((avail + GRID_GAP) / (GRID_CARD_MIN + GRID_GAP)))
+    const cardMin = gridCardMin
+    const avail = Math.max(gridEl.clientWidth - GRID_PAD, cardMin)
+    const cols = Math.max(1, Math.floor((avail + GRID_GAP) / (cardMin + GRID_GAP)))
     const cardWidth = (avail - GRID_GAP * (cols - 1)) / cols
     const coverHeight = cardWidth * 9 / 16
     gridColumns = cols
-    gridRowHeight = coverHeight + GRID_TEXT_HEIGHT + GRID_GAP
+    gridRowHeight = coverHeight + gridTextHeight + GRID_GAP
   }
 
   $effect(() => {
@@ -397,9 +413,10 @@
   })
 
   // Table rows are uniform height, so windowing is simpler — one measurement
-  // for the whole list. Matches the row's rendered height: 40px cover thumb
-  // + 4px top/bottom padding + 1px border.
-  const TABLE_ROW_HEIGHT = 49
+  // for the whole list. Comfortable matches the row's rendered height: 40px
+  // cover thumb + 4px top/bottom padding + 1px border. Compact drops the
+  // thumb/padding for a denser data-table feel (P1 item 7).
+  let tableRowHeight = $derived(library.density === 'compact' ? 34 : 49)
 
   let tableVirtualizerApi
   let tableVirtualRows = $state.raw([])
@@ -407,7 +424,7 @@
   const unsubTableVirtualizer = createVirtualizer({
     count: 0,
     getScrollElement: () => tableBodyEl,
-    estimateSize: () => TABLE_ROW_HEIGHT,
+    estimateSize: () => tableRowHeight,
     overscan: 8,
   }).subscribe(v => {
     tableVirtualizerApi = v
@@ -418,10 +435,11 @@
   $effect(() => {
     const el = tableBodyEl
     const rows = displayed
+    const rowHeight = tableRowHeight
     tableVirtualizerApi?.setOptions({
       count: rows.length,
       getScrollElement: () => el,
-      estimateSize: () => TABLE_ROW_HEIGHT,
+      estimateSize: () => rowHeight,
       overscan: 8,
       getItemKey: (i) => rows[i]?.id ?? i,
     })
@@ -512,6 +530,84 @@
     contextMenuView = 'main'
   }
 
+  // ── Keyboard grid/list navigation + context-menu parity (P2 item 10) ──
+  // Every card/row was individually tabindex="0" — fine for a dozen games,
+  // a tab-trap for a real library (Tab would walk all 400+ before reaching
+  // the next sidebar item). Switched to a roving tabindex (Steam/Playnite
+  // pattern): exactly one card/row is a Tab stop at a time; arrow keys move
+  // it and drive focus, so Tab in/out of the library costs one stop either
+  // way. `rovingId` falls back to the first visible item whenever the
+  // previously-focused id drops out of `displayed` (filter/sort changed
+  // under it) so a stop is always reachable.
+  let focusedId = $state(null)
+  let rovingId = $derived.by(() => {
+    if (focusedId != null && displayed.some(g => g.id === focusedId)) return focusedId
+    return displayed[0]?.id ?? null
+  })
+
+  function clampIndex(i) {
+    return Math.max(0, Math.min(displayed.length - 1, i))
+  }
+
+  // Rows only exist in the DOM within the virtualizer's window, so moving
+  // focus onto an off-screen target has to scroll it into view first, wait
+  // a tick for it to actually mount, then focus the real element.
+  async function focusGameEl(id) {
+    await tick()
+    const container = library.viewMode === 'grid' ? gridEl : tableBodyEl
+    container?.querySelector(`[data-game-id="${id}"]`)?.focus()
+  }
+
+  async function moveFocus(delta) {
+    if (displayed.length === 0) return
+    const curIdx = focusedId != null ? displayed.findIndex(g => g.id === focusedId) : -1
+    const nextIdx = clampIndex((curIdx === -1 ? 0 : curIdx) + delta)
+    const g = displayed[nextIdx]
+    if (!g) return
+    focusedId = g.id
+    if (library.viewMode === 'grid') {
+      gridVirtualizerApi?.scrollToIndex(Math.floor(nextIdx / gridColumns), {align: 'auto'})
+    } else {
+      tableVirtualizerApi?.scrollToIndex(nextIdx, {align: 'auto'})
+    }
+    await focusGameEl(g.id)
+  }
+
+  // Right-click already opens the context menu (positioned at the mouse);
+  // the keyboard equivalent (Menu key / Shift+F10, same as Windows Explorer)
+  // positions it against the focused card/row's own bounding box instead.
+  function openContextMenuFromKeyboard(e) {
+    const el = e.target?.closest?.('[data-game-id]')
+    const game = el && displayed.find(g => String(g.id) === el.dataset.gameId)
+    if (!game) return
+    closeContextMenu()
+    const rect = el.getBoundingClientRect()
+    const menuW = 200, menuH = 220
+    const x = Math.min(rect.left, window.innerWidth - menuW)
+    const y = Math.min(rect.bottom + 4, window.innerHeight - menuH)
+    contextMenu = {x, y, game}
+    contextMenuView = 'main'
+  }
+
+  function onNavKeydown(e) {
+    if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+      e.preventDefault()
+      openContextMenuFromKeyboard(e)
+      return
+    }
+    const cols = library.viewMode === 'grid' ? gridColumns : 1
+    switch (e.key) {
+      case 'ArrowRight':
+        if (library.viewMode !== 'grid') return
+        e.preventDefault(); moveFocus(1); break
+      case 'ArrowLeft':
+        if (library.viewMode !== 'grid') return
+        e.preventDefault(); moveFocus(-1); break
+      case 'ArrowDown': e.preventDefault(); moveFocus(cols); break
+      case 'ArrowUp':   e.preventDefault(); moveFocus(-cols); break
+    }
+  }
+
   async function handleStatus(status) {
     if (!contextMenu?.game) return
     const g = contextMenu.game
@@ -571,12 +667,24 @@
       default:           return 'Relax the engine or status filters.'
     }
   })
+
+  // Zero results already get a curated empty state above; a "few" results
+  // (1 or more, but fewer than the full library) had no feedback at all —
+  // a search/filter narrowing to 1-2 games looked identical to an unfiltered
+  // sparse library, with no cue that a filter was even active. This surfaces
+  // the match count whenever something is actually filtering the list.
+  let hasActiveFilter = $derived(
+    library.search.trim().length >= 2 ||
+    library.quickView !== 'all' ||
+    (library.engine && library.engine !== 'All') ||
+    (library.status && library.status !== 'All')
+  )
 </script>
 
-<div class="game-list">
+<div class="game-list" class:density-compact={library.density === 'compact'}>
   {#if games.length === 0 && !isSearching && !loading}
     <div class="empty">
-      <div class="empty-icon">📂</div>
+      <div class="empty-icon">▦</div>
       <p class="empty-title">No games yet</p>
       <p class="empty-desc">Scan a directory to find and add games to your library.</p>
     </div>
@@ -602,32 +710,52 @@
         {/each}
       </div>
 
-      <div class="view-toggle" role="group" aria-label="Library layout">
-        <button
-          class="vbtn"
-          class:active={library.viewMode === 'grid'}
-          aria-pressed={library.viewMode === 'grid'}
-          title="Grid view"
-          onclick={() => library.viewMode = 'grid'}
-        ><span class="vbtn-icon">▦</span>Grid</button>
-        <button
-          class="vbtn"
-          class:active={library.viewMode === 'list'}
-          aria-pressed={library.viewMode === 'list'}
-          title="List view"
-          onclick={() => library.viewMode = 'list'}
-        ><span class="vbtn-icon">☰</span>List</button>
+      <div class="toggle-group">
+        <div class="view-toggle" role="group" aria-label="Library layout">
+          <button
+            class="vbtn"
+            class:active={library.viewMode === 'grid'}
+            aria-pressed={library.viewMode === 'grid'}
+            title="Grid view"
+            onclick={() => setViewMode('grid')}
+          ><span class="vbtn-icon">▦</span>Grid</button>
+          <button
+            class="vbtn"
+            class:active={library.viewMode === 'list'}
+            aria-pressed={library.viewMode === 'list'}
+            title="List view"
+            onclick={() => setViewMode('list')}
+          ><span class="vbtn-icon">☰</span>List</button>
+        </div>
+
+        <div class="view-toggle" role="group" aria-label="Library density">
+          <button
+            class="vbtn"
+            class:active={library.density === 'comfortable'}
+            aria-pressed={library.density === 'comfortable'}
+            title="Comfortable density"
+            onclick={() => setDensity('comfortable')}
+          ><span class="vbtn-icon">⊟</span>Comfortable</button>
+          <button
+            class="vbtn"
+            class:active={library.density === 'compact'}
+            aria-pressed={library.density === 'compact'}
+            title="Compact density"
+            onclick={() => setDensity('compact')}
+          ><span class="vbtn-icon">≡</span>Compact</button>
+        </div>
       </div>
     </div>
 
     <!-- Secondary filters: search · engine · arrangement · status chips -->
     <div class="filter-bar">
       <div class="search-wrapper">
-        <span class="search-icon">🔍</span>
+        <span class="search-icon">⌕</span>
         <input
           type="text"
           class="search-input"
           placeholder="Search titles, tags, developers…"
+          bind:this={searchInputEl}
           value={library.search}
           oninput={onSearchInput}
         />
@@ -660,6 +788,10 @@
           </button>
         {/each}
       </div>
+
+      {#if hasActiveFilter && displayed.length > 0}
+        <span class="result-count">{displayed.length} of {games.length}</span>
+      {/if}
     </div>
 
     {#if displayed.length === 0}
@@ -669,10 +801,12 @@
       </div>
     {:else if library.viewMode === 'grid'}
       <!-- ── Cover grid (default library presentation, P0-1) ── -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="grid-scroll"
         bind:this={gridEl}
         onscroll={(e) => library.gridScrollTop = e.currentTarget.scrollTop}
+        onkeydown={onNavKeydown}
       >
         <div class="grid-spacer" style="height: {gridTotalSize}px">
           {#each gridVirtualRows as vRow (vRow.key)}
@@ -686,8 +820,10 @@
                 <div
                   class="card"
                   role="button"
-                  tabindex="0"
+                  tabindex={rovingId === game.id ? 0 : -1}
+                  data-game-id={game.id}
                   onclick={() => onOpenDetail(game.id)}
+                  onfocus={() => focusedId = game.id}
                   onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenDetail(game.id); } }}
                   oncontextmenu={(e) => onRowContextMenu(e, game)}
                 >
@@ -702,11 +838,11 @@
                       />
                     {:else if game.hasCover && coverBase}
                       <span class="cover-ph" title="Cover unavailable — retries after the next sync or cover fetch">
-                        <span class="cover-ph-icon">🖼</span>
+                        <span class="cover-ph-icon">⊠</span>
                       </span>
                     {:else}
                       <span class="cover-ph" title="No cover — use Covers in the sidebar to fetch one">
-                        <span class="cover-ph-icon">🎮</span>
+                        <span class="cover-ph-icon">▭</span>
                       </span>
                     {/if}
 
@@ -779,10 +915,12 @@
         <span class="col-play">Play</span>
       </div>
 
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="table-body"
         bind:this={tableBodyEl}
         onscroll={(e) => library.scrollTop = e.currentTarget.scrollTop}
+        onkeydown={onNavKeydown}
       >
         <div class="table-spacer" style="height: {tableTotalSize}px">
           {#each tableVirtualRows as vItem (vItem.key)}
@@ -792,12 +930,14 @@
               {@const ctl = playControl(game)}
               <div
                 class="table-row"
-                style="height: {TABLE_ROW_HEIGHT}px; transform: translateY({vItem.start}px)"
+                style="height: {tableRowHeight}px; transform: translateY({vItem.start}px)"
+                data-game-id={game.id}
                 onclick={() => onOpenDetail(game.id)}
+                onfocus={() => focusedId = game.id}
                 oncontextmenu={(e) => onRowContextMenu(e, game)}
                 onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenDetail(game.id); } }}
                 role="button"
-                tabindex="0"
+                tabindex={rovingId === game.id ? 0 : -1}
               >
                 <span class="col-cover">
                   {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
@@ -810,11 +950,11 @@
                     />
                   {:else if game.hasCover && coverBase}
                     <span class="cover-placeholder" title="Cover unavailable — retries after the next sync or cover fetch">
-                      <span class="cover-icon">🖼</span>
+                      <span class="cover-icon">⊠</span>
                     </span>
                   {:else}
                     <span class="cover-placeholder" title="No cover — use Covers in the sidebar to fetch one">
-                      <span class="cover-icon">🎮</span>
+                      <span class="cover-icon">▭</span>
                     </span>
                   {/if}
                 </span>
@@ -968,6 +1108,12 @@
     font-weight: 600;
   }
 
+  .toggle-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+  }
+
   .view-toggle {
     display: flex;
     gap: 2px;
@@ -1078,6 +1224,15 @@
     display: flex;
     gap: 4px;
     flex-wrap: wrap;
+  }
+
+  .result-count {
+    margin-left: auto;
+    padding-left: 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .chip {
@@ -1308,6 +1463,22 @@
     white-space: nowrap;
   }
 
+  /* ── Density: compact (P1 item 7) ──────────────────────
+     Card/row sizing mirrors gridTextHeight/tableRowHeight in <script> —
+     change one, change the other, or the virtualizer windows the wrong
+     number of rows for what's actually on screen. */
+  .density-compact .grid-row { gap: 10px 12px; }
+  .density-compact .card-title {
+    margin-top: 6px;
+    font-size: 11px;
+    min-height: 32px;
+  }
+  .density-compact .card-meta {
+    margin-top: 3px;
+    min-height: 16px;
+    gap: 6px;
+  }
+
   /* ── List / table view ─────────────────────────────── */
   .table-header {
     display: grid;
@@ -1380,6 +1551,11 @@
     outline: 2px solid var(--accent);
     outline-offset: -2px;
   }
+
+  .density-compact .table-row { padding: 2px 12px; font-size: 11px; }
+  .density-compact .cover-thumb,
+  .density-compact .cover-placeholder { width: 44px; height: 25px; }
+  .density-compact .cover-icon { font-size: 12px; }
 
   .game-title {
     font-weight: 500;

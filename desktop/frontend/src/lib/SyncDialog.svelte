@@ -1,6 +1,8 @@
 <script>
   // Presentational only — sync state and event subscriptions live in
   // App.svelte so they survive tab switches. This view just renders them.
+  import Button from './Button.svelte'
+  import Spinner from './Spinner.svelte'
 
   let {
     cookieStatus = '',        // 'available' | 'not_found' | ''
@@ -75,7 +77,7 @@
     </div>
   {:else}
     <div class="cookie-status cookie-loading">
-      <div class="spinner"></div>
+      <Spinner size={16} duration={0.6} />
       <p class="status-text">Checking cookie status…</p>
     </div>
   {/if}
@@ -86,8 +88,8 @@
       <input type="checkbox" bind:checked={force} disabled={!canSync} />
       Full sync (ignore 24h cooldown)
     </label>
-    <button
-      class="btn btn-primary"
+    <Button
+      variant="primary"
       onclick={() => onSync(force)}
       disabled={!canSync}
     >
@@ -96,11 +98,11 @@
       {:else}
         Start Sync
       {/if}
-    </button>
+    </Button>
     {#if syncing}
-      <button class="btn btn-outline btn-cancel" onclick={onCancel} title="Stop the running sync">
+      <Button variant="danger" onclick={onCancel} title="Stop the running sync">
         Cancel
-      </button>
+      </Button>
     {/if}
   </div>
 
@@ -286,20 +288,6 @@
     margin: 0;
   }
 
-  /* ── Spinner ────────────────────────── */
-  .spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid var(--border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-    flex-shrink: 0;
-  }
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
   /* ── Progress ──────────────────────── */
   .progress-section {
     margin: 16px 0;
@@ -436,39 +424,4 @@
     font-family: var(--font-mono);
   }
 
-  /* ── Buttons ────────────────────────── */
-  .btn {
-    padding: 7px 16px;
-    border: none;
-    border-radius: 6px;
-    font-size: 13px;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: all 0.12s;
-  }
-  .btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .btn-primary {
-    background: var(--accent);
-    color: #fff;
-  }
-  .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-
-  .btn-outline {
-    background: transparent;
-    color: var(--text-primary);
-    border: 1px solid var(--border);
-  }
-  .btn-outline:hover:not(:disabled) { background: var(--bg-hover); }
-
-  .btn-cancel {
-    color: var(--danger);
-    border-color: color-mix(in srgb, var(--danger) 45%, transparent);
-  }
-  .btn-cancel:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--danger) 12%, transparent);
-  }
 </style>
