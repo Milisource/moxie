@@ -4,6 +4,8 @@
 > **Scope:** Moxie's Wails/Svelte desktop frontend only (the Bubble Tea TUI is out of scope)
 > **Reference set:** Steam (mass-market baseline) · Playnite (closest functional analogue — local library manager) · Heroic Games Launcher (Linux-native analogue), with light passes on GOG Galaxy 2.0, Epic, itch.io, and Steam Deck / Big Picture
 > **Method:** Web research with citations + an evidence-based audit of the real frontend (screenshots in `docs/screenshots/`, source-verified claims). Screenshots were captured against a mock backend runtime (see §6.1); every structural claim was cross-checked against `desktop/frontend/src/`.
+>
+> **Implementation status (2026-09-03, `wip-desktop-alpha`, F95-6ail):** the P0 workstream (§7 P0 items 1–4) has been shipped in the frontend — the library's default is now a cover grid with hover Play and plaintext titles, recency-first by default with a date-added sort option, per-card/row Play with a playing-state switch, and All · Installed · Ready to play · Recently played quick views. Screenshots `16-library-grid.png` … `24-library-search.png` capture the new surface against the same mock harness. The audit below (§4–§5) records the *pre-redesign* snapshot. P1/P2 items remain future work.
 
 ---
 
