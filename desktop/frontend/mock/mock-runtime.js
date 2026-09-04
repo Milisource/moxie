@@ -109,7 +109,18 @@ const App = {
   DetectGame:          () => delay().then(() => ({engine: 'Unity', version: '1.0.0'})),
   SetGameStatus:       () => delay().then(() => {}),
   SetGameWinePrefix:   () => delay().then(() => {}),
-  PlayGame:            () => delay().then(() => ({started: true})),
+  // Mirrors desktop/app.go PlayGame: rejects virtual (/virtual/) games and
+  // records a play-history entry, so the library's recency arrangement can
+  // be demoed (a launched game bubbles to the top of "recently played").
+  PlayGame:            (id) => delay().then(() => {
+    const g = gameOf(id)
+    if (!g) throw new Error('game with id ' + id + ' not found')
+    if (g.path?.startsWith('/virtual/')) {
+      throw new Error(`"${g.title}" was added from F95Zone but not yet downloaded. Use Install on its detail page to download it.`)
+    }
+    g.lastPlayed = new Date().toISOString()
+    return `Launching ${g.title}`
+  }),
 
   // ── Collections
   GetCollections:      () => delay().then(() => (EMPTY ? [] : COLLECTIONS)),
