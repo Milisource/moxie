@@ -10,6 +10,7 @@
   } from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
   import {collectionsView, addSmartCollection, removeSmartCollection, library} from './viewState.svelte.js'
+  import {makeCoverHelpers} from './cover.js'
 
   let {onOpenDetail = () => {}, onCollectionsChanged = () => {}} = $props()
 
@@ -44,15 +45,7 @@
   // triggered from the Library tab (sync/backfill) also clears stale 404s
   // cached here.
   let coverBase = $state('')
-
-  function coverSrc(id, variant = 'thumb') {
-    const epoch = library.failedCovers.has(id) ? `?r=${library.coverEpoch}` : ''
-    return `${coverBase}/cover/${id}/${variant}${epoch}`
-  }
-
-  function markFailed(id) {
-    library.failedCovers = new Set([...library.failedCovers, id])
-  }
+  const {coverSrc, markFailed} = makeCoverHelpers(() => coverBase)
 
   // ── Smart collections (client-side auto-groups, no backend rule storage —
   // see docs/desktop-ui-research.md §7 item 6) ────────────────────

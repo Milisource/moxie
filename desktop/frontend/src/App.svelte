@@ -18,6 +18,7 @@
   import SettingsView from './lib/SettingsView.svelte'
   import StatusBar from './lib/StatusBar.svelte'
   import {library, appMeta, setLastSyncAt} from './lib/viewState.svelte.js'
+  import {createPipeline} from './lib/pipeline.svelte.js'
 
   let version = $state('')
   let games = $state([])
@@ -37,26 +38,99 @@
   // survives tab switches. SyncDialog used to own its state and event
   // subscriptions, so navigating away destroyed them: an in-flight sync
   // vanished from the UI, its completion result was lost, and returning to
-  // the tab allowed starting a second concurrent run.
-  let syncState = $state({
+  // the tab allowed starting a second concurrent run. createPipeline owns
+  // the $state object and the sync:* event wiring; startSync/cancelSync
+  // below own the SyncAllGames/CancelSync calls.
+  const syncPipeline = createPipeline({
     cookieStatus: '',        // 'available' | 'not_found' | ''
     syncing: false,
     progress: {current: 0, total: 0, title: '', phase: ''},
     gameResults: [],         // {id, title, status, version}
     result: null,            // {associated, updated, skipped, errors} or null
     syncError: '',
+  }, {
+    'sync:progress': (s, data) => {
+      // A live run clears any stale rejection text (e.g. a double-click
+      // that hit the "already running" guard before the button disabled).
+      s.syncError = ''
+      s.progress = data
+      s.syncing = true
+      statusMsg = `Sync: ${syncPhaseLabel(data?.phase)} (${data?.current ?? 0}/${data?.total ?? 0})`
+    },
+    'sync:game-done': (s, data) => {
+      // A sync run cached this game's cover — retry it right away (app-level
+      // so it also fires while the library tab is hidden, see covers:complete).
+      if (data?.id && library.failedCovers.has(data.id)) {
+        library.coverEpoch++
+        const next = new Set(library.failedCovers)
+        next.delete(data.id)
+        library.failedCovers = next
+      }
+      s.gameResults = [...s.gameResults, data].slice(-50)
+    },
+    'sync:complete': async (s, data) => {
+      s.result = data
+      s.syncing = false
+      try {
+        // A sync run may have cached covers or associated new games — refresh
+        // so cover cells and rows reflect the new state.
+        await refreshGames()
+        // A sync can discover new game versions: bump lastUpdate so the
+        // updates view (and sidebar badge) refresh even while it's open.
+        lastUpdate++
+        setLastSyncAt(new Date().toISOString())
+        statusMsg = 'Sync complete — library refreshed'
+      } catch (e) {
+        statusMsg = `Sync finished, but the library refresh failed — ${e}`
+      }
+    },
+    'sync:error': (s, data) => {
+      s.syncError = data?.error || 'Sync failed'
+      s.syncing = false
+      statusMsg = `Sync error: ${s.syncError}`
+    },
   })
+  let syncState = syncPipeline.state
 
   // Cover backfill state lives here for the same reason: CoversView is
   // destroyed on tab switch, and an in-flight fetch must stay visible (and
   // non-redundant) from any view.
-  let coverState = $state({
+  const coverPipeline = createPipeline({
     gameCount: null,           // null = not loaded
     fetching: false,
     progress: {current: 0, total: 0, title: '', phase: ''},
     result: null,              // {fetched, failed, skipped, total, backfilled} or null
     coverError: '',
+  }, {
+    'covers:progress': (s, r) => {
+      s.progress = r
+      s.fetching = true
+    },
+    'covers:complete': async (s, r) => {
+      s.result = r
+      s.fetching = false
+      // Failed-cover retry bookkeeping lives here (not in GameList) because
+      // this subscription survives tab switches: a backfill finishing while
+      // the library tab is hidden must still bump the epoch so the next
+      // mount re-requests those covers instead of re-rendering cached 404s.
+      if (library.failedCovers.size > 0) {
+        library.coverEpoch++
+        library.failedCovers = new Set()
+      }
+      try {
+        await refreshGames()
+        if (r?.total === 0) statusMsg = 'All games already have covers'
+        else statusMsg = `Cover fetch complete — ${r?.fetched ?? 0} cached`
+      } catch (e) {
+        statusMsg = `Covers fetched, but the library refresh failed — ${e}`
+      }
+    },
+    'covers:error': (s, r) => {
+      s.coverError = r?.error || 'Cover fetch failed'
+      s.fetching = false
+    },
   })
+  let coverState = coverPipeline.state
 
   // ── App self-update state (App level) ─────────────────
   // The DownloadUpdate pipeline runs in the background. UpdateDialog used to
@@ -64,14 +138,27 @@
   // tab mid-download killed the progress UI and reset the button while the
   // backend kept downloading unseen. State and subscriptions live here so the
   // whole check→download→apply flow survives tab switches.
-  let appUpdateState = $state({
+  const appUpdatePipeline = createPipeline({
     checking: false,
     info: null,              // CheckForUpdate result or null
     downloading: false,
     downloadProgress: {downloaded: 0, total: 0},
     downloadComplete: false,
     error: '',
+  }, {
+    'update:progress': (s, data) => {
+      s.downloadProgress = data || s.downloadProgress
+    },
+    'update:complete': (s) => {
+      s.downloading = false
+      s.downloadComplete = true
+    },
+    'update:error': (s, data) => {
+      s.error = data?.error || 'Update failed'
+      s.downloading = false
+    },
   })
+  let appUpdateState = appUpdatePipeline.state
 
   async function checkAppUpdate() {
     if (appUpdateState.checking || appUpdateState.downloading) return
@@ -124,16 +211,53 @@
   // and its game-install:* subscriptions, so navigating back to the library
   // mid-install reset the Install button to its default while the backend
   // kept going (and a second click could start a redundant second run).
+  // Field mutations only (never a whole-object reassignment of `installState`
+  // itself) — createPipeline's $state object stays reactive that way even
+  // though the `installState` binding below isn't itself declared via $state.
+  const installPipeline = createPipeline(
+    {running: false, gameId: null, phase: '', progress: 0, error: ''},
+    {
+      'game-install:phase': (s, data) => {
+        if (Number(data?.gameID) === Number(s.gameId)) s.phase = data.phase || ''
+      },
+      'game-install:download-progress': (s, data) => {
+        if (Number(data?.gameID) === Number(s.gameId)) s.progress = Math.round(data.percent ?? 0)
+      },
+      'game-install:error': (s, data) => {
+        if (Number(data?.gameID) === Number(s.gameId)) {
+          s.running = false
+          s.phase = 'error'
+          s.error = data?.message || 'Install failed'
+          refreshGames()
+        }
+      },
+      'game-install:complete': (s, data) => {
+        if (Number(data?.gameID) === Number(s.gameId)) {
+          s.running = false
+          s.phase = 'done'
+          s.progress = 100
+          refreshGames()
+          lastUpdate++
+        }
+      },
+    }
+  )
   /** @type {{running:boolean, gameId:number|null, phase:string, progress:number, error:string}} */
-  let installState = $state({running: false, gameId: null, phase: '', progress: 0, error: ''})
+  let installState = installPipeline.state
 
   async function startInstall(gameId, dest) {
     if (installState.running) return
-    installState = {running: true, gameId, phase: 'selecting-link', progress: 0, error: ''}
+    installState.running = true
+    installState.gameId = gameId
+    installState.phase = 'selecting-link'
+    installState.progress = 0
+    installState.error = ''
     try {
       await InstallGame(gameId, dest)
     } catch (e) {
-      installState = {...installState, running: false, phase: 'error', error: String(e)}
+      installState.running = false
+      installState.phase = 'error'
+      installState.error = String(e)
     }
   }
 
@@ -561,39 +685,12 @@
     } catch (e) { statusMsg = `Couldn't empty the trash — ${e}` }
   }
 
-  let unsubAutoScan
-  let unsubAutoScanError
-  let unsubAutoScanStarted
-  let unsubAutoScanProgress
-  let unsubSyncProgress
-  let unsubSyncGameDone
-  let unsubSyncComplete
-  let unsubSyncError
-  let unsubCoversProgress
-  let unsubCoversComplete
-  let unsubCoversError
-  let unsubScanProgress
-  let unsubScanComplete
-  let unsubScanError
-  let unsubGamePhase
-  let unsubGameDownload
-  let unsubGameExtract
-  let unsubGameError
-  let unsubGameManual
-  let unsubGameComplete
-  let unsubGameBatchStart
-  let unsubGameBatchProgress
-  let unsubGameDone
-  let unsubGameBatchComplete
-  let unsubGameCancelled
-  let unsubGameIdle
-  let unsubAppUpdateProgress
-  let unsubAppUpdateComplete
-  let unsubAppUpdateError
-  let unsubInstallPhase
-  let unsubInstallProgress
-  let unsubInstallError
-  let unsubInstallComplete
+  // Manual EventsOn subscriptions that don't fit createPipeline (auto-scan
+  // status messages, and the per-game update/batch/retry pipeline, which is
+  // keyed by gameID rather than being a single flat state object) are
+  // collected here instead of one `let unsubX` + one teardown line each —
+  // cleanup below just loops the array.
+  let subs = []
 
   // Global search shortcut (P1 item 8): "/" or Ctrl/Cmd+F jumps to the
   // library and focuses its search field, Steam/Playnite-style. "/" is only
@@ -620,7 +717,7 @@
     init()
     window.addEventListener('keydown', handleGlobalKeydown)
     // Live library refresh when the directory watcher finishes an auto-scan.
-    unsubAutoScan = EventsOn('scan:auto-complete', async (r) => {
+    subs.push(EventsOn('scan:auto-complete', async (r) => {
       let msg = ''
       if (r) {
         const parts = []
@@ -639,97 +736,59 @@
       } catch (e) {
         statusMsg = `Auto-scan finished, but the library refresh failed — ${e}`
       }
-    })
-    unsubAutoScanError = EventsOn('scan:auto-error', (r) => {
+    }))
+    subs.push(EventsOn('scan:auto-error', (r) => {
       statusMsg = `Auto-scan failed — ${r?.error || 'unknown error'}`
-    })
+    }))
     // The directory watcher's auto-scans emit these but nothing displayed
     // them — surface them in the status bar so background scanning is
     // visible from any tab.
-    unsubAutoScanStarted = EventsOn('scan:auto', () => {
+    subs.push(EventsOn('scan:auto', () => {
       statusMsg = 'Auto-scan in progress…'
-    })
-    unsubAutoScanProgress = EventsOn('scan:auto-progress', (r) => {
+    }))
+    subs.push(EventsOn('scan:auto-progress', (r) => {
       statusMsg = `Auto-scan in progress… (${r?.dirsExamined ?? 0} dirs, ${r?.gamesFound ?? 0} games)`
-    })
-    // Sync events are tracked at app level so the sync view keeps its state
-    // (and the status bar keeps reporting progress) no matter which tab is
-    // active. SyncDialog just renders this state.
-    unsubSyncProgress = EventsOn('sync:progress', (data) => {
-      // A live run clears any stale rejection text (e.g. a double-click
-      // that hit the "already running" guard before the button disabled).
-      syncState.syncError = ''
-      syncState.progress = data
-      syncState.syncing = true
-      statusMsg = `Sync: ${syncPhaseLabel(data?.phase)} (${data?.current ?? 0}/${data?.total ?? 0})`
-    })
-    unsubSyncGameDone = EventsOn('sync:game-done', (data) => {
-      // A sync run cached this game's cover — retry it right away (app-level
-      // so it also fires while the library tab is hidden, see covers:complete).
-      if (data?.id && library.failedCovers.has(data.id)) {
-        library.coverEpoch++
-        const next = new Set(library.failedCovers)
-        next.delete(data.id)
-        library.failedCovers = next
-      }
-      syncState.gameResults = [...syncState.gameResults, data].slice(-50)
-    })
-    unsubSyncComplete = EventsOn('sync:complete', async (data) => {
-      syncState.result = data
-      syncState.syncing = false
-      try {
-        // A sync run may have cached covers or associated new games — refresh
-        // so cover cells and rows reflect the new state.
-        await refreshGames()
-        // A sync can discover new game versions: bump lastUpdate so the
-        // updates view (and sidebar badge) refresh even while it's open.
-        lastUpdate++
-        setLastSyncAt(new Date().toISOString())
-        statusMsg = 'Sync complete — library refreshed'
-      } catch (e) {
-        statusMsg = `Sync finished, but the library refresh failed — ${e}`
-      }
-    })
-    unsubSyncError = EventsOn('sync:error', (data) => {
-      syncState.syncError = data?.error || 'Sync failed'
-      syncState.syncing = false
-      statusMsg = `Sync error: ${syncState.syncError}`
-    })
-    // Manual scan events live at app level too (like sync): the backend scan
-    // runs in a goroutine, so navigating away must not drop the running flag
-    // or the completion result.
-    unsubScanProgress = EventsOn('scan:progress', (data) => {
+    }))
+    // Manual scan events live at app level: the backend scan runs in a
+    // goroutine, so navigating away must not drop the running flag or the
+    // completion result. (Same shape as the pipelines in pipeline.svelte.js,
+    // but kept manual here rather than folded in — out of scope for this pass.)
+    subs.push(EventsOn('scan:progress', (data) => {
       scanState.progress = data
-    })
-    unsubScanComplete = EventsOn('scan:complete', (data) => {
+    }))
+    subs.push(EventsOn('scan:complete', (data) => {
       scanState.lastResult = data
       scanState.scanning = false
       refreshGames()
-    })
-    unsubScanError = EventsOn('scan:error', (data) => {
+    }))
+    subs.push(EventsOn('scan:error', (data) => {
       scanState.scanError = data.error || 'Unknown error'
       scanState.scanning = false
-    })
+    }))
     // Game update pipeline events (App level so they survive tab switches).
-    unsubGamePhase = EventsOn('game-update:phase', (data) => {
+    // Kept manual rather than folded into createPipeline: gameStates is
+    // keyed by gameID (not a flat object) and batchState/retryQueue add
+    // sequential retry orchestration on top — a shape the shared factory
+    // isn't meant to cover.
+    subs.push(EventsOn('game-update:phase', (data) => {
       updateGS(data.gameID, {phase: data.phase})
-    })
-    unsubGameDownload = EventsOn('game-update:download-progress', (data) => {
+    }))
+    subs.push(EventsOn('game-update:download-progress', (data) => {
       updateGS(data.gameID, {
         percent: Math.min(data.percent ?? 0, 100),
         speed: data.speedBytesPerSec ?? 0,
         bytesDownloaded: data.bytesDownloaded ?? 0,
         totalBytes: data.totalBytes ?? 0,
       })
-    })
-    unsubGameExtract = EventsOn('game-update:extract-progress', (data) => {
+    }))
+    subs.push(EventsOn('game-update:extract-progress', (data) => {
       updateGS(data.gameID, {
         filesExtracted: data.filesExtracted ?? 0,
         totalFiles: data.totalFiles ?? 0,
         currentFile: data.currentFile ?? '',
       })
-    })
-    unsubGameManual = EventsOn('game-update:manual-required', (data) => {
+    }))
+    subs.push(EventsOn('game-update:manual-required', (data) => {
       // Auto-download failed (Cloudflare-blocked host, dead link, …). The
       // pipeline has already ended in the error state; flag the game so the
       // UI can offer the file-picker fallback (ProvideUpdateFile).
@@ -737,8 +796,8 @@
         manualRequired: true,
         manualHost: data.host || '',
       })
-    })
-    unsubGameError = EventsOn('game-update:error', (data) => {
+    }))
+    subs.push(EventsOn('game-update:error', (data) => {
       // A gameID of 0 (or the 'list-updatable' step) means the whole batch
       // failed before it started (e.g. GetUpdatableGames error). The backend
       // emits this instead of batch-complete, so treat it as a batch-level
@@ -759,8 +818,8 @@
         return
       }
       updateGS(data.gameID, {phase: 'error', error: data.message || 'Unknown error', step: data.step || ''})
-    })
-    unsubGameComplete = EventsOn('game-update:complete', (data) => {
+    }))
+    subs.push(EventsOn('game-update:complete', (data) => {
       updateGS(data.gameID, {
         phase: 'done',
         oldVersion: data.oldVersion || '',
@@ -773,8 +832,8 @@
         refreshGames()
         lastUpdate++
       }
-    })
-    unsubGameBatchStart = EventsOn('game-update:batch-start', (data) => {
+    }))
+    subs.push(EventsOn('game-update:batch-start', (data) => {
       batchState = {
         running: true,
         current: 0,
@@ -783,13 +842,13 @@
         results: [],
         error: '',
       }
-    })
-    unsubGameBatchProgress = EventsOn('game-update:batch-progress', (data) => {
+    }))
+    subs.push(EventsOn('game-update:batch-progress', (data) => {
       if (batchState) {
         batchState = {...batchState, current: data.current ?? 0, currentGameTitle: data.currentGameTitle || ''}
       }
-    })
-    unsubGameDone = EventsOn('game-update:game-done', (data) => {
+    }))
+    subs.push(EventsOn('game-update:game-done', (data) => {
       if (batchState) {
         batchState = {
           ...batchState,
@@ -801,8 +860,8 @@
           }],
         }
       }
-    })
-    unsubGameBatchComplete = EventsOn('game-update:batch-complete', (data) => {
+    }))
+    subs.push(EventsOn('game-update:batch-complete', (data) => {
       if (batchState) {
         batchState = {
           ...batchState,
@@ -814,16 +873,16 @@
         refreshGames()
         lastUpdate++
       }
-    })
-    unsubGameCancelled = EventsOn('game-update:cancelled', () => {
+    }))
+    subs.push(EventsOn('game-update:cancelled', () => {
       markAllAsCancelled()
-    })
+    }))
     // The backend releases its single-run lock and emits this after EVERY
     // pipeline (single update, batch, install). It carries no gameID, so the
     // only pipeline we can attribute it to is the current sequential retry —
     // record its outcome (phase was already set by complete/error) and start
     // the next one. This is what chains retries one-at-a-time.
-    unsubGameIdle = EventsOn('game-update:idle', () => {
+    subs.push(EventsOn('game-update:idle', () => {
       if (retryInFlight !== null) {
         const gs = gameStates[retryInFlight] || {}
         const ok = gs.phase === 'done'
@@ -844,111 +903,14 @@
       // rejected while the previous pipeline still held the lock and the game
       // was re-queued.
       pumpRetryQueue()
-    })
-    // Cover backfill events: live at App level so the state (and the
-    // in-flight run) survives tab switches. After completion, newly cached
-    // covers need hasCover=true to render at all — refresh the library.
-    unsubCoversProgress = EventsOn('covers:progress', (r) => {
-      coverState.progress = r
-      coverState.fetching = true
-    })
-    unsubCoversComplete = EventsOn('covers:complete', async (r) => {
-      coverState.result = r
-      coverState.fetching = false
-      // Failed-cover retry bookkeeping lives here (not in GameList) because
-      // this subscription survives tab switches: a backfill finishing while
-      // the library tab is hidden must still bump the epoch so the next
-      // mount re-requests those covers instead of re-rendering cached 404s.
-      if (library.failedCovers.size > 0) {
-        library.coverEpoch++
-        library.failedCovers = new Set()
-      }
-      try {
-        await refreshGames()
-        if (r?.total === 0) statusMsg = 'All games already have covers'
-        else statusMsg = `Cover fetch complete — ${r?.fetched ?? 0} cached`
-      } catch (e) {
-        statusMsg = `Covers fetched, but the library refresh failed — ${e}`
-      }
-    })
-    unsubCoversError = EventsOn('covers:error', (r) => {
-      coverState.coverError = r?.error || 'Cover fetch failed'
-      coverState.fetching = false
-    })
-    // App self-update flow events (App level so the download keeps its UI
-    // across tab switches — the backend pipeline runs in the background).
-    unsubAppUpdateProgress = EventsOn('update:progress', (data) => {
-      appUpdateState.downloadProgress = data || appUpdateState.downloadProgress
-    })
-    unsubAppUpdateComplete = EventsOn('update:complete', () => {
-      appUpdateState.downloading = false
-      appUpdateState.downloadComplete = true
-    })
-    unsubAppUpdateError = EventsOn('update:error', (data) => {
-      appUpdateState.error = data?.error || 'Update failed'
-      appUpdateState.downloading = false
-    })
-    // Install pipeline events (App level so the install keeps its UI across
-    // navigation; GameDetail just renders installState). InstallGame shares
-    // the update lock, so the shell must also know when it is running.
-    unsubInstallPhase = EventsOn('game-install:phase', (data) => {
-      if (Number(data?.gameID) === Number(installState.gameId)) {
-        installState = {...installState, phase: data.phase || ''}
-      }
-    })
-    unsubInstallProgress = EventsOn('game-install:download-progress', (data) => {
-      if (Number(data?.gameID) === Number(installState.gameId)) {
-        installState = {...installState, progress: Math.round(data.percent ?? 0)}
-      }
-    })
-    unsubInstallError = EventsOn('game-install:error', (data) => {
-      if (Number(data?.gameID) === Number(installState.gameId)) {
-        installState = {...installState, running: false, phase: 'error', error: data?.message || 'Install failed'}
-        refreshGames()
-      }
-    })
-    unsubInstallComplete = EventsOn('game-install:complete', (data) => {
-      if (Number(data?.gameID) === Number(installState.gameId)) {
-        installState = {...installState, running: false, phase: 'done', progress: 100}
-        refreshGames()
-        lastUpdate++
-      }
-    })
+    }))
     return () => {
       window.removeEventListener('keydown', handleGlobalKeydown)
-      if (unsubAutoScan) unsubAutoScan()
-      if (unsubAutoScanError) unsubAutoScanError()
-      if (unsubAutoScanStarted) unsubAutoScanStarted()
-      if (unsubAutoScanProgress) unsubAutoScanProgress()
-      if (unsubSyncProgress) unsubSyncProgress()
-      if (unsubSyncGameDone) unsubSyncGameDone()
-      if (unsubSyncComplete) unsubSyncComplete()
-      if (unsubSyncError) unsubSyncError()
-      if (unsubScanProgress) unsubScanProgress()
-      if (unsubScanComplete) unsubScanComplete()
-      if (unsubScanError) unsubScanError()
-      if (unsubGamePhase) unsubGamePhase()
-      if (unsubGameDownload) unsubGameDownload()
-      if (unsubGameExtract) unsubGameExtract()
-      if (unsubGameError) unsubGameError()
-      if (unsubGameManual) unsubGameManual()
-      if (unsubGameComplete) unsubGameComplete()
-      if (unsubGameBatchStart) unsubGameBatchStart()
-      if (unsubGameBatchProgress) unsubGameBatchProgress()
-      if (unsubGameDone) unsubGameDone()
-      if (unsubGameBatchComplete) unsubGameBatchComplete()
-      if (unsubGameCancelled) unsubGameCancelled()
-      if (unsubGameIdle) unsubGameIdle()
-      if (unsubCoversProgress) unsubCoversProgress()
-      if (unsubCoversComplete) unsubCoversComplete()
-      if (unsubCoversError) unsubCoversError()
-      if (unsubAppUpdateProgress) unsubAppUpdateProgress()
-      if (unsubAppUpdateComplete) unsubAppUpdateComplete()
-      if (unsubAppUpdateError) unsubAppUpdateError()
-      if (unsubInstallPhase) unsubInstallPhase()
-      if (unsubInstallProgress) unsubInstallProgress()
-      if (unsubInstallError) unsubInstallError()
-      if (unsubInstallComplete) unsubInstallComplete()
+      subs.forEach(unsub => unsub())
+      syncPipeline.unsubscribe()
+      coverPipeline.unsubscribe()
+      appUpdatePipeline.unsubscribe()
+      installPipeline.unsubscribe()
     }
   })
 </script>

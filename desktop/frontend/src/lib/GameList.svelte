@@ -1,10 +1,17 @@
 <script>
   import {onMount, onDestroy, tick} from 'svelte'
-  import {createVirtualizer} from '@tanstack/svelte-virtual'
   import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCoverBaseURL, PlayGame} from '../../wailsjs/go/main/App'
-  import {engineColor} from './engineColors.js'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
   import {library, setViewMode, setDensity} from './viewState.svelte.js'
+  import {makeCoverHelpers} from './cover.js'
+  import {createVirtualList} from './virtualList.svelte.js'
+  import {createLibraryNav} from './useLibraryNav.svelte.js'
+  import {
+    QUICK_VIEWS, SORT_OPTIONS,
+    quickViewMatches, sortCompare, toggleSort, sortIcon, onSortSelect,
+  } from './useLibrarySort.svelte.js'
+  import GameGridCard from './GameGridCard.svelte'
+  import GameTableRow from './GameTableRow.svelte'
 
   let {
     games = [],
@@ -57,17 +64,6 @@
   }
 
   // ── Play-state derivation (P0-4 quick views) ────────────────
-  // Orthogonal to `status` (the user's curation axis): a game is "installed"
-  // when it has a real local path (not a /virtual/ F95Zone reference) and
-  // "ready to play" when it is installed and nothing (update/install
-  // pipeline) is currently mutating it.
-  const VIRTUAL_PATH = '/virtual/'
-  const UPDATE_BUSY_PHASES = ['syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
-
-  function isVirtual(g) {
-    return !!g?.path?.startsWith(VIRTUAL_PATH)
-  }
-
   // `gameStates` is replaced wholesale on every download/extract progress
   // tick (up to 5x/sec while any update is running), but only phase
   // *transitions* actually change which games are "busy". Without this
@@ -75,6 +71,7 @@
   // re-filter + re-sort the entire library on every percent tick. Track just
   // the busy-id membership and only touch this $state (and thus retrigger
   // `displayed`) when that membership set actually changes.
+  const UPDATE_BUSY_PHASES = ['syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
   let busyIds = $state(new Set())
   $effect(() => {
     const next = new Set()
@@ -101,14 +98,7 @@
   // always-subscribed handlers (covers:complete, sync:game-done) so it also
   // fires while this view is unmounted.
 
-  function coverSrc(id, variant = 'thumb') {
-    const epoch = library.failedCovers.has(id) ? `?r=${library.coverEpoch}` : ''
-    return `${coverBase}/cover/${id}/${variant}${epoch}`
-  }
-
-  function markFailed(id) {
-    library.failedCovers = new Set([...library.failedCovers, id])
-  }
+  const {coverSrc, markFailed} = makeCoverHelpers(() => coverBase)
 
   onMount(async () => {
     try {
@@ -130,8 +120,8 @@
 
   onDestroy(() => {
     clearTimeout(debounceTimer)
-    unsubGridVirtualizer()
-    unsubTableVirtualizer()
+    gridVirtualizer.unsubscribe()
+    tableVirtualizer.unsubscribe()
   })
 
   // ── Search & Filters ──────────────────────────────────────────
@@ -164,144 +154,16 @@
   // Available statuses (shared with the context menu via lib/statuses.js)
   const statuses = ['All', ...GAME_STATUSES]
 
-  // ── Quick views (P0-4) ────────────────────────────────────────
-  // Primary play-state tabs; engine/status filters below stay secondary.
-  const QUICK_VIEWS = [
-    {value: 'all',       label: 'All'},
-    {value: 'installed', label: 'Installed'},
-    {value: 'ready',     label: 'Ready to play'},
-    {value: 'recent',    label: 'Recently played'},
-  ]
-
-  function quickViewMatches(v, g) {
-    switch (v) {
-      case 'installed': return !isVirtual(g)
-      case 'ready':     return !isVirtual(g) && !busyIds.has(String(g.id))
-      case 'recent':    return tsVal(g, 'lastPlayed') !== null
-      default:          return true
-    }
-  }
-
-  // ── Sorting / arrangement ─────────────────────────────────────
-  // Default arrangement is recency-first (P0-2): games with a last-played
-  // timestamp sort most-recent first, never-played games group last (title
-  // asc). "Date added" is a first-class option — moxie owns created_at,
-  // which competitors like Heroic can't even offer. Timestamp fields are
-  // optional on the summary (see mock-data.js enrichment note); missing
-  // values degrade to stable fallbacks instead of breaking the sort.
-  const SORT_OPTIONS = [
-    {value: 'recent', label: 'Recently played'},
-    {value: 'added',  label: 'Date added'},
-    {value: 'title',  label: 'Title A–Z'},
-    {value: 'engine', label: 'Engine'},
-    {value: 'version',label: 'Version'},
-    {value: 'size',   label: 'Size'},
-    {value: 'status', label: 'Status'},
-  ]
-
-  // Numeric-aware version comparison: "10.0" sorts after "9.0". Splits on
-  // non-alphanumerics and compares token-wise — numeric tokens numerically,
-  // anything else lexically (numeric tokens first when mixed).
-  function compareVersions(a, b) {
-    const ta = String(a || '')
-    const tb = String(b || '')
-    if (ta === tb) return 0
-    const pa = ta.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
-    const pb = tb.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
-    const len = Math.max(pa.length, pb.length)
-    for (let i = 0; i < len; i++) {
-      const x = pa[i]
-      const y = pb[i]
-      if (x === undefined) return -1
-      if (y === undefined) return 1
-      const xNum = /^\d+$/.test(x)
-      const yNum = /^\d+$/.test(y)
-      if (xNum && yNum) {
-        const n = parseInt(x, 10) - parseInt(y, 10)
-        if (n !== 0) return n
-      } else if (xNum !== yNum) {
-        return xNum ? -1 : 1
-      } else {
-        const c = x.localeCompare(y)
-        if (c !== 0) return c
-      }
-    }
-    return 0
-  }
-
-  function tsVal(g, key) {
-    const s = g?.[key]
-    if (!s) return null
-    const t = Date.parse(s)
-    return Number.isNaN(t) ? null : t
-  }
-
-  function toggleSort(col) {
-    if (library.sortColumn === col) {
-      library.sortDesc = !library.sortDesc
-    } else {
-      library.sortColumn = col
-      library.sortDesc = false
-    }
-  }
-
-  function sortIcon(col) {
-    if (library.sortColumn !== col) return '▽'
-    return library.sortDesc ? '▲' : '▼'
-  }
-
-  function onSortSelect(e) {
-    library.sortColumn = e.target.value
-    // Recency & date-added default to most-recent-first; column sorts start
-    // ascending (clicking a header toggles direction).
-    library.sortDesc = e.target.value === 'added'
-  }
-
-  function sortCompare(a, b) {
-    switch (library.sortColumn) {
-      case 'recent': {
-        const ta = tsVal(a, 'lastPlayed')
-        const tb = tsVal(b, 'lastPlayed')
-        if (ta === null && tb === null) {
-          return (a.title || '').localeCompare(b.title || '', undefined, {numeric: true})
-        }
-        if (ta === null) return 1
-        if (tb === null) return -1
-        return tb - ta                     // most recent first
-      }
-      case 'added': {
-        const ta = tsVal(a, 'createdAt')
-        const tb = tsVal(b, 'createdAt')
-        let cmp
-        if (ta === null && tb === null) cmp = (a.id || 0) - (b.id || 0)
-        else if (ta === null) cmp = 1
-        else if (tb === null) cmp = -1
-        else cmp = ta - tb
-        return library.sortDesc ? -cmp : cmp
-      }
-      case 'title':
-        return (a.title || '').localeCompare(b.title || '', undefined, {numeric: true})
-      case 'engine':
-        return (a.engine || '').localeCompare(b.engine || '')
-      case 'version':
-        return compareVersions(a.version, b.version)
-      case 'status':
-        return (a.status || '').localeCompare(b.status || '')
-      case 'size':
-        return (a.sizeBytes || 0) - (b.sizeBytes || 0)
-      default:
-        return 0
-    }
-  }
-
   // ── Derived: quick-view-filtered + sorted list ───────────────
+  // Sort options/comparator/quick-view predicates live in
+  // useLibrarySort.svelte.js — see that module for the arrangement rules.
   let displayed = $derived.by(() => {
     // 1. Use search results if available, else full list
     let list = searchResults ?? games
 
     // 2. Filter by quick view (primary axis)
     if (library.quickView !== 'all') {
-      list = list.filter(g => quickViewMatches(library.quickView, g))
+      list = list.filter(g => quickViewMatches(library.quickView, g, busyIds))
     }
 
     // 3. Filter by engine (secondary)
@@ -374,42 +236,25 @@
     return rows
   })
 
-  // NOTE on the subscribe-by-hand pattern below: `setOptions()` unconditionally
-  // force-emits a new store value on every call (see the library's source —
-  // it re-sets the writable even when the visible range didn't change, so
-  // count-only updates still notify). Reading the store reactively (`$store`)
-  // from *inside* the same $effect that calls `.setOptions()` would make that
-  // effect depend on its own output and spin forever
-  // (`effect_update_depth_exceeded`). So: `.setOptions()`/`.measure()` are
-  // called on a plain (non-reactive) reference to the instance, and a
-  // hand-rolled `.subscribe()` mirrors the current virtual items/total size
-  // into actual `$state` for the template to read.
-  let gridVirtualizerApi        // plain ref — same singleton instance every emit
-  let gridVirtualRows = $state.raw([])
-  let gridTotalSize = $state(0)
-  const unsubGridVirtualizer = createVirtualizer({
+  // See virtualList.svelte.js for why this isn't a plain reactive $store read.
+  const gridVirtualizer = createVirtualList({
     count: 0,
     getScrollElement: () => gridEl,
     estimateSize: () => gridRowHeight,
     overscan: 3,
-  }).subscribe(v => {
-    gridVirtualizerApi = v
-    gridVirtualRows = v.getVirtualItems()
-    gridTotalSize = v.getTotalSize()
   })
 
   $effect(() => {
     const el = gridEl
     const rows = gridRows
     const rowHeight = gridRowHeight
-    gridVirtualizerApi?.setOptions({
+    gridVirtualizer.setOptions({
       count: rows.length,
       getScrollElement: () => el,
       estimateSize: () => rowHeight,
       overscan: 3,
       getItemKey: (i) => rows[i]?.map(g => g.id).join(',') ?? i,
     })
-    gridVirtualizerApi?.measure()
   })
 
   // Table rows are uniform height, so windowing is simpler — one measurement
@@ -418,32 +263,24 @@
   // thumb/padding for a denser data-table feel (P1 item 7).
   let tableRowHeight = $derived(library.density === 'compact' ? 34 : 49)
 
-  let tableVirtualizerApi
-  let tableVirtualRows = $state.raw([])
-  let tableTotalSize = $state(0)
-  const unsubTableVirtualizer = createVirtualizer({
+  const tableVirtualizer = createVirtualList({
     count: 0,
     getScrollElement: () => tableBodyEl,
     estimateSize: () => tableRowHeight,
     overscan: 8,
-  }).subscribe(v => {
-    tableVirtualizerApi = v
-    tableVirtualRows = v.getVirtualItems()
-    tableTotalSize = v.getTotalSize()
   })
 
   $effect(() => {
     const el = tableBodyEl
     const rows = displayed
     const rowHeight = tableRowHeight
-    tableVirtualizerApi?.setOptions({
+    tableVirtualizer.setOptions({
       count: rows.length,
       getScrollElement: () => el,
       estimateSize: () => rowHeight,
       overscan: 8,
       getItemKey: (i) => rows[i]?.id ?? i,
     })
-    tableVirtualizerApi?.measure()
   })
 
   // ── Search with debounce ──────────────────────────────────────
@@ -484,45 +321,24 @@
     debounceTimer = setTimeout(() => doSearch(library.search), 300)
   }
 
-  // ── Engine colors — imported from shared module ───────────────
-  // See engineColors.js for the canonical palette matching TUI styles
-
-  function hasUpdate(game) {
-    return game.latestVersion && game.version &&
-           game.latestVersion !== game.version
-  }
-
-  function lastPlayedDate(g) {
-    const t = tsVal(g, 'lastPlayed')
-    return t === null ? null : new Date(t)
-  }
-
-  function relativePlayed(d) {
-    const mins = Math.floor((Date.now() - d.getTime()) / 60000)
-    if (mins < 1) return 'just now'
-    if (mins < 60) return `${mins}m ago`
-    const hours = Math.floor(mins / 60)
-    if (hours < 24) return `${hours}h ago`
-    const days = Math.floor(hours / 24)
-    if (days < 30) return `${days}d ago`
-    const months = Math.floor(days / 30)
-    if (months < 12) return `${months}mo ago`
-    return `${Math.floor(months / 12)}y ago`
-  }
-
   // ── Context Menu ──────────────────────────────────────────────
   let contextMenu = $state(null)     // {x, y, game} or null
   let contextMenuView = $state('main') // 'main' | 'status'
 
+  function positionContextMenu(x, y, game) {
+    const menuW = 200, menuH = 220
+    contextMenu = {
+      x: Math.min(x, window.innerWidth - menuW),
+      y: Math.min(y, window.innerHeight - menuH),
+      game,
+    }
+    contextMenuView = 'main'
+  }
+
   function onRowContextMenu(e, game) {
     e.preventDefault()
     closeContextMenu()
-    // position menu, keeping it inside viewport
-    const menuW = 200, menuH = 220
-    const x = Math.min(e.clientX, window.innerWidth - menuW)
-    const y = Math.min(e.clientY, window.innerHeight - menuH)
-    contextMenu = {x, y, game}
-    contextMenuView = 'main'
+    positionContextMenu(e.clientX, e.clientY, game)
   }
 
   function closeContextMenu() {
@@ -531,82 +347,25 @@
   }
 
   // ── Keyboard grid/list navigation + context-menu parity (P2 item 10) ──
-  // Every card/row was individually tabindex="0" — fine for a dozen games,
-  // a tab-trap for a real library (Tab would walk all 400+ before reaching
-  // the next sidebar item). Switched to a roving tabindex (Steam/Playnite
-  // pattern): exactly one card/row is a Tab stop at a time; arrow keys move
-  // it and drive focus, so Tab in/out of the library costs one stop either
-  // way. `rovingId` falls back to the first visible item whenever the
-  // previously-focused id drops out of `displayed` (filter/sort changed
-  // under it) so a stop is always reachable.
-  let focusedId = $state(null)
-  let rovingId = $derived.by(() => {
-    if (focusedId != null && displayed.some(g => g.id === focusedId)) return focusedId
-    return displayed[0]?.id ?? null
+  // Roving tabindex + arrow-key nav lives in useLibraryNav.svelte.js — this
+  // just wires it to the grid/table DOM and virtualizers it owns.
+  const nav = createLibraryNav({
+    getDisplayed: () => displayed,
+    getViewMode: () => library.viewMode,
+    getGridColumns: () => gridColumns,
+    getContainer: () => (library.viewMode === 'grid' ? gridEl : tableBodyEl),
+    scrollToIndex: (nextIdx) => {
+      if (library.viewMode === 'grid') {
+        gridVirtualizer.scrollToIndex(Math.floor(nextIdx / gridColumns), {align: 'auto'})
+      } else {
+        tableVirtualizer.scrollToIndex(nextIdx, {align: 'auto'})
+      }
+    },
+    onOpenContextMenu: (rect, game) => {
+      closeContextMenu()
+      positionContextMenu(rect.left, rect.bottom + 4, game)
+    },
   })
-
-  function clampIndex(i) {
-    return Math.max(0, Math.min(displayed.length - 1, i))
-  }
-
-  // Rows only exist in the DOM within the virtualizer's window, so moving
-  // focus onto an off-screen target has to scroll it into view first, wait
-  // a tick for it to actually mount, then focus the real element.
-  async function focusGameEl(id) {
-    await tick()
-    const container = library.viewMode === 'grid' ? gridEl : tableBodyEl
-    container?.querySelector(`[data-game-id="${id}"]`)?.focus()
-  }
-
-  async function moveFocus(delta) {
-    if (displayed.length === 0) return
-    const curIdx = focusedId != null ? displayed.findIndex(g => g.id === focusedId) : -1
-    const nextIdx = clampIndex((curIdx === -1 ? 0 : curIdx) + delta)
-    const g = displayed[nextIdx]
-    if (!g) return
-    focusedId = g.id
-    if (library.viewMode === 'grid') {
-      gridVirtualizerApi?.scrollToIndex(Math.floor(nextIdx / gridColumns), {align: 'auto'})
-    } else {
-      tableVirtualizerApi?.scrollToIndex(nextIdx, {align: 'auto'})
-    }
-    await focusGameEl(g.id)
-  }
-
-  // Right-click already opens the context menu (positioned at the mouse);
-  // the keyboard equivalent (Menu key / Shift+F10, same as Windows Explorer)
-  // positions it against the focused card/row's own bounding box instead.
-  function openContextMenuFromKeyboard(e) {
-    const el = e.target?.closest?.('[data-game-id]')
-    const game = el && displayed.find(g => String(g.id) === el.dataset.gameId)
-    if (!game) return
-    closeContextMenu()
-    const rect = el.getBoundingClientRect()
-    const menuW = 200, menuH = 220
-    const x = Math.min(rect.left, window.innerWidth - menuW)
-    const y = Math.min(rect.bottom + 4, window.innerHeight - menuH)
-    contextMenu = {x, y, game}
-    contextMenuView = 'main'
-  }
-
-  function onNavKeydown(e) {
-    if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
-      e.preventDefault()
-      openContextMenuFromKeyboard(e)
-      return
-    }
-    const cols = library.viewMode === 'grid' ? gridColumns : 1
-    switch (e.key) {
-      case 'ArrowRight':
-        if (library.viewMode !== 'grid') return
-        e.preventDefault(); moveFocus(1); break
-      case 'ArrowLeft':
-        if (library.viewMode !== 'grid') return
-        e.preventDefault(); moveFocus(-1); break
-      case 'ArrowDown': e.preventDefault(); moveFocus(cols); break
-      case 'ArrowUp':   e.preventDefault(); moveFocus(-cols); break
-    }
-  }
 
   async function handleStatus(status) {
     if (!contextMenu?.game) return
@@ -806,88 +565,27 @@
         class="grid-scroll"
         bind:this={gridEl}
         onscroll={(e) => library.gridScrollTop = e.currentTarget.scrollTop}
-        onkeydown={onNavKeydown}
+        onkeydown={nav.onNavKeydown}
       >
-        <div class="grid-spacer" style="height: {gridTotalSize}px">
-          {#each gridVirtualRows as vRow (vRow.key)}
+        <div class="grid-spacer" style="height: {gridVirtualizer.totalSize}px">
+          {#each gridVirtualizer.virtualRows as vRow (vRow.key)}
             <div
               class="grid-row"
               style="grid-template-columns: repeat({gridColumns}, 1fr); height: {gridRowHeight - GRID_GAP}px; transform: translateY({vRow.start + GRID_GAP}px)"
             >
               {#each gridRows[vRow.index] ?? [] as game (game.id)}
-                <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_tabindex -->
-                {@const ctl = playControl(game)}
-                <div
-                  class="card"
-                  role="button"
-                  tabindex={rovingId === game.id ? 0 : -1}
-                  data-game-id={game.id}
-                  onclick={() => onOpenDetail(game.id)}
-                  onfocus={() => focusedId = game.id}
-                  onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenDetail(game.id); } }}
-                  oncontextmenu={(e) => onRowContextMenu(e, game)}
-                >
-                  <div class="cover-frame">
-                    {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
-                      <img
-                        class="cover-img"
-                        src={coverSrc(game.id)}
-                        alt="{game.title} cover"
-                        loading="lazy"
-                        onerror={() => markFailed(game.id)}
-                      />
-                    {:else if game.hasCover && coverBase}
-                      <span class="cover-ph" title="Cover unavailable — retries after the next sync or cover fetch">
-                        <span class="cover-ph-icon">⊠</span>
-                      </span>
-                    {:else}
-                      <span class="cover-ph" title="No cover — use Covers in the sidebar to fetch one">
-                        <span class="cover-ph-icon">▭</span>
-                      </span>
-                    {/if}
-
-                    {#if hasUpdate(game)}
-                      <span class="card-badge badge-update" title="Update available: {game.latestVersion}">
-                        ⇪ {game.version} → {game.latestVersion}
-                      </span>
-                    {/if}
-                    {#if isVirtual(game)}
-                      <span class="card-badge badge-virtual">Not installed</span>
-                    {/if}
-
-                    <button
-                      class="card-play"
-                      class:state-launching={ctl.state === 'launching'}
-                      class:state-playing={ctl.state === 'playing'}
-                      class:state-error={ctl.state === 'error'}
-                      disabled={ctl.state === 'launching'}
-                      title={ctl.msg || 'Play'}
-                      onclick={(e) => handlePlay(e, game)}
-                    >
-                      {#if ctl.state === 'launching'}
-                        <span class="play-spinner"></span><span>Launching…</span>
-                      {:else if ctl.state === 'playing'}
-                        <span>⏸ Playing</span>
-                      {:else if ctl.state === 'error'}
-                        <span>↻ Retry</span>
-                      {:else}
-                        <span>▶ Play</span>
-                      {/if}
-                    </button>
-                  </div>
-
-                  <div class="card-title" title={game.title}>{game.title}</div>
-                  <div class="card-meta">
-                    {#if game.engine}
-                      <span class="card-engine" style="--ec: {engineColor(game.engine)}">{game.engine}</span>
-                    {/if}
-                    {#if lastPlayedDate(game)}
-                      <span class="card-last-played" title="Last played {lastPlayedDate(game).toLocaleString()}">
-                        ▶ {relativePlayed(lastPlayedDate(game))}
-                      </span>
-                    {/if}
-                  </div>
-                </div>
+                <GameGridCard
+                  {game}
+                  {playControl}
+                  isRoving={nav.rovingId === game.id}
+                  {coverBase}
+                  {coverSrc}
+                  {markFailed}
+                  onOpenDetail={() => onOpenDetail(game.id)}
+                  onFocus={() => nav.setFocused(game.id)}
+                  onContextMenu={(e) => onRowContextMenu(e, game)}
+                  onPlay={(e) => handlePlay(e, game)}
+                />
               {/each}
             </div>
           {/each}
@@ -920,95 +618,26 @@
         class="table-body"
         bind:this={tableBodyEl}
         onscroll={(e) => library.scrollTop = e.currentTarget.scrollTop}
-        onkeydown={onNavKeydown}
+        onkeydown={nav.onNavKeydown}
       >
-        <div class="table-spacer" style="height: {tableTotalSize}px">
-          {#each tableVirtualRows as vItem (vItem.key)}
+        <div class="table-spacer" style="height: {tableVirtualizer.totalSize}px">
+          {#each tableVirtualizer.virtualRows as vItem (vItem.key)}
             {@const game = displayed[vItem.index]}
             {#if game}
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              {@const ctl = playControl(game)}
-              <div
-                class="table-row"
-                style="height: {tableRowHeight}px; transform: translateY({vItem.start}px)"
-                data-game-id={game.id}
-                onclick={() => onOpenDetail(game.id)}
-                onfocus={() => focusedId = game.id}
-                oncontextmenu={(e) => onRowContextMenu(e, game)}
-                onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenDetail(game.id); } }}
-                role="button"
-                tabindex={rovingId === game.id ? 0 : -1}
-              >
-                <span class="col-cover">
-                  {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
-                    <img
-                      class="cover-thumb"
-                      src={coverSrc(game.id)}
-                      alt="{game.title} cover"
-                      loading="lazy"
-                      onerror={() => markFailed(game.id)}
-                    />
-                  {:else if game.hasCover && coverBase}
-                    <span class="cover-placeholder" title="Cover unavailable — retries after the next sync or cover fetch">
-                      <span class="cover-icon">⊠</span>
-                    </span>
-                  {:else}
-                    <span class="cover-placeholder" title="No cover — use Covers in the sidebar to fetch one">
-                      <span class="cover-icon">▭</span>
-                    </span>
-                  {/if}
-                </span>
-                <span class="col-title game-title">
-                  {game.title}
-                  {#if hasUpdate(game)}
-                    <span class="update-dot" title="Update available: {game.latestVersion}">●</span>
-                  {/if}
-                </span>
-                <span class="col-engine">
-                  {#if game.engine}
-                    <span class="engine-badge" style="--ec: {engineColor(game.engine)}">
-                      {game.engine}
-                    </span>
-                  {:else}
-                    <span class="text-muted">—</span>
-                  {/if}
-                </span>
-                <span class="col-version">
-                  {#if hasUpdate(game)}
-                    <span class="version-old">{game.version}</span>
-                    <span class="version-new" title="Latest: {game.latestVersion}">→ {game.latestVersion}</span>
-                  {:else}
-                    {game.version || '—'}
-                  {/if}
-                </span>
-                <span class="col-size">{game.sizeLabel || '—'}</span>
-                <span class="col-status">
-                  <span class="status-badge status-{game.status || 'unknown'}">
-                    {statusLabel(game.status)}
-                  </span>
-                </span>
-                <span class="col-play">
-                  <button
-                    class="row-play"
-                    class:state-launching={ctl.state === 'launching'}
-                    class:state-playing={ctl.state === 'playing'}
-                    class:state-error={ctl.state === 'error'}
-                    disabled={ctl.state === 'launching'}
-                    title={ctl.msg || 'Play'}
-                    onclick={(e) => handlePlay(e, game)}
-                  >
-                    {#if ctl.state === 'launching'}
-                      <span class="play-spinner small"></span>
-                    {:else if ctl.state === 'playing'}
-                      ⏸
-                    {:else if ctl.state === 'error'}
-                      ↻
-                    {:else}
-                      ▶ Play
-                    {/if}
-                  </button>
-                </span>
-              </div>
+              <GameTableRow
+                {game}
+                {playControl}
+                isRoving={nav.rovingId === game.id}
+                top={vItem.start}
+                height={tableRowHeight}
+                {coverBase}
+                {coverSrc}
+                {markFailed}
+                onOpenDetail={() => onOpenDetail(game.id)}
+                onFocus={() => nav.setFocused(game.id)}
+                onContextMenu={(e) => onRowContextMenu(e, game)}
+                onPlay={(e) => handlePlay(e, game)}
+              />
             {/if}
           {/each}
         </div>
@@ -1291,193 +920,12 @@
     box-sizing: border-box;
   }
 
-  .card {
-    cursor: pointer;
-    border-radius: 12px;
-    outline: none;
-    transition: background 0.1s;
-    padding: 6px;
-    margin: -6px;
-  }
-  .card:hover { background: var(--bg-hover); }
-  .card:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-
-  .cover-frame {
-    position: relative;
-    border-radius: 10px;
-    overflow: hidden;
-    aspect-ratio: 16 / 9;
-    background: var(--bg-tertiary);
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
-  }
-  .cover-frame::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(to top, rgba(0, 0, 0, 0.65), transparent 55%);
-    opacity: 0;
-    transition: opacity 0.15s;
-    pointer-events: none;
-  }
-  .card:hover .cover-frame::after,
-  .card:focus-visible .cover-frame::after,
-  .cover-frame:has(.card-play.state-playing)::after,
-  .cover-frame:has(.card-play.state-error)::after {
-    opacity: 1;
-  }
-
-  .cover-img {
-    display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-  }
-
-  .cover-ph {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    height: 100%;
-    background: var(--bg-tertiary);
-  }
-  .cover-ph-icon { font-size: 28px; opacity: 0.3; }
-
-  /* Play-state badges on the cover (update / not installed) */
-  .card-badge {
-    position: absolute;
-    top: 8px;
-    padding: 2px 8px;
-    border-radius: 10px;
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    pointer-events: none;
-    z-index: 2;
-  }
-  .badge-update {
-    left: 8px;
-    background: var(--warning);
-    color: #1a1a10;
-  }
-  .badge-virtual {
-    right: 8px;
-    background: color-mix(in srgb, var(--text-muted) 85%, transparent);
-    color: #fff;
-  }
-
-  /* Hover Play (Steam/itch card pattern) */
-  .card-play {
-    position: absolute;
-    left: 50%;
-    top: 56%;
-    transform: translate(-50%, -50%);
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 18px;
-    border: none;
-    border-radius: 8px;
-    background: var(--accent);
-    color: #fff;
-    font-size: 13px;
-    font-weight: 700;
-    cursor: pointer;
-    z-index: 3;
-    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
-    opacity: 0;
-    visibility: hidden;
-    transition: opacity 0.15s, transform 0.15s, background 0.12s;
-  }
-  .card:hover .card-play,
-  .card:focus-visible .card-play,
-  .card-play.state-playing,
-  .card-play.state-error {
-    opacity: 1;
-    visibility: visible;
-  }
-  .card:hover .card-play { transform: translate(-50%, -50%) scale(1.04); }
-  .card-play:hover { background: var(--accent-hover); }
-  .card-play:disabled { opacity: 0.85; cursor: default; }
-  .card-play.state-launching { background: var(--accent-dim); }
-  .card-play.state-playing {
-    background: var(--success);
-    color: #07140b;
-    opacity: 1;
-    visibility: visible;
-    animation: pulse-success 1.2s ease-in-out infinite;
-  }
-  .card-play.state-error { background: var(--danger); opacity: 1; visibility: visible; }
-
-  @keyframes pulse-success {
-    0%, 100% { box-shadow: 0 4px 18px rgba(74, 222, 128, 0.35); }
-    50%      { box-shadow: 0 4px 26px rgba(74, 222, 128, 0.7); }
-  }
-
-  .play-spinner {
-    width: 12px;
-    height: 12px;
-    border: 2px solid rgba(255, 255, 255, 0.5);
-    border-top-color: #fff;
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-  }
-  .play-spinner.small { width: 10px; height: 10px; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  .card-title {
-    margin-top: 8px;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-primary);
-    line-height: 1.25;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    min-height: 2.5em;
-  }
-
-  .card-meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 4px;
-    min-height: 18px;
-  }
-  .card-engine {
-    display: inline-block;
-    padding: 1px 7px;
-    border-radius: 4px;
-    font-size: 10px;
-    font-weight: 600;
-    background: color-mix(in srgb, var(--ec) 15%, transparent);
-    color: var(--ec);
-  }
-  .card-last-played {
-    font-size: 10px;
-    color: var(--text-muted);
-    white-space: nowrap;
-  }
-
   /* ── Density: compact (P1 item 7) ──────────────────────
-     Card/row sizing mirrors gridTextHeight/tableRowHeight in <script> —
-     change one, change the other, or the virtualizer windows the wrong
-     number of rows for what's actually on screen. */
+     Grid-row gap mirrors gridTextHeight in <script> — change one, change
+     the other, or the virtualizer windows the wrong number of rows for
+     what's actually on screen. Per-card density rules live in
+     GameGridCard.svelte; per-row rules live in GameTableRow.svelte. */
   .density-compact .grid-row { gap: 10px 12px; }
-  .density-compact .card-title {
-    margin-top: 6px;
-    font-size: 11px;
-    min-height: 32px;
-  }
-  .density-compact .card-meta {
-    margin-top: 3px;
-    min-height: 16px;
-    gap: 6px;
-  }
 
   /* ── List / table view ─────────────────────────────── */
   .table-header {
@@ -1526,158 +974,6 @@
     position: relative;
     width: 100%;
   }
-
-  /* Windowed (perf follow-up): rows are uniform height, so each is just
-     absolutely positioned at its virtual offset — see .grid-row above for
-     why the spacer/transform pattern is needed instead of a plain list. */
-  .table-row {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    display: grid;
-    grid-template-columns: 80px 1fr 110px 130px 80px 100px 64px;
-    gap: 8px;
-    padding: 4px 12px;
-    font-size: 13px;
-    border-bottom: 1px solid var(--border);
-    cursor: pointer;
-    transition: background 0.08s;
-    align-items: center;
-    box-sizing: border-box;
-  }
-  .table-row:hover { background: var(--bg-hover); }
-  .table-row:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-  }
-
-  .density-compact .table-row { padding: 2px 12px; font-size: 11px; }
-  .density-compact .cover-thumb,
-  .density-compact .cover-placeholder { width: 44px; height: 25px; }
-  .density-compact .cover-icon { font-size: 12px; }
-
-  .game-title {
-    font-weight: 500;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .update-dot {
-    display: inline-block;
-    margin-left: 4px;
-    color: var(--warning);
-    font-size: 10px;
-    vertical-align: super;
-  }
-
-  .engine-badge {
-    display: inline-block;
-    padding: 1px 7px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 600;
-    background: color-mix(in srgb, var(--ec) 15%, transparent);
-    color: var(--ec);
-  }
-
-  .version-old {
-    text-decoration: line-through;
-    opacity: 0.7;
-    margin-right: 4px;
-  }
-  .version-new {
-    color: var(--warning);
-    font-weight: 600;
-    font-size: 12px;
-  }
-
-  .col-size { font-size: 12px; color: var(--text-secondary); }
-
-  .col-play {
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-  }
-  .row-play {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 3px 8px;
-    border: 1px solid var(--accent-dim);
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
-    color: var(--accent);
-    font-size: 11px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.12s;
-    white-space: nowrap;
-  }
-  .row-play:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .row-play:disabled { opacity: 0.7; cursor: default; }
-  .row-play.state-playing { background: var(--success); color: #07140b; border-color: var(--success); }
-  .row-play.state-error { background: var(--danger); color: #fff; border-color: var(--danger); }
-
-  /* ── Cover Column ───────────────────────────────────── */
-  .col-cover {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 10px;
-    color: var(--text-muted);
-  }
-
-  .cover-thumb {
-    display: block;
-    width: 72px;
-    height: 40px;
-    object-fit: cover;
-    border-radius: 3px;
-    background: var(--bg-secondary);
-    flex-shrink: 0;
-  }
-
-  .cover-placeholder {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 72px;
-    height: 40px;
-    border-radius: 3px;
-    background: var(--bg-tertiary);
-    flex-shrink: 0;
-  }
-
-  .cover-icon {
-    font-size: 16px;
-    opacity: 0.3;
-  }
-
-  .cover-spinner {
-    width: 14px;
-    height: 14px;
-    border: 2px solid var(--border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-  }
-
-  .status-badge {
-    display: inline-block;
-    padding: 1px 7px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 500;
-  }
-  .status-active { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
-  .status-completed { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
-  .status-abandoned { background: color-mix(in srgb, var(--text-muted) 15%, transparent); color: var(--text-muted); }
-  .status-on_hold { background: color-mix(in srgb, var(--warning) 15%, transparent); color: var(--warning); }
-  .status-unknown { background: color-mix(in srgb, var(--text-muted) 10%, transparent); color: var(--text-muted); }
-
-  .text-muted { color: var(--text-muted); }
 
   /* ── Context Menu ─────────────────────────── */
   .context-menu-overlay {
