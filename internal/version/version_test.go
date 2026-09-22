@@ -117,3 +117,31 @@ func TestIsNewer(t *testing.T) {
 		t.Error("IsNewer on incomparable kinds = true, want false")
 	}
 }
+
+func TestIsNewerRelease(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name            string
+		latest, current string
+		want            bool
+	}{
+		{"newer patch", "0.5.0", "0.4.0-alpha", true},
+		{"own prerelease is not newer", "0.4.0", "0.4.0-alpha", false},
+		{"leading v", "v1.0.0", "0.9.9", true},
+		{"two-part orders", "1.0", "0.9.9", true},
+		{"missing segment is zero", "1.0.0", "1.0", false},
+		{"two-part minor bump", "1.1", "1.0.0", true},
+		{"older", "0.4.0", "0.4.1", false},
+		{"equal", "0.4.0", "0.4.0", false},
+		{"build suffix ignored", "1.0.0+build", "1.0.0", false},
+		{"empty latest", "", "0.1.0", false},
+		{"empty current", "0.1.0", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := IsNewerRelease(c.latest, c.current); got != c.want {
+				t.Errorf("IsNewerRelease(%q, %q) = %v, want %v", c.latest, c.current, got, c.want)
+			}
+		})
+	}
+}

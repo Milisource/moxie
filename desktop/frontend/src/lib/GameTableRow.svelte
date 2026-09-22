@@ -115,7 +115,8 @@
     left: 0;
     right: 0;
     display: grid;
-    grid-template-columns: 80px 1fr 110px 130px 80px 100px 64px;
+    /* First column width must match GameList.svelte's .table-header grid. */
+    grid-template-columns: 56px 1fr 110px 130px 80px 100px 64px;
     gap: 8px;
     padding: 4px 12px;
     font-size: 13px;
@@ -133,7 +134,7 @@
 
   :global(.density-compact) .table-row { padding: 2px 12px; font-size: 11px; }
   :global(.density-compact) .cover-thumb,
-  :global(.density-compact) .cover-placeholder { width: 44px; height: 25px; }
+  :global(.density-compact) .cover-placeholder { width: 22px; height: 30px; }
   :global(.density-compact) .cover-icon { font-size: 12px; }
 
   .game-title {
@@ -219,9 +220,12 @@
     color: var(--text-muted);
   }
 
+  /* 3:4 to match F95Zone's native portrait cover art (was a 72x40 16:9 crop
+     that chewed off most of the artwork) — sized to the row's content
+     height (comfortable: 49px row - 2*4px padding = 41px, rounded to 40). */
   .cover-thumb {
     display: block;
-    width: 72px;
+    width: 30px;
     height: 40px;
     object-fit: cover;
     border-radius: 3px;
@@ -233,7 +237,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 72px;
+    width: 30px;
     height: 40px;
     border-radius: 3px;
     background: var(--bg-tertiary);

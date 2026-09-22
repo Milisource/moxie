@@ -6,6 +6,7 @@
   import {formatBytes} from './format.js'
   import Button from './Button.svelte'
   import Spinner from './Spinner.svelte'
+  import {confirmAction} from './confirmDialog.svelte.js'
 
   let {
     onDedupDone = () => {},
@@ -28,7 +29,8 @@
   }
 
   async function handleRemove(id, groupIdx) {
-    if (!window.confirm('Remove this duplicate?')) return
+    const ok = await confirmAction({title: 'Remove duplicate?', description: 'Remove this duplicate?', confirmLabel: 'Remove', danger: true})
+    if (!ok) return
     resolving = {...resolving, [id]: true}
     try {
       await RemoveGame(id, false)
@@ -53,7 +55,8 @@
     if (others.length === 0) return
 
     const msg = `Keep "${groups[groupIdx].games.find(g => g.id === id)?.title}" and remove ${others.length} duplicate${others.length > 1 ? 's' : ''}?`
-    if (!window.confirm(msg)) return
+    const ok = await confirmAction({title: 'Remove duplicates?', description: msg, confirmLabel: 'Remove', danger: true})
+    if (!ok) return
 
     resolving = {...resolving}
     for (const g of others) {

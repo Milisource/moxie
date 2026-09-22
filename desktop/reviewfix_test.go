@@ -101,9 +101,10 @@ func TestRenameGameValidation(t *testing.T) {
 }
 
 // TestDownloadWithRetries exercises the retry/backoff/attempt-counting
-// contract: transient failures retry up to maxRetries with fresh temp dirs,
-// non-transient failures abort immediately, cancellation is honoured during
-// backoff, and the reported attempt count is the real one.
+// contract: transient failures retry up to maxRetries, clearing the
+// caller-owned temp dir between attempts, non-transient failures abort
+// immediately, cancellation is honoured during backoff, and the reported
+// attempt count is the real one.
 func TestDownloadWithRetries(t *testing.T) {
 	ctx := context.Background()
 
@@ -146,13 +147,24 @@ func TestDownloadWithRetries(t *testing.T) {
 		}
 	})
 
-	t.Run("succeeds on retry with fresh temp dir", func(t *testing.T) {
+	t.Run("retry reuses the caller temp dir and clears partial files", func(t *testing.T) {
+		// The caller owns this dir path and reads it after the helper returns,
+		// so a retry must clear the existing dir in place rather than swap in a
+		// new random path. A new path is invisible to the caller: the
+		// successful retry's file would be lost and the new dir leaked.
+		dir := t.TempDir()
 		var seen []string
-		attempts, err := downloadWithRetries(ctx, t.TempDir(), 3, time.Millisecond,
-			func(attempt int, dir string) error {
-				seen = append(seen, dir)
+		attempts, err := downloadWithRetries(ctx, dir, 3, time.Millisecond,
+			func(attempt int, d string) error {
+				seen = append(seen, d)
 				if attempt == 1 {
+					if werr := os.WriteFile(filepath.Join(d, "partial.part"), []byte("x"), 0o600); werr != nil {
+						t.Fatalf("write partial: %v", werr)
+					}
 					return &netTimeoutError{}
+				}
+				if _, statErr := os.Stat(filepath.Join(d, "partial.part")); !os.IsNotExist(statErr) {
+					t.Errorf("partial file from the previous attempt survived the retry")
 				}
 				return nil
 			})
@@ -162,8 +174,8 @@ func TestDownloadWithRetries(t *testing.T) {
 		if attempts != 2 {
 			t.Errorf("attempts = %d, want 2", attempts)
 		}
-		if len(seen) != 2 || seen[0] == seen[1] {
-			t.Errorf("retry should use a fresh temp dir, saw %v", seen)
+		if len(seen) != 2 || seen[0] != seen[1] || seen[0] != dir {
+			t.Errorf("retry must reuse the caller-owned dir %q, saw %v", dir, seen)
 		}
 	})
 

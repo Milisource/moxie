@@ -114,7 +114,11 @@
     position: relative;
     border-radius: 10px;
     overflow: hidden;
-    aspect-ratio: 16 / 9;
+    /* F95Zone covers are native 3:4 portrait art; matching it here (was
+       16:9) avoids object-fit: cover chewing off most of the artwork. Must
+       track GameList.svelte's updateGridLayout coverHeight math (also 4/3),
+       which the grid virtualizer's row-height depends on. */
+    aspect-ratio: 3 / 4;
     background: var(--bg-tertiary);
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
   }

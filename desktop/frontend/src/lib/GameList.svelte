@@ -1,11 +1,14 @@
 <script>
   import {onMount, onDestroy, tick} from 'svelte'
+  import {DropdownMenu} from 'bits-ui'
   import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCoverBaseURL, PlayGame} from '../../wailsjs/go/main/App'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
   import {library, setViewMode, setDensity} from './viewState.svelte.js'
   import {makeCoverHelpers} from './cover.js'
   import {createVirtualList} from './virtualList.svelte.js'
   import {createLibraryNav} from './useLibraryNav.svelte.js'
+  import {confirmAction} from './confirmDialog.svelte.js'
+  import {promptAction} from './promptDialog.svelte.js'
   import {
     QUICK_VIEWS, SORT_OPTIONS,
     quickViewMatches, sortCompare, toggleSort, sortIcon, onSortSelect,
@@ -37,6 +40,17 @@
     return playState[g.id] ?? {state: 'idle', msg: ''}
   }
 
+  // Timers are tracked so onDestroy can clear them: a revert timer that fires
+  // after the component is destroyed would otherwise write to orphaned state.
+  const playTimers = new Set()
+  function schedulePlayRevert(id, ms) {
+    const t = setTimeout(() => {
+      playTimers.delete(t)
+      playState = {...playState, [id]: {state: 'idle', msg: ''}}
+    }, ms)
+    playTimers.add(t)
+  }
+
   async function handlePlay(e, game) {
     e.stopPropagation()
     e.preventDefault()
@@ -51,15 +65,11 @@
       // The real backend records the play entry server-side; the mock does
       // too — refresh so the recency arrangement reflects the new entry.
       await onUpdate()
-      setTimeout(() => {
-        playState = {...playState, [game.id]: {state: 'idle', msg: ''}}
-      }, PLAY_REVERT_MS)
+      schedulePlayRevert(game.id, PLAY_REVERT_MS)
     } catch (err) {
       const msg = String(err).replace(/^Error:\s*/, '')
       playState = {...playState, [game.id]: {state: 'error', msg}}
-      setTimeout(() => {
-        playState = {...playState, [game.id]: {state: 'idle', msg: ''}}
-      }, PLAY_ERROR_REVERT_MS)
+      schedulePlayRevert(game.id, PLAY_ERROR_REVERT_MS)
     }
   }
 
@@ -120,6 +130,8 @@
 
   onDestroy(() => {
     clearTimeout(debounceTimer)
+    for (const t of playTimers) clearTimeout(t)
+    playTimers.clear()
     gridVirtualizer.unsubscribe()
     tableVirtualizer.unsubscribe()
   })
@@ -191,7 +203,7 @@
   //
   // The grid's card width is fluid (`auto-fill, minmax(176px, 1fr)`), so the
   // number of columns per row — and thus row height, since the cover keeps a
-  // 16:9 aspect ratio off that width — depends on container width. A
+  // 3:4 aspect ratio off that width — depends on container width. A
   // ResizeObserver on the scroll container recomputes both whenever it
   // changes (window resize, sidebar toggle, view-mode switch).
   // Density (P1 item 7): compact trades card/row size for more items
@@ -213,7 +225,7 @@
     const avail = Math.max(gridEl.clientWidth - GRID_PAD, cardMin)
     const cols = Math.max(1, Math.floor((avail + GRID_GAP) / (cardMin + GRID_GAP)))
     const cardWidth = (avail - GRID_GAP * (cols - 1)) / cols
-    const coverHeight = cardWidth * 9 / 16
+    const coverHeight = cardWidth * 4 / 3
     gridColumns = cols
     gridRowHeight = coverHeight + gridTextHeight + GRID_GAP
   }
@@ -322,28 +334,26 @@
   }
 
   // ── Context Menu ──────────────────────────────────────────────
-  let contextMenu = $state(null)     // {x, y, game} or null
-  let contextMenuView = $state('main') // 'main' | 'status'
+  // DropdownMenu anchored to a shared hidden 0x0 element (ctxAnchorEl)
+  // repositioned before opening — avoids instrumenting every virtualized
+  // row with its own trigger, and gets floating-ui collision detection
+  // (avoidCollisions) instead of the old hand-rolled menuW/menuH clamp.
+  let ctxMenuOpen = $state(false)
+  let contextGame = $state(null)
+  let ctxAnchorEl = $state(null)
 
-  function positionContextMenu(x, y, game) {
-    const menuW = 200, menuH = 220
-    contextMenu = {
-      x: Math.min(x, window.innerWidth - menuW),
-      y: Math.min(y, window.innerHeight - menuH),
-      game,
+  function openContextMenuAt(x, y, game) {
+    contextGame = game
+    if (ctxAnchorEl) {
+      ctxAnchorEl.style.left = `${x}px`
+      ctxAnchorEl.style.top = `${y}px`
     }
-    contextMenuView = 'main'
+    ctxMenuOpen = true
   }
 
   function onRowContextMenu(e, game) {
     e.preventDefault()
-    closeContextMenu()
-    positionContextMenu(e.clientX, e.clientY, game)
-  }
-
-  function closeContextMenu() {
-    contextMenu = null
-    contextMenuView = 'main'
+    openContextMenuAt(e.clientX, e.clientY, game)
   }
 
   // ── Keyboard grid/list navigation + context-menu parity (P2 item 10) ──
@@ -362,15 +372,14 @@
       }
     },
     onOpenContextMenu: (rect, game) => {
-      closeContextMenu()
-      positionContextMenu(rect.left, rect.bottom + 4, game)
+      openContextMenuAt(rect.left, rect.bottom + 4, game)
     },
   })
 
   async function handleStatus(status) {
-    if (!contextMenu?.game) return
-    const g = contextMenu.game
-    closeContextMenu()
+    if (!contextGame) return
+    const g = contextGame
+    ctxMenuOpen = false
     try {
       await SetGameStatus(g.id, status)
       await onUpdate()
@@ -380,13 +389,13 @@
   }
 
   async function handleRename() {
-    if (!contextMenu?.game) return
-    const g = contextMenu.game
-    closeContextMenu()
-    const newTitle = window.prompt('Enter new title:', g.title)
-    if (!newTitle || newTitle.trim() === '' || newTitle.trim() === g.title) return
+    if (!contextGame) return
+    const g = contextGame
+    ctxMenuOpen = false
+    const newTitle = await promptAction({title: 'Rename game', label: 'Enter new title:', defaultValue: g.title})
+    if (!newTitle || newTitle === g.title) return
     try {
-      await RenameGame(g.id, newTitle.trim())
+      await RenameGame(g.id, newTitle)
       await onUpdate()
     } catch (e) {
       console.error('Failed to rename:', e)
@@ -394,10 +403,16 @@
   }
 
   async function handleRemove() {
-    if (!contextMenu?.game) return
-    const g = contextMenu.game
-    closeContextMenu()
-    if (!window.confirm(`Are you sure you want to remove "${g.title}" from your library?`)) return
+    if (!contextGame) return
+    const g = contextGame
+    ctxMenuOpen = false
+    const ok = await confirmAction({
+      title: 'Remove game?',
+      description: `Are you sure you want to remove "${g.title}" from your library?`,
+      confirmLabel: 'Remove',
+      danger: true,
+    })
+    if (!ok) return
     try {
       await RemoveGame(g.id, false)
       await onUpdate()
@@ -644,36 +659,35 @@
       </div>
     {/if}
 
-    <!-- Context Menu -->
-    {#if contextMenu}
-      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="context-menu-overlay" onclick={closeContextMenu} oncontextmenu={(e) => e.preventDefault()}>
-        <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px" onclick={(e) => e.stopPropagation()}>
-          {#if contextMenuView === 'main'}
-            <button class="ctx-item" onclick={() => contextMenuView = 'status'}>
+    <!-- Context Menu — anchored to a shared hidden element repositioned
+         before opening (see openContextMenuAt), so neither GameGridCard
+         nor GameTableRow needs its own DropdownMenu.Trigger. -->
+    <div bind:this={ctxAnchorEl} class="context-menu-anchor"></div>
+    <DropdownMenu.Root bind:open={ctxMenuOpen}>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content class="context-menu" customAnchor={ctxAnchorEl} side="bottom" align="start">
+          <DropdownMenu.Sub>
+            <DropdownMenu.SubTrigger class="ctx-item">
               <span>Set Status</span>
               <span class="ctx-arrow">▶</span>
-            </button>
-            <button class="ctx-item" onclick={handleRename}>Rename</button>
-            <div class="ctx-divider"></div>
-            <button class="ctx-item ctx-danger" onclick={handleRemove}>Remove</button>
-          {:else}
-            <button class="ctx-item" onclick={() => contextMenuView = 'main'}>
-              <span class="ctx-back-arrow">◀</span>
-              <span>Status</span>
-            </button>
-            <div class="ctx-divider"></div>
-            {#each GAME_STATUSES as s}
-              <button class="ctx-item" onclick={() => handleStatus(s)}>
-                <span class="ctx-dot ctx-dot-{s}"></span>
-                {statusLabel(s)}
-              </button>
-            {/each}
-          {/if}
-        </div>
-      </div>
-    {/if}
+            </DropdownMenu.SubTrigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.SubContent class="context-menu">
+                {#each GAME_STATUSES as s}
+                  <DropdownMenu.Item class="ctx-item" onSelect={() => handleStatus(s)}>
+                    <span class="ctx-dot ctx-dot-{s}"></span>
+                    {statusLabel(s)}
+                  </DropdownMenu.Item>
+                {/each}
+              </DropdownMenu.SubContent>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Sub>
+          <DropdownMenu.Item class="ctx-item" onSelect={handleRename}>Rename</DropdownMenu.Item>
+          <DropdownMenu.Separator class="ctx-divider" />
+          <DropdownMenu.Item class="ctx-item ctx-danger" onSelect={handleRemove}>Remove</DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   {/if}
 </div>
 
@@ -930,7 +944,9 @@
   /* ── List / table view ─────────────────────────────── */
   .table-header {
     display: grid;
-    grid-template-columns: 80px 1fr 110px 130px 80px 100px 64px;
+    /* First column width must match GameTableRow.svelte's .table-row grid
+       (narrowed alongside the 3:4 portrait cover-thumb resize there). */
+    grid-template-columns: 56px 1fr 110px 130px 80px 100px 64px;
     gap: 8px;
     padding: 6px 12px;
     font-size: 11px;
@@ -976,13 +992,14 @@
   }
 
   /* ── Context Menu ─────────────────────────── */
-  .context-menu-overlay {
+  /* Hidden 0x0 anchor repositioned before opening (see openContextMenuAt in
+     the script) — DropdownMenu.Content's customAnchor points at this. */
+  .context-menu-anchor {
     position: fixed;
-    inset: 0;
-    z-index: 1000;
+    width: 0;
+    height: 0;
   }
   .context-menu {
-    position: fixed;
     z-index: 1001;
     min-width: 180px;
     background: var(--bg-secondary);
@@ -1009,11 +1026,13 @@
     text-align: left;
     white-space: nowrap;
   }
-  .ctx-item:hover { background: var(--bg-hover); }
+  .ctx-item:hover,
+  .ctx-item:global([data-highlighted]) { background: var(--bg-hover); }
   .ctx-item.ctx-danger { color: var(--danger); }
-  .ctx-item.ctx-danger:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+  .ctx-item.ctx-danger:hover,
+  .ctx-item.ctx-danger:global([data-highlighted]) { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+  .ctx-item:global([data-disabled]) { opacity: 0.4; cursor: not-allowed; }
   .ctx-arrow { margin-left: auto; font-size: 10px; opacity: 0.5; }
-  .ctx-back-arrow { font-size: 12px; opacity: 0.7; }
   .ctx-divider {
     height: 1px;
     background: var(--border);

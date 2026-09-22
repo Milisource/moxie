@@ -149,8 +149,10 @@ func applyPendingUpdateIfRequested() bool {
 
 	if err := swapBinaries(m.Staged, m.Exe, nil); err != nil {
 		agent.Error("update agent: swap failed", "error", err)
+		// swapBinaries folds rollback status into the error, so don't claim
+		// restoration unconditionally.
 		showFatalError("Moxie update failed",
-			"Installing the update failed: "+err.Error()+"\nThe previous version was restored.")
+			"Installing the update failed: "+err.Error())
 		return true
 	}
 	// The staged file is this process's own image; with the copy above
@@ -226,9 +228,14 @@ func swapBinaries(staged, exe string, ops *swapOps) error {
 	// launch (or agent re-run) restores it via recoverStaleUpdate.
 
 	if err := ops.rename(tmp, exe); err != nil {
-		// Put the old binary back.
-		_ = ops.rename(backup, exe)
+		// Put the old binary back. If the rollback itself fails, say so — the
+		// caller must not report "the previous version was restored" when it
+		// was not.
+		rollbackErr := ops.rename(backup, exe)
 		_ = ops.remove(tmp)
+		if rollbackErr != nil {
+			return fmt.Errorf("install staged binary: %w (rollback failed: %v; previous version remains at %s)", err, rollbackErr, backup)
+		}
 		return fmt.Errorf("install staged binary: %w", err)
 	}
 

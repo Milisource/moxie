@@ -17,8 +17,11 @@
   import CoversView from './lib/CoversView.svelte'
   import SettingsView from './lib/SettingsView.svelte'
   import StatusBar from './lib/StatusBar.svelte'
+  import ConfirmDialog from './lib/ConfirmDialog.svelte'
+  import PromptDialog from './lib/PromptDialog.svelte'
   import {library, appMeta, setLastSyncAt} from './lib/viewState.svelte.js'
   import {createPipeline} from './lib/pipeline.svelte.js'
+  import {confirmAction} from './lib/confirmDialog.svelte.js'
 
   let version = $state('')
   let games = $state([])
@@ -443,7 +446,7 @@
         // release) pumps it for real.
         updateGS(gameId, {phase: 'error', error: msg})
         retryInFlight = null
-        retryQueue = [gameId, ...retryQueue]
+        if (!retryQueue.includes(gameId)) retryQueue = [gameId, ...retryQueue]
         return
       }
       updateGS(gameId, {phase: 'error', error: msg})
@@ -676,7 +679,13 @@
   }
 
   async function handlePurge() {
-    if (!confirm(`Permanently delete ${deletedGames.length} games?`)) return
+    const ok = await confirmAction({
+      title: `Permanently delete ${deletedGames.length} game${deletedGames.length === 1 ? '' : 's'}?`,
+      description: 'This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
     try {
       await PurgeDeleted()
       await loadTrash()
@@ -1065,6 +1074,9 @@
     />
   </main>
 </div>
+
+<ConfirmDialog />
+<PromptDialog />
 
 <style>
   .shell {

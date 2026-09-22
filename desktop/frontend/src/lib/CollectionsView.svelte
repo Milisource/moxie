@@ -11,6 +11,7 @@
   import {engineColor} from './engineColors.js'
   import {collectionsView, addSmartCollection, removeSmartCollection, library} from './viewState.svelte.js'
   import {makeCoverHelpers} from './cover.js'
+  import {confirmAction} from './confirmDialog.svelte.js'
 
   let {onOpenDetail = () => {}, onCollectionsChanged = () => {}} = $props()
 
@@ -137,7 +138,13 @@
   }
 
   async function handleDelete(c) {
-    if (!confirm(`Delete the collection "${c.name}"? The games themselves are not removed.`)) return
+    const ok = await confirmAction({
+      title: `Delete the collection "${c.name}"?`,
+      description: 'The games themselves are not removed.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
     try {
       await DeleteCollection(c.id)
       if (collectionsView.selectedId === c.id) {

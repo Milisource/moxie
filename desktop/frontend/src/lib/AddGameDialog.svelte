@@ -31,6 +31,20 @@
   let hasDetection = $derived(detection !== null && !detecting)
   let canAdd = $derived(hasDetection && title.trim().length > 0 && !adding)
 
+  // Invalidates any in-flight DetectGame so a stale response can't repopulate
+  // the preview from a directory the user has since changed.
+  let detectSeq = 0
+  function resetDetection() {
+    detectSeq++
+    detecting = false
+    detection = null
+    title = ''
+    engine = ''
+    version = ''
+    result = null
+    error = ''
+  }
+
   // ── Directory Browse ──────────────────────────────────────────
   async function handleBrowse() {
     try {
@@ -38,12 +52,7 @@
       if (dir) {
         directoryPath = dir
         // Reset previous detection when path changes
-        detection = null
-        title = ''
-        engine = ''
-        version = ''
-        result = null
-        error = ''
+        resetDetection()
       }
     } catch (e) {
       error = String(e)
@@ -55,6 +64,7 @@
     const path = directoryPath.trim()
     if (!path) return
 
+    const seq = ++detectSeq
     detecting = true
     detection = null
     result = null
@@ -62,6 +72,7 @@
 
     try {
       const d = await DetectGame(path)
+      if (seq !== detectSeq) return // path changed while detecting
       detection = d
       title = d.title || ''
       engine = d.engine || ''
@@ -72,9 +83,10 @@
         error = d.error
       }
     } catch (e) {
+      if (seq !== detectSeq) return
       error = String(e)
     } finally {
-      detecting = false
+      if (seq === detectSeq) detecting = false
     }
   }
 
@@ -106,12 +118,7 @@
 
   // ── Path changed externally (e.g. typed) → reset detection ──
   function handlePathInput() {
-    detection = null
-    title = ''
-    engine = ''
-    version = ''
-    result = null
-    error = ''
+    resetDetection()
   }
 </script>
 

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // ---------------------------------------------------------------------------
@@ -1789,9 +1791,10 @@ func TestUnwrapMasked_Pacing(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	const wantInterval = 120 * time.Millisecond
 	r := NewHostResolver()
 	r.unwrapBackoff = nil
-	r.unwrapMinInterval = 120 * time.Millisecond
+	r.unwrapLimiter = rate.NewLimiter(rate.Every(wantInterval), 1)
 	for i := 0; i < 4; i++ {
 		if _, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x"); err != nil {
 			t.Fatalf("unwrap %d: %v", i, err)
@@ -1810,8 +1813,8 @@ func TestUnwrapMasked_Pacing(t *testing.T) {
 		// sleep, and timer/HTTP scheduling on a loaded machine can shave
 		// sub-millisecond off the observed gap. A missing sleep still fails
 		// loudly (gaps near 0), so the floor assertion holds with slack.
-		if gap := times[i].Sub(times[i-1]); gap < r.unwrapMinInterval-5*time.Millisecond {
-			t.Errorf("unwrap gap %d = %v, want >= %v (pacing not enforced)", i, gap, r.unwrapMinInterval)
+		if gap := times[i].Sub(times[i-1]); gap < wantInterval-5*time.Millisecond {
+			t.Errorf("unwrap gap %d = %v, want >= %v (pacing not enforced)", i, gap, wantInterval)
 		}
 	}
 }

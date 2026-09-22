@@ -119,8 +119,12 @@
   let updateInFlight = $derived(isUpdatingAny || !!batchState?.running || installRunning)
 
   let count = $derived(games.length)
+  // Count "done" only for games still in the current list. Counting every
+  // gameStates entry is cumulative across the session; after a mixed batch the
+  // refetched list drops succeeded games, so count - doneCount could go
+  // negative (the button rendered "Update All (-1)").
   let doneCount = $derived(
-    Object.values(gameStates).filter(s => s && s.phase === 'done').length
+    games.filter(g => gameStates[g.id]?.phase === 'done').length
   )
   let allDone = $derived(count > 0 && doneCount === count)
 

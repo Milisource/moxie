@@ -113,3 +113,28 @@ func TestBgShutdownGraceIsBounded(t *testing.T) {
 		t.Errorf("bgShutdownGrace = %v, want a small positive bound", bgShutdownGrace)
 	}
 }
+
+// TestIsGameUpdateStripsQualifiers guards the phantom-update fix: a stored
+// thread version carrying a qualifier ("v21.0.0 wip.7944") must not read as an
+// update over the bare numeric version, because version.Compare otherwise
+// treats the qualifier's digit run as an extra (newer) segment.
+func TestIsGameUpdateStripsQualifiers(t *testing.T) {
+	cases := []struct {
+		name            string
+		latest, current string
+		want            bool
+	}{
+		{"wip qualifier is same", "v21.0.0 wip.7944", "21.0.0", false},
+		{"dlc qualifier is same", "v1.03 + DLC", "1.03", false},
+		{"real bump", "1.0.1", "1.0.0", true},
+		{"older is not an update", "0.8", "0.9", false},
+		{"final is newer", "Final", "0.9", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isGameUpdate(c.latest, c.current); got != c.want {
+				t.Errorf("isGameUpdate(%q, %q) = %v, want %v", c.latest, c.current, got, c.want)
+			}
+		})
+	}
+}

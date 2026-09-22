@@ -257,7 +257,7 @@ func TestWriteCoverThumbDownscales(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1000x500 → 320x160 (ratio preserved).
+	// 1000x500 → 480x240 (ratio preserved).
 	coverPath := filepath.Join(coverDir, "5")
 	if err := os.WriteFile(coverPath, makePNG(t, 1000, 500), 0o644); err != nil {
 		t.Fatal(err)
@@ -275,8 +275,8 @@ func TestWriteCoverThumbDownscales(t *testing.T) {
 		t.Fatalf("thumbnail is not a decodable JPEG: %v", err)
 	}
 	b := img.Bounds()
-	if b.Dx() != 320 || b.Dy() != 160 {
-		t.Errorf("thumbnail dims = %dx%d, want 320x160", b.Dx(), b.Dy())
+	if b.Dx() != 480 || b.Dy() != 240 {
+		t.Errorf("thumbnail dims = %dx%d, want 480x240", b.Dx(), b.Dy())
 	}
 }
 
@@ -403,12 +403,15 @@ func TestBackfillCoverThumbs(t *testing.T) {
 	if err := os.WriteFile(big, makePNG(t, 1000, 500), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Cover that already has a thumbnail — must be left alone.
+	// Cover that already has a (stale) thumbnail — must be regenerated, not
+	// skipped, since this pass only runs once per app version and needs to
+	// pick up thumbnailing changes (e.g. a coverThumbMaxDim or filter bump)
+	// for covers thumbnailed under a previous version.
 	withThumb := filepath.Join(coverDir, "6")
 	if err := os.WriteFile(withThumb, makePNG(t, 800, 600), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(withThumb+".thumb", []byte("existing"), 0o644); err != nil {
+	if err := os.WriteFile(withThumb+".thumb", []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// Small cover — no thumbnail expected.
@@ -422,14 +425,17 @@ func TestBackfillCoverThumbs(t *testing.T) {
 	}
 
 	n := backfillCoverThumbs()
-	if n != 1 {
-		t.Fatalf("backfillCoverThumbs wrote %d thumbnails, want 1", n)
+	if n != 2 {
+		t.Fatalf("backfillCoverThumbs wrote %d thumbnails, want 2", n)
 	}
 	if _, err := os.Stat(big + ".thumb"); err != nil {
 		t.Errorf("thumb for big cover not written: %v", err)
 	}
-	if _, err := os.Stat(withThumb + ".thumb"); err != nil {
+	staleThumb, err := os.ReadFile(withThumb + ".thumb")
+	if err != nil {
 		t.Errorf("existing thumb was removed: %v", err)
+	} else if string(staleThumb) == "stale" {
+		t.Error("stale thumb was not regenerated")
 	}
 	if _, err := os.Stat(small + ".thumb"); err == nil {
 		t.Error("thumb must not be written for small cover")
@@ -490,6 +496,36 @@ func TestCacheCoverAcceptsAVIF(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(coverDir, "1")); err != nil {
 		t.Errorf("AVIF cover not persisted: %v", err)
+	}
+}
+
+// TestCacheCoverRefreshesWhenURLChanges guards the stale-cover fix: a cached
+// cover must be re-fetched when the thread's cover URL changes, but a repeat
+// call for the same URL must hit the cache.
+func TestCacheCoverRefreshesWhenURLChanges(t *testing.T) {
+	testCoverDir(t)
+
+	png := makePNG(t, 8, 8)
+	var requests atomic.Int64
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(png)
+	}))
+	defer ts.Close()
+
+	a := &App{}
+	if p := a.cacheCover(1, ts.URL+"/a.png"); p == "" {
+		t.Fatal("first cover fetch failed")
+	}
+	if p := a.cacheCover(1, ts.URL+"/b.png"); p == "" {
+		t.Fatal("refetch after URL change failed")
+	}
+	if p := a.cacheCover(1, ts.URL+"/b.png"); p == "" {
+		t.Fatal("cached cover fetch failed")
+	}
+	if got := requests.Load(); got != 2 {
+		t.Errorf("cover requests = %d, want 2 (fetch, refetch-on-change, then cache hit)", got)
 	}
 }
 

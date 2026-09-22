@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/log"
@@ -378,12 +380,9 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 	var saveMu sync.Mutex
 
 	// Launch workers.
-	var wg sync.WaitGroup
+	var g errgroup.Group
 	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-
+		g.Go(func() error {
 			for job := range jobs {
 				game, query := job.game, job.query
 				elapsed := time.Since(startTime).Truncate(time.Second)
@@ -427,7 +426,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 								interrupted: true,
 								msg:         fmt.Sprintf("  ⚠ BLOCKED: %v\n  Try refreshing your F95Zone session.\n", err),
 							}
-							return // worker stops on block
+							return nil // worker stops on block
 						}
 						log.Debug("latest-updates search failed, falling back to XenForo search",
 							"query", query, "error", err)
@@ -451,7 +450,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 								interrupted: true,
 								msg:         fmt.Sprintf("  ⚠ BLOCKED: %v\n  Try refreshing your F95Zone session.\n", err),
 							}
-							return // worker stops on block
+							return nil // worker stops on block
 						}
 						resultCh <- workResult{
 							game: game, query: query,
@@ -648,7 +647,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 							interrupted: true,
 							msg:         fmt.Sprintf("  ⚠ BLOCKED: %v\n  Try refreshing your F95Zone session.\n", err),
 						}
-						return // worker stops on block
+						return nil // worker stops on block
 					}
 					resultCh <- workResult{
 						game: game, query: query,
@@ -727,12 +726,13 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 					msg:        savedMsg,
 				}
 			}
-		}(w)
+			return nil
+		})
 	}
 
 	// Close results when all workers finish.
 	go func() {
-		wg.Wait()
+		_ = g.Wait()
 		close(resultCh)
 	}()
 
@@ -763,7 +763,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 
 	// Join the workers so their writes land before we return (and so no
 	// goroutine keeps running after the process starts tearing down).
-	wg.Wait()
+	_ = g.Wait()
 
 	elapsed := time.Since(startTime).Truncate(time.Second)
 

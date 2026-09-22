@@ -29,9 +29,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/image/draw"
 	"golang.org/x/image/webp"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/mili/moxie/internal/archive"
@@ -179,9 +181,9 @@ func (a *App) startup(ctx context.Context) {
 
 	// Covers cached before the thumbnailing change have no .thumb sibling;
 	// backfill them so the list view stops serving full images for those.
-	// Local-only and cheap; runs in the background to keep startup snappy.
-	// The app context makes the walk cancellable at shutdown.
-	go backfillCoverThumbs(a.bgCtx)
+	// Local-only and cheap; runs on a tracked goroutine (joined at shutdown)
+	// to keep startup snappy. The app context makes the walk cancellable.
+	a.goBackground("cover-backfill", func(ctx context.Context) { backfillCoverThumbs(ctx) })
 
 	a.startWatcher()
 }
@@ -268,14 +270,19 @@ func (a *App) shutdown(ctx context.Context) {
 		a.bgWG.Wait()
 		close(done)
 	}()
+	timedOut := false
 	select {
 	case <-done:
 	case <-time.After(bgShutdownGrace):
-		slog.Warn("background tasks did not finish before shutdown; closing database anyway",
+		timedOut = true
+		slog.Warn("background tasks did not finish before shutdown; skipping database close to avoid writing after close (the process is exiting)",
 			"grace", bgShutdownGrace)
 	}
 
-	if a.db != nil {
+	// Only close the database once every writer has stopped. On timeout a
+	// goroutine may still be mid-transaction; closing the handle underneath it
+	// is worse than leaking it, and the OS reclaims it on exit.
+	if !timedOut && a.db != nil {
 		if err := a.db.Close(); err != nil {
 			slog.Error("error closing database", "error", err)
 		}
@@ -463,10 +470,17 @@ func (a *App) GetUpdatableGames() ([]DesktopGameSummary, error) {
 		return nil, fmt.Errorf("failed to list updatable games: %w", err)
 	}
 
+	// The SQL predicate is raw string inequality (latest_version != version),
+	// but the apply path gates on the semantic isGameUpdate. Filter here so
+	// the list can't advertise an update the pipeline will reject (e.g.
+	// "v0.8" vs "0.8", which normalize equal).
 	result := make([]DesktopGameSummary, 0, len(games))
 	covers := coverSetFromDir()
 	lastPlayed := lastPlayedMap(a)
 	for _, g := range games {
+		if !isGameUpdate(g.LatestVersion, g.Version) {
+			continue
+		}
 		result = append(result, gameToSummaryCovers(&g, covers, lastPlayed))
 	}
 	return result, nil
@@ -478,9 +492,18 @@ func (a *App) GetUpdatableCount() (int, error) {
 		return 0, fmt.Errorf("database not initialized")
 	}
 
-	n, err := a.db.CountGamesNeedingUpdate()
+	// Count the semantically-filtered list, not the raw SQL count, so the
+	// sidebar badge agrees with GetUpdatableGames and the apply path (see the
+	// filter there for why raw != over-counts).
+	games, err := a.db.GamesNeedingUpdate()
 	if err != nil {
 		return 0, fmt.Errorf("failed to count updatable games: %w", err)
+	}
+	n := 0
+	for _, g := range games {
+		if isGameUpdate(g.LatestVersion, g.Version) {
+			n++
+		}
 	}
 	return n, nil
 }
@@ -706,6 +729,13 @@ func (a *App) ScanDirectory(path string, force bool) error {
 	}
 	if !a.scanRunning.CompareAndSwap(false, true) {
 		return fmt.Errorf("a scan is already running")
+	}
+	// Re-check after claiming scanRunning: the pre-CAS update check is
+	// advisory, so an update that claimed updateRunning in the gap would
+	// otherwise run concurrently with this scan.
+	if a.updateRunning.Load() {
+		a.scanRunning.Store(false)
+		return fmt.Errorf("an update is in progress; cannot scan right now")
 	}
 
 	// games.path is UNIQUE and everything downstream (watcher root matching,
@@ -1088,13 +1118,17 @@ func downloadWithRetries(ctx context.Context, tempDir string, maxRetries int, re
 			case <-time.After(retryDelay):
 			}
 
-			// Recreate temp dir on retry to avoid partial-file conflicts.
-			os.RemoveAll(tempDir)
-			newDir, mkErr := os.MkdirTemp(os.TempDir(), "moxie-update-*-retry")
-			if mkErr != nil {
-				return attempt, fmt.Errorf("create temp dir: %w", mkErr)
+			// Clear the temp dir on retry so partial files cannot poison the
+			// next attempt. Recreate the same path rather than MkdirTemp a new
+			// one: the caller owns this path and reads/cleans it after we
+			// return, so a fresh random dir would be invisible to it — the
+			// successful retry's file would be lost and the new dir leaked.
+			if rmErr := os.RemoveAll(tempDir); rmErr != nil {
+				return attempt, fmt.Errorf("clear temp dir: %w", rmErr)
 			}
-			tempDir = newDir
+			if mkErr := os.MkdirAll(tempDir, 0o700); mkErr != nil {
+				return attempt, fmt.Errorf("recreate temp dir: %w", mkErr)
+			}
 		}
 
 		attempts = attempt
@@ -1340,25 +1374,13 @@ func coverSetFromDir() map[int64]bool {
 	return set
 }
 
-// formatBytes returns a human-readable size string.
+// formatBytes returns a human-readable size string, or "" when the size is
+// unknown/zero (hides the size label in the UI rather than showing "0 B").
 func formatBytes(b int64) string {
 	if b == 0 {
 		return ""
 	}
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	const units = "KMGTPE"
-	if exp >= len(units) {
-		return fmt.Sprintf("%.1f EB", float64(b)/float64(div))
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), units[exp])
+	return humanize.IBytes(uint64(b))
 }
 
 // ---------------------------------------------------------------------------
@@ -1794,10 +1816,14 @@ func fetchLatestRelease() (*githubRelease, error) {
 
 // isGameUpdate reports whether a game's F95Zone version warrants an update
 // over the installed one. Unlike isNewerVersion (which compares moxie's own
-// semver releases), game versions are free-form, so an unorderable change
+// release versions), game versions are free-form, so an unorderable change
 // counts as an update while an older or equivalent version does not.
+//
+// Both sides are qualifier-stripped first: a stored thread version like
+// "v1.03 + DLC" otherwise compares as Changed against "1.03" (the extra digit
+// run reads as a fourth segment), producing a permanent phantom update.
 func isGameUpdate(latest, installed string) bool {
-	switch version.Compare(latest, installed) {
+	switch version.Compare(scraper.StripVersionQualifier(latest), scraper.StripVersionQualifier(installed)) {
 	case version.Newer, version.Changed:
 		return true
 	default:
@@ -1805,39 +1831,11 @@ func isGameUpdate(latest, installed string) bool {
 	}
 }
 
-// isNewerVersion returns true if latest > current using semver-like comparison.
+// isNewerVersion reports whether the moxie release latest is newer than the
+// installed current. Delegates to internal/version so the desktop and the CLI
+// (which carried a second, numeric implementation) cannot drift apart.
 func isNewerVersion(latest, current string) bool {
-	clean := func(v string) string {
-		v = strings.TrimPrefix(v, "v")
-		if idx := strings.IndexAny(v, "-+"); idx >= 0 {
-			v = v[:idx]
-		}
-		return v
-	}
-
-	latest = clean(latest)
-	current = clean(current)
-
-	partsL := strings.Split(latest, ".")
-	partsC := strings.Split(current, ".")
-	maxLen := len(partsL)
-	if len(partsC) > maxLen {
-		maxLen = len(partsC)
-	}
-
-	for i := 0; i < maxLen; i++ {
-		var a, b int
-		if i < len(partsL) {
-			a, _ = strconv.Atoi(partsL[i])
-		}
-		if i < len(partsC) {
-			b, _ = strconv.Atoi(partsC[i])
-		}
-		if a != b {
-			return a > b
-		}
-	}
-	return false
+	return version.IsNewerRelease(latest, current)
 }
 
 // renameOrCopy attempts an atomic rename, falling back to copy+delete
@@ -2433,20 +2431,15 @@ func (a *App) fetchCoversRun(ctx context.Context) {
 	// these safe to overlap with sync's own cover caching.
 	var mu sync.Mutex
 	var done, fetched, failed, skipped int
-	sem := make(chan struct{}, coverFetchWorkers)
-	var wg sync.WaitGroup
+	var g errgroup.Group
+	g.SetLimit(coverFetchWorkers)
 
 	for i := range jobs {
 		if ctx.Err() != nil {
 			break
 		}
 		j := jobs[i]
-		sem <- struct{}{}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() { <-sem }()
-
+		g.Go(func() error {
 			ok := j.cover != "" && a.cacheCoverCtx(ctx, j.game.ID, j.cover) != ""
 			mu.Lock()
 			done++
@@ -2468,9 +2461,10 @@ func (a *App) fetchCoversRun(ctx context.Context) {
 				Title:   title,
 				Phase:   "downloading",
 			})
-		}()
+			return nil
+		})
 	}
-	wg.Wait()
+	_ = g.Wait()
 
 	// Self-heal: covers cached before the thumbnailing change (or any cover
 	// whose thumbnail is missing) get one locally. No network involved. The
@@ -2575,9 +2569,22 @@ func (a *App) cacheCoverCtx(ctx context.Context, gameID int64, coverURL string) 
 	coverDir := config.CoverDir()
 	coverPath := filepath.Join(coverDir, strconv.FormatInt(gameID, 10))
 
-	// Already cached.
+	// Already cached — but only trust it if it was cached for this URL. The
+	// thread's cover art can change; without this check the old image is
+	// served forever. The sidecar URL marker is written alongside each cover.
 	if _, err := os.Stat(coverPath); err == nil {
-		return coverPath
+		if b, rerr := os.ReadFile(coverPath + ".url"); rerr == nil {
+			if strings.TrimSpace(string(b)) == coverURL {
+				return coverPath
+			}
+			// Cached for a different URL — fall through and re-fetch.
+		} else {
+			// No marker (cover cached by an older build). Adopt the current
+			// URL rather than mass-refreshing the whole cache on upgrade, and
+			// start detecting changes from here on.
+			_ = os.WriteFile(coverPath+".url", []byte(coverURL), 0o644)
+			return coverPath
+		}
 	}
 
 	// Coalesce concurrent downloads of the same cover: every caller for this
@@ -2653,6 +2660,9 @@ func (a *App) fetchAndCacheCover(ctx context.Context, gameID int64, coverURL, co
 		slog.Error("failed to write cover file", "game_id", gameID, "path", coverPath, "error", err)
 		return ""
 	}
+	// Record which URL this cover came from so a later URL change triggers a
+	// refresh (see cacheCoverCtx).
+	_ = os.WriteFile(coverPath+".url", []byte(coverURL), 0o644)
 	invalidateCoverSetCache()
 
 	switch writeCoverThumb(coverPath) {
@@ -2666,10 +2676,13 @@ func (a *App) fetchAndCacheCover(ctx context.Context, gameID int64, coverURL, co
 	return coverPath
 }
 
-// coverThumbMaxDim bounds the long edge of list-view cover thumbnails. The
-// list rows are ~56px tall; 320px keeps one row sharp on HiDPI screens at a
-// fraction of the full image's bytes.
-const coverThumbMaxDim = 320
+// coverThumbMaxDim bounds the long edge of grid/list cover thumbnails. The
+// grid's cards are fluid-width (auto-fill, minmax(176px, 1fr) — see
+// GameList.svelte's updateGridLayout) and can render past 320px on wide
+// screens; a thumbnail capped there gets visibly upscaled and blurry. 480px
+// covers realistic card widths (and HiDPI 1x rendering of them) while still
+// being a fraction of the full image's bytes.
+const coverThumbMaxDim = 480
 
 // errCoverFormatNotThumbnailable is returned by decodeCoverImage for formats
 // Go cannot decode (AVIF). The webview renders those from the full image, so
@@ -2744,8 +2757,12 @@ func writeCoverThumb(coverPath string) thumbResult {
 		h = 1
 	}
 
+	// CatmullRom (bicubic) over ApproxBiLinear: the thumbnail is generated
+	// once and cached, so the extra cost buys a visibly sharper downscale —
+	// ApproxBiLinear's softness compounded with wide grid cards upscaling a
+	// small thumbnail was the main source of "crude" looking covers.
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
-	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, src, draw.Over, nil)
+	draw.CatmullRom.Scale(dst, dst.Bounds(), img, src, draw.Over, nil)
 
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 82}); err != nil {
@@ -3621,7 +3638,7 @@ func (a *App) syncPhase1Associate(ctx context.Context, unassociated []db.Game, c
 	// Buffered so cancellation can never deadlock the pool: if every worker
 	// exits early on ctx cancellation, the remaining sends still complete.
 	jobCh := make(chan syncJob, len(jobs))
-	var wg sync.WaitGroup
+	var g errgroup.Group
 	var associatedCount atomic.Int64
 	var noMatchCount atomic.Int64
 	var blocked atomic.Bool
@@ -3647,9 +3664,7 @@ func (a *App) syncPhase1Associate(ctx context.Context, unassociated []db.Game, c
 	}()
 
 	for w := 0; w < syncWorkers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		g.Go(func() error {
 			// Each worker gets its own PublicAPI so F95Zone's own endpoints
 			// (search, checker) are paced per worker — a shared client would
 			// serialize the whole pool back to one request per delay. The
@@ -3657,13 +3672,13 @@ func (a *App) syncPhase1Associate(ctx context.Context, unassociated []db.Game, c
 			public := scraper.NewPublicAPIWithCookie(cookie)
 			for job := range jobCh {
 				if ctx.Err() != nil {
-					return
+					return nil
 				}
 				game := job.game
 				assoc, noMatch, b := a.associateGame(ctx, &game, job.query, job.detEngine, job.memo, client, cookie, public, allErrors, &saveMu)
 				if b {
 					blocked.Store(true)
-					return
+					return nil
 				}
 				if assoc {
 					associatedCount.Add(1)
@@ -3673,13 +3688,14 @@ func (a *App) syncPhase1Associate(ctx context.Context, unassociated []db.Game, c
 				}
 				progressCh <- game.Title
 			}
-		}()
+			return nil
+		})
 	}
 	for _, j := range jobs {
 		jobCh <- j
 	}
 	close(jobCh)
-	wg.Wait()
+	_ = g.Wait()
 	close(progressCh)
 	<-emitterDone
 
@@ -3955,6 +3971,13 @@ func (a *App) syncPhase2CheckUpdates(ctx context.Context, trackable []db.Game, p
 		var bulkErr error
 		versions, bulkErr = public.BulkVersions(ctx, bulkIDs)
 		if bulkErr != nil {
+			// A Cloudflare challenge on the bulk endpoint is a block, not a
+			// transient outage: abort like every other phase instead of
+			// mislabelling it and burning a futile fallback scrape.
+			if isBlockedErr(bulkErr) {
+				*allErrors = append(*allErrors, fmt.Sprintf("bulk version API blocked: %v", bulkErr))
+				return updated, skipped, true
+			}
 			slog.Warn("bulk version API unavailable, falling back to per-game scrape",
 				"error", bulkErr)
 			*allErrors = append(*allErrors, fmt.Sprintf("bulk version API unavailable (%v) — fell back to per-game scraping", bulkErr))
@@ -4053,7 +4076,7 @@ func (a *App) checkGameVersion(ctx context.Context, game *db.Game, public *scrap
 	}
 	knownVer = scraper.StripVersionQualifier(knownVer)
 	if latest != "" && knownVer != "" {
-		switch version.Compare(latest, knownVer) {
+		switch version.Compare(scraper.StripVersionQualifier(latest), knownVer) {
 		case version.Newer, version.Changed:
 			isUpdate = true
 		}
@@ -4110,7 +4133,7 @@ func (a *App) syncPhase2ScrapeOne(ctx context.Context, game *db.Game, client *sc
 	}
 	knownVer = scraper.StripVersionQualifier(knownVer)
 	if latest != "" && knownVer != "" {
-		switch version.Compare(latest, knownVer) {
+		switch version.Compare(scraper.StripVersionQualifier(latest), knownVer) {
 		case version.Newer, version.Changed:
 			isUpdate = true
 		}
@@ -4171,10 +4194,17 @@ func (a *App) pickBestLatestResult(game db.Game, detEngine engine.Result, result
 	var best *scraper.LatestSearchResult
 	bestScore := 0.0
 	for i, r := range results {
-		score := scraper.ComputeMatchScore(game.Title, r.Title)
+		base := scraper.ComputeMatchScore(game.Title, r.Title)
+		score := base
 		// Version alignment breaks sequel ties ("SiNiSistar2" local v1.3.0
-		// vs "SiNiSistar 2" v1.3.1 over the original "SiNiSistar" v3.0.1).
-		score += scraper.VersionMatchBonus(game.Version, r.Version)
+		// vs "SiNiSistar 2" v1.3.1 over the original "SiNiSistar" v3.0.1) —
+		// but only for candidates that already clear the title-match
+		// threshold. Adding it unconditionally lifts a meaningful-diff
+		// candidate (ComputeMatchScore returns 0.25 for a sequel/remaster)
+		// to 0.55 and auto-associates the game with the wrong thread.
+		if base >= 0.3 {
+			score += scraper.VersionMatchBonus(game.Version, r.Version)
+		}
 		if score > 1.0 {
 			score = 1.0
 		}
@@ -4767,6 +4797,14 @@ func (a *App) DownloadGameUpdate(gameID int64) error {
 	if !a.updateRunning.CompareAndSwap(false, true) {
 		return fmt.Errorf("an update is already in progress")
 	}
+	// Re-check after claiming the update lock: the pre-CAS scan check is
+	// advisory (two independent check-then-set sequences on different
+	// flags), so a scan that claimed scanRunning in the gap would otherwise
+	// run concurrently over the same game directories.
+	if a.scanRunning.Load() {
+		a.updateRunning.Store(false)
+		return fmt.Errorf("a scan is in progress; cannot update right now")
+	}
 
 	a.goBackground("game-update", func(ctx context.Context) {
 		// Signal idle only after the lock is actually released — the pipeline
@@ -4881,6 +4919,14 @@ func (a *App) DownloadAllUpdates() error {
 	if !a.updateRunning.CompareAndSwap(false, true) {
 		return fmt.Errorf("an update is already in progress")
 	}
+	// Re-check after claiming the update lock: the pre-CAS scan check is
+	// advisory (two independent check-then-set sequences on different
+	// flags), so a scan that claimed scanRunning in the gap would otherwise
+	// run concurrently over the same game directories.
+	if a.scanRunning.Load() {
+		a.updateRunning.Store(false)
+		return fmt.Errorf("a scan is in progress; cannot update right now")
+	}
 
 	a.goBackground("game-update", func(ctx context.Context) {
 		// Signal idle only after the lock is actually released — the pipeline
@@ -4988,6 +5034,14 @@ func (a *App) ProvideUpdateFile(gameID int64) error {
 	}
 	if !a.updateRunning.CompareAndSwap(false, true) {
 		return fmt.Errorf("an update is already in progress")
+	}
+	// Re-check after claiming the update lock: the pre-CAS scan check is
+	// advisory (two independent check-then-set sequences on different
+	// flags), so a scan that claimed scanRunning in the gap would otherwise
+	// run concurrently over the same game directories.
+	if a.scanRunning.Load() {
+		a.updateRunning.Store(false)
+		return fmt.Errorf("a scan is in progress; cannot update right now")
 	}
 
 	a.goBackground("game-update", func(ctx context.Context) {
@@ -5278,6 +5332,12 @@ func (a *App) InstallGame(gameID int64, destParent string) error {
 	// game directories, and running them together is asking for trouble.
 	if !a.updateRunning.CompareAndSwap(false, true) {
 		return fmt.Errorf("an update or install is already in progress")
+	}
+	// Re-check after claiming the lock (see DownloadGameUpdate): the pre-CAS
+	// scan check is advisory and a scan could have started in the gap.
+	if a.scanRunning.Load() {
+		a.updateRunning.Store(false)
+		return fmt.Errorf("a scan is in progress; cannot update right now")
 	}
 
 	a.goBackground("game-install", func(ctx context.Context) {

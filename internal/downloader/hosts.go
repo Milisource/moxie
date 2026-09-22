@@ -8,11 +8,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/log"
+
+	"golang.org/x/time/rate"
 )
 
 // HostResolver resolves a file host URL to a direct downloadable URL.
@@ -47,15 +48,13 @@ type HostResolver struct {
 	// with progress/resume. nil = walled links fail with the captcha error
 	// (the browser-download fallback may still pick them up).
 	maskedSolver func(ctx context.Context, maskedURL string) (string, error)
-	// unwrapMu guards the unwrap pacing state. F95Zone's masked endpoint is
+	// unwrapLimiter paces unwrap pacing state. F95Zone's masked endpoint is
 	// rate-budgeted (live A/B: ok, ok, wall, wall, wall, wall) — pacing
 	// unwraps keeps bursts under the budget, retries ride out transient
 	// walls, and the browser solver handles persistent ones.
-	unwrapMu         sync.Mutex
-	lastUnwrap       time.Time
-	lastCaptcha      time.Time
-	unwrapBackoff    []time.Duration
-	unwrapMinInterval time.Duration
+	lastCaptcha   time.Time
+	unwrapBackoff []time.Duration
+	unwrapLimiter *rate.Limiter
 }
 
 // SetF95Cookie sets the F95Zone session cookie string used to authenticate
@@ -138,8 +137,8 @@ func NewHostResolver() *HostResolver {
 		// F95Zone's masked unwrap is rate-budgeted; live A/B showed the
 		// wall after ~2-3 back-to-back unwraps, clearing minutes later.
 		// Pace unwraps and retry with backoff before surfacing the wall.
-		unwrapBackoff:     []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second, 45 * time.Second},
-		unwrapMinInterval: 3 * time.Second,
+		unwrapBackoff: []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second, 45 * time.Second},
+		unwrapLimiter: rate.NewLimiter(rate.Every(3*time.Second), 1),
 	}
 }
 
@@ -296,7 +295,7 @@ func (r *HostResolver) resolveDepth(url string, host string, depth int) (*Resolv
 // Falls back to followRedirect (HTTP redirect chain) for older F95Zone
 // deployments that answer non-JSON.
 func (r *HostResolver) unwrapMasked(rawURL string) (string, error) {
-	r.paceUnwrap()
+	r.paceUnwrap(context.Background())
 
 	status, msg, err := r.unwrapOnce(rawURL)
 	if err != nil {
@@ -341,20 +340,13 @@ func (r *HostResolver) unwrapMasked(rawURL string) (string, error) {
 
 // paceUnwrap enforces a minimum interval between masked unwrap POSTs:
 // F95Zone rate-budgets the endpoint and bursts trip the captcha wall.
-func (r *HostResolver) paceUnwrap() {
-	r.unwrapMu.Lock()
-	defer r.unwrapMu.Unlock()
-	interval := r.unwrapMinInterval
-	if interval <= 0 {
+func (r *HostResolver) paceUnwrap(ctx context.Context) {
+	if r.unwrapLimiter == nil {
 		return
 	}
-	if !r.lastUnwrap.IsZero() {
-		if wait := interval - time.Since(r.lastUnwrap); wait > 0 {
-			log.Debug("masked unwrap pacing", "wait", wait)
-			time.Sleep(wait)
-		}
+	if err := r.unwrapLimiter.Wait(ctx); err != nil {
+		log.Debug("masked unwrap pacing wait aborted", "error", err)
 	}
-	r.lastUnwrap = time.Now()
 }
 
 // unwrapOnce performs a single masked unwrap POST and returns the JSON

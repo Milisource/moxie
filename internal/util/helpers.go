@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/muesli/reflow/wordwrap"
+
 	"github.com/mili/moxie/internal/scraper"
 )
 
@@ -17,20 +19,6 @@ var (
 	MultiSpaceRE = regexp.MustCompile(`\s{2,}`)
 	MultiDashRE  = regexp.MustCompile(`-{2,}`)
 )
-
-// FormatSize returns a human-readable size string (e.g. "1.5 KB").
-func FormatSize(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
-}
 
 // FormatDuration returns a human-readable duration string.
 func FormatDuration(d time.Duration) string {
@@ -104,20 +92,5 @@ func MustParseInt(s string) int64 {
 
 // WrapText wraps text to a given width.
 func WrapText(s string, width int) string {
-	var result strings.Builder
-	words := strings.Fields(s)
-	lineLen := 0
-	for _, w := range words {
-		if lineLen+len(w)+1 > width && lineLen > 0 {
-			result.WriteByte('\n')
-			lineLen = 0
-		}
-		if lineLen > 0 {
-			result.WriteByte(' ')
-			lineLen++
-		}
-		result.WriteString(w)
-		lineLen += len(w)
-	}
-	return result.String()
+	return wordwrap.String(s, width)
 }

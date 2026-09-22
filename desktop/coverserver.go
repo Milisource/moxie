@@ -167,9 +167,12 @@ func backfillCoverThumbs(ctxs ...context.Context) int {
 			continue // not a cover file
 		}
 		full := filepath.Join(dir, name)
-		if _, err := os.Stat(full + ".thumb"); err == nil {
-			continue
-		}
+		// Deliberately no "does .thumb already exist" skip here: this pass
+		// only runs once per app version (gated by the marker above), and a
+		// version bump that changes coverThumbMaxDim or the scale filter
+		// (e.g. the ApproxBiLinear -> CatmullRom, 320 -> 480 fix) needs to
+		// regenerate thumbnails that already exist on disk, not just fill in
+		// covers that never got one. writeCoverThumb overwrites in place.
 		switch writeCoverThumb(full) {
 		case thumbWritten:
 			count++

@@ -11,12 +11,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/log"
+	"github.com/mili/moxie/internal/version"
 )
 
 // githubRelease represents the GitHub API response for a release.
@@ -357,38 +357,9 @@ func escapeBatch(s string) string {
 	return strings.ReplaceAll(s, "%", "%%")
 }
 
-// isNewerVersion returns true if latest > current using semver-like comparison.
+// isNewerVersion reports whether the release latest is newer than current.
+// Delegates to internal/version so the CLI and the desktop app share one
+// implementation and cannot drift apart.
 func isNewerVersion(latest, current string) bool {
-	// Strip leading 'v' and prerelease suffixes for comparison.
-	clean := func(v string) string {
-		v = strings.TrimPrefix(v, "v")
-		if idx := strings.IndexAny(v, "-+"); idx >= 0 {
-			v = v[:idx]
-		}
-		return v
-	}
-
-	latest = clean(latest)
-	current = clean(current)
-
-	partsL := strings.Split(latest, ".")
-	partsC := strings.Split(current, ".")
-	maxLen := len(partsL)
-	if len(partsC) > maxLen {
-		maxLen = len(partsC)
-	}
-
-	for i := 0; i < maxLen; i++ {
-		var a, b int
-		if i < len(partsL) {
-			a, _ = strconv.Atoi(partsL[i])
-		}
-		if i < len(partsC) {
-			b, _ = strconv.Atoi(partsC[i])
-		}
-		if a != b {
-			return a > b
-		}
-	}
-	return false
+	return version.IsNewerRelease(latest, current)
 }

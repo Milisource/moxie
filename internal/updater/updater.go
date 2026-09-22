@@ -121,9 +121,14 @@ func Merge(ctx context.Context, gameDir, engine, extractedDir string, backup boo
 		return result, err
 	}
 
-	// If we have a backup, restore preserved files from it
+	// If we have a backup, restore preserved files from it. A failure here
+	// (including ctx cancellation) must not commit: the live dir is only
+	// partially restored, so returning with committed=false triggers the
+	// deferred rollback rather than recording a half-restored merge as success.
 	if result.BackupPath != "" {
-		restorePreserved(ctx, result.BackupPath, gameDir, preserve)
+		if err := restorePreserved(ctx, result.BackupPath, gameDir, preserve); err != nil {
+			return result, fmt.Errorf("restore preserved files: %w", err)
+		}
 	}
 
 	committed = true
@@ -174,9 +179,10 @@ func copyNew(ctx context.Context, srcDir, destDir string, preserve []string, res
 
 // restorePreserved copies files from backupDir to gameDir that match preserve
 // patterns, overwriting any defaults from the new version with the user's files.
-// A non-nil ctx.Err() stops the walk early.
-func restorePreserved(ctx context.Context, backupDir, gameDir string, preserve []string) {
-	filepath.Walk(backupDir, func(srcPath string, info os.FileInfo, err error) error {
+// A non-nil ctx.Err() stops the walk early and is returned so the caller can
+// roll the merge back instead of committing a partially-restored game dir.
+func restorePreserved(ctx context.Context, backupDir, gameDir string, preserve []string) error {
+	return filepath.Walk(backupDir, func(srcPath string, info os.FileInfo, err error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -186,10 +192,13 @@ func restorePreserved(ctx context.Context, backupDir, gameDir string, preserve [
 		relPath, _ := filepath.Rel(backupDir, srcPath)
 		if shouldPreserve(relPath, "", preserve) {
 			destPath := filepath.Join(gameDir, relPath)
-			os.MkdirAll(filepath.Dir(destPath), 0755)
-			if copyFile(srcPath, destPath) == nil {
-				log.Debug("restored user file from backup", "path", relPath)
+			if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+				return err
 			}
+			if err := copyFile(srcPath, destPath); err != nil {
+				return err
+			}
+			log.Debug("restored user file from backup", "path", relPath)
 		}
 		return nil
 	})

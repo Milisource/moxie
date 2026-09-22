@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dustin/go-humanize"
+
 	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/scanner"
@@ -186,7 +188,7 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 
 	fmt.Printf("Found %d games:\n\n", len(games))
 	for _, g := range games {
-		sizeStr := util.FormatSize(g.SizeBytes)
+		sizeStr := humanize.IBytes(uint64(g.SizeBytes))
 		fmt.Printf("  %-30s %-12s %8s", g.Title, g.Engine, sizeStr)
 		if g.ExePath != "" {
 			fmt.Printf("  %s", g.ExePath)
@@ -367,7 +369,7 @@ func List(args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to compute total size: %v\n", err)
 	}
-	fmt.Fprintf(os.Stderr, "\n%d games, %s total.\n", count, util.FormatSize(size))
+	fmt.Fprintf(os.Stderr, "\n%d games, %s total.\n", count, humanize.IBytes(uint64(size)))
 }
 
 // Info shows detailed information about a game.
@@ -392,7 +394,7 @@ func Info(args []string) {
 	fmt.Printf("Version:    %s\n", game.Version)
 	fmt.Printf("Path:       %s\n", game.Path)
 	fmt.Printf("Exe:        %s\n", game.ExePath)
-	fmt.Printf("Size:       %s\n", util.FormatSize(game.SizeBytes))
+	fmt.Printf("Size:       %s\n", humanize.IBytes(uint64(game.SizeBytes)))
 	fmt.Printf("Status:     %s\n", game.Status)
 	fmt.Printf("F95Zone:    %s\n", game.F95URL)
 	fmt.Printf("Tags:       %s\n", strings.Join(game.Tags, ", "))

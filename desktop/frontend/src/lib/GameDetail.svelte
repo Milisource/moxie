@@ -10,6 +10,7 @@
   import {engineColor, engineOptions} from './engineColors.js'
   import {safeExternalUrl} from './sanitizeUrl.js'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
+  import {confirmAction} from './confirmDialog.svelte.js'
 
   // The game-update and game-install pipelines (and their event subscriptions)
   // live in App.svelte so they survive tab switches. This view derives its
@@ -372,7 +373,13 @@
   }
 
   async function handleRemove() {
-    if (!window.confirm(`Are you sure you want to remove "${detail.title}" from your library?`)) return
+    const ok = await confirmAction({
+      title: 'Remove game?',
+      description: `Are you sure you want to remove "${detail.title}" from your library?`,
+      confirmLabel: 'Remove',
+      danger: true,
+    })
+    if (!ok) return
     editError = ''
     try {
       await RemoveGame(gameId, false)
@@ -437,7 +444,7 @@
   // shared gameStates/installState. When a pipeline for THIS game lands in a
   // terminal phase we just re-fetch the detail and nudge the library — no
   // local event copies that can die on navigation.
-  let prevUpdatePhase = $state('')
+  let prevUpdatePhase = ''
   $effect(() => {
     const phase = gameState?.phase || 'idle'
     if (phase !== prevUpdatePhase) {
@@ -449,7 +456,7 @@
     }
   })
 
-  let prevInstallPhase = $state('')
+  let prevInstallPhase = ''
   $effect(() => {
     const phase = installForThis ? installState.phase : ''
     if (phase !== prevInstallPhase) {
@@ -1094,8 +1101,8 @@
   }
   .cover-placeholder {
     width: 100%;
-    max-width: 320px;
-    aspect-ratio: 16/9;
+    max-width: 240px;
+    aspect-ratio: 3/4;
     display: flex;
     flex-direction: column;
     align-items: center;

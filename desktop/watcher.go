@@ -282,6 +282,15 @@ func (a *App) RescanDirectory(ctx context.Context, root string, triggerPaths []s
 	}
 	defer a.scanRunning.Store(false)
 
+	// Cross-guard mirroring ScanDirectory: an update/install writes into game
+	// directories, and scanning mid-write would upsert half-written games.
+	// Re-checked after claiming scanRunning because the watcher can fire
+	// during an update; return false so the sweep re-queues the root.
+	if a.updateRunning.Load() {
+		slog.Debug("auto-scan skipped: update in progress", "root", root)
+		return false
+	}
+
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		slog.Warn("auto-scan skipped: cannot resolve root", "root", root, "error", err)

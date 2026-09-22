@@ -2,10 +2,27 @@ package updater
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// TestRestorePreserved_CancelledContextReturnsError guards the merge-rollback
+// contract: a cancelled restore must surface ctx.Err() so Merge does not
+// commit a partially-restored game directory.
+func TestRestorePreserved_CancelledContextReturnsError(t *testing.T) {
+	backup := t.TempDir()
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(backup, "save.dat"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := restorePreserved(ctx, backup, dest, []string{"*.dat"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("restorePreserved with cancelled ctx = %v, want context.Canceled", err)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // matchPath

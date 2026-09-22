@@ -195,6 +195,54 @@ func IsNewer(remote, known string) bool {
 	return Compare(remote, known) == Newer
 }
 
+// IsNewerRelease reports whether the moxie release version latest is newer
+// than current. This is for the project's own release tags (dotted numerics,
+// optionally with a leading "v" and a "-prerelease"/"+build" suffix), not for
+// F95Zone game versions — use Compare/IsNewer for those. Prerelease and build
+// suffixes are ignored so a release and its own prerelease compare equal.
+// Missing segments count as zero, so two-part tags ("1.1" vs "1.0") order
+// correctly rather than being treated as unparseable.
+//
+// Desktop (CheckForUpdate) and the CLI (commands.Update) both call this so
+// their update checks cannot drift apart.
+func IsNewerRelease(latest, current string) bool {
+	a, b := releaseParts(latest), releaseParts(current)
+	n := len(a)
+	if len(b) > n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		x, y := 0, 0
+		if i < len(a) {
+			x = a[i]
+		}
+		if i < len(b) {
+			y = b[i]
+		}
+		if x != y {
+			return x > y
+		}
+	}
+	return false
+}
+
+// releaseParts parses a release version into numeric segments, ignoring a
+// leading "v" and any "-prerelease"/"+build" suffix. Non-numeric segments
+// parse as zero.
+func releaseParts(v string) []int {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(strings.TrimPrefix(v, "v"), "V")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	out := make([]int, 0, 3)
+	for _, p := range strings.Split(v, ".") {
+		n, _ := strconv.Atoi(strings.TrimSpace(p))
+		out = append(out, n)
+	}
+	return out
+}
+
 // compareNumeric compares the digit runs of two versions element-wise,
 // treating a missing segment as zero so "0.8" < "0.8.1". When every
 // segment matches it falls back to the build letter ("1.5a" < "1.5b").
