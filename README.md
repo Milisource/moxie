@@ -160,6 +160,15 @@ moxie config set steamgriddb-key YOUR_KEY
 moxie steam fix-artwork <id>
 ```
 
+#### Portrait library covers
+
+F95Zone covers are mostly landscape banners. `covers upgrade` replaces them with portrait box art from Steam (no key needed), SteamGridDB (when a key is set) and VNDB (`--vndb`). It only replaces a cover on an exact title match, and only with art that is portrait and at least as sharp. The desktop app has the same action under Covers → Upgrade to Portrait Art. See `docs/cover-art.md`.
+
+```bash
+moxie covers upgrade --dry-run   # list proposed replacements
+moxie covers upgrade             # apply (the previous cover is kept for undo)
+```
+
 #### View all configuration
 
 ```bash
@@ -247,6 +256,7 @@ moxie list --warnings                # quick scan for engine/exe issues
 | `set-path <id> <path>` | Update the filesystem path for a game in the database. |
 | `set-exe <id> <exe>` | Manually set the executable path for a game. |
 | `refresh-versions [--dry-run]` | Re-detect installed versions from folder names and game files (Ren'Py options/.rpa, RPG Maker System.json, Game.ini, package.json); no network calls. |
+| `covers upgrade [--dry-run] [--vndb] [--no-steam] [--limit N] [--game ID]` | Replace landscape, missing or low-res covers with portrait art from Steam, SteamGridDB and VNDB. Requires an exact title match. |
 </details>
 
 <details>

@@ -30,6 +30,8 @@ sql.Open("sqlite3", "file:<path>?_pragma=foreign_keys(1)&_pragma=busy_timeout(50
 PRAGMA journal_mode = WAL     -- persistent, set once on the initial connection
 ```
 
+**Open-time data fixes.** Opening the database also clears `scraped_meta.cover_url` values that aren't http(s) URLs. Older scrapes stored F95's literal `missing` placeholder, which blocked cover fetching. `CleanCoverURL` applies the same rule on every read and write. This is an idempotent `UPDATE`, not a schema migration, so the schema version is unchanged.
+
 Foreign key enforcement on every pooled connection matters because desktop workers, the TUI, and the downloader run concurrently — a connection without `foreign_keys=ON` would silently skip cascade deletes and orphan rows (`scraped_meta`, `downloads`, `play_history`). The DB file is chmod 0600 **after** the first statement creates it (`sql.Open` is lazy).
 
 ### Schema

@@ -39,6 +39,7 @@ package main          internal/util/          internal/commands/
                 sync_check.go    (RunUpdateCheck, CheckUpdates)
                 sync_game.go     (SyncGameLogic)
                 cleanup.go       (engine mismatch, refresh-versions)
+                covers.go        (covers upgrade → internal/coverart)
                  play.go          (RunPlay, launch, fuzzy name search)
                  install.go       (install from archive → extract → merge → DB update)
                  steam.go         (Steam dispatcher)
