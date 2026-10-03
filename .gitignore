@@ -14,7 +14,13 @@ scripts/release.sh
 # Desktop (Wails) build artifacts
 desktop/build/bin/
 desktop/build/dist/
-desktop/frontend/dist/
+# frontend/dist is generated, but a committed .gitkeep must survive so the
+# `//go:embed all:frontend/dist` in desktop/main.go matches on a fresh clone
+# (CI runs `go build ./...` before any frontend build). The bare `dist` rule
+# above also matches this directory, so re-include it first.
+!desktop/frontend/dist/
+desktop/frontend/dist/*
+!desktop/frontend/dist/.gitkeep
 desktop/frontend/node_modules/
 desktop/desktop
 
