@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/mili/moxie/internal/config"
 )
 
 // associationCache maps sanitized game titles to F95Zone thread IDs.
@@ -27,8 +29,7 @@ var globalCache = &associationCache{
 
 // AssociationCachePath returns the path to the persistent association cache file.
 func AssociationCachePath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "moxie", "associations.json")
+	return filepath.Join(config.ConfigDir(), "associations.json")
 }
 
 // LoadAssociationCache reads the persistent cache from disk.
