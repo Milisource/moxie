@@ -286,7 +286,7 @@ func (a *App) RescanDirectory(ctx context.Context, root string, triggerPaths []s
 	// directories, and scanning mid-write would upsert half-written games.
 	// Re-checked after claiming scanRunning because the watcher can fire
 	// during an update; return false so the sweep re-queues the root.
-	if a.updateRunning.Load() {
+	if a.updateGate().active() {
 		slog.Debug("auto-scan skipped: update in progress", "root", root)
 		return false
 	}

@@ -5,6 +5,8 @@
     GetDbPath,
     GetConfigDir,
     GetVersion,
+    GetUpdateConcurrency,
+    SetUpdateConcurrency,
   } from '../../wailsjs/go/main/App'
   import ScanPaths from './ScanPaths.svelte'
   import UpdateDialog from './UpdateDialog.svelte'
@@ -52,6 +54,23 @@
   }
 
   onMount(loadAll)
+
+  // Parallel game updates (config key update-concurrency, 1–4). Applies to
+  // queued runs immediately — no restart.
+  let concurrency = $state(2)
+  let concurrencyError = $state('')
+  onMount(async () => {
+    try { concurrency = await GetUpdateConcurrency() } catch (e) { /* keep default */ }
+  })
+  async function saveConcurrency(n) {
+    concurrencyError = ''
+    try {
+      await SetUpdateConcurrency(n)
+      concurrency = n
+    } catch (e) {
+      concurrencyError = `Could not save: ${e}`
+    }
+  }
 
   function statusLabel(s) {
     switch (s) {
@@ -105,6 +124,31 @@
         {/each}
       </div>
     {/if}
+  </section>
+
+  <!-- ── Game Updates ───────────────────────────────────── -->
+  <section class="settings-section">
+    <h3 class="section-title">Game Updates</h3>
+    <p class="section-hint">
+      How many game updates download and install at once. Extra updates wait
+      in a queue. Link unwrapping and browser fallbacks stay one-at-a-time, so
+      F95Zone is never hit harder.
+    </p>
+    <div class="kv-row">
+      <span class="kv-key">Parallel updates</span>
+      <div class="seg" role="radiogroup" aria-label="Parallel updates">
+        {#each [1, 2, 3, 4] as n}
+          <button
+            class="seg-btn"
+            class:seg-active={concurrency === n}
+            role="radio"
+            aria-checked={concurrency === n}
+            onclick={() => saveConcurrency(n)}
+          >{n}</button>
+        {/each}
+      </div>
+    </div>
+    {#if concurrencyError}<p class="section-hint error-text">{concurrencyError}</p>{/if}
   </section>
 
   <!-- ── Storage ────────────────────────────────────────── -->
@@ -237,6 +281,21 @@
     white-space: nowrap;
   }
 
+  .seg { display: inline-flex; justify-self: start; width: max-content; border: 1px solid var(--border); }
+  .seg-btn {
+    min-width: 34px;
+    padding: 4px 10px;
+    border: none;
+    border-left: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    cursor: pointer;
+  }
+  .seg-btn:first-child { border-left: none; }
+  .seg-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .seg-btn.seg-active { background: var(--accent); color: var(--on-accent); }
+  .error-text { color: var(--danger); }
   .kv-list { display: flex; flex-direction: column; gap: 4px; }
   .kv-row {
     display: grid;

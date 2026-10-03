@@ -2,7 +2,7 @@
   import {onMount, tick} from 'svelte'
   import {fly} from 'svelte/transition'
   import {EventsOn} from '../wailsjs/runtime/runtime'
-  import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted, GetCookieStatus, SyncAllGames, DownloadGameUpdate, DownloadAllUpdates, CancelGameUpdate, CancelSync, ProvideUpdateFile, ScanDirectory, FetchCovers, GetGameCount, CheckForUpdate, DownloadUpdate, ApplyUpdate, InstallGame} from '../wailsjs/go/main/App'
+  import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted, GetCookieStatus, SyncAllGames, DownloadGameUpdate, DownloadAllUpdates, CancelGameUpdate, CancelGameUpdateFor, CancelSync, ProvideUpdateFile, ScanDirectory, FetchCovers, GetGameCount, CheckForUpdate, DownloadUpdate, ApplyUpdate, InstallGame} from '../wailsjs/go/main/App'
   import Sidebar from './lib/Sidebar.svelte'
   import GameList from './lib/GameList.svelte'
   import GameDetail from './lib/GameDetail.svelte'
@@ -336,18 +336,18 @@
   let gameStates = $state({})
   /** @type {{running:boolean,retrying?:boolean,current:number,total:number,currentGameTitle:string,results:Array,error:string,succeeded?:number,failed?:number}|null} */
   let batchState = $state(null)
-  // Sequential retry plumbing: the backend pipeline is single-flight, so
-  // retries run one at a time. retryInFlight tracks which game the backend
-  // is currently pumping; game-update:idle (empty payload, fires after every
-  // pipeline) tells us that game finished.
-  let retryQueue = $state([])
-  let retryInFlight = $state(null)
+  // Retry plumbing: retries all start at once — the backend queues them
+  // behind its update-concurrency slots (phase 'queued'). retryPending maps
+  // gameID → 'running' | 'deferred'; game-update:idle {gameID} (fires after
+  // each game's run releases its claim) records that game's outcome.
+  // 'deferred' games were rejected because their previous run hadn't
+  // released yet and start on that idle instead.
+  let retryPending = $state({})
 
-  const UPDATE_BUSY_PHASES = ['syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
+  const UPDATE_BUSY_PHASES = ['queued', 'syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
 
-  // True when ANY update/install pipeline holds the backend single-run lock —
-  // the global truth every action (Updates view, detail update/install)
-  // respects, since updates and installs share that lock.
+  // True while any update/install runs — drives the status-bar indicator.
+  // Per-game actions check only their own game: runs are per game.
   let pipelineBusy = $derived(
     installState.running ||
     !!batchState?.running ||
@@ -361,19 +361,24 @@
       const g = games.find(x => Number(x.id) === installState.gameId)
       return `Installing ${g?.title || 'game'}…`
     }
-    if (batchState?.running) {
-      return batchState.retrying
-        ? `Retrying updates… (${batchState.current}/${batchState.total})`
-        : `Updating ${batchState.current} of ${batchState.total} games…`
-    }
-    const busyId = Object.keys(gameStates).find(id => {
+    const busyIds = Object.keys(gameStates).filter(id => {
       const s = gameStates[id]
-      return s && UPDATE_BUSY_PHASES.includes(s.phase)
+      return s && UPDATE_BUSY_PHASES.includes(s.phase) && s.phase !== 'queued'
     })
-    if (busyId) {
-      const g = games.find(x => Number(x.id) === Number(busyId))
-      return `Updating ${g?.title || 'game'}…`
+    const queued = Object.values(gameStates).filter(s => s?.phase === 'queued').length
+    const tail = queued ? ` (${queued} queued)` : ''
+    if (batchState?.running) {
+      const done = batchState.results.length
+      return batchState.retrying
+        ? `Retrying updates… ${done}/${batchState.total} done${tail}`
+        : `Updating ${busyIds.length || 1} game${busyIds.length > 1 ? 's' : ''}… ${done}/${batchState.total} done${tail}`
     }
+    if (busyIds.length === 1) {
+      const g = games.find(x => Number(x.id) === Number(busyIds[0]))
+      return `Updating ${g?.title || 'game'}…${tail}`
+    }
+    if (busyIds.length > 1) return `Updating ${busyIds.length} games…${tail}`
+    if (queued) return `${queued} update${queued > 1 ? 's' : ''} queued…`
     return ''
   })
 
@@ -431,41 +436,25 @@
   }
 
   // Single-game update (row button / per-row retry). The backend runs the
-  // pipeline in a goroutine and rejects a second concurrent run — surface
-  // that rejection instead of dropping it.
+  // pipeline in a goroutine and rejects a second run for the same game —
+  // surface that rejection instead of dropping it.
   function startUpdateGame(gameId) {
     const gs = gameStates[gameId] || {phase: 'idle'}
     if (gs.phase !== 'idle' && gs.phase !== 'error') return
     updateGS(gameId, {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', oldVersion: '', newVersion: '', manualRequired: false, manualHost: '', step: ''})
     DownloadGameUpdate(gameId).catch((e) => {
       const msg = String(e)
-      if (batchState?.retrying && /already in progress/i.test(msg)) {
-        // Retry Failed was clicked in the tiny window between batch-complete
-        // and the backend releasing its single-run lock. Hold this game at
-        // the front of the queue — the next game-update:idle (the lock
-        // release) pumps it for real.
-        updateGS(gameId, {phase: 'error', error: msg})
-        retryInFlight = null
-        if (!retryQueue.includes(gameId)) retryQueue = [gameId, ...retryQueue]
+      updateGS(gameId, {phase: 'error', error: msg})
+      if (!batchState?.retrying || !(gameId in retryPending)) return
+      if (/already in progress/i.test(msg)) {
+        // The game's previous run hasn't released its claim yet; its
+        // game-update:idle starts this retry for real.
+        retryPending = {...retryPending, [gameId]: 'deferred'}
         return
       }
-      updateGS(gameId, {phase: 'error', error: msg})
-      if (batchState?.retrying && retryInFlight !== null) {
-        // The pipeline never started (e.g. a hard backend error) and no idle
-        // will follow — record the failure and move on so the pass can't stall.
-        const failedId = retryInFlight
-        retryInFlight = null
-        batchState = {
-          ...batchState,
-          results: [...batchState.results, {
-            gameID: failedId,
-            title: retryTitle(failedId),
-            success: false,
-            error: msg,
-          }],
-        }
-        pumpRetryQueue()
-      }
+      // The pipeline never started and no idle will follow — record the
+      // failure now so the pass can't stall.
+      recordRetryResult(gameId, false, msg)
     })
   }
 
@@ -506,10 +495,11 @@
     }
   }
 
-  // Retry the failed games of the last batch, one at a time. The backend
+  // Retry the failed games of the last batch. All start at once; the backend
+  // runs up to update-concurrency of them and queues the rest. The backend
   // won't emit batch-start/progress/complete for this path, so we keep a
   // live batchState ourselves and accumulate per-game results from the
-  // game-update:complete/error events (via the idle correlation below).
+  // per-game game-update:idle events.
   function handleRetryFailed() {
     const failed = (batchState?.results || []).filter(r => !r.success)
     if (failed.length === 0) return
@@ -524,25 +514,26 @@
       succeeded: 0,
       failed: 0,
     }
-    retryQueue = failed.map(f => f.gameID)
-    pumpRetryQueue()
+    const pending = {}
+    for (const f of failed) pending[f.gameID] = 'running'
+    retryPending = pending
+    for (const f of failed) startUpdateGame(f.gameID)
   }
 
-  function pumpRetryQueue() {
-    if (!batchState?.running) return        // cancelled / already finished
-    if (retryQueue.length === 0) {
-      finishRetryBatch()
-      return
+  function recordRetryResult(gameId, ok, error) {
+    if (!(gameId in retryPending)) return
+    const {[gameId]: _, ...rest} = retryPending
+    retryPending = rest
+    if (batchState?.retrying) {
+      const results = [...batchState.results, {
+        gameID: gameId,
+        title: retryTitle(gameId),
+        success: ok,
+        error: ok ? '' : (error || 'Update failed'),
+      }]
+      batchState = {...batchState, results, current: results.length}
     }
-    const [next, ...rest] = retryQueue
-    retryQueue = rest
-    retryInFlight = next
-    batchState = {
-      ...batchState,
-      current: batchState.total - retryQueue.length,
-      currentGameTitle: retryTitle(next),
-    }
-    startUpdateGame(next)
+    if (Object.keys(retryPending).length === 0) finishRetryBatch()
   }
 
   function finishRetryBatch() {
@@ -556,18 +547,28 @@
   }
 
   function cancelUpdates() {
-    retryQueue = []
-    retryInFlight = null
+    retryPending = {}
     CancelGameUpdate().then((cancelled) => {
       // false = nothing was running — the backend emits no
       // game-update:cancelled event, so run the same phase reset locally to
       // make sure stale busy phases can't wedge the UI.
       if (!cancelled) markAllAsCancelled()
     }).catch(() => {
-      // Binding rejected (e.g. "already in progress" race): still reset, a
-      // stuck row is worse than a redundant cancel attempt.
+      // Binding rejected: still reset, a stuck row is worse than a
+      // redundant cancel attempt.
       markAllAsCancelled()
     })
+  }
+
+  // Cancel one game's run (queued or in progress). It ends through its own
+  // game-update:error and :idle events; if nothing was running, clear the row.
+  function cancelUpdateFor(gameId) {
+    CancelGameUpdateFor(gameId).then((cancelled) => {
+      if (!cancelled) {
+        const gs = gameStates[gameId]
+        if (gs && UPDATE_BUSY_PHASES.includes(gs.phase)) updateGS(gameId, {phase: 'error', error: 'Cancelled'})
+      }
+    }).catch(() => {})
   }
 
   // Like startSync: UI guard plus backend single-flight (coverRunning) as
@@ -776,8 +777,8 @@
     }))
     // Game update pipeline events (App level so they survive tab switches).
     // Kept manual rather than folded into createPipeline: gameStates is
-    // keyed by gameID (not a flat object) and batchState/retryQueue add
-    // sequential retry orchestration on top — a shape the shared factory
+    // keyed by gameID (not a flat object) and batchState/retryPending add
+    // retry orchestration on top — a shape the shared factory
     // isn't meant to cover.
     subs.push(EventsOn('game-update:phase', (data) => {
       updateGS(data.gameID, {phase: data.phase})
@@ -886,44 +887,25 @@
     subs.push(EventsOn('game-update:cancelled', () => {
       markAllAsCancelled()
     }))
-    // The backend releases its single-run lock and emits this after EVERY
-    // pipeline (single update, batch, install). It carries no gameID, so the
-    // only pipeline we can attribute it to is the current sequential retry —
-    // record its outcome (phase was already set by complete/error) and start
-    // the next one. This is what chains retries one-at-a-time.
-    subs.push(EventsOn('game-update:idle', () => {
-      if (retryInFlight !== null) {
-        const gs = gameStates[retryInFlight] || {}
-        const ok = gs.phase === 'done'
-        if (batchState) {
-          batchState = {
-            ...batchState,
-            results: [...batchState.results, {
-              gameID: retryInFlight,
-              title: retryTitle(retryInFlight),
-              success: ok,
-              error: ok ? '' : (gs.error || 'Update failed'),
-            }],
-          }
-        }
-        retryInFlight = null
+    // Emitted after each game's run (update, batch member, install) releases
+    // its claim. Any row still in a busy phase missed its terminal event
+    // (e.g. a pipeline that bailed without :error) — surface it instead of
+    // spinning forever. Then record a retry's outcome or start a deferred one.
+    subs.push(EventsOn('game-update:idle', (data) => {
+      const id = data?.gameID
+      if (id === undefined || id === null) return
+      const gs = gameStates[id]
+      if (gs && UPDATE_BUSY_PHASES.includes(gs.phase)) {
+        updateGS(id, {phase: 'error', error: gs.error || 'Update stopped before finishing'})
       }
-      // idle means the backend lock is released, so nothing is running. Any
-      // row still in a busy phase missed its terminal event (e.g. a pipeline
-      // that bailed without :error) — surface it instead of spinning forever.
-      const stuck = Object.entries(gameStates)
-        .filter(([, gs]) => gs && UPDATE_BUSY_PHASES.includes(gs.phase))
-      if (stuck.length) {
-        const next = {...gameStates}
-        for (const [id, gs] of stuck) {
-          next[id] = {...gs, phase: 'error', error: gs.error || 'Update stopped before finishing'}
-        }
-        gameStates = next
+      if (!(id in retryPending)) return
+      if (retryPending[id] === 'deferred') {
+        retryPending = {...retryPending, [id]: 'running'}
+        startUpdateGame(id)
+        return
       }
-      // Always pump: also covers the lock-race path where startUpdateGame was
-      // rejected while the previous pipeline still held the lock and the game
-      // was re-queued.
-      pumpRetryQueue()
+      const after = gameStates[id] || {}
+      recordRetryResult(id, after.phase === 'done', after.error)
     }))
     return () => {
       window.removeEventListener('keydown', handleGlobalKeydown)
@@ -961,7 +943,6 @@
               onBack={closeDetail}
               onUpdate={refreshGames}
               gameState={gameStates[selectedGameId]}
-              pipelineBusy={pipelineBusy}
               installState={installState}
               onUpdateGame={startUpdateGame}
               onProvideFile={provideUpdateFile}
@@ -1007,6 +988,7 @@
               onRetryFailed={handleRetryFailed}
               onProvideFile={provideUpdateFile}
               onCancel={cancelUpdates}
+              onCancelGame={cancelUpdateFor}
             />
           {:else if activeView === 'downloads'}
             <DownloadsView />

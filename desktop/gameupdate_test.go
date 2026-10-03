@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// The update pipeline is single-flight: while one run holds the lock, every
-// other update/install entry point must reject without spawning a second
-// pipeline (two concurrent merges into the same game directory would corrupt
-// it). Exercises the guard's reject path deterministically — the pipeline
+// Each game has at most one update/install run: while one holds a game,
+// every other entry point for that game must reject without spawning a
+// second pipeline (two concurrent merges into the same game directory would
+// corrupt it). Exercises the guard's reject path deterministically — the pipeline
 // itself does real network IO and Wails event emission, so it is never
 // started here.
 func TestGameUpdateGuardRejectsConcurrentRuns(t *testing.T) {
@@ -17,8 +17,9 @@ func TestGameUpdateGuardRejectsConcurrentRuns(t *testing.T) {
 	a.ctx = context.Background()
 	id := addGame(t, a, "Test Game", "/games/test-game")
 
-	// Simulate an in-flight pipeline.
-	a.updateRunning.Store(true)
+	// Simulate an in-flight pipeline for this game and a running batch.
+	a.updateGate().claimGame(id)
+	a.batchRunning.Store(true)
 
 	t.Run("DownloadGameUpdate", func(t *testing.T) {
 		err := a.DownloadGameUpdate(id)
@@ -47,6 +48,12 @@ func TestGameUpdateGuardRejectsConcurrentRuns(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "in progress") {
 			t.Errorf("error = %q, want mention of in-progress guard", err)
+		}
+	})
+
+	t.Run("SelfUpdateExcluded", func(t *testing.T) {
+		if a.updateGate().claimExclusive() {
+			t.Fatal("self-update claimed the gate while a game update runs")
 		}
 	})
 

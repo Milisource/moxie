@@ -25,14 +25,13 @@
     onBack = () => {},
     onUpdate = () => {},
     gameState = null,            // gameStates[gameId] || null — shared pipeline state for this game
-    pipelineBusy = false,        // true when ANY update/install holds the backend lock
     installState = null,         // shared install pipeline state
     onUpdateGame = () => {},
     onProvideFile = () => {},
     onInstall = () => {},
   } = $props()
 
-  const UPDATE_BUSY_PHASES = ['syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
+  const UPDATE_BUSY_PHASES = ['queued', 'syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
 
   let detail = $state(null)
   let loading = $state(true)
@@ -47,8 +46,8 @@
 
   // ── Game update (Update Available badge) ─────────────
   // Derived from the shared App-level gameStates entry: a busy phase means the
-  // pipeline for THIS game is running. Because the backend lock is global, the
-  // button must also stay disabled while another game's pipeline runs.
+  // pipeline for THIS game is running. Other games' updates run in parallel
+  // and don't lock this page.
   let updating = $derived(!!gameState && UPDATE_BUSY_PHASES.includes(gameState.phase))
   // Auto-download failed (Cloudflare-blocked host, …); the backend asked the
   // user to provide the archive manually via ProvideUpdateFile.
@@ -67,9 +66,9 @@
   let installProgress = $derived(installForThis ? installState.progress : 0)
   let installError = $derived(installForThis ? installState.error : '')
 
-  // The shared single-run lock is busy with a pipeline that is NOT this game's
-  // update and NOT this game's install — action buttons must reflect it.
-  let lockBusyElsewhere = $derived(pipelineBusy && !updating && !installing)
+  // The install UI tracks one install at a time (installState is shared), so
+  // another game's install still locks the Install button.
+  let installElsewhere = $derived(installBusy && !installing)
 
   // ── Download link rows ───────────────────────────────
   let openingLinks = $state(new Set())   // link IDs currently being opened
@@ -546,7 +545,7 @@
                 </p>
               {:else}
                 <div class="install-row">
-                  <select class="install-select" bind:value={installDest} disabled={installing || pipelineBusy}>
+                  <select class="install-select" bind:value={installDest} disabled={installing || installElsewhere}>
                     {#each installTargets as t}
                       <option value={t.path} disabled={!t.available}>
                         {t.path}{t.available ? '' : ' (unavailable)'}
@@ -556,10 +555,10 @@
                   <button
                     class="btn btn-primary"
                     onclick={() => onInstall(gameId, installDest)}
-                    disabled={installing || !installDest || pipelineBusy}
-                    title={pipelineBusy && !installing ? 'An update or install is already running' : undefined}
+                    disabled={installing || !installDest || installElsewhere}
+                    title={installElsewhere ? 'Another install is already running' : undefined}
                   >
-                    {installing ? installPhaseLabel : pipelineBusy ? 'Busy…' : '↓ Install'}
+                    {installing ? installPhaseLabel : installElsewhere ? 'Busy…' : '↓ Install'}
                   </button>
                 </div>
                 {#if installing && installProgress}
@@ -621,10 +620,10 @@
                 <button
                   class="update-btn"
                   onclick={() => onUpdateGame(gameId)}
-                  disabled={updating || lockBusyElsewhere}
+                  disabled={updating || installing}
                   title="Download {detail.latestVersion}"
                 >
-                  {updating ? 'Downloading…' : lockBusyElsewhere ? 'Updating…' : '↓ Download Update'}
+                  {updating ? (gameState?.phase === 'queued' ? 'Queued…' : 'Downloading…') : '↓ Download Update'}
                 </button>
                 {#if detail.updateState === 'unknown'}
                   <button
@@ -656,7 +655,7 @@
                     <button
                       class="btn btn-sm btn-primary"
                       onclick={() => onProvideFile(gameId)}
-                      disabled={providingFile || pipelineBusy}
+                      disabled={providingFile || updating || installing}
                     >
                       {providingFile ? 'Selecting…' : 'Choose Downloaded Archive…'}
                     </button>

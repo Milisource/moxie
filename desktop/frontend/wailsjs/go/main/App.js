@@ -26,6 +26,10 @@ export function CancelGameUpdate() {
   return window['go']['main']['App']['CancelGameUpdate']();
 }
 
+export function CancelGameUpdateFor(arg1) {
+  return window['go']['main']['App']['CancelGameUpdateFor'](arg1);
+}
+
 export function CancelSync() {
   return window['go']['main']['App']['CancelSync']();
 }
@@ -154,6 +158,10 @@ export function GetUpdatableGames() {
   return window['go']['main']['App']['GetUpdatableGames']();
 }
 
+export function GetUpdateConcurrency() {
+  return window['go']['main']['App']['GetUpdateConcurrency']();
+}
+
 export function GetVersion() {
   return window['go']['main']['App']['GetVersion']();
 }
@@ -232,6 +240,10 @@ export function SetGameStatus(arg1, arg2) {
 
 export function SetGameWinePrefix(arg1, arg2) {
   return window['go']['main']['App']['SetGameWinePrefix'](arg1, arg2);
+}
+
+export function SetUpdateConcurrency(arg1) {
+  return window['go']['main']['App']['SetUpdateConcurrency'](arg1);
 }
 
 export function SyncAllGames(arg1) {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mili/moxie/internal/browser"
@@ -117,6 +118,48 @@ func SetDefaultMaskedSolver(fn func(ctx context.Context, maskedURL string) (stri
 	defaultMaskedSolver = fn
 }
 
+// sharedUnwrapLimiter paces F95Zone masked-URL unwraps across every
+// resolver in the process. Each download builds its own HostResolver, so a
+// per-resolver limiter let parallel game updates fire unwraps back to back
+// and trip the captcha wall (~2-3 quick unwraps). One process-wide budget
+// keeps parallel downloads as polite as sequential ones (F95-cbv5).
+var sharedUnwrapLimiter = rate.NewLimiter(rate.Every(3*time.Second), 1)
+
+// browserMu serialises the browser fallback and masked solver: each run
+// copies the user's browser profile and launches a browser, and two at once
+// contend for the same profile lock and look like a bot to the hosts.
+var browserMu sync.Mutex
+
+// serialBrowserFallback wraps fn so only one browser download runs at a time.
+func serialBrowserFallback(fn func(ctx context.Context, url, destDir string) (string, error)) func(ctx context.Context, url, destDir string) (string, error) {
+	if fn == nil {
+		return nil
+	}
+	return func(ctx context.Context, url, destDir string) (string, error) {
+		browserMu.Lock()
+		defer browserMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return fn(ctx, url, destDir)
+	}
+}
+
+// serialMaskedSolver wraps fn so only one browser solve runs at a time.
+func serialMaskedSolver(fn func(ctx context.Context, maskedURL string) (string, error)) func(ctx context.Context, maskedURL string) (string, error) {
+	if fn == nil {
+		return nil
+	}
+	return func(ctx context.Context, maskedURL string) (string, error) {
+		browserMu.Lock()
+		defer browserMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return fn(ctx, maskedURL)
+	}
+}
+
 // NewHostResolver creates a resolver with a shared HTTP client.
 func NewHostResolver() *HostResolver {
 	return &HostResolver{
@@ -132,13 +175,13 @@ func NewHostResolver() *HostResolver {
 		cookieSource:     browserCookieHeader,
 		resolvedCache:    defaultResolvedCache,
 		resolvedCachePut: defaultResolvedCachePut,
-		browserFallback:  defaultBrowserFallback,
-		maskedSolver:     defaultMaskedSolver,
+		browserFallback:  serialBrowserFallback(defaultBrowserFallback),
+		maskedSolver:     serialMaskedSolver(defaultMaskedSolver),
 		// F95Zone's masked unwrap is rate-budgeted; live A/B showed the
 		// wall after ~2-3 back-to-back unwraps, clearing minutes later.
 		// Pace unwraps and retry with backoff before surfacing the wall.
 		unwrapBackoff: []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second, 45 * time.Second},
-		unwrapLimiter: rate.NewLimiter(rate.Every(3*time.Second), 1),
+		unwrapLimiter: sharedUnwrapLimiter,
 	}
 }
 

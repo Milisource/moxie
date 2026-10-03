@@ -183,6 +183,8 @@ The `HostResolver.Resolve()` handles this transparently:
 
 **Resolved-URL cache**: the unwrap endpoint rate-limits after repeated hits (captcha rotation kicks in), so successful unwrap results are cached in the SQLite `resolved_urls` table (7-day TTL, `ResolvedURLTTL` in `internal/db/resolved_urls.go`). On `Resolve()`, the masked branch consults the cache first (`GetResolvedURL`) and only POSTs to the endpoint on a miss; a successful unwrap is stored via `PutResolvedURL` (upsert, one row per masked URL). The DB-backed pair is attached by the app entry points that hold a `*db.Database` — `tui/commands.go` (`startDownloadCmd`) and `internal/commands/download.go` — via `downloader.SetDefaultResolvedCache(get, put)`, which every `NewHostResolver()` (including the one constructed inside `DownloadWithContext`) picks up. `HostResolver.SetResolvedCache` overrides the pair per resolver; nil = no caching. Stale entries read as misses and are auto-pruned on every DB open.
 
+**Shared pacing (F95-cbv5)**: the desktop runs several game updates at once, each with its own `HostResolver`, so the politeness limits are process-wide rather than per resolver. One package-level `sharedUnwrapLimiter` (`rate.Every(3s)`, burst 1, `internal/downloader/hosts.go`) paces every masked-URL POST, and the browser fallback and masked-captcha solver are wrapped by `serialBrowserFallback` / `serialMaskedSolver`, which share one mutex (each copies the browser profile and opens a window). Only byte transfer and extraction run in parallel.
+
 If unwrapping fails (timeout, network error, captcha), resolution falls through to host-specific resolution with the masked URL — which will likely fail, but the caller's fallback loop will try other links.
 
 ### Browser Cookie Reuse

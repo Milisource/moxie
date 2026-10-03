@@ -72,14 +72,17 @@ type App struct {
 	bgCancel context.CancelFunc
 	bgWG     sync.WaitGroup
 
-	// updateRunning serialises the game-update pipeline. Two concurrent runs
-	// would extract and merge into the same game directory at once, so both
-	// the single and batch entry points take this.
-	updateRunning atomic.Bool
+	// updates tracks game update/install runs: one per game, several games
+	// in parallel up to the update-concurrency slot limit, and the app's own
+	// self-update exclusively. Created lazily by updateGate.
+	updatesOnce sync.Once
+	updates     *updateRuns
+	// batchRunning guards DownloadAllUpdates — one batch at a time.
+	batchRunning atomic.Bool
 
-	// updateCancel aborts the in-flight update run. Guarded by updateCancelMu
-	// because CancelGameUpdate arrives on a different goroutine than the one
-	// that installs it.
+	// updateCancel aborts the in-flight self-update download. Guarded by
+	// updateCancelMu because CancelGameUpdate arrives on a different
+	// goroutine than the one that installs it.
 	updateCancelMu sync.Mutex
 	updateCancel   context.CancelFunc
 
@@ -729,16 +732,16 @@ func (a *App) ScanDirectory(path string, force bool) error {
 	// Cross-guard: an in-flight update pipeline writes into game directories
 	// while it runs, and scanning mid-extract would detect (and upsert)
 	// half-written games. Refuse rather than race.
-	if a.updateRunning.Load() {
+	if a.updateGate().active() {
 		return fmt.Errorf("an update is in progress; cannot scan right now")
 	}
 	if !a.scanRunning.CompareAndSwap(false, true) {
 		return fmt.Errorf("a scan is already running")
 	}
 	// Re-check after claiming scanRunning: the pre-CAS update check is
-	// advisory, so an update that claimed updateRunning in the gap would
+	// advisory, so an update that claimed a game in the gap would
 	// otherwise run concurrently with this scan.
-	if a.updateRunning.Load() {
+	if a.updateGate().active() {
 		a.scanRunning.Store(false)
 		return fmt.Errorf("an update is in progress; cannot scan right now")
 	}
@@ -1639,13 +1642,13 @@ func (a *App) DownloadUpdate() error {
 		return fmt.Errorf("application context not initialized")
 	}
 
-	if !a.updateRunning.CompareAndSwap(false, true) {
+	if !a.updateGate().claimExclusive() {
 		return fmt.Errorf("an update is already in progress")
 	}
 
 	a.goBackground("self-update", func(ctx context.Context) {
 		defer func() {
-			a.updateRunning.Store(false)
+			a.updateGate().releaseExclusive()
 			runtime.EventsEmit(a.ctx, "update:idle", map[string]interface{}{})
 		}()
 		ctx = a.beginCancellableUpdate(ctx)
@@ -1816,10 +1819,10 @@ func (a *App) ApplyUpdate() error {
 	// The swap and rename paths below replace the running binary while the
 	// update pipeline may be mid-download or mid-apply of game updates; it
 	// must never run concurrently with the app's own update machinery.
-	if !a.updateRunning.CompareAndSwap(false, true) {
+	if !a.updateGate().claimExclusive() {
 		return fmt.Errorf("an update is already in progress")
 	}
-	defer a.updateRunning.Store(false)
+	defer a.updateGate().releaseExclusive()
 
 	assetName := binaryName()
 	if assetName == "" {
@@ -5068,37 +5071,113 @@ func (a *App) DownloadGameUpdate(gameID int64) error {
 	if a.ctx == nil {
 		return fmt.Errorf("application context not initialized")
 	}
+	return a.startGameRun(gameID, "game-update", true, func(ctx context.Context) {
+		a.runSingleGameUpdate(ctx, gameID)
+	})
+}
 
+// updateGate returns the update-run registry, creating it on first use with
+// the configured update-concurrency.
+func (a *App) updateGate() *updateRuns {
+	a.updatesOnce.Do(func() {
+		limit := defaultUpdateConcurrency
+		if cfg, err := config.ReadConfig(); err == nil {
+			limit = clampUpdateConcurrency(cfg.Get(updateConcurrencyKey))
+		}
+		a.updates = newUpdateRuns(limit)
+	})
+	return a.updates
+}
+
+// updateConcurrencyKey is the config key for parallel game updates.
+const updateConcurrencyKey = "update-concurrency"
+
+// GetUpdateConcurrency returns how many game updates may run at once.
+func (a *App) GetUpdateConcurrency() int {
+	cfg, err := config.ReadConfig()
+	if err != nil {
+		return defaultUpdateConcurrency
+	}
+	return clampUpdateConcurrency(cfg.Get(updateConcurrencyKey))
+}
+
+// SetUpdateConcurrency stores the parallel-update limit (clamped to
+// 1..maxUpdateConcurrency) and applies it to waiting runs immediately.
+func (a *App) SetUpdateConcurrency(n int) error {
+	n = clampUpdateConcurrency(strconv.Itoa(n))
+	cfg, err := config.ReadConfig()
+	if err != nil {
+		cfg = &config.Config{}
+	}
+	cfg.Set(updateConcurrencyKey, strconv.Itoa(n))
+	if err := config.WriteConfig(cfg); err != nil {
+		return err
+	}
+	a.updateGate().setLimit(n)
+	return nil
+}
+
+// startGameRun claims gameID and runs fn in the background, emitting
+// game-update:idle {gameID} once the claim is released. Different games run
+// in parallel; a second run for the same game is rejected. With slot set the
+// run waits for an update slot first (phase "queued" while waiting). Scans
+// and runs exclude each other: game directories are written mid-run.
+func (a *App) startGameRun(gameID int64, task string, slot bool, fn func(ctx context.Context)) error {
 	// Cross-guard: a running scan walks game directories; updating mid-scan
 	// would let the scanner see half-written files. Refuse rather than race.
 	if a.scanRunning.Load() {
 		return fmt.Errorf("a scan is in progress; cannot update right now")
 	}
-	if !a.updateRunning.CompareAndSwap(false, true) {
-		return fmt.Errorf("an update is already in progress")
+	gate := a.updateGate()
+	if !gate.claimGame(gameID) {
+		return fmt.Errorf("an update is already in progress for this game")
 	}
-	// Re-check after claiming the update lock: the pre-CAS scan check is
-	// advisory (two independent check-then-set sequences on different
-	// flags), so a scan that claimed scanRunning in the gap would otherwise
-	// run concurrently over the same game directories.
+	// Re-check after claiming: the pre-claim scan check is advisory (two
+	// independent check-then-set sequences), so a scan that started in the
+	// gap would otherwise run concurrently over the same directories.
 	if a.scanRunning.Load() {
-		a.updateRunning.Store(false)
+		gate.release(gameID)
 		return fmt.Errorf("a scan is in progress; cannot update right now")
 	}
 
-	a.goBackground("game-update", func(ctx context.Context) {
-		// Signal idle only after the lock is actually released — the pipeline
-		// emits :complete before returning, so a client that queued the next
-		// update on :complete would still find the lock held.
+	a.goBackground(task, func(ctx context.Context) {
+		ctx, cancel := context.WithCancel(ctx)
+		gate.setCancel(gameID, cancel)
+		// Signal idle only after the claim is released — the pipeline emits
+		// :complete before returning, so a client that queued the next run
+		// on :complete would still find this game claimed.
 		defer func() {
-			a.updateRunning.Store(false)
-			runtime.EventsEmit(a.ctx, "game-update:idle", map[string]interface{}{})
+			cancel()
+			gate.release(gameID)
+			runtime.EventsEmit(a.ctx, "game-update:idle", map[string]interface{}{"gameID": gameID})
 		}()
-		ctx = a.beginCancellableUpdate(ctx)
-		defer a.endCancellableUpdate()
-		a.runSingleGameUpdate(ctx, gameID)
+		if slot {
+			if !a.waitUpdateSlot(ctx, gameID) {
+				return
+			}
+			defer gate.releaseSlot()
+		}
+		fn(ctx)
 	})
 	return nil
+}
+
+// waitUpdateSlot takes an update slot, announcing phase "queued" when it
+// has to wait. False (with an error event) when cancelled while queued.
+func (a *App) waitUpdateSlot(ctx context.Context, gameID int64) bool {
+	gate := a.updateGate()
+	if gate.tryAcquire() {
+		return true
+	}
+	runtime.EventsEmit(a.ctx, "game-update:phase", map[string]interface{}{
+		"gameID": gameID,
+		"phase":  "queued",
+	})
+	if err := gate.acquire(ctx); err != nil {
+		a.emitUpdateError(gameID, "queued", "Cancelled while queued")
+		return false
+	}
+	return true
 }
 
 // beginCancellableUpdate derives a cancellable child of ctx and publishes its
@@ -5156,31 +5235,49 @@ func (a *App) CancelSync() (bool, error) {
 	return true, nil
 }
 
-// CancelGameUpdate aborts the in-flight game update, if any. It returns
-// whether a run was actually cancelled so the frontend can report accurately.
+// CancelGameUpdate aborts every in-flight game update/install (and a
+// self-update download). It returns whether anything was actually cancelled
+// so the frontend can report accurately.
 func (a *App) CancelGameUpdate() bool {
+	n := a.updateGate().cancelAll()
 	a.updateCancelMu.Lock()
 	cancel := a.updateCancel
 	a.updateCancelMu.Unlock()
-	if cancel == nil {
+	if cancel != nil {
+		cancel()
+		n++
+	}
+	if n == 0 {
 		return false
 	}
-	slog.Info("game update cancelled by user")
-	cancel()
+	slog.Info("game updates cancelled by user", "runs", n)
 	runtime.EventsEmit(a.ctx, "game-update:cancelled", map[string]interface{}{})
+	return true
+}
+
+// CancelGameUpdateFor aborts one game's update (queued or running). The
+// run ends through its own game-update:error / :idle events.
+func (a *App) CancelGameUpdateFor(gameID int64) bool {
+	if !a.updateGate().cancel(gameID) {
+		return false
+	}
+	slog.Info("game update cancelled by user", "gameID", gameID)
 	return true
 }
 
 // DownloadAllUpdates downloads and applies updates for all games that have
 // updates available. This is a Wails-bound method that runs the batch update
-// pipeline in a background goroutine. Games are updated sequentially.
+// pipeline in a background goroutine. Games run in parallel, up to the
+// update-concurrency slot limit; each game is claimed for the whole batch so
+// a single-game run can't start on it meanwhile.
 //
 // The function returns immediately; the frontend listens for Wails events
 // to track progress:
 //
 //	game-update:batch-start     { total }
-//	game-update:batch-progress  { current, total, currentGameTitle }
+//	game-update:batch-progress  { current, total, currentGameTitle } — a game started
 //	game-update:game-done       { gameID, title, success, error }
+//	game-update:idle            { gameID } — per game, after its claim is released
 //	game-update:batch-complete  { succeeded, failed, total }
 //	game-update:error           { gameID, step, message }
 func (a *App) DownloadAllUpdates() error {
@@ -5196,28 +5293,13 @@ func (a *App) DownloadAllUpdates() error {
 	if a.scanRunning.Load() {
 		return fmt.Errorf("a scan is in progress; cannot update right now")
 	}
-	if !a.updateRunning.CompareAndSwap(false, true) {
-		return fmt.Errorf("an update is already in progress")
-	}
-	// Re-check after claiming the update lock: the pre-CAS scan check is
-	// advisory (two independent check-then-set sequences on different
-	// flags), so a scan that claimed scanRunning in the gap would otherwise
-	// run concurrently over the same game directories.
-	if a.scanRunning.Load() {
-		a.updateRunning.Store(false)
-		return fmt.Errorf("a scan is in progress; cannot update right now")
+	if !a.batchRunning.CompareAndSwap(false, true) {
+		return fmt.Errorf("an update batch is already in progress")
 	}
 
 	a.goBackground("game-update", func(ctx context.Context) {
-		// Signal idle only after the lock is actually released — the pipeline
-		// emits :complete before returning, so a client that queued the next
-		// update on :complete would still find the lock held.
-		defer func() {
-			a.updateRunning.Store(false)
-			runtime.EventsEmit(a.ctx, "game-update:idle", map[string]interface{}{})
-		}()
-		ctx = a.beginCancellableUpdate(ctx)
-		defer a.endCancellableUpdate()
+		defer a.batchRunning.Store(false)
+		gate := a.updateGate()
 
 		all, err := a.GetUpdatableGames()
 		if err != nil {
@@ -5231,7 +5313,15 @@ func (a *App) DownloadAllUpdates() error {
 
 		// Drop not-yet-downloaded games up front so they don't show up as
 		// batch failures — runSingleGameUpdate rejects them individually.
-		games := make([]DesktopGameSummary, 0, len(all))
+		// Claim the rest now (skipping any already running on their own) and
+		// give each its own cancel, all before a worker starts, so a
+		// CancelGameUpdate can never miss a game that hasn't started yet.
+		type job struct {
+			g      DesktopGameSummary
+			ctx    context.Context
+			cancel context.CancelFunc
+		}
+		var jobs []job
 		for _, g := range all {
 			if strings.HasPrefix(g.Path, db.VirtualPathPrefix) {
 				continue
@@ -5241,55 +5331,87 @@ func (a *App) DownloadAllUpdates() error {
 			if g.UpdateState != updateAvailable {
 				continue
 			}
-			games = append(games, g)
+			if !gate.claimGame(g.ID) {
+				slog.Info("batch update: game already updating, skipping", "gameID", g.ID)
+				continue
+			}
+			jctx, jcancel := context.WithCancel(ctx)
+			gate.setCancel(g.ID, jcancel)
+			jobs = append(jobs, job{g: g, ctx: jctx, cancel: jcancel})
 		}
-		if skipped := len(all) - len(games); skipped > 0 {
-			slog.Info("batch update: skipping games not downloaded yet", "count", skipped)
+		if skipped := len(all) - len(jobs); skipped > 0 {
+			slog.Info("batch update: skipping games", "count", skipped)
+		}
+		// Re-check after claiming (see startGameRun).
+		if a.scanRunning.Load() {
+			for _, j := range jobs {
+				j.cancel()
+				gate.release(j.g.ID)
+				runtime.EventsEmit(a.ctx, "game-update:idle", map[string]interface{}{"gameID": j.g.ID})
+			}
+			runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+				"gameID":  0,
+				"step":    "list-updatable",
+				"message": "a scan is in progress; cannot update right now",
+			})
+			return
 		}
 
 		runtime.EventsEmit(a.ctx, "game-update:batch-start", map[string]interface{}{
-			"total": len(games),
+			"total": len(jobs),
 		})
 
-		succeeded := 0
-		failed := 0
-
-		for i, g := range games {
-			if ctx.Err() != nil {
-				break
-			}
-			runtime.EventsEmit(a.ctx, "game-update:batch-progress", map[string]interface{}{
-				"current":          i + 1,
-				"total":            len(games),
-				"currentGameTitle": g.Title,
-			})
-
-			err := a.runSingleGameUpdate(ctx, g.ID)
+		var (
+			mu                         sync.Mutex
+			started, succeeded, failed int
+			wg                         sync.WaitGroup
+		)
+		finish := func(g DesktopGameSummary, err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			ev := map[string]interface{}{"gameID": g.ID, "title": g.Title, "success": err == nil}
 			if err != nil {
 				failed++
-				runtime.EventsEmit(a.ctx, "game-update:game-done", map[string]interface{}{
-					"gameID":  g.ID,
-					"title":   g.Title,
-					"success": false,
-					"error":   err.Error(),
-				})
+				ev["error"] = err.Error()
 			} else {
 				succeeded++
-				runtime.EventsEmit(a.ctx, "game-update:game-done", map[string]interface{}{
-					"gameID":  g.ID,
-					"title":   g.Title,
-					"success": true,
-				})
 			}
+			runtime.EventsEmit(a.ctx, "game-update:game-done", ev)
 		}
+		for _, j := range jobs {
+			wg.Add(1)
+			go func(j job) {
+				defer wg.Done()
+				defer func() {
+					j.cancel()
+					gate.release(j.g.ID)
+					runtime.EventsEmit(a.ctx, "game-update:idle", map[string]interface{}{"gameID": j.g.ID})
+				}()
+				if !a.waitUpdateSlot(j.ctx, j.g.ID) {
+					finish(j.g, fmt.Errorf("cancelled"))
+					return
+				}
+				defer gate.releaseSlot()
+				mu.Lock()
+				started++
+				runtime.EventsEmit(a.ctx, "game-update:batch-progress", map[string]interface{}{
+					"current":          started,
+					"total":            len(jobs),
+					"currentGameTitle": j.g.Title,
+				})
+				mu.Unlock()
+				finish(j.g, a.runSingleGameUpdate(j.ctx, j.g.ID))
+			}(j)
+		}
+		wg.Wait()
 
 		runtime.EventsEmit(a.ctx, "game-update:batch-complete", map[string]interface{}{
 			"succeeded": succeeded,
 			"failed":    failed,
-			"total":     len(games),
+			"total":     len(jobs),
 		})
 
-		slog.Info("batch update complete", "succeeded", succeeded, "failed", failed, "total", len(games))
+		slog.Info("batch update complete", "succeeded", succeeded, "failed", failed, "total", len(jobs))
 	})
 
 	return nil
@@ -5301,7 +5423,7 @@ func (a *App) DownloadAllUpdates() error {
 // resumes the pipeline from the extraction phase.
 //
 // This is a Wails-bound method that mirrors DownloadGameUpdate: it returns
-// immediately, runs in the background, holds the same single-run lock, and
+// immediately, runs in the background, holds the same per-game claim, and
 // drives the same game-update:* event protocol. The user-provided archive is
 // never modified or deleted. Returns an error only when the pipeline could
 // not be started (guards); failures after that surface via game-update:error.
@@ -5312,32 +5434,7 @@ func (a *App) ProvideUpdateFile(gameID int64) error {
 	if a.ctx == nil {
 		return fmt.Errorf("application context not initialized")
 	}
-	// Cross-guard: a running scan walks game directories; updating mid-scan
-	// would let the scanner see half-written files. Refuse rather than race.
-	if a.scanRunning.Load() {
-		return fmt.Errorf("a scan is in progress; cannot update right now")
-	}
-	if !a.updateRunning.CompareAndSwap(false, true) {
-		return fmt.Errorf("an update is already in progress")
-	}
-	// Re-check after claiming the update lock: the pre-CAS scan check is
-	// advisory (two independent check-then-set sequences on different
-	// flags), so a scan that claimed scanRunning in the gap would otherwise
-	// run concurrently over the same game directories.
-	if a.scanRunning.Load() {
-		a.updateRunning.Store(false)
-		return fmt.Errorf("a scan is in progress; cannot update right now")
-	}
-
-	a.goBackground("game-update", func(ctx context.Context) {
-		// Signal idle only after the lock is actually released, matching the
-		// DownloadGameUpdate protocol.
-		defer func() {
-			a.updateRunning.Store(false)
-			runtime.EventsEmit(a.ctx, "game-update:idle", map[string]interface{}{})
-		}()
-		ctx = a.beginCancellableUpdate(ctx)
-		defer a.endCancellableUpdate()
+	return a.startGameRun(gameID, "game-update", true, func(ctx context.Context) {
 
 		game, err := a.db.GetGame(gameID)
 		if err != nil {
@@ -5403,8 +5500,6 @@ func (a *App) ProvideUpdateFile(gameID int64) error {
 		slog.Info("game update: manual archive provided", "gameID", gameID, "file", archivePath)
 		a.applyGameUpdateArchive(ctx, game, archivePath, false)
 	})
-
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -5607,34 +5702,9 @@ func (a *App) InstallGame(gameID int64, destParent string) error {
 		return fmt.Errorf("application context not initialized")
 	}
 
-	// Cross-guard: a running scan walks game directories; installing mid-scan
-	// would let the scanner see half-written files. Refuse rather than race.
-	if a.scanRunning.Load() {
-		return fmt.Errorf("a scan is in progress; cannot update right now")
-	}
-
-	// Shares the update lock: both pipelines download, extract and write into
-	// game directories, and running them together is asking for trouble.
-	if !a.updateRunning.CompareAndSwap(false, true) {
-		return fmt.Errorf("an update or install is already in progress")
-	}
-	// Re-check after claiming the lock (see DownloadGameUpdate): the pre-CAS
-	// scan check is advisory and a scan could have started in the gap.
-	if a.scanRunning.Load() {
-		a.updateRunning.Store(false)
-		return fmt.Errorf("a scan is in progress; cannot update right now")
-	}
-
-	a.goBackground("game-install", func(ctx context.Context) {
-		defer func() {
-			a.updateRunning.Store(false)
-			runtime.EventsEmit(a.ctx, "game-update:idle", map[string]interface{}{})
-		}()
-		ctx = a.beginCancellableUpdate(ctx)
-		defer a.endCancellableUpdate()
+	return a.startGameRun(gameID, "game-install", false, func(ctx context.Context) {
 		a.runGameInstall(ctx, gameID, destParent)
 	})
-	return nil
 }
 
 // updateDirSize calculates the total size of a directory and all its contents

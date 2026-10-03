@@ -16,6 +16,8 @@ export function ApplyUpdate():Promise<void>;
 
 export function CancelGameUpdate():Promise<boolean>;
 
+export function CancelGameUpdateFor(arg1:number):Promise<boolean>;
+
 export function CancelSync():Promise<boolean>;
 
 export function CheckDependencies():Promise<Array<main.DependencyStatus>>;
@@ -80,6 +82,8 @@ export function GetUpdatableCount():Promise<number>;
 
 export function GetUpdatableGames():Promise<Array<main.DesktopGameSummary>>;
 
+export function GetUpdateConcurrency():Promise<number>;
+
 export function GetVersion():Promise<string>;
 
 export function InstallGame(arg1:number,arg2:string):Promise<void>;
@@ -119,6 +123,8 @@ export function SearchGames(arg1:string):Promise<Array<main.DesktopGameSummary>>
 export function SetGameStatus(arg1:number,arg2:string):Promise<void>;
 
 export function SetGameWinePrefix(arg1:number,arg2:string):Promise<void>;
+
+export function SetUpdateConcurrency(arg1:number):Promise<void>;
 
 export function SyncAllGames(arg1:boolean):Promise<void>;
 

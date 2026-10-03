@@ -25,6 +25,62 @@ function emit(event, ...args) {
   })
 }
 
+// Update simulator mirroring desktop/update_runs.go: one run per game,
+// MOCK_SLOTS running at once, the rest in phase 'queued'.
+let MOCK_SLOTS = 2
+const mockRuns = new Map() // gameID → {cancelled}
+let mockRunning = 0
+const mockWaiters = []
+function mockSlot(run) {
+  if (mockRunning < MOCK_SLOTS) { mockRunning++; return Promise.resolve(true) }
+  return new Promise((res) => mockWaiters.push({run, res}))
+}
+function mockFreeSlot() {
+  mockRunning--
+  while (mockWaiters.length && mockRunning < MOCK_SLOTS) {
+    const w = mockWaiters.shift()
+    if (w.run.cancelled) { w.res(false); continue }
+    mockRunning++
+    w.res(true)
+  }
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+async function mockUpdate(gameID, onDone) {
+  const run = {cancelled: false}
+  mockRuns.set(gameID, run)
+  const g = (typeof UPDATABLE_GAMES !== 'undefined' ? UPDATABLE_GAMES : []).find((x) => x.id === gameID) || {}
+  let ok = false
+  try {
+    if (mockRunning >= MOCK_SLOTS) emit('game-update:phase', {gameID, phase: 'queued'})
+    if (!(await mockSlot(run)) || run.cancelled) {
+      emit('game-update:error', {gameID, step: 'queued', message: 'Cancelled while queued'})
+      return
+    }
+    try {
+      for (const phase of ['syncing', 'selecting-link']) {
+        emit('game-update:phase', {gameID, phase}); await sleep(600)
+      }
+      emit('game-update:phase', {gameID, phase: 'downloading'})
+      for (let p = 0; p <= 100; p += 3.3333) {
+        if (run.cancelled) { emit('game-update:error', {gameID, step: 'download', message: 'Cancelled'}); return }
+        emit('game-update:download-progress', {gameID, percent: Math.min(p, 100), speedBytesPerSec: 4.2e6, bytesDownloaded: p * 1e6, totalBytes: 100e6})
+        await sleep(150)
+      }
+      for (const phase of ['extracting', 'merging', 'updating-db']) {
+        emit('game-update:phase', {gameID, phase}); await sleep(500)
+      }
+      emit('game-update:complete', {gameID, oldVersion: g.version || '0.1', newVersion: g.latestVersion || '0.2'})
+      ok = true
+    } finally {
+      mockFreeSlot()
+    }
+  } finally {
+    mockRuns.delete(gameID)
+    onDone?.(ok)
+    emit('game-update:idle', {gameID})
+  }
+}
+
 window.runtime = {
   EventsOn: on,
   EventsOnMultiple: (event, cb) => on(event, cb),
@@ -161,9 +217,40 @@ const App = {
   // ── Updates
   GetUpdatableCount:   () => delay().then(() => (EMPTY ? 0 : UPDATABLE_COUNT)),
   GetUpdatableGames:   () => delay().then(() => (EMPTY ? [] : UPDATABLE_GAMES)),
-  DownloadGameUpdate:  () => delay().then(() => {}),
-  DownloadAllUpdates:  () => delay().then(() => {}),
-  CancelGameUpdate:    () => delay().then(() => {}),
+  DownloadGameUpdate:  (id) => delay().then(() => {
+    if (mockRuns.has(id)) throw new Error('an update is already in progress for this game')
+    mockUpdate(id)
+  }),
+  DownloadAllUpdates:  () => delay().then(() => {
+    const list = UPDATABLE_GAMES.filter((g) => g.updateState !== 'unknown' && !mockRuns.has(g.id))
+    emit('game-update:batch-start', {total: list.length})
+    let started = 0, succeeded = 0, failed = 0, left = list.length
+    for (const g of list) {
+      mockUpdate(g.id, (ok) => {
+        ok ? succeeded++ : failed++
+        emit('game-update:game-done', {gameID: g.id, title: g.title, success: ok, error: ok ? '' : 'Cancelled'})
+        if (--left === 0) setTimeout(() => emit('game-update:batch-complete', {succeeded, failed, total: list.length}), 0)
+      })
+      started++
+    }
+  }),
+  CancelGameUpdate:    () => delay().then(() => {
+    const n = mockRuns.size
+    mockRuns.forEach((r) => { r.cancelled = true })
+    mockWaiters.splice(0).forEach((w) => w.res(false))
+    if (n) emit('game-update:cancelled', {})
+    return n > 0
+  }),
+  CancelGameUpdateFor: (id) => delay().then(() => {
+    const r = mockRuns.get(id)
+    if (!r) return false
+    r.cancelled = true
+    const i = mockWaiters.findIndex((w) => w.run === r)
+    if (i >= 0) mockWaiters.splice(i, 1)[0].res(false)
+    return true
+  }),
+  GetUpdateConcurrency: () => delay().then(() => MOCK_SLOTS),
+  SetUpdateConcurrency: (n) => delay().then(() => { MOCK_SLOTS = n; mockFreeSlot(); mockRunning++ }),
   GetGameDownloadLinksForUpdate: (id) => delay().then(() => DOWNLOAD_LINKS),
   ProvideUpdateFile:   () => delay().then(() => {}),
 

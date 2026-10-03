@@ -38,6 +38,7 @@
     onRetryFailed = () => {},
     onProvideFile = () => {},
     onCancel = () => {},
+    onCancelGame = () => {},
   } = $props()
 
   // ── Game List State ──────────────────────────────────────────
@@ -58,6 +59,7 @@
 
   function phaseLabel(gs) {
     switch (gs.phase) {
+      case 'queued':         return 'Queued…'
       case 'syncing':        return 'Checking…'
       case 'selecting-link': return 'Selecting link…'
       case 'downloading':    return 'Downloading…'
@@ -128,9 +130,9 @@
     Object.values(gameStates).some(s => s && s.phase && s.phase !== 'idle' && s.phase !== 'done' && s.phase !== 'error')
   )
 
-  // The backend holds a single-run lock for the whole pipeline (updates and
-  // installs share it), so the view must also reflect an in-flight install
-  // started from a game's detail page.
+  // Anything running (updates run per game, in parallel; an install started
+  // from a detail page counts too) — shows the Cancel-all button. Per-row
+  // actions only check their own game's phase.
   let updateInFlight = $derived(isUpdatingAny || !!batchState?.running || installRunning)
 
   // GetUpdatableGames returns both verdicts (see gameUpdateState in Go).
@@ -160,15 +162,17 @@
   )
   let allDone = $derived(count > 0 && doneCount === count)
 
-  // Batch progress bar. The backend's batch-progress `current` counts games
-  // that have STARTED, so it equals `total` while the last game is still
-  // running — a naive current/total bar would read 100% prematurely. Cap the
-  // bar at 97% while the batch runs; only a finished batch (running=false)
-  // renders as 100%.
+  // Batch progress counts FINISHED games (results) — games run in parallel,
+  // so "started" says little. Capped at 97% while the batch runs; only a
+  // finished batch (running=false) renders as 100%.
+  let batchDone = $derived(batchState?.results?.length ?? 0)
+  let batchActive = $derived(
+    Object.values(gameStates).filter(s => s && s.phase && !['idle', 'done', 'error', 'queued'].includes(s.phase)).length
+  )
   let batchProgressPct = $derived.by(() => {
     if (!batchState || !batchState.total) return 0
     if (!batchState.running) return 100
-    return Math.min(Math.round((batchState.current / batchState.total) * 100), 97)
+    return Math.min(Math.round((batchDone / batchState.total) * 100), 97)
   })
 </script>
 
@@ -221,14 +225,8 @@
             ></div>
           </div>
           <p class="batch-progress-label">
-            Updating {batchState.current} of {batchState.total} games
+            {batchDone} of {batchState.total} games done{batchActive ? ` · ${batchActive} running` : ''}
           </p>
-          {#if batchState.currentGameTitle}
-            <p class="batch-current-game">
-              <span class="spinner spinner-sm"></span>
-              Currently: {batchState.currentGameTitle}
-            </p>
-          {/if}
         {/if}
 
         <!-- Per-game results -->
@@ -280,7 +278,7 @@
         <button
           class="btn btn-primary"
           onclick={() => onUpdateAll(available)}
-          disabled={updateInFlight}
+          disabled={!!batchState?.running}
         >
           {#if batchState?.running}
             Updating…
@@ -299,9 +297,9 @@
           <button
             class="btn btn-outline btn-cancel"
             onclick={onCancel}
-            title="Cancel the running update or install"
+            title="Cancel every running or queued update and install"
           >
-            Cancel
+            Cancel all
           </button>
         {/if}
       </div>
@@ -378,7 +376,6 @@
                 <button
                   class="btn btn-sm btn-accent"
                   onclick={() => onUpdateGame(game.id)}
-                  disabled={updateInFlight}
                 >
                   Update
                 </button>
@@ -386,7 +383,6 @@
                   <button
                     class="btn btn-sm btn-outline"
                     onclick={() => markAsCurrent(game)}
-                    disabled={updateInFlight}
                     title="Record {game.latestVersion} as installed without downloading"
                   >
                     Mark as current
@@ -407,6 +403,7 @@
                       <span class="cell-speed">— {formatSpeed(gs.speed)}</span>
                     {/if}
                   </span>
+                  <button class="btn btn-sm btn-outline cell-cancel" onclick={() => onCancelGame(game.id)} title="Cancel this update">Cancel</button>
                 </div>
 
               {:else if phase === 'extracting'}
@@ -421,10 +418,15 @@
                   </span>
                 </div>
 
-              {:else if phase === 'syncing' || phase === 'selecting-link'}
+              {:else if phase === 'queued' || phase === 'syncing' || phase === 'selecting-link'}
                 <div class="cell-status-row">
-                  <span class="spinner spinner-sm"></span>
+                  {#if phase === 'queued'}
+                    <span class="cell-queued-dot"></span>
+                  {:else}
+                    <span class="spinner spinner-sm"></span>
+                  {/if}
                   <span class="cell-status-text">{phaseLabel(gs)}</span>
+                  <button class="btn btn-sm btn-outline cell-cancel" onclick={() => onCancelGame(game.id)} title="Cancel this update">Cancel</button>
                 </div>
 
               {:else if phase === 'merging'}
@@ -464,7 +466,6 @@
                       <button
                         class="btn btn-sm btn-primary"
                         onclick={() => onProvideFile(game.id)}
-                        disabled={updateInFlight}
                       >
                         Provide file…
                       </button>
@@ -474,7 +475,6 @@
                     <button
                       class="btn btn-sm btn-warning"
                       onclick={() => onUpdateGame(game.id)}
-                      disabled={updateInFlight}
                     >
                       Retry
                     </button>
@@ -668,14 +668,6 @@
     color: var(--text-secondary);
     margin: 0 0 6px;
     font-weight: 600;
-  }
-  .batch-current-game {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: var(--text-sm);
-    color: var(--accent);
-    margin: 0 0 8px;
   }
   .batch-results {
     display: flex;
@@ -892,6 +884,22 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .cell-queued-dot {
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border: 1px solid var(--text-muted);
+    border-radius: 50%;
+  }
+  .cell-cancel {
+    margin-left: auto;
+    padding: 1px 8px;
+    font-size: var(--text-xs);
+  }
+  .cell-download-progress .cell-cancel {
+    align-self: flex-start;
+    margin-left: 0;
   }
   .cell-status-done {
     gap: 4px;

@@ -81,7 +81,7 @@
   // re-filter + re-sort the entire library on every percent tick. Track just
   // the busy-id membership and only touch this $state (and thus retrigger
   // `displayed`) when that membership set actually changes.
-  const UPDATE_BUSY_PHASES = ['syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
+  const UPDATE_BUSY_PHASES = ['queued', 'syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
   let busyIds = $state(new Set())
   $effect(() => {
     const next = new Set()
