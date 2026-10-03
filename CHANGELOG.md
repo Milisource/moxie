@@ -42,6 +42,14 @@
 
 - **Association cache ignored the channel and platform (F95-1p5r).** `scraper.AssociationCachePath` hardcoded `~/.config/moxie/associations.json` on every OS, so a dev build wrote into the stable directory and Windows/macOS used a non-standard path. It now derives from `config.ConfigDir()`.
 
+- **Windows compatibility (F95-jkcf).** CI had never run the suite on Windows (it was red on `main` since the desktop landed), so adding `dev` to CI surfaced a batch of Windows-only issues:
+  - `sanitizeZipPath` accepted Unix-absolute archive entries on Windows (`filepath.IsAbs("/etc/passwd")` is false there) — a zip-slip gap. It now rejects any rooted path on every OS.
+  - Virtual (online-only) game paths were not recognized on Windows: the prefix is `/virtual/` but `filepath.Join` stores `\virtual\`. Added `db.IsVirtualPath` and used it at every call site.
+  - Update merges dropped preserved saves on Windows because preserve patterns use `/` while `filepath.Rel` yields `\`; matching now normalizes separators.
+  - Browser profile discovery silently fell back to another browser's profile when an explicit override or `MOXIE_CHROME_PROFILE_DIR` was invalid; explicit configuration is now authoritative, matching the Firefox path.
+  - The desktop update agent held `update-agent.log` open (blocking temp-dir cleanup) and its failure dialog blocked headless runners; the log is opened per write and the dialog is injectable and time-bounded.
+  - Unix-only tests (fake `megatools` shell script, executable-bit preservation, ENOTDIR ambiguity) now skip on Windows.
+
 - **Sharper covers (F95-x2ml).**
   - Grid thumbnails are shaped for the 3:4 card. Near-portrait art is centre-cropped and scaled to fit 600×800. Before, a long edge capped at 480 left banners about 270px tall, and the card blew them up 2–3×.
   - Wide banners (aspect above 1.6) and tiny images are letterboxed over the cover's average colour instead of being cropped and upscaled.
