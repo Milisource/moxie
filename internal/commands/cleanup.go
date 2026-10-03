@@ -236,6 +236,19 @@ func DisassociateGame(database *db.Database, g *db.Game) {
 
 // RefreshVersions re-extracts versions from directory names.
 func RefreshVersions(args []string) {
+	fs := flag.NewFlagSet("refresh-versions", flag.ExitOnError)
+	dryRun := fs.Bool("dry-run", false, "Show the version changes without writing them")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: moxie refresh-versions [--dry-run]\n\n")
+		fmt.Fprintf(os.Stderr, "Re-detect installed versions from folder names and game files\n(Ren'Py options/.rpa, RPG Maker System.json, Game.ini, package.json).\n\nFlags:\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(hoistFlags(args, nil))
+	if fs.NArg() > 0 {
+		fs.Usage()
+		os.Exit(2)
+	}
+
 	database := OpenDB()
 	defer database.Close()
 
@@ -258,6 +271,12 @@ func RefreshVersions(args []string) {
 			continue // already matches
 		}
 		oldVer := g.Version
+		if *dryRun {
+			updated++
+			fmt.Fprintf(os.Stderr, "  %-50s %s → %s\n",
+				util.Truncate(g.Title, 48), util.TruncateVer(oldVer), dirVer)
+			continue
+		}
 		g.Version = dirVer
 		if err := database.UpdateGame(&g); err != nil {
 			fmt.Fprintf(os.Stderr, "  ! %q: failed to update version: %v\n", g.Title, err)
@@ -270,11 +289,9 @@ func RefreshVersions(args []string) {
 
 	if updated == 0 {
 		fmt.Println("No version changes. All games are up to date.")
+	} else if *dryRun {
+		fmt.Fprintf(os.Stderr, "\n%d game(s) would change (dry run, nothing written).\n", updated)
 	} else {
 		fmt.Fprintf(os.Stderr, "\nUpdated %d game(s).\n", updated)
 	}
 }
-
-
-
-

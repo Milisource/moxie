@@ -191,7 +191,7 @@ F95ZONE
   sync [id] [flags]           Full sync: auto-associate + check version updates
   scrape <id> [flags]         Scrape F95Zone metadata for a game
   check-updates [flags]       Check all games for newer versions on F95Zone
-  refresh-versions [flags]    Re-extract version strings from directory names
+  refresh-versions [flags]    Re-detect installed versions from folders and game files
 
 DOWNLOADS
   download <id> [flags]       Download a game from F95Zone links

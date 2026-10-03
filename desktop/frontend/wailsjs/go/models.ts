@@ -171,6 +171,7 @@ export namespace main {
 	    hasCover: boolean;
 	    createdAt?: string;
 	    lastPlayed?: string;
+	    updateState: string;
 	    developer: string;
 	    overview: string;
 	    coverUrl: string;
@@ -202,6 +203,7 @@ export namespace main {
 	        this.hasCover = source["hasCover"];
 	        this.createdAt = source["createdAt"];
 	        this.lastPlayed = source["lastPlayed"];
+	        this.updateState = source["updateState"];
 	        this.developer = source["developer"];
 	        this.overview = source["overview"];
 	        this.coverUrl = source["coverUrl"];
@@ -247,6 +249,7 @@ export namespace main {
 	    hasCover: boolean;
 	    createdAt?: string;
 	    lastPlayed?: string;
+	    updateState: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new DesktopGameSummary(source);
@@ -267,6 +270,7 @@ export namespace main {
 	        this.hasCover = source["hasCover"];
 	        this.createdAt = source["createdAt"];
 	        this.lastPlayed = source["lastPlayed"];
+	        this.updateState = source["updateState"];
 	    }
 	}
 	

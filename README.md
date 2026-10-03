@@ -246,7 +246,7 @@ moxie list --warnings                # quick scan for engine/exe issues
 | `rename` | Rename directories to clean, filesystem-safe titles. `--dry-run` to preview. |
 | `set-path <id> <path>` | Update the filesystem path for a game in the database. |
 | `set-exe <id> <exe>` | Manually set the executable path for a game. |
-| `refresh-versions` | Re-extract version strings from directory names (no network calls). |
+| `refresh-versions [--dry-run]` | Re-detect installed versions from folder names and game files (Ren'Py options/.rpa, RPG Maker System.json, Game.ini, package.json); no network calls. |
 </details>
 
 <details>
