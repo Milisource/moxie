@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
+	"github.com/gen2brain/avif"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -13,7 +13,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -570,82 +569,86 @@ func TestCoverContentTypeTable(t *testing.T) {
 	}
 }
 
-// TestDecodeCoverImageAVIF asserts AVIF covers fail with the typed
-// errCoverFormatNotThumbnailable (graceful degradation: webview renders the
-// full image, no thumbnail), NOT the misleading stdlib "image: unknown
-// format" that used to spam the log for every cached AVIF cover.
+// makeAVIF encodes a real AVIF of the given size (gen2brain/avif), so the
+// thumbnail path is exercised end to end rather than against magic bytes.
+func makeAVIF(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x % 255), G: 90, B: 160, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := avif.Encode(&buf, img, avif.Options{Quality: 40, Speed: 10}); err != nil {
+		t.Fatalf("encode avif: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestDecodeCoverImageAVIF: AVIF covers (most F95 attachments) must decode,
+// so they get a thumbnail instead of every grid card loading the full image.
 func TestDecodeCoverImageAVIF(t *testing.T) {
-	img, err := decodeCoverImage(avifMagic)
-	if img != nil {
-		t.Error("decodeCoverImage(avif) returned an image, want nil")
+	img, err := decodeCoverImage(makeAVIF(t, 64, 48))
+	if err != nil {
+		t.Fatalf("decodeCoverImage(avif): %v", err)
 	}
-	if err == nil {
-		t.Fatal("decodeCoverImage(avif) must fail: no pure-Go AVIF decoder")
-	}
-	if !errors.Is(err, errCoverFormatNotThumbnailable) {
-		t.Errorf("err = %v, want wrap of errCoverFormatNotThumbnailable", err)
-	}
-	if strings.Contains(err.Error(), "image: unknown format") {
-		t.Errorf("err = %q, must not surface the misleading stdlib unknown-format error", err)
+	if b := img.Bounds(); b.Dx() != 64 || b.Dy() != 48 {
+		t.Errorf("decoded bounds = %v, want 64x48", b)
 	}
 }
 
-// TestWriteCoverThumbSkipsAVIF asserts AVIF covers produce no .thumb file
-// (the cover server falls back to the full image) and report thumbSkipAVIF
-// so backfill can count them without a per-cover Warn.
-func TestWriteCoverThumbSkipsAVIF(t *testing.T) {
+// TestWriteCoverThumbAVIF: a large AVIF cover gets a JPEG .thumb.
+func TestWriteCoverThumbAVIF(t *testing.T) {
 	coverDir := testCoverDir(t)
 	if err := os.MkdirAll(coverDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-
 	coverPath := filepath.Join(coverDir, "21")
-	if err := os.WriteFile(coverPath, avifMagic, 0o644); err != nil {
+	if err := os.WriteFile(coverPath, makeAVIF(t, 960, 720), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	if got := writeCoverThumb(coverPath); got != thumbSkipAVIF {
-		t.Errorf("writeCoverThumb(avif) = %v, want thumbSkipAVIF", got)
+	if got := writeCoverThumb(coverPath); got != thumbWritten {
+		t.Fatalf("writeCoverThumb(avif) = %v, want thumbWritten", got)
 	}
-	if _, err := os.Stat(coverPath + ".thumb"); err == nil {
-		t.Error("no .thumb must be written for AVIF covers")
+	data, err := os.ReadFile(coverPath + ".thumb")
+	if err != nil {
+		t.Fatalf("thumb not written: %v", err)
+	}
+	if imageMimeFromPrefix(data) != "jpeg" {
+		t.Errorf("thumb is %q, want jpeg", imageMimeFromPrefix(data))
 	}
 }
 
-// TestBackfillCoverThumbsSkipsAVIFAndCorrupt mixes a thumbnailable PNG, an
-// AVIF cover, and a corrupt blob: only the PNG gets a thumbnail, and the
-// backfill still returns the written count so the summary line is accurate.
-func TestBackfillCoverThumbsSkipsAVIFAndCorrupt(t *testing.T) {
+// TestBackfillCoverThumbsSkipsCorrupt mixes thumbnailable PNG and AVIF
+// covers with a corrupt blob: both images get thumbnails, the corrupt file
+// does not, and the returned count is accurate for the summary line.
+func TestBackfillCoverThumbsSkipsCorrupt(t *testing.T) {
 	coverDir := testCoverDir(t)
 	if err := os.MkdirAll(coverDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	// Thumbnailable large PNG.
 	big := filepath.Join(coverDir, "5")
 	if err := os.WriteFile(big, makePNG(t, 1000, 500), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// AVIF cover — accepted for caching, skipped for thumbnails.
-	avif := filepath.Join(coverDir, "6")
-	if err := os.WriteFile(avif, avifMagic, 0o644); err != nil {
+	avifPath := filepath.Join(coverDir, "6")
+	if err := os.WriteFile(avifPath, makeAVIF(t, 960, 720), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Corrupt blob — decode failure, no thumbnail.
 	corrupt := filepath.Join(coverDir, "7")
 	if err := os.WriteFile(corrupt, []byte("definitely not an image"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	n := backfillCoverThumbs()
-	if n != 1 {
-		t.Fatalf("backfillCoverThumbs wrote %d thumbnails, want 1", n)
+	if n := backfillCoverThumbs(); n != 2 {
+		t.Fatalf("backfillCoverThumbs wrote %d thumbnails, want 2", n)
 	}
-	if _, err := os.Stat(big + ".thumb"); err != nil {
-		t.Errorf("thumb for PNG cover not written: %v", err)
-	}
-	if _, err := os.Stat(avif + ".thumb"); err == nil {
-		t.Error("thumb must not be written for AVIF cover")
+	for _, p := range []string{big, avifPath} {
+		if _, err := os.Stat(p + ".thumb"); err != nil {
+			t.Errorf("thumb for %s not written: %v", filepath.Base(p), err)
+		}
 	}
 	if _, err := os.Stat(corrupt + ".thumb"); err == nil {
 		t.Error("thumb must not be written for corrupt cover")

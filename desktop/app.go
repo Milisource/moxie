@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/dustin/go-humanize"
+	"github.com/gen2brain/avif"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/image/draw"
 	"golang.org/x/image/webp"
@@ -2665,14 +2666,8 @@ func (a *App) fetchAndCacheCover(ctx context.Context, gameID int64, coverURL, co
 	_ = os.WriteFile(coverPath+".url", []byte(coverURL), 0o644)
 	invalidateCoverSetCache()
 
-	switch writeCoverThumb(coverPath) {
-	case thumbSkipAVIF:
-		// No pure-Go AVIF decoder: thumbnail skipped, cover server falls
-		// back to the full image (webview renders AVIF natively).
-		slog.Info("cover cached", "game_id", gameID, "bytes", len(data), "thumb", "skipped-avif", "elapsed", time.Since(start))
-	default:
-		slog.Info("cover cached", "game_id", gameID, "bytes", len(data), "elapsed", time.Since(start))
-	}
+	thumb := writeCoverThumb(coverPath)
+	slog.Info("cover cached", "game_id", gameID, "bytes", len(data), "thumb", thumb.String(), "elapsed", time.Since(start))
 	return coverPath
 }
 
@@ -2684,22 +2679,15 @@ func (a *App) fetchAndCacheCover(ctx context.Context, gameID int64, coverURL, co
 // being a fraction of the full image's bytes.
 const coverThumbMaxDim = 480
 
-// errCoverFormatNotThumbnailable is returned by decodeCoverImage for formats
-// Go cannot decode (AVIF). The webview renders those from the full image, so
-// callers skip the thumbnail and the cover server falls back — this typed
-// error lets them distinguish "expected, skip quietly" from a corrupt file.
-var errCoverFormatNotThumbnailable = errors.New("cover format not thumbnailable")
-
 // thumbResult classifies what writeCoverThumb did, so callers can count
-// skipped AVIF covers (expected, no decoder) separately from genuine decode
-// failures (corrupt files) and log one summary instead of per-cover Warns.
+// genuine decode failures (corrupt files) and log one summary instead of
+// per-cover Warns.
 type thumbResult int
 
 const (
-	thumbWritten     thumbResult = iota // .thumb written
-	thumbNotNeeded                      // image already at or below the cap
-	thumbSkipAVIF                       // AVIF: webview renders it, Go cannot decode
-	thumbDecodeFailed                   // corrupt/undecodable data
+	thumbWritten      thumbResult = iota // .thumb written
+	thumbNotNeeded                       // image already at or below the cap
+	thumbDecodeFailed                    // corrupt/undecodable data
 )
 
 func (r thumbResult) String() string {
@@ -2708,8 +2696,6 @@ func (r thumbResult) String() string {
 		return "written"
 	case thumbNotNeeded:
 		return "not-needed"
-	case thumbSkipAVIF:
-		return "skipped-avif"
 	case thumbDecodeFailed:
 		return "decode-failed"
 	default:
@@ -2719,10 +2705,8 @@ func (r thumbResult) String() string {
 
 // writeCoverThumb decodes the cover at coverPath and writes a downscaled
 // JPEG thumbnail to coverPath+".thumb". Best-effort: if the image is already
-// small, is AVIF, or fails to decode, no thumbnail is written and the cover
-// server falls back to serving the full image. Corrupt-file decode failures
-// are logged as Warn here; the AVIF skip is silent (expected — there is no
-// pure-Go AVIF decoder, and the webview renders AVIF from the full image).
+// small or fails to decode, no thumbnail is written and the cover server
+// falls back to serving the full image. Decode failures are logged as Warn.
 func writeCoverThumb(coverPath string) thumbResult {
 	data, err := os.ReadFile(coverPath)
 	if err != nil {
@@ -2731,9 +2715,6 @@ func writeCoverThumb(coverPath string) thumbResult {
 
 	img, err := decodeCoverImage(data)
 	if err != nil {
-		if errors.Is(err, errCoverFormatNotThumbnailable) {
-			return thumbSkipAVIF
-		}
 		slog.Warn("failed to decode cover for thumbnail", "path", coverPath, "error", err)
 		return thumbDecodeFailed
 	}
@@ -2777,10 +2758,11 @@ func writeCoverThumb(coverPath string) thumbResult {
 
 // decodeCoverImage decodes image bytes by sniffing the format first, so
 // formats stdlib's generic decoder routes to the right codec (webp included).
-// AVIF is handled explicitly: there is no pure-Go AVIF decoder (libavif is
-// CGO, banned by the project's pure-Go constraint), so it returns a typed
-// errCoverFormatNotThumbnailable instead of the misleading stdlib
-// "image: unknown format" from the unregistered-format default path.
+// AVIF (most F95 attachments, served under .png/.jpg names) is decoded by
+// gen2brain/avif: libavif via purego when the system has it, otherwise an
+// embedded wasm build under wazero — CGO-free either way. Thumbnailing AVIF
+// matters: without it every grid card loaded the full-size (often >1 MiB,
+// 2000px+) cover.
 func decodeCoverImage(data []byte) (image.Image, error) {
 	switch imageMimeFromPrefix(data) {
 	case "jpeg":
@@ -2793,7 +2775,7 @@ func decodeCoverImage(data []byte) (image.Image, error) {
 		img, err := gif.Decode(bytes.NewReader(data))
 		return img, err
 	case "avif":
-		return nil, fmt.Errorf("%w: avif has no pure-Go decoder; full image served instead", errCoverFormatNotThumbnailable)
+		return avif.Decode(bytes.NewReader(data))
 	default:
 		img, _, err := image.Decode(bytes.NewReader(data))
 		return img, err

@@ -71,8 +71,15 @@ dist/$(DESKTOP_BINARY): desktop/build/bin/moxie
 	cp -f desktop/build/bin/moxie dist/$(DESKTOP_BINARY)
 	@echo "  -> dist/$(DESKTOP_BINARY)"
 
-desktop/build/bin/moxie: desktop/frontend/src/**/* desktop/app.go desktop/main.go
+# Always rebuild: make's `**` is not recursive (it matched only top-level
+# src files) and the old prerequisite list ignored every other Go file and all
+# of internal/, so `make install-desktop` silently re-installed a stale binary
+# whose embedded frontend predated weeks of fixes. A wails build is ~40s.
+desktop/build/bin/moxie: FORCE
 	cd desktop && wails build -tags webkit2_41 -ldflags "-X main.appVersion=$(VERSION)"
+
+.PHONY: FORCE
+FORCE:
 
 # Run desktop in development mode with hot-reload
 desktop-dev:

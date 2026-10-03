@@ -112,9 +112,8 @@ var backfillMu sync.Mutex
 // any full-size cover that predates the thumbnailing change (or whose
 // thumbnail is missing for any reason). Local-only, no network. Returns the
 // number of thumbnails written. Covers whose thumbnail already exists, and
-// covers too small to need one, are skipped. AVIF covers (no pure-Go
-// decoder) and corrupt files are counted and reported in a single summary
-// line instead of a per-cover Warn storm.
+// covers too small to need one, are skipped. Corrupt files are counted and
+// reported in a single summary line.
 //
 // The optional context argument cancels the walk (aborting leaves no
 // completion marker, so the next launch retries); callers that predate the
@@ -147,7 +146,6 @@ func backfillCoverThumbs(ctxs ...context.Context) int {
 		return 0
 	}
 	count := 0
-	skippedAVIF := 0
 	skippedOther := 0
 	for _, e := range entries {
 		if ctx.Err() != nil {
@@ -176,17 +174,13 @@ func backfillCoverThumbs(ctxs ...context.Context) int {
 		switch writeCoverThumb(full) {
 		case thumbWritten:
 			count++
-		case thumbSkipAVIF:
-			// Expected: webview renders AVIF from the full image; there is
-			// no pure-Go AVIF decoder, so no thumbnail can be generated.
-			skippedAVIF++
 		case thumbDecodeFailed:
 			skippedOther++
 		}
 	}
 	slog.Info("cover thumbnails backfilled",
 		"count", count,
-		"skippedAVIF", skippedAVIF, "skippedOther", skippedOther,
+		"skippedOther", skippedOther,
 		"elapsed", time.Since(start))
 
 	// Full pass completed: mark it done so later startups skip the walk.
