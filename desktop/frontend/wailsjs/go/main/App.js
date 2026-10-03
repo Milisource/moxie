@@ -170,6 +170,10 @@ export function OpenDownloadURL(arg1) {
   return window['go']['main']['App']['OpenDownloadURL'](arg1);
 }
 
+export function OpenUpdateDownloadPage(arg1) {
+  return window['go']['main']['App']['OpenUpdateDownloadPage'](arg1);
+}
+
 export function PickDirectory() {
   return window['go']['main']['App']['PickDirectory']();
 }

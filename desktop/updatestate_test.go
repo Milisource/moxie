@@ -223,3 +223,26 @@ func TestRankPatchLinks(t *testing.T) {
 		t.Fatalf("ranked = %+v, want only the full build", ranked)
 	}
 }
+
+func TestUpdateDownloadPageURL(t *testing.T) {
+	masked := "https://f95zone.to/masked/pixeldrain.com/1/2/x"
+	links := []db.DownloadLink{{URL: masked}, {URL: "https://other"}}
+	cache := func(u string) (string, bool) {
+		if u == masked {
+			return "https://pixeldrain.com/u/aQiB1niF", true
+		}
+		return "", false
+	}
+	none := func(string) (string, bool) { return "", false }
+	thread := "https://f95zone.to/threads/x.1/"
+
+	if got := updateDownloadPageURL(links, cache, thread); got != "https://pixeldrain.com/u/aQiB1niF" {
+		t.Errorf("resolved: got %s", got)
+	}
+	if got := updateDownloadPageURL(links, none, thread); got != masked {
+		t.Errorf("masked fallback: got %s", got)
+	}
+	if got := updateDownloadPageURL(nil, none, thread); got != thread {
+		t.Errorf("thread fallback: got %s", got)
+	}
+}

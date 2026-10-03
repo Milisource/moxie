@@ -2,6 +2,8 @@
 
 ### Changed
 
+- **"Open download page" on failed updates (F95-bes9).** The Updates view's error rows and the game detail view open the closest page to the file in your browser: the host page a masked link already resolved to, else the masked F95 link, else the thread. The URL that was opened is shown under the button.
+
 - **Desktop redesign: "Archive / catalog" visual system** (F95-nks0, docs/desktop-ui-research.md §8):
   - Bundled IBM Plex type (Condensed for labels, Sans for body text, Mono for data).
   - The violet palette (matching the app icon), with 2px or square corners.

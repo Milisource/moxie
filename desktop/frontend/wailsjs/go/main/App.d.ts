@@ -88,6 +88,8 @@ export function ListDeletedGames():Promise<Array<main.DesktopGameSummary>>;
 
 export function OpenDownloadURL(arg1:number):Promise<void>;
 
+export function OpenUpdateDownloadPage(arg1:number):Promise<string>;
+
 export function PickDirectory():Promise<string>;
 
 export function PlayGame(arg1:number):Promise<string>;

@@ -6,7 +6,7 @@
     SetGameWinePrefix, SyncSingleGame, EditGame,
     GetCollections, GetGameCollections, AddGameToCollection, RemoveGameFromCollection,
     GetInstallTargets, GetCoverBaseURL,
-    OpenDownloadURL,
+    OpenDownloadURL, OpenUpdateDownloadPage,
   } from '../../wailsjs/go/main/App'
   import {engineColor, engineOptions} from './engineColors.js'
   import {safeExternalUrl} from './sanitizeUrl.js'
@@ -345,6 +345,17 @@
 
   // "Mark as current": the installed version is unknown but the user knows
   // they already have the latest build. Same write path as the manual edit.
+  // Fallback when the automatic download fails: open the deepest known
+  // download page (resolved host page → masked link → thread).
+  let openedPage = $state('')
+  async function openDownloadPage() {
+    try {
+      openedPage = await OpenUpdateDownloadPage(gameId)
+    } catch (e) {
+      openedPage = `Could not open: ${e}`
+    }
+  }
+
   async function markAsCurrent() {
     editError = ''
     try {
@@ -625,6 +636,16 @@
                 {/if}
                 {#if updateError}
                   <span class="update-error" title={updateError}>{updateError}</span>
+                {/if}
+                {#if (updateError || manualRequired) && !updating}
+                  <button
+                    class="btn btn-sm"
+                    onclick={openDownloadPage}
+                    title="Open the download page in your browser"
+                  >Open download page ↗</button>
+                  {#if openedPage}
+                    <span class="opened-page" title={openedPage}>{openedPage}</span>
+                  {/if}
                 {/if}
                 {#if manualRequired && !updating}
                   <div class="manual-fallback">
@@ -1102,6 +1123,16 @@
   }
   .update-btn:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
   .update-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .opened-page {
+    display: block;
+    max-width: 100%;
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .update-error {
     font-size: var(--text-xs);
     color: var(--danger);

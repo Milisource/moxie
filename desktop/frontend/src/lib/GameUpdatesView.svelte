@@ -4,9 +4,23 @@
     GetUpdatableGames,
     GetVersion,
     EditGame,
+    OpenUpdateDownloadPage,
   } from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
   import {formatBytes, formatSpeed, formatPercent} from './format.js'
+
+  // Opens the deepest known download page (resolved host page → masked
+  // link → thread) in the system browser; the opened URL is kept per row
+  // so the user can see where they were sent.
+  let openedPages = $state({})
+  async function openDownloadPage(gameId) {
+    try {
+      const url = await OpenUpdateDownloadPage(gameId)
+      openedPages = {...openedPages, [gameId]: url}
+    } catch (e) {
+      openedPages = {...openedPages, [gameId]: `Could not open: ${e}`}
+    }
+  }
 
   // Presentational view: the game-update pipeline state (gameStates,
   // batchState) and its event subscriptions live in App.svelte so they
@@ -456,13 +470,25 @@
                       </button>
                     </div>
                   {/if}
-                  <button
-                    class="btn btn-sm btn-warning"
-                    onclick={() => onUpdateGame(game.id)}
-                    disabled={updateInFlight}
-                  >
-                    Retry
-                  </button>
+                  <div class="cell-error-actions">
+                    <button
+                      class="btn btn-sm btn-warning"
+                      onclick={() => onUpdateGame(game.id)}
+                      disabled={updateInFlight}
+                    >
+                      Retry
+                    </button>
+                    <button
+                      class="btn btn-sm btn-outline"
+                      onclick={() => openDownloadPage(game.id)}
+                      title="Open the download page in your browser"
+                    >
+                      Open download page ↗
+                    </button>
+                  </div>
+                  {#if openedPages[game.id]}
+                    <span class="cell-opened" title={openedPages[game.id]}>{openedPages[game.id]}</span>
+                  {/if}
                 </div>
               {/if}
             </span>
@@ -949,6 +975,16 @@
     background: color-mix(in srgb, var(--danger) 12%, transparent);
   }
 
+  .cell-error-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .cell-opened {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+  }
   .btn-sm {
     padding: 4px 10px;
     font-size: var(--text-sm);

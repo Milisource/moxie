@@ -176,6 +176,7 @@ const App = {
   GetAllDownloadLinks: () => delay().then(() => DOWNLOAD_LINKS),
   GetGameDownloadLinks: (id) => delay().then(() => DOWNLOAD_LINKS),
   OpenDownloadURL:     () => delay().then(() => {}),
+  OpenUpdateDownloadPage: () => delay().then(() => 'https://pixeldrain.com/u/aQiB1niF'),
   GetInstallTargets:   () => delay().then(() => INSTALL_TARGETS),
   InstallGame:         () => delay().then(() => {}),
 

@@ -916,6 +916,50 @@ func (a *App) OpenDownloadURL(linkID int64) error {
 	return nil
 }
 
+// OpenUpdateDownloadPage opens, in the system browser, the page closest to
+// the actual file for a game's update — the fallback when the automatic
+// download fails or no link qualifies. Preference order:
+//  1. the host page an F95 masked link already unwrapped to (resolved_urls
+//     cache, e.g. https://pixeldrain.com/u/<id>) for the best-ranked link;
+//  2. that link's stored URL (masked F95 URLs show the captcha/continue
+//     page in the user's own, logged-in browser);
+//  3. the game's F95Zone thread.
+//
+// Returns the URL opened so the UI can show it.
+func (a *App) OpenUpdateDownloadPage(gameID int64) (string, error) {
+	if a.db == nil {
+		return "", fmt.Errorf("database not initialized")
+	}
+	if a.ctx == nil {
+		return "", fmt.Errorf("application context not initialized")
+	}
+	game, err := a.db.GetGame(gameID)
+	if err != nil || game == nil {
+		return "", fmt.Errorf("game %d not found", gameID)
+	}
+	links, _ := a.rankedDownloadLinks(gameID, updateRankOpts(game)) // no qualifying link → thread
+	u := updateDownloadPageURL(links, a.db.GetResolvedURL, game.F95URL)
+	if u == "" {
+		return "", fmt.Errorf("no download link or thread URL for this game")
+	}
+	runtime.BrowserOpenURL(a.ctx, u)
+	return u, nil
+}
+
+// updateDownloadPageURL picks the deepest known URL for the best-ranked
+// link (see OpenUpdateDownloadPage). links must already be ranked.
+func updateDownloadPageURL(links []db.DownloadLink, resolved func(string) (string, bool), threadURL string) string {
+	if len(links) > 0 {
+		if r, ok := resolved(links[0].URL); ok && r != "" {
+			return r
+		}
+		if links[0].URL != "" {
+			return links[0].URL
+		}
+	}
+	return threadURL
+}
+
 // GetGamesWithDownloadLinks returns all active games that have at least one
 // download link in the database.
 func (a *App) GetGamesWithDownloadLinks() ([]DesktopGameSummary, error) {
