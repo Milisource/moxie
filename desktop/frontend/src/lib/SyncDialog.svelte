@@ -184,22 +184,21 @@
   .sync-dialog {
     flex: 1;
     overflow: auto;
-    padding: 32px;
-    max-width: 720px;
-    margin: 0 auto;
+    padding: var(--space-8) var(--gutter);
     width: 100%;
+    max-width: 1280px;
   }
 
   .sync-header {
     margin-bottom: 24px;
   }
   .sync-header h2 {
-    font-size: 20px;
+    font-size: var(--text-2xl);
     font-weight: 700;
     margin: 0 0 4px;
   }
   .sync-subtitle {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     margin: 0;
   }
@@ -216,7 +215,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     cursor: pointer;
     user-select: none;
@@ -229,13 +228,13 @@
   .cookie-status {
     margin: 16px 0;
     padding: 16px;
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     display: flex;
     gap: 12px;
     align-items: flex-start;
   }
   .cookie-icon {
-    font-size: 18px;
+    font-size: var(--text-xl);
     font-weight: 700;
     flex-shrink: 0;
     line-height: 1.4;
@@ -245,12 +244,12 @@
     min-width: 0;
   }
   .cookie-title {
-    font-size: 15px;
+    font-size: var(--text-lg);
     font-weight: 600;
     margin: 0 0 4px;
   }
   .cookie-detail {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     margin: 0;
     line-height: 1.5;
@@ -283,7 +282,7 @@
     align-items: center;
   }
   .cookie-loading .status-text {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     margin: 0;
   }
@@ -293,24 +292,24 @@
     margin: 16px 0;
     padding: 16px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
   }
   .progress-bar-bg {
     height: 6px;
-    border-radius: 3px;
+    border-radius: var(--radius-1);
     background: var(--bg-tertiary);
     overflow: hidden;
     margin-bottom: 8px;
   }
   .progress-bar-fill {
     height: 100%;
-    border-radius: 3px;
+    border-radius: var(--radius-1);
     background: var(--accent);
     transition: width 0.3s ease;
   }
   .progress-label {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     margin: 0;
   }
@@ -331,11 +330,11 @@
     gap: 8px;
     padding: 6px 10px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-primary);
   }
   .game-icon {
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 700;
     flex-shrink: 0;
     width: 18px;
@@ -349,14 +348,14 @@
   }
   .game-title {
     flex: 1;
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .game-status {
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--text-muted);
     flex-shrink: 0;
     font-family: var(--font-mono);
@@ -367,7 +366,7 @@
     margin: 16px 0;
     padding: 16px;
     border: 1px solid var(--success);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--success) 8%, transparent);
   }
   .result-header {
@@ -376,7 +375,7 @@
     align-items: flex-start;
   }
   .result-icon {
-    font-size: 18px;
+    font-size: var(--text-xl);
     font-weight: 700;
     color: var(--success);
     flex-shrink: 0;
@@ -387,13 +386,13 @@
     min-width: 0;
   }
   .result-title {
-    font-size: 15px;
+    font-size: var(--text-lg);
     font-weight: 600;
     color: var(--success);
     margin: 0 0 4px;
   }
   .result-summary {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     margin: 0;
   }
@@ -408,17 +407,17 @@
     margin: 16px 0;
     padding: 16px;
     border: 1px solid var(--danger);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--danger) 8%, transparent);
   }
   .error-title {
-    font-size: 12px;
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--danger);
     margin: 0 0 4px;
   }
   .error-line {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     margin: 0 0 2px;
     font-family: var(--font-mono);

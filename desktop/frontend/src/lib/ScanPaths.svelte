@@ -129,11 +129,11 @@
   .path-input {
     flex: 1;
     padding: 8px 12px;
-    font-size: 13px;
+    font-size: var(--text-base);
     font-family: var(--font-mono);
     background: var(--bg-tertiary);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     color: var(--text-primary);
   }
   .path-input:focus {
@@ -143,8 +143,8 @@
 
   .btn {
     padding: 8px 14px;
-    font-size: 13px;
-    border-radius: 6px;
+    font-size: var(--text-base);
+    border-radius: var(--radius-1);
     border: 1px solid transparent;
     cursor: pointer;
     white-space: nowrap;
@@ -155,7 +155,7 @@
   }
   .btn-primary {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
   }
   .btn-primary:hover:not(:disabled) {
     background: var(--accent-hover);
@@ -182,13 +182,13 @@
     padding: 8px 12px;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
   }
 
   .path-label {
     flex: 1;
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -204,15 +204,15 @@
     background: color-mix(in srgb, var(--accent) 15%, transparent);
     color: var(--accent);
     padding: 4px 12px;
-    font-size: 12px;
+    font-size: var(--text-sm);
   }
-  .btn-scan:hover:not(:disabled) { background: var(--accent); color: #fff; }
+  .btn-scan:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
 
   .btn-remove {
     background: transparent;
     color: var(--text-muted);
     padding: 4px 8px;
-    font-size: 12px;
+    font-size: var(--text-sm);
   }
   .btn-remove:hover:not(:disabled) {
     color: var(--danger);
@@ -223,14 +223,14 @@
     padding: 20px;
     text-align: center;
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: var(--text-base);
     border: 1px dashed var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
   }
 
   .path-error {
     margin: 0 0 10px;
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--danger);
   }
 </style>

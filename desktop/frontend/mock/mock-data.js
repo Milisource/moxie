@@ -55,6 +55,38 @@ export const GAMES = [
 GAMES[20].path = '/virtual/f95zone/229833'
 GAMES[20].exePath = ''
 
+// Generated filler so the 2K layout has a realistically sized library:
+// mixed engines, update states (including installed-version-unknown, the
+// common case for real installs) and some missing covers. Deterministic.
+const FILLER_WORDS = ['Velvet', 'Hollow', 'Summer', 'Lantern', 'Cinder', 'Orchard', 'Signal', 'Harbor',
+  'Moth', 'Second', 'Quiet', 'Copper', 'Winter', 'Atlas', 'Bramble', 'Static', 'Rook', 'Tidewater']
+const FILLER_NOUNS = ['Academy', 'Lease', 'Hours', 'Tenant', 'Contract', 'Season', 'Relic', 'Archive',
+  'Weekend', 'Covenant', 'Diaries', 'Frontier', 'Inheritance', 'Shift', 'Station']
+const FILLER_ENGINES = ['Ren\'Py', 'Ren\'Py', 'Ren\'Py', 'Unity', 'RPGM', 'HTML', 'Godot', 'UE5', 'QSP', 'Others']
+const FILLER_STATUSES = ['active', 'active', 'active', 'completed', 'on_hold', 'abandoned']
+for (let i = 0; i < 60; i++) {
+  const id = 30 + i
+  const title = `${FILLER_WORDS[(i * 7) % FILLER_WORDS.length]} ${FILLER_NOUNS[(i * 5) % FILLER_NOUNS.length]}${i % 9 === 0 ? ' [Ch. ' + (i % 5 + 1) + ']' : ''}`
+  const minor = (i * 3) % 17
+  const latest = `0.${minor}.${i % 4}`
+  // Every 3rd: installed version unknown; every 5th: an update; rest current.
+  const installed = i % 3 === 0 ? '' : i % 5 === 0 ? `0.${Math.max(0, minor - 1)}.0` : latest
+  const bytes = 150e6 + ((i * 977) % 90) * 120e6
+  GAMES.push(P(id, title, FILLER_ENGINES[i % FILLER_ENGINES.length], installed, latest,
+    FILLER_STATUSES[i % FILLER_STATUSES.length], `${(bytes / 1e9).toFixed(1)} GB`, bytes,
+    i % 11 !== 4, 'Generated Studio', '',
+    new Date(Date.UTC(2026, i % 9, 1 + (i % 27))).toISOString(),
+    i % 4 === 0 ? new Date(Date.UTC(2026, 8, 1 + (i % 28), 20)).toISOString() : null))
+}
+
+// Mirrors desktop/app.go gameUpdateState (minus the Go version-compare
+// subtleties): the frontend renders only this verdict.
+for (const g of GAMES) {
+  g.updateState = !g.latestVersion ? ''
+    : !g.version ? 'unknown'
+    : g.version !== g.latestVersion ? 'available' : 'current'
+}
+
 export const GAME_DETAILS = {
   1: P(1, 'Ember Falls', 'Ren\'Py', '1.4.2', '1.4.2', 'active', '2.6 GB', 2791728742, true, 'Vesper Games',
       'A slow-burn romance visual novel set in a mountain town where the winter never ends. Three love interests, a town council conspiracy, and a past that refuses to stay buried.'),
@@ -151,5 +183,6 @@ export const INSTALL_TARGETS = [
 export const COOKIE_STATUS = 'available'
 export const APP_VERSION = '0.4.0-alpha'
 export const GAME_COUNT = GAMES.length
-export const UPDATABLE_COUNT = 3
-export const UPDATABLE_GAMES = [GAMES[1], GAMES[3], GAMES[8]]
+export const UPDATABLE_GAMES = GAMES.filter(g => !g.path.startsWith('/virtual/') &&
+  (g.updateState === 'available' || g.updateState === 'unknown'))
+export const UPDATABLE_COUNT = UPDATABLE_GAMES.filter(g => g.updateState === 'available').length

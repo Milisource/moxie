@@ -77,7 +77,7 @@
     padding: 0 12px;
     background: var(--bg-tertiary);
     border-top: 1px solid var(--border);
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--text-muted);
     flex-shrink: 0;
   }
@@ -100,7 +100,7 @@
     border: none;
     padding: 0;
     color: var(--accent);
-    font-size: 11px;
+    font-size: var(--text-xs);
     font-weight: 600;
     cursor: pointer;
     white-space: nowrap;

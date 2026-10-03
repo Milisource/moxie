@@ -172,9 +172,7 @@
   .dedup-dialog {
     flex: 1;
     overflow: auto;
-    padding: 32px;
-    max-width: 800px;
-    margin: 0 auto;
+    padding: var(--space-8) var(--gutter);
     width: 100%;
   }
 
@@ -182,12 +180,12 @@
     margin-bottom: 20px;
   }
   .dedup-header h2 {
-    font-size: 20px;
+    font-size: var(--text-2xl);
     font-weight: 700;
     margin: 0 0 4px;
   }
   .dedup-subtitle {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     margin: 0 0 12px;
   }
@@ -202,24 +200,24 @@
     gap: 8px;
     color: var(--text-muted);
   }
-  .empty-icon { font-size: 32px; opacity: 0.6; }
-  .empty-title { font-size: 16px; font-weight: 600; color: var(--text-secondary); }
-  .empty-desc { font-size: 13px; }
+  .empty-icon { font-size: var(--text-3xl); opacity: 0.6; }
+  .empty-title { font-size: var(--text-lg); font-weight: 600; color: var(--text-secondary); }
+  .empty-desc { font-size: var(--text-base); }
 
   .error-section {
     padding: 16px;
     border: 1px solid var(--danger);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--danger) 8%, transparent);
   }
   .error-title {
-    font-size: 12px;
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--danger);
     margin: 0 0 4px;
   }
   .error-line {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     font-family: var(--font-mono);
     margin: 0;
@@ -230,9 +228,9 @@
     padding: 10px 14px;
     margin-bottom: 16px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
   }
   .summary-bar strong { color: var(--text-primary); }
@@ -241,7 +239,7 @@
   .dup-group {
     margin-bottom: 20px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     overflow: hidden;
     background: var(--bg-secondary);
   }
@@ -257,15 +255,15 @@
     gap: 8px;
   }
   .group-title {
-    font-size: 15px;
+    font-size: var(--text-lg);
     font-weight: 600;
     margin: 0;
     color: var(--text-primary);
   }
   .group-count {
-    font-size: 11px;
+    font-size: var(--text-xs);
     padding: 1px 7px;
-    border-radius: 10px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--warning) 20%, transparent);
     color: var(--warning);
     font-weight: 600;
@@ -295,32 +293,32 @@
     flex-shrink: 0;
   }
   .entry-idx {
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--text-muted);
     font-family: var(--font-mono);
     min-width: 22px;
   }
   .entry-engine {
-    font-size: 11px;
+    font-size: var(--text-xs);
     font-weight: 600;
     padding: 1px 6px;
-    border-radius: 4px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--ec) 15%, transparent);
     color: var(--ec);
     min-width: 50px;
     text-align: center;
   }
   .entry-version {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     font-family: var(--font-mono);
     min-width: 50px;
   }
   .entry-status {
-    font-size: 11px;
+    font-size: var(--text-xs);
     font-weight: 500;
     padding: 1px 6px;
-    border-radius: 4px;
+    border-radius: var(--radius-1);
   }
   :global(.status-active) { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
   :global(.status-completed) { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
@@ -336,12 +334,12 @@
     min-width: 0;
   }
   .entry-size {
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--text-muted);
     font-family: var(--font-mono);
   }
   .entry-path {
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--text-muted);
     font-family: var(--font-mono);
     overflow: hidden;

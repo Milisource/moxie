@@ -349,11 +349,11 @@
                   <span class="version-new-done">{game.latestVersion}</span>
                 {/if}
               {:else if phase === 'error'}
-                <span class="version-current">{game.version || 'unknown'}</span>
+                <span class="version-current" class:version-unknown={!game.version}>{game.version || 'unknown'}</span>
                 <span class="version-arrow">→</span>
                 <span class="version-latest">{game.latestVersion}</span>
               {:else}
-                <span class="version-current">{game.version || 'unknown'}</span>
+                <span class="version-current" class:version-unknown={!game.version}>{game.version || 'unknown'}</span>
                 <span class="version-arrow">→</span>
                 <span class="version-latest">{game.latestVersion}</span>
               {/if}
@@ -517,9 +517,7 @@
   .updates-view {
     flex: 1;
     overflow: auto;
-    padding: 32px;
-    max-width: 720px;
-    margin: 0 auto;
+    padding: var(--space-8) var(--gutter);
     width: 100%;
   }
 
@@ -527,12 +525,12 @@
     margin-bottom: 24px;
   }
   .updates-header h2 {
-    font-size: 20px;
+    font-size: var(--text-2xl);
     font-weight: 700;
     margin: 0 0 4px;
   }
   .updates-subtitle {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     margin: 0;
   }
@@ -550,13 +548,13 @@
   .status-section {
     margin: 16px 0;
     padding: 16px;
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     display: flex;
     gap: 12px;
     align-items: flex-start;
   }
   .status-icon {
-    font-size: 18px;
+    font-size: var(--text-xl);
     font-weight: 700;
     flex-shrink: 0;
     line-height: 1.4;
@@ -566,12 +564,12 @@
     min-width: 0;
   }
   .status-title {
-    font-size: 15px;
+    font-size: var(--text-lg);
     font-weight: 600;
     margin: 0 0 4px;
   }
   .status-detail {
-    font-size: 13px;
+    font-size: var(--text-base);
     margin: 0;
     color: var(--text-secondary);
     line-height: 1.5;
@@ -592,7 +590,7 @@
     align-items: center;
   }
   .status-loading .status-text {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     margin: 0;
   }
@@ -623,24 +621,24 @@
     margin: 0 0 16px;
     padding: 14px 16px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
   }
   .batch-progress-bar-bg {
     height: 6px;
-    border-radius: 3px;
+    border-radius: var(--radius-1);
     background: var(--bg-tertiary);
     overflow: hidden;
     margin-bottom: 8px;
   }
   .batch-progress-bar-fill {
     height: 100%;
-    border-radius: 3px;
+    border-radius: var(--radius-1);
     background: var(--accent);
     transition: width 0.3s ease;
   }
   .batch-progress-label {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     margin: 0 0 6px;
     font-weight: 600;
@@ -649,7 +647,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--accent);
     margin: 0 0 8px;
   }
@@ -660,7 +658,7 @@
     margin: 8px 0;
   }
   .batch-result-item {
-    font-size: 11px;
+    font-size: var(--text-xs);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -681,7 +679,7 @@
     border-top: 1px solid var(--border);
   }
   .batch-summary-text {
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 600;
   }
   .batch-summary-ok {
@@ -690,6 +688,9 @@
   .batch-summary-fail {
     color: var(--danger);
   }
+  /* Nothing to strike through when the installed version is unknown. */
+  .version-current.version-unknown { text-decoration: none; font-style: italic; }
+
   .section-divider {
     display: flex;
     flex-direction: column;
@@ -698,24 +699,24 @@
     border-top: 1px solid var(--border);
   }
   .section-divider-title {
-    font-size: 12px;
+    font-size: var(--text-sm);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--text-secondary, var(--text-muted));
   }
   .section-divider-hint {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-muted);
   }
 
   .batch-error {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--danger);
     margin-top: 8px;
     padding: 6px 8px;
     background: color-mix(in srgb, var(--danger) 8%, transparent);
-    border-radius: 4px;
+    border-radius: var(--radius-1);
   }
 
   /* ── Table ──────────────────────────── */
@@ -724,7 +725,7 @@
     grid-template-columns: 1fr 110px 150px 1fr;
     gap: 8px;
     padding: 6px 12px;
-    font-size: 11px;
+    font-size: var(--text-xs);
     font-weight: 600;
     color: var(--text-muted);
     text-transform: uppercase;
@@ -744,7 +745,7 @@
     grid-template-columns: 1fr 110px 150px 1fr;
     gap: 8px;
     padding: 10px 12px;
-    font-size: 13px;
+    font-size: var(--text-base);
     border-bottom: 1px solid var(--border);
     align-items: center;
     transition: background 0.08s;
@@ -775,8 +776,8 @@
   .engine-badge {
     display: inline-block;
     padding: 1px 7px;
-    border-radius: 4px;
-    font-size: 11px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-xs);
     font-weight: 600;
     background: color-mix(in srgb, var(--ec) 15%, transparent);
     color: var(--ec);
@@ -784,7 +785,7 @@
 
   .col-version {
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--text-sm);
     display: flex;
     align-items: center;
     gap: 6px;
@@ -795,7 +796,7 @@
   }
   .version-arrow {
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: var(--text-xs);
   }
   .version-latest {
     color: var(--warning);
@@ -833,18 +834,18 @@
   }
   .cell-progress-bg {
     height: 4px;
-    border-radius: 2px;
+    border-radius: var(--radius-1);
     background: var(--bg-tertiary);
     overflow: hidden;
   }
   .cell-progress-fill {
     height: 100%;
-    border-radius: 2px;
+    border-radius: var(--radius-1);
     background: var(--accent);
     transition: width 0.25s ease;
   }
   .cell-progress-text {
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--accent);
     font-family: var(--font-mono);
     white-space: nowrap;
@@ -860,7 +861,7 @@
     gap: 6px;
   }
   .cell-status-text {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
@@ -872,7 +873,7 @@
   .cell-done-icon {
     color: var(--success);
     font-weight: 700;
-    font-size: 14px;
+    font-size: var(--text-md);
   }
 
   /* ── Cell: Error ─────────────────────── */
@@ -884,7 +885,7 @@
     max-width: 100%;
   }
   .cell-error-text {
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--danger);
     font-family: var(--font-mono);
     text-align: right;
@@ -901,7 +902,7 @@
     max-width: 100%;
   }
   .cell-manual-hint {
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--text-secondary);
     text-align: right;
     max-width: 320px;
@@ -912,8 +913,8 @@
   .btn {
     padding: 7px 16px;
     border: none;
-    border-radius: 6px;
-    font-size: 13px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-base);
     cursor: pointer;
     white-space: nowrap;
     transition: all 0.12s;
@@ -925,7 +926,7 @@
 
   .btn-primary {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
   }
   .btn-primary:hover:not(:disabled) {
     background: var(--accent-hover);
@@ -950,12 +951,12 @@
 
   .btn-sm {
     padding: 4px 10px;
-    font-size: 12px;
+    font-size: var(--text-sm);
   }
 
   .btn-accent {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
   }
   .btn-accent:hover:not(:disabled) {
     background: var(--accent-hover);
@@ -974,17 +975,17 @@
     margin: 16px 0;
     padding: 16px;
     border: 1px solid var(--danger);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--danger) 8%, transparent);
   }
   .error-title {
-    font-size: 12px;
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--danger);
     margin: 0 0 4px;
   }
   .error-line {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     margin: 0;
     font-family: var(--font-mono);
@@ -1004,7 +1005,7 @@
     gap: 12px;
     padding: 12px 14px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
     flex-wrap: wrap;
   }
@@ -1018,19 +1019,19 @@
   }
 
   .app-update-icon {
-    font-size: 16px;
+    font-size: var(--text-lg);
     flex-shrink: 0;
   }
 
   .app-update-card-title {
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 600;
     color: var(--text-primary);
     margin: 0 0 2px;
   }
 
   .app-update-card-desc {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     margin: 0;
     line-height: 1.4;
@@ -1039,17 +1040,17 @@
   .version-tag {
     margin-left: auto;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 12%, transparent);
     padding: 1px 6px;
-    border-radius: 4px;
+    border-radius: var(--radius-1);
     flex-shrink: 0;
   }
 
   .btn-sm {
     padding: 4px 10px;
-    font-size: 12px;
+    font-size: var(--text-sm);
   }
 
   .btn-outline {

@@ -118,7 +118,7 @@
 
   .covers-header h2 {
     margin: 0 0 6px;
-    font-size: 20px;
+    font-size: var(--text-2xl);
   }
 
   .covers-subtitle {
@@ -144,25 +144,25 @@
   .progress-bar-bg {
     height: 10px;
     background: var(--bg-elevated, #232331);
-    border-radius: 5px;
+    border-radius: var(--radius-1);
     overflow: hidden;
   }
 
   .progress-bar-fill {
     height: 100%;
     background: var(--accent, #7c5cff);
-    border-radius: 5px;
+    border-radius: var(--radius-1);
     transition: width 0.2s ease;
   }
 
   .progress-label {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--text-base);
   }
 
   .progress-current {
     margin: 0;
-    font-size: 12px;
+    font-size: var(--text-sm);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -175,7 +175,7 @@
     padding: 14px 16px;
     background: var(--bg-elevated, #232331);
     border: 1px solid var(--border, #333342);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
   }
 
   .result-header {
@@ -186,7 +186,7 @@
 
   .result-icon {
     color: #4caf50;
-    font-size: 18px;
+    font-size: var(--text-xl);
   }
 
   .result-body p {
@@ -199,14 +199,14 @@
 
   .result-summary {
     color: var(--text-muted, #9aa0a6);
-    font-size: 13px;
+    font-size: var(--text-base);
   }
 
   .error-section {
     padding: 12px 16px;
     background: rgba(220, 60, 60, 0.08);
     border: 1px solid rgba(220, 60, 60, 0.4);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
   }
 
   .error-title {
@@ -217,7 +217,7 @@
 
   .error-line {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--text-base);
     color: #e57373;
     word-break: break-word;
   }

@@ -71,8 +71,8 @@
 
 <aside class="sidebar">
   <div class="brand">
-    <span class="brand-icon">◆</span>
     <span class="brand-text">Moxie</span>
+    <span class="brand-sub">Library index</span>
   </div>
 
   <nav class="nav">
@@ -127,6 +127,8 @@
 </aside>
 
 <style>
+  /* Index-style navigation: hairline-separated rows, an amber ▌ marker on
+     the active row, condensed uppercase labels (docs/desktop-ui-research.md §8). */
   .sidebar {
     width: var(--sidebar-width);
     height: 100vh;
@@ -140,153 +142,141 @@
 
   .brand {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 10px;
     height: var(--header-height);
     padding: 0 20px;
     border-bottom: 1px solid var(--border);
+    line-height: var(--header-height);
   }
-
-  .brand-icon {
-    font-size: 18px;
+  .brand-text {
+    font-family: var(--font-display);
+    font-size: var(--text-xl);
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
     color: var(--accent);
   }
-
-  .brand-text {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--text-primary);
-    letter-spacing: 0.02em;
+  .brand-sub {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
   }
 
   .nav {
     flex: 1;
-    padding: var(--space-3) var(--space-3);
+    padding: var(--space-4) 0;
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    overflow-y: auto;
   }
 
   .nav-item {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: var(--space-3) var(--space-4);
+    padding: 9px 20px;
     border: none;
-    border-left: 2px solid transparent;
-    border-radius: 6px;
+    border-bottom: 1px solid var(--border);
     background: transparent;
     color: var(--text-secondary);
-    font-size: var(--text-base);
+    font-family: var(--font-display);
+    font-size: var(--text-md);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
     cursor: pointer;
     text-align: left;
-    transition: all 0.12s;
+    transition: background 0.1s, color 0.1s;
   }
-
-  /* Text-only rows (no per-item icon, docs/desktop-ui-research.md §7
-     icon-consistency cleanup) — hover/active background + accent edge are
-     the whole affordance, so both need to read clearly at a glance. */
   .nav-item:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
   }
-
   .nav-item.active {
-    background: var(--accent-dim);
-    border-left-color: var(--accent);
-    color: #fff;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+  .nav-item.active::before {
+    content: '▌';
+    position: absolute;
+    left: 4px;
+    color: var(--accent);
   }
 
-  /* Primary items (Library, Browse) carry the most visual weight — bigger,
-     bolder text, a touch more breathing room — since the sidebar frames
-     every screen and these are the two views used constantly. */
   .nav-item-primary {
-    padding: var(--space-4);
-    font-size: var(--text-md);
+    padding: 12px 20px;
+    font-size: var(--text-lg);
     font-weight: 600;
   }
-
-  .nav-item-primary.active {
-    box-shadow: var(--shadow-sm);
-  }
+  .nav-item-primary:first-child { border-top: 1px solid var(--border); }
 
   .nav-divider {
-    height: 1px;
-    margin: var(--space-3) var(--space-2);
-    background: var(--border);
+    height: var(--space-5);
   }
 
-  /* Demoted management items (Scan/Sync/Covers/Duplicates/Trash/Settings) —
-     lighter text, smaller icon, tighter padding — sit behind the "Manage"
-     disclosure toggle below so they don't compete with daily-use items. */
   .nav-item-demoted {
-    padding: var(--space-2) var(--space-4);
+    padding: 6px 20px;
+    font-family: var(--font-sans);
     font-size: var(--text-sm);
+    text-transform: none;
+    letter-spacing: 0;
     color: var(--text-muted);
   }
-
-  .nav-item-demoted:hover {
-    color: var(--text-secondary);
-  }
+  .nav-item-demoted:hover { color: var(--text-secondary); }
 
   .nav-manage-toggle {
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    margin-top: var(--space-2);
-    padding: var(--space-2) var(--space-4);
+    margin-top: var(--space-5);
+    padding: var(--space-2) 20px;
     border: none;
+    border-bottom: 1px solid var(--border);
     background: transparent;
     color: var(--text-muted);
+    font-family: var(--font-display);
     font-size: var(--text-xs);
-    font-weight: 700;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: var(--tracking-label);
     cursor: pointer;
     text-align: left;
   }
-
-  .nav-manage-toggle:hover {
-    color: var(--text-secondary);
-  }
+  .nav-manage-toggle:hover { color: var(--text-secondary); }
 
   .nav-manage-chevron {
     display: inline-block;
     font-size: var(--text-base);
     transition: transform 0.12s;
   }
+  .nav-manage-chevron.expanded { transform: rotate(90deg); }
 
-  .nav-manage-chevron.expanded {
-    transform: rotate(90deg);
-  }
-
-  .nav-label {
-    font-weight: 500;
-  }
+  .nav-label { font-weight: inherit; }
 
   .nav-badge {
     margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 5px;
-    border-radius: 9px;
-    background: var(--warning);
-    color: #000;
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 1;
+    min-width: 22px;
+    padding: 0 4px;
+    border: 1px solid var(--accent-dim);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    line-height: 16px;
+    text-align: center;
+    letter-spacing: 0;
+    font-variant-numeric: tabular-nums;
   }
 
   .sidebar-footer {
     padding: 12px 20px;
     border-top: 1px solid var(--border);
   }
-
   .version {
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--text-muted);
     font-family: var(--font-mono);
   }

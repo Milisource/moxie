@@ -3,7 +3,7 @@
   import {DropdownMenu} from 'bits-ui'
   import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCoverBaseURL, PlayGame} from '../../wailsjs/go/main/App'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
-  import {library, setViewMode, setDensity} from './viewState.svelte.js'
+  import {library, setViewMode, setDensity, setCardScale, CARD_SCALE_MIN, CARD_SCALE_MAX} from './viewState.svelte.js'
   import {makeCoverHelpers} from './cover.js'
   import {createVirtualList} from './virtualList.svelte.js'
   import {createLibraryNav} from './useLibraryNav.svelte.js'
@@ -212,17 +212,28 @@
   // just CSS — CSS alone wouldn't change how many rows the virtualizer
   // windows in.
   const GRID_GAP = 16
-  const GRID_PAD = 32                // 16px horizontal padding, both sides
-  let gridCardMin = $derived(library.density === 'compact' ? 132 : 176)
-  // title margin + 2-line title + meta margin + meta row
-  let gridTextHeight = $derived(library.density === 'compact' ? 6 + 32 + 3 + 16 : 8 + 40 + 4 + 18)
+  // Horizontal padding, both sides — must equal .grid-row's padding-inline
+  // (the --gutter clamp(16px, 2vw, 48px)), recomputed from the live width.
+  const gridPad = (w) => 2 * Math.min(48, Math.max(16, window.innerWidth * 0.02))
+  // Base card width grows with the container (about 176px at a 1440px
+  // window, 240px at 2560px) so a 2K screen gets bigger covers instead of
+  // just more columns; the toolbar slider scales it, compact shrinks it.
+  function baseCardMin(avail) {
+    const fluid = Math.min(240, Math.max(176, 176 + (avail - 1190) * 0.057))
+    return fluid * library.cardScale * (library.density === 'compact' ? 0.75 : 1)
+  }
+  // Caption block under the cover. GameGridCard.svelte sets these exact
+  // heights in CSS (meta margin + meta row + title margin + 2 title lines);
+  // change one, change both, or rows overlap / gap.
+  let gridTextHeight = $derived(library.density === 'compact' ? 6 + 16 + 4 + 30 : 8 + 18 + 6 + 34)
   let gridColumns = $state(1)
   let gridRowHeight = $state(280)
 
   function updateGridLayout() {
     if (!gridEl) return
-    const cardMin = gridCardMin
-    const avail = Math.max(gridEl.clientWidth - GRID_PAD, cardMin)
+    const raw = gridEl.clientWidth - gridPad(gridEl.clientWidth)
+    const cardMin = baseCardMin(raw)
+    const avail = Math.max(raw, cardMin)
     const cols = Math.max(1, Math.floor((avail + GRID_GAP) / (cardMin + GRID_GAP)))
     const cardWidth = (avail - GRID_GAP * (cols - 1)) / cols
     const coverHeight = cardWidth * 4 / 3
@@ -232,6 +243,8 @@
 
   $effect(() => {
     if (!gridEl) return
+    // Re-run when the size inputs change, not only on resize.
+    void library.cardScale, library.density, gridTextHeight
     updateGridLayout()
     const ro = new ResizeObserver(() => updateGridLayout())
     ro.observe(gridEl)
@@ -518,6 +531,21 @@
             onclick={() => setDensity('compact')}
           ><span class="vbtn-icon">≡</span>Compact</button>
         </div>
+
+        {#if library.viewMode === 'grid'}
+          <label class="size-slider" title="Cover size">
+            <span class="label">Size</span>
+            <input
+              type="range"
+              min={CARD_SCALE_MIN}
+              max={CARD_SCALE_MAX}
+              step="0.05"
+              value={library.cardScale}
+              oninput={(e) => setCardScale(e.currentTarget.value)}
+              ondblclick={() => setCardScale(1)}
+            />
+          </label>
+        {/if}
       </div>
     </div>
 
@@ -625,6 +653,8 @@
         <button class="col-status col-sortable" onclick={() => toggleSort('status')}>
           Status <span class="sort-arrow">{sortIcon('status')}</span>
         </button>
+        <span class="col-wide">Last played</span>
+        <span class="col-wide">Added</span>
         <span class="col-play">Play</span>
       </div>
 
@@ -709,9 +739,9 @@
     color: var(--text-muted);
   }
   .empty.small { height: 100%; padding: 24px; }
-  .empty-icon { font-size: 40px; opacity: 0.5; }
-  .empty-title { font-size: 16px; font-weight: 600; color: var(--text-secondary); }
-  .empty-desc { font-size: 13px; }
+  .empty-icon { font-size: var(--text-4xl); opacity: 0.5; }
+  .empty-title { font-size: var(--text-lg); font-weight: 600; color: var(--text-secondary); }
+  .empty-desc { font-size: var(--text-base); }
 
   /* ── Quick view tabs + layout toggle (P0-4 / P0-1) ── */
   .quick-bar {
@@ -729,16 +759,16 @@
     gap: 2px;
     background: var(--bg-tertiary);
     padding: 3px;
-    border-radius: 9px;
+    border-radius: var(--radius-1);
   }
 
   .quick-tab {
     padding: 5px 14px;
     border: none;
-    border-radius: 7px;
+    border-radius: var(--radius-1);
     background: transparent;
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--text-sm);
     font-weight: 500;
     cursor: pointer;
     transition: all 0.12s;
@@ -747,7 +777,7 @@
   .quick-tab:hover { color: var(--text-primary); }
   .quick-tab.active {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
     font-weight: 600;
   }
 
@@ -767,24 +797,24 @@
     gap: 6px;
     padding: 5px 10px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: transparent;
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: var(--text-xs);
     font-weight: 500;
     cursor: pointer;
     transition: all 0.12s;
   }
-  .vbtn + .vbtn { border-left: none; border-radius: 6px 0 0 6px; }
-  .vbtn:first-of-type { border-radius: 6px 0 0 6px; }
-  .vbtn:last-of-type { border-radius: 0 6px 6px 0; }
+  .vbtn + .vbtn { border-left: none; border-radius: var(--radius-1) 0 0 var(--radius-1); }
+  .vbtn:first-of-type { border-radius: var(--radius-1) 0 0 var(--radius-1); }
+  .vbtn:last-of-type { border-radius: 0 var(--radius-1) var(--radius-1) 0; }
   .vbtn:hover { color: var(--text-primary); background: var(--bg-hover); }
   .vbtn.active {
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 12%, transparent);
     border-color: var(--accent-dim);
   }
-  .vbtn-icon { font-size: 12px; line-height: 1; }
+  .vbtn-icon { font-size: var(--text-sm); line-height: 1; }
 
   /* ── Filter / secondary filter bar ──────────────────── */
   .filter-bar {
@@ -810,7 +840,7 @@
     left: 8px;
     top: 50%;
     transform: translateY(-50%);
-    font-size: 12px;
+    font-size: var(--text-sm);
     opacity: 0.5;
     pointer-events: none;
   }
@@ -819,10 +849,10 @@
     width: 100%;
     padding: 5px 10px 5px 28px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-primary);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     outline: none;
   }
   .search-input:focus { border-color: var(--accent); }
@@ -847,10 +877,10 @@
   .filter-select {
     padding: 5px 22px 5px 8px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-primary);
     color: var(--text-primary);
-    font-size: 12px;
+    font-size: var(--text-sm);
     outline: none;
     cursor: pointer;
     -webkit-appearance: none;
@@ -872,7 +902,7 @@
   .result-count {
     margin-left: auto;
     padding-left: 8px;
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--text-muted);
     white-space: nowrap;
     flex-shrink: 0;
@@ -881,23 +911,23 @@
   .chip {
     padding: 3px 8px;
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: var(--radius-1);
     background: transparent;
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: var(--text-xs);
     cursor: pointer;
     transition: all 0.12s;
   }
   .chip:hover { background: var(--bg-hover); color: var(--text-primary); }
   .chip-active {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
     border-color: var(--accent);
   }
 
   .searching-indicator {
     padding: 4px 12px;
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--text-muted);
     background: var(--bg-tertiary);
     border-bottom: 1px solid var(--border);
@@ -912,6 +942,19 @@
      absolutely-positioned element's containing block is its ancestor's
      padding box, not content box — container padding would otherwise be
      ignored for positioning. */
+  /* List columns, shared by .table-header and GameTableRow's .table-row.
+     Wide windows get Last played / Added instead of a stretched title. */
+  .game-list {
+    --table-cols: 56px minmax(220px, 1fr) 110px 180px 90px 110px 72px;
+  }
+  .game-list :global(.col-wide) { display: none; }
+  @media (min-width: 1700px) {
+    .game-list {
+      --table-cols: 56px minmax(260px, 1fr) 120px 200px 100px 120px 130px 120px 80px;
+    }
+    .game-list :global(.col-wide) { display: block; }
+  }
+
   .grid-scroll {
     flex: 1;
     overflow-y: auto;
@@ -929,9 +972,19 @@
     left: 0;
     right: 0;
     display: grid;
-    gap: 18px 16px;
-    padding: 0 16px;
+    gap: 0 16px;
+    padding: 0 var(--gutter);
     box-sizing: border-box;
+  }
+
+  .size-slider {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .size-slider input {
+    width: 120px;
+    accent-color: var(--accent);
   }
 
   /* ── Density: compact (P1 item 7) ──────────────────────
@@ -939,17 +992,15 @@
      the other, or the virtualizer windows the wrong number of rows for
      what's actually on screen. Per-card density rules live in
      GameGridCard.svelte; per-row rules live in GameTableRow.svelte. */
-  .density-compact .grid-row { gap: 10px 12px; }
+  /* Column gap stays GRID_GAP in both densities (the width math assumes it). */
 
   /* ── List / table view ─────────────────────────────── */
   .table-header {
     display: grid;
-    /* First column width must match GameTableRow.svelte's .table-row grid
-       (narrowed alongside the 3:4 portrait cover-thumb resize there). */
-    grid-template-columns: 56px 1fr 110px 130px 80px 100px 64px;
+    grid-template-columns: var(--table-cols);
     gap: 8px;
     padding: 6px 12px;
-    font-size: 11px;
+    font-size: var(--text-xs);
     font-weight: 600;
     color: var(--text-muted);
     text-transform: uppercase;
@@ -976,7 +1027,7 @@
   .col-sortable:hover { color: var(--text-primary); }
 
   .sort-arrow {
-    font-size: 8px;
+    font-size: var(--text-2xs);
     opacity: 0.6;
   }
 
@@ -1004,9 +1055,9 @@
     min-width: 180px;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     padding: 4px;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    box-shadow: var(--shadow-pop);
     display: flex;
     flex-direction: column;
     gap: 1px;
@@ -1018,10 +1069,10 @@
     width: 100%;
     padding: 7px 10px;
     border: none;
-    border-radius: 5px;
+    border-radius: var(--radius-1);
     background: transparent;
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     cursor: pointer;
     text-align: left;
     white-space: nowrap;
@@ -1032,7 +1083,7 @@
   .ctx-item.ctx-danger:hover,
   .ctx-item.ctx-danger:global([data-highlighted]) { background: color-mix(in srgb, var(--danger) 12%, transparent); }
   .ctx-item:global([data-disabled]) { opacity: 0.4; cursor: not-allowed; }
-  .ctx-arrow { margin-left: auto; font-size: 10px; opacity: 0.5; }
+  .ctx-arrow { margin-left: auto; font-size: var(--text-2xs); opacity: 0.5; }
   .ctx-divider {
     height: 1px;
     background: var(--border);

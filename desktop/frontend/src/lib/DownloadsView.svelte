@@ -323,9 +323,7 @@
   .downloads-view {
     flex: 1;
     overflow: auto;
-    padding: 32px;
-    max-width: 800px;
-    margin: 0 auto;
+    padding: var(--space-8) var(--gutter);
     width: 100%;
   }
 
@@ -333,12 +331,12 @@
     margin-bottom: 20px;
   }
   .downloads-header h2 {
-    font-size: 20px;
+    font-size: var(--text-2xl);
     font-weight: 700;
     margin: 0 0 4px;
   }
   .downloads-subtitle {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     margin: 0;
   }
@@ -351,7 +349,7 @@
     margin-bottom: 16px;
     padding: 12px 16px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
   }
   .stat-item {
@@ -360,13 +358,13 @@
     gap: 6px;
   }
   .stat-value {
-    font-size: 18px;
+    font-size: var(--text-xl);
     font-weight: 700;
     color: var(--accent);
     font-family: var(--font-mono);
   }
   .stat-label {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-muted);
   }
   .stat-dead .stat-value {
@@ -387,14 +385,14 @@
     margin-bottom: 16px;
     padding: 8px 12px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
   }
   .search-bar:focus-within {
     border-color: var(--accent);
   }
   .search-icon {
-    font-size: 14px;
+    font-size: var(--text-md);
     flex-shrink: 0;
   }
   .search-input {
@@ -402,7 +400,7 @@
     border: none;
     background: transparent;
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     outline: none;
     min-width: 0;
   }
@@ -413,7 +411,7 @@
     background: none;
     border: none;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: var(--text-sm);
     cursor: pointer;
     padding: 2px;
     flex-shrink: 0;
@@ -426,13 +424,13 @@
   .status-section {
     margin: 16px 0;
     padding: 16px;
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     display: flex;
     gap: 12px;
     align-items: flex-start;
   }
   .status-icon {
-    font-size: 18px;
+    font-size: var(--text-xl);
     font-weight: 700;
     flex-shrink: 0;
     line-height: 1.4;
@@ -442,12 +440,12 @@
     min-width: 0;
   }
   .status-title {
-    font-size: 15px;
+    font-size: var(--text-lg);
     font-weight: 600;
     margin: 0 0 4px;
   }
   .status-detail {
-    font-size: 13px;
+    font-size: var(--text-base);
     margin: 0 0 10px;
     color: var(--text-secondary);
     line-height: 1.5;
@@ -462,7 +460,7 @@
     align-items: center;
   }
   .status-loading .status-text {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     margin: 0;
   }
@@ -501,7 +499,7 @@
 
   .game-card {
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     overflow: hidden;
     background: var(--bg-secondary);
     transition: border-color 0.12s;
@@ -520,7 +518,7 @@
     border: none;
     background: transparent;
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     cursor: pointer;
     text-align: left;
     transition: background 0.12s;
@@ -530,7 +528,7 @@
   }
 
   .game-expand-icon {
-    font-size: 10px;
+    font-size: var(--text-2xs);
     color: var(--text-muted);
     width: 12px;
     text-align: center;
@@ -546,15 +544,15 @@
   }
 
   .game-link-count {
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--text-muted);
     flex-shrink: 0;
   }
 
   .dead-badge {
     padding: 1px 6px;
-    border-radius: 4px;
-    font-size: 10px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-2xs);
     font-weight: 600;
     background: color-mix(in srgb, var(--danger) 15%, transparent);
     color: var(--danger);
@@ -572,7 +570,7 @@
     grid-template-columns: 100px 1fr 80px 90px;
     gap: 8px;
     padding: 6px 12px;
-    font-size: 10px;
+    font-size: var(--text-2xs);
     font-weight: 600;
     color: var(--text-muted);
     text-transform: uppercase;
@@ -590,7 +588,7 @@
     grid-template-columns: 100px 1fr 80px 90px;
     gap: 8px;
     padding: 7px 12px;
-    font-size: 12px;
+    font-size: var(--text-sm);
     border-bottom: 1px solid var(--border);
     align-items: center;
     transition: background 0.08s;
@@ -608,8 +606,8 @@
   .host-badge {
     display: inline-block;
     padding: 1px 7px;
-    border-radius: 4px;
-    font-size: 10px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-2xs);
     font-weight: 600;
     background: color-mix(in srgb, var(--hc) 15%, transparent);
     color: var(--hc);
@@ -622,7 +620,7 @@
     white-space: nowrap;
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--text-xs);
   }
 
   .link-dead .link-name {
@@ -632,8 +630,8 @@
 
   .platform-badge {
     padding: 1px 6px;
-    border-radius: 4px;
-    font-size: 10px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-2xs);
     font-weight: 600;
     background: color-mix(in srgb, var(--accent) 12%, transparent);
     color: var(--accent);
@@ -650,7 +648,7 @@
   }
 
   .dead-label {
-    font-size: 10px;
+    font-size: var(--text-2xs);
     font-weight: 600;
     color: var(--danger);
     text-transform: uppercase;
@@ -660,7 +658,7 @@
   .links-empty {
     padding: 16px;
     text-align: center;
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-muted);
     margin: 0;
   }
@@ -669,8 +667,8 @@
   .btn {
     padding: 7px 16px;
     border: none;
-    border-radius: 6px;
-    font-size: 13px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-base);
     cursor: pointer;
     white-space: nowrap;
     transition: all 0.12s;
@@ -682,12 +680,12 @@
 
   .btn-sm {
     padding: 4px 10px;
-    font-size: 11px;
+    font-size: var(--text-xs);
   }
 
   .btn-accent {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
   }
   .btn-accent:hover:not(:disabled) {
     background: var(--accent-hover);
@@ -707,17 +705,17 @@
     margin: 16px 0;
     padding: 16px;
     border: 1px solid var(--danger);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--danger) 8%, transparent);
   }
   .error-title {
-    font-size: 12px;
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--danger);
     margin: 0 0 4px;
   }
   .error-line {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     margin: 0 0 10px;
     font-family: var(--font-mono);

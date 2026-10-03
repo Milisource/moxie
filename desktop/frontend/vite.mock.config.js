@@ -85,10 +85,14 @@ function mockCovers() {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         const pathname = req.url.split('?')[0]
-        const m = pathname.match(/^\/mock\/covers\/(?:cover\/)?(\d+)\/(thumb|full)$/)
+        // Real routes are /cover/<id> (full) and /cover/<id>/thumb.
+        const m = pathname.match(/^\/mock\/covers\/(?:cover\/)?(\d+)(?:\/(thumb|full))?$/)
         if (!m) return next()
         const id = parseInt(m[1], 10) || 1
-        const [w, h] = m[2] === 'full' ? [320, 180] : [72, 40]
+        // Portrait 3:4 key art, like the F95Zone covers the grid is sized for.
+        // Every 11th id (offset 4) 404s to exercise the placeholder.
+        if (id >= 30 && (id - 30) % 11 === 4) { res.statusCode = 404; return res.end() }
+        const [w, h] = m[2] === 'thumb' ? [180, 240] : [600, 800]
         res.setHeader('Content-Type', 'image/png')
         res.setHeader('Cache-Control', 'no-store')
         res.end(encodePNG(w, h, coverPixel(id, w, h)))

@@ -92,22 +92,21 @@
   .scan-dialog {
     flex: 1;
     overflow: auto;
-    padding: 32px;
-    max-width: 720px;
-    margin: 0 auto;
+    padding: var(--space-8) var(--gutter);
     width: 100%;
+    max-width: 1280px;
   }
 
   .scan-header {
     margin-bottom: 24px;
   }
   .scan-header h2 {
-    font-size: 20px;
+    font-size: var(--text-2xl);
     font-weight: 700;
     margin: 0 0 4px;
   }
   .scan-subtitle {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     margin: 0;
   }
@@ -117,7 +116,7 @@
     align-items: center;
     gap: 8px;
     margin: 14px 0 0;
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     cursor: pointer;
     user-select: none;
@@ -136,24 +135,24 @@
     margin: 20px 0;
     padding: 16px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
   }
   .progress-bar-bg {
     height: 6px;
-    border-radius: 3px;
+    border-radius: var(--radius-1);
     background: var(--bg-tertiary);
     overflow: hidden;
     margin-bottom: 8px;
   }
   .progress-bar-fill {
     height: 100%;
-    border-radius: 3px;
+    border-radius: var(--radius-1);
     background: var(--accent);
     transition: width 0.3s ease;
   }
   .progress-label {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     margin: 0;
   }
@@ -163,17 +162,17 @@
     margin: 16px 0;
     padding: 16px;
     border: 1px solid var(--success);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--success) 8%, transparent);
   }
   .result-title {
-    font-size: 15px;
+    font-size: var(--text-lg);
     font-weight: 600;
     color: var(--success);
     margin: 0 0 8px;
   }
   .result-breakdown {
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     color: var(--text-secondary);
   }
@@ -183,17 +182,17 @@
     margin: 16px 0;
     padding: 16px;
     border: 1px solid var(--danger);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--danger) 8%, transparent);
   }
   .error-title {
-    font-size: 12px;
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--danger);
     margin: 0 0 4px;
   }
   .error-line {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     margin: 0 0 2px;
     font-family: var(--font-mono);

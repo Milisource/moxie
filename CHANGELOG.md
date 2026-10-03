@@ -1,7 +1,34 @@
 ## [Unreleased]
 
+### Changed
+
+- **Desktop redesign: "Archive / catalog" visual system** (F95-nks0, docs/desktop-ui-research.md §8):
+  - Bundled IBM Plex type (Condensed for labels, Sans for body text, Mono for data).
+  - A warm dark palette with one amber accent, and 2px or square corners.
+  - Hairline rules instead of shadows.
+  - Square mono engine and status tags.
+- **The desktop layout now uses the full window.** Views no longer centre in a 640–960px column:
+  - The library grid scales its cover size with the window, and a persisted Size slider adjusts it further.
+  - The list view adds Last played and Added columns on wide screens.
+  - The detail view is a two-column catalog record (cover and actions | metadata), with a third column for links and history at ≥2200px.
+  - Settings splits into two columns at ≥1600px.
+- Missing covers render as typographic cards (title initials). The grid marks updates with an amber cover edge and shows `old → new` in the caption.
+
 ### Fixed
 
+- **Game updates work for real libraries** (F95-8igb):
+  - The update verdict is computed once in Go (`updateState`), which ends phantom `0.4` vs `v0.4` updates.
+  - Games whose installed version can't be detected show as "Installed: unknown" with **Update** and **Mark as current**, in a separate section of the Updates view.
+  - The pipeline tries up to 3 download links.
+  - Downloads and extraction use `~/.config/moxie/work` instead of the RAM-backed temp dir.
+  - A row can no longer spin forever on "Downloading".
+- **Installed versions are detected far more often:**
+  - Ren'Py `options.rpyc` and `.rpa` archives, RPG Maker MV/MZ `System.json`, and `ver1.11`-style folder names are now read.
+  - `scan --force` no longer erases known versions.
+  - Status labels such as "Translation Request" are no longer stored as the latest version (schema v11 clears them).
+- **Covers load again.** The desktop binary is always rebuilt (`make desktop` no longer skips stale builds), and AVIF covers get real thumbnails.
+- **Emoji removed** from the CLI, TUI, desktop UI and docs; a guard test keeps them out.
+- `moxie install` extracts into a per-run work dir and keeps the old version if the merge fails. `moxie update` rejects extra arguments instead of silently self-updating.
 - **`scan --force` actually forces a full rescan** — three defects that made the flag a no-op are fixed:
   - **Flags written after the directory no longer get swallowed.** Go's stdlib `flag` stops parsing at the first positional arg, so `moxie scan <dir> --force` used to treat `--force` as a scan directory (incremental scan of the real dir + a hard error on a literal `--force` path). `hoistFlags` reorders args so flags (and their values) always precede positionals — applied to `scan`, `sync`, and `check-updates`.
   - **`--force` now reaches the save path.** `db.UpdateGameScanFields(..., force)` overwrites the scanner-owned fields (version/engine/exe_path) with fresh detection when force is set, instead of only filling them when unset. A forced rescan truly "re-detects all games"; non-force upserts (desktop watcher, plain `scan`) still preserve manual corrections.

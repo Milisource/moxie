@@ -1,4 +1,5 @@
 <script>
+  import {initials} from './initials.js'
   import {onMount} from 'svelte'
   import {
     GetGameDetail, PlayGame, RemoveGame, SetGameStatus, RenameGame,
@@ -494,85 +495,9 @@
     <div class="error-state"><p>Error: {error}</p><button class="back-btn" onclick={onBack}>Go Back</button></div>
   {:else if detail}
     <div class="detail-content">
-      {#if editError}
-        <div class="edit-notice">
-          <span class="edit-notice-icon">✕</span>
-          <span>{editError}</span>
-        </div>
-      {/if}
-
-      <!-- Title + Badges -->
-      <div class="title-section">
-        <div class="title-main">
-          {#if showRenameInput}
-            <!-- svelte-ignore a11y_autofocus -->
-            <input
-              class="rename-input"
-              type="text"
-              bind:value={renameTitle}
-              onkeydown={(e) => {
-                if (e.key === 'Enter') handleRenameSave()
-                if (e.key === 'Escape') showRenameInput = false
-              }}
-              autofocus
-            />
-            <button class="btn btn-sm btn-primary" onclick={handleRenameSave}>Save</button>
-            <button class="btn btn-sm" onclick={() => showRenameInput = false}>Cancel</button>
-          {:else}
-            <h1>{detail.title}</h1>
-            {#if detail.updateState === 'available' || detail.updateState === 'unknown' || updateError || manualRequired}
-              {#if detail.updateState === 'unknown'}
-                <span class="update-badge update-badge-unknown" title="Installed version unknown; latest is {detail.latestVersion}">Installed: unknown</span>
-              {:else if detail.updateState === 'available'}
-                <span class="update-badge" title="Update: {detail.version} → {detail.latestVersion}">Update Available</span>
-              {/if}
-              <button
-                class="update-btn"
-                onclick={() => onUpdateGame(gameId)}
-                disabled={updating || lockBusyElsewhere}
-                title="Download {detail.latestVersion}"
-              >
-                {updating ? 'Downloading…' : lockBusyElsewhere ? 'Updating…' : '↓ Download Update'}
-              </button>
-              {#if detail.updateState === 'unknown'}
-                <button
-                  class="btn btn-sm"
-                  onclick={markAsCurrent}
-                  disabled={updating}
-                  title="Record {detail.latestVersion} as the installed version without downloading"
-                >Mark as current ({detail.latestVersion})</button>
-              {/if}
-              {#if updateError}
-                <span class="update-error" title={updateError}>{updateError}</span>
-              {/if}
-              {#if manualRequired && !updating}
-                <div class="manual-fallback">
-                  <span class="manual-fallback-text">
-                    Automatic download failed{manualHost ? ` (${manualHost} is blocking it)` : ''}.
-                    Download the update in your browser, then point moxie at the archive.
-                  </span>
-                  <button
-                    class="btn btn-sm btn-primary"
-                    onclick={() => onProvideFile(gameId)}
-                    disabled={providingFile || pipelineBusy}
-                  >
-                    {providingFile ? 'Selecting…' : 'Choose Downloaded Archive…'}
-                  </button>
-                </div>
-              {/if}
-            {/if}
-          {/if}
-        </div>
-        <div class="badges">
-          {#if detail.engine}
-            <span class="engine-badge" style="--ec: {engineColor(detail.engine)}">{detail.engine}</span>
-          {/if}
-          <span class="status-badge status-{detail.status || 'unknown'}">{statusLabel(detail.status)}</span>
-        </div>
-      </div>
-
-      <!-- Two-column layout -->
-      <div class="detail-grid">
+      <!-- Catalog layout: cover + actions | record | links & history.
+           Columns collapse by width (see .detail-content media rules). -->
+      <aside class="detail-side">
         <!-- Left: Cover -->
         <div class="cover-section">
           {#if coverSrc}
@@ -585,10 +510,146 @@
             />
           {:else}
             <div class="cover-placeholder">
-              <span class="cover-icon">◆</span>
-              <span>No Cover</span>
+              <span class="cover-ph-initials">{initials(detail.title)}</span>
+              <span class="cover-ph-note">No cover</span>
             </div>
           {/if}
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="action-section">
+          {#if launchStatus.msg}
+            <div class="launch-notice launch-ok">{launchStatus.msg}</div>
+          {/if}
+          {#if launchStatus.error}
+            <div class="launch-notice launch-error">{launchStatus.error}</div>
+          {/if}
+          {#if needsInstall}
+            <div class="install-box">
+              <p class="install-hint">
+                Added from F95Zone but not downloaded yet. Choose where to install it.
+              </p>
+              {#if installTargets.length === 0}
+                <p class="install-warn">
+                  No scan paths configured. Add one in Settings first.
+                </p>
+              {:else}
+                <div class="install-row">
+                  <select class="install-select" bind:value={installDest} disabled={installing || pipelineBusy}>
+                    {#each installTargets as t}
+                      <option value={t.path} disabled={!t.available}>
+                        {t.path}{t.available ? '' : ' (unavailable)'}
+                      </option>
+                    {/each}
+                  </select>
+                  <button
+                    class="btn btn-primary"
+                    onclick={() => onInstall(gameId, installDest)}
+                    disabled={installing || !installDest || pipelineBusy}
+                    title={pipelineBusy && !installing ? 'An update or install is already running' : undefined}
+                  >
+                    {installing ? installPhaseLabel : pipelineBusy ? 'Busy…' : '↓ Install'}
+                  </button>
+                </div>
+                {#if installing && installProgress}
+                  <div class="install-progress">
+                    <div class="install-bar-bg">
+                      <div class="install-bar-fill" style="width: {installProgress}%"></div>
+                    </div>
+                  </div>
+                {/if}
+              {/if}
+              {#if installError}
+                <p class="install-warn">{installError}</p>
+              {/if}
+            </div>
+          {:else}
+            <button class="btn btn-primary btn-play" onclick={handlePlay}>▶︎ Play</button>
+          {/if}
+          {#if detail.f95Url}
+            <button class="btn" onclick={handleSync}>Sync from F95Zone</button>
+          {/if}
+          <button class="btn" onclick={handleRenameStart}>Rename</button>
+          <button class="btn btn-danger" onclick={handleRemove}>Remove Game</button>
+        </div>
+      </aside>
+
+      <div class="detail-main">
+        {#if editError}
+          <div class="edit-notice">
+            <span class="edit-notice-icon">✕</span>
+            <span>{editError}</span>
+          </div>
+        {/if}
+
+        <!-- Title + Badges -->
+        <div class="title-section">
+          <div class="title-main">
+            {#if showRenameInput}
+              <!-- svelte-ignore a11y_autofocus -->
+              <input
+                class="rename-input"
+                type="text"
+                bind:value={renameTitle}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') handleRenameSave()
+                  if (e.key === 'Escape') showRenameInput = false
+                }}
+                autofocus
+              />
+              <button class="btn btn-sm btn-primary" onclick={handleRenameSave}>Save</button>
+              <button class="btn btn-sm" onclick={() => showRenameInput = false}>Cancel</button>
+            {:else}
+              <h1>{detail.title}</h1>
+              {#if detail.updateState === 'available' || detail.updateState === 'unknown' || updateError || manualRequired}
+                {#if detail.updateState === 'unknown'}
+                  <span class="update-badge update-badge-unknown" title="Installed version unknown; latest is {detail.latestVersion}">Installed: unknown</span>
+                {:else if detail.updateState === 'available'}
+                  <span class="update-badge" title="Update: {detail.version} → {detail.latestVersion}">Update Available</span>
+                {/if}
+                <button
+                  class="update-btn"
+                  onclick={() => onUpdateGame(gameId)}
+                  disabled={updating || lockBusyElsewhere}
+                  title="Download {detail.latestVersion}"
+                >
+                  {updating ? 'Downloading…' : lockBusyElsewhere ? 'Updating…' : '↓ Download Update'}
+                </button>
+                {#if detail.updateState === 'unknown'}
+                  <button
+                    class="btn btn-sm"
+                    onclick={markAsCurrent}
+                    disabled={updating}
+                    title="Record {detail.latestVersion} as the installed version without downloading"
+                  >Mark as current ({detail.latestVersion})</button>
+                {/if}
+                {#if updateError}
+                  <span class="update-error" title={updateError}>{updateError}</span>
+                {/if}
+                {#if manualRequired && !updating}
+                  <div class="manual-fallback">
+                    <span class="manual-fallback-text">
+                      Automatic download failed{manualHost ? ` (${manualHost} is blocking it)` : ''}.
+                      Download the update in your browser, then point moxie at the archive.
+                    </span>
+                    <button
+                      class="btn btn-sm btn-primary"
+                      onclick={() => onProvideFile(gameId)}
+                      disabled={providingFile || pipelineBusy}
+                    >
+                      {providingFile ? 'Selecting…' : 'Choose Downloaded Archive…'}
+                    </button>
+                  </div>
+                {/if}
+              {/if}
+            {/if}
+          </div>
+          <div class="badges">
+            {#if detail.engine}
+              <span class="engine-badge" style="--ec: {engineColor(detail.engine)}">{detail.engine}</span>
+            {/if}
+            <span class="status-badge status-{detail.status || 'unknown'}">{statusLabel(detail.status)}</span>
+          </div>
         </div>
 
         <!-- Right: Metadata -->
@@ -812,170 +873,117 @@
             </div>
           {/if}
         </div>
+
+        <!-- Overview -->
+        {#if detail.overview}
+          <div class="overview-section">
+            <h3>Overview</h3>
+            <div class="overview-text" class:truncated={!showFullOverview && detail.overview.length > 500}>
+              {showFullOverview ? detail.overview : detail.overview.slice(0, 500)}
+              {#if detail.overview.length > 500}
+                <button class="show-more" onclick={() => showFullOverview = !showFullOverview}>
+                  {showFullOverview ? 'Show less' : '… Show more'}
+                </button>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+        <!-- Notes -->
+        {#if detail.notes !== undefined || editNotes.active}
+          <div class="section-card notes-section">
+            <div class="section-card-header">
+              <h3>Notes</h3>
+              {#if !editNotes.active}
+                <button class="btn btn-xs" onclick={startNotesEdit}>
+                  {detail.notes ? 'Edit' : 'Add Note'}
+                </button>
+              {/if}
+            </div>
+            {#if editNotes.active}
+              <textarea
+                class="notes-textarea"
+                bind:value={editNotes.value}
+                placeholder="Add notes about this game..."
+                rows="3"
+              ></textarea>
+              <div class="inline-edit-actions">
+                <button class="btn btn-xs btn-primary" onclick={saveNotes}>Save</button>
+                <button class="btn btn-xs" onclick={() => editNotes = {active: false, value: ''}}>Cancel</button>
+              </div>
+            {:else if detail.notes}
+              <p class="notes-text">{detail.notes}</p>
+            {:else}
+              <p class="notes-empty">No notes.</p>
+            {/if}
+          </div>
+        {/if}
+
       </div>
 
-      <!-- Overview -->
-      {#if detail.overview}
-        <div class="overview-section">
-          <h3>Overview</h3>
-          <div class="overview-text" class:truncated={!showFullOverview && detail.overview.length > 500}>
-            {showFullOverview ? detail.overview : detail.overview.slice(0, 500)}
-            {#if detail.overview.length > 500}
-              <button class="show-more" onclick={() => showFullOverview = !showFullOverview}>
-                {showFullOverview ? 'Show less' : '… Show more'}
+      <div class="detail-extra">
+        <!-- Download Links -->
+        {#if detail.downloadLinks && detail.downloadLinks.length > 0}
+          <div class="section-card">
+            <div class="section-card-header">
+              <h3>Download Links ({detail.downloadLinks.length})</h3>
+              <button class="btn btn-xs" onclick={() => showDownloads = !showDownloads}>
+                {showDownloads ? 'Hide' : 'Show'}
               </button>
-            {/if}
-          </div>
-        </div>
-      {/if}
-
-      <!-- Notes -->
-      {#if detail.notes !== undefined || editNotes.active}
-        <div class="section-card notes-section">
-          <div class="section-card-header">
-            <h3>Notes</h3>
-            {#if !editNotes.active}
-              <button class="btn btn-xs" onclick={startNotesEdit}>
-                {detail.notes ? 'Edit' : 'Add Note'}
-              </button>
-            {/if}
-          </div>
-          {#if editNotes.active}
-            <textarea
-              class="notes-textarea"
-              bind:value={editNotes.value}
-              placeholder="Add notes about this game..."
-              rows="3"
-            ></textarea>
-            <div class="inline-edit-actions">
-              <button class="btn btn-xs btn-primary" onclick={saveNotes}>Save</button>
-              <button class="btn btn-xs" onclick={() => editNotes = {active: false, value: ''}}>Cancel</button>
             </div>
-          {:else if detail.notes}
-            <p class="notes-text">{detail.notes}</p>
-          {:else}
-            <p class="notes-empty">No notes.</p>
-          {/if}
-        </div>
-      {/if}
-
-      <!-- Download Links -->
-      {#if detail.downloadLinks && detail.downloadLinks.length > 0}
-        <div class="section-card">
-          <div class="section-card-header">
-            <h3>Download Links ({detail.downloadLinks.length})</h3>
-            <button class="btn btn-xs" onclick={() => showDownloads = !showDownloads}>
-              {showDownloads ? 'Hide' : 'Show'}
-            </button>
-          </div>
-          {#if showDownloads}
-            <div class="dl-list">
-              {#each detail.downloadLinks as link}
-                <button
-                  class="dl-row"
-                  onclick={() => handleOpenLink(link.id)}
-                  disabled={openingLinks.has(link.id)}
-                  title="Open download page in your browser"
-                >
-                  <span class="dl-host">{link.host}</span>
-                  <span class="dl-name">{link.name}</span>
-                  <span class="dl-url">{safeExternalUrl(link.url) || link.url}</span>
-                  {#if link.platform}
-                    <span class="dl-platform">{link.platform}</span>
-                  {/if}
-                  {#if link.isDead}
-                    <span class="dl-dead">dead</span>
-                  {/if}
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {/if}
-
-      <!-- Play History -->
-      {#if detail.playHistory && detail.playHistory.length > 0}
-        <div class="section-card">
-          <div class="section-card-header">
-            <h3>Play History ({detail.playHistory.length})</h3>
-            <button class="btn btn-xs" onclick={() => showPlayHistory = !showPlayHistory}>
-              {showPlayHistory ? 'Hide' : 'Show'}
-            </button>
-          </div>
-          {#if showPlayHistory}
-            <div class="ph-list">
-              {#each detail.playHistory as entry}
-                <div class="ph-row">
-                  <span class="ph-date">{new Date(entry.playedAt).toLocaleDateString()}</span>
-                  <span class="ph-time">{new Date(entry.playedAt).toLocaleTimeString()}</span>
-                  {#if entry.platform}
-                    <span class="ph-platform">{entry.platform}</span>
-                  {/if}
-                  {#if entry.durationS}
-                    <span class="ph-duration">{formatDuration(entry.durationS)}</span>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {/if}
-
-      <!-- Action Buttons -->
-      <div class="action-section">
-        {#if launchStatus.msg}
-          <div class="launch-notice launch-ok">{launchStatus.msg}</div>
-        {/if}
-        {#if launchStatus.error}
-          <div class="launch-notice launch-error">{launchStatus.error}</div>
-        {/if}
-        {#if needsInstall}
-          <div class="install-box">
-            <p class="install-hint">
-              Added from F95Zone but not downloaded yet. Choose where to install it.
-            </p>
-            {#if installTargets.length === 0}
-              <p class="install-warn">
-                No scan paths configured. Add one in Settings first.
-              </p>
-            {:else}
-              <div class="install-row">
-                <select class="install-select" bind:value={installDest} disabled={installing || pipelineBusy}>
-                  {#each installTargets as t}
-                    <option value={t.path} disabled={!t.available}>
-                      {t.path}{t.available ? '' : ' (unavailable)'}
-                    </option>
-                  {/each}
-                </select>
-                <button
-                  class="btn btn-primary"
-                  onclick={() => onInstall(gameId, installDest)}
-                  disabled={installing || !installDest || pipelineBusy}
-                  title={pipelineBusy && !installing ? 'An update or install is already running' : undefined}
-                >
-                  {installing ? installPhaseLabel : pipelineBusy ? 'Busy…' : '↓ Install'}
-                </button>
+            {#if showDownloads}
+              <div class="dl-list">
+                {#each detail.downloadLinks as link}
+                  <button
+                    class="dl-row"
+                    onclick={() => handleOpenLink(link.id)}
+                    disabled={openingLinks.has(link.id)}
+                    title="Open download page in your browser"
+                  >
+                    <span class="dl-host">{link.host}</span>
+                    <span class="dl-name">{link.name}</span>
+                    <span class="dl-url">{safeExternalUrl(link.url) || link.url}</span>
+                    {#if link.platform}
+                      <span class="dl-platform">{link.platform}</span>
+                    {/if}
+                    {#if link.isDead}
+                      <span class="dl-dead">dead</span>
+                    {/if}
+                  </button>
+                {/each}
               </div>
-              {#if installing && installProgress}
-                <div class="install-progress">
-                  <div class="install-bar-bg">
-                    <div class="install-bar-fill" style="width: {installProgress}%"></div>
-                  </div>
-                </div>
-              {/if}
-            {/if}
-            {#if installError}
-              <p class="install-warn">{installError}</p>
             {/if}
           </div>
-        {:else}
-          <button class="btn btn-primary btn-play" onclick={handlePlay}>▶︎ Play</button>
         {/if}
-        {#if detail.f95Url}
-          <button class="btn btn-primary" onclick={handleSync}>Sync from F95Zone</button>
+
+        <!-- Play History -->
+        {#if detail.playHistory && detail.playHistory.length > 0}
+          <div class="section-card">
+            <div class="section-card-header">
+              <h3>Play History ({detail.playHistory.length})</h3>
+              <button class="btn btn-xs" onclick={() => showPlayHistory = !showPlayHistory}>
+                {showPlayHistory ? 'Hide' : 'Show'}
+              </button>
+            </div>
+            {#if showPlayHistory}
+              <div class="ph-list">
+                {#each detail.playHistory as entry}
+                  <div class="ph-row">
+                    <span class="ph-date">{new Date(entry.playedAt).toLocaleDateString()}</span>
+                    <span class="ph-time">{new Date(entry.playedAt).toLocaleTimeString()}</span>
+                    {#if entry.platform}
+                      <span class="ph-platform">{entry.platform}</span>
+                    {/if}
+                    {#if entry.durationS}
+                      <span class="ph-duration">{formatDuration(entry.durationS)}</span>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
         {/if}
-        <button class="btn" onclick={handleRenameStart}>Rename</button>
-        <button class="btn btn-danger" onclick={handleRemove}>Remove Game</button>
+
       </div>
     </div>
   {/if}
@@ -999,20 +1007,48 @@
   .back-btn {
     padding: 4px 12px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: transparent;
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     cursor: pointer;
   }
   .back-btn:hover { background: var(--bg-hover); }
 
+  /* Catalog record layout. Side column (cover + actions) scales with the
+     window; the record fills the rest; at >=2200px links and history get
+     their own third column instead of trailing below. */
   .detail-content {
     flex: 1;
-    padding: 24px;
-    max-width: 960px;
-    margin: 0 auto;
+    display: grid;
+    grid-template-columns: clamp(220px, 24vw, 520px) minmax(0, 1fr);
+    align-items: start;
+    gap: var(--space-8) clamp(24px, 2.5vw, 56px);
+    padding: var(--space-7) var(--gutter);
     width: 100%;
+  }
+  .detail-side {
+    position: sticky;
+    top: var(--space-7);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+    min-width: 0;
+  }
+  .detail-main { min-width: 0; }
+  .detail-extra { grid-column: 2; min-width: 0; }
+  .detail-extra:empty { display: none; }
+  .detail-extra > :first-child { margin-top: 0; }
+  @media (min-width: 2200px) {
+    .detail-content {
+      grid-template-columns: clamp(220px, 20vw, 520px) minmax(0, 1fr) minmax(360px, 26vw);
+    }
+    .detail-extra { grid-column: 3; grid-row: 1; }
+  }
+  @media (max-width: 900px) {
+    .detail-content { grid-template-columns: minmax(0, 1fr); }
+    .detail-side { position: static; }
+    .detail-extra { grid-column: 1; }
   }
 
   /* ── Title ──────────────────────────────── */
@@ -1025,17 +1061,26 @@
     gap: 12px;
     margin-bottom: 8px;
   }
+  .title-main {
+    flex-wrap: wrap;
+  }
   .title-main h1 {
-    font-size: 24px;
-    font-weight: 700;
+    font-size: clamp(var(--text-2xl), 2.2vw, var(--text-4xl));
+    font-weight: 600;
+    line-height: 1.1;
     margin: 0;
+    flex-basis: 100%;
+  }
+  .title-section {
+    padding-bottom: var(--space-5);
+    border-bottom: var(--rule-emph);
   }
   .update-badge {
     padding: 2px 10px;
-    border-radius: 12px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--warning) 20%, transparent);
     color: var(--warning);
-    font-size: 12px;
+    font-size: var(--text-sm);
     font-weight: 600;
   }
   .update-badge-unknown {
@@ -1046,19 +1091,19 @@
   .update-btn {
     padding: 3px 12px;
     border: 1px solid var(--accent);
-    border-radius: 12px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--accent) 14%, transparent);
     color: var(--accent);
-    font-size: 12px;
+    font-size: var(--text-sm);
     font-weight: 600;
     cursor: pointer;
     white-space: nowrap;
     transition: background 0.12s, color 0.12s;
   }
-  .update-btn:hover:not(:disabled) { background: var(--accent); color: #fff; }
+  .update-btn:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
   .update-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .update-error {
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--danger);
     font-family: var(--font-mono);
     max-width: 420px;
@@ -1071,12 +1116,12 @@
     margin-top: 10px;
     padding: 10px 14px;
     border: 1px solid var(--warning);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--warning) 8%, transparent);
     max-width: 560px;
   }
   .manual-fallback-text {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     line-height: 1.4;
     flex: 1;
@@ -1086,37 +1131,26 @@
     display: flex;
     gap: 8px;
   }
-  .engine-badge {
-    padding: 2px 10px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: 600;
-    background: color-mix(in srgb, var(--ec) 15%, transparent);
-    color: var(--ec);
-  }
+  /* Square, bordered mono tags (REN'PY / ACTIVE), not pills. */
+  .engine-badge,
   .status-badge {
-    padding: 2px 10px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: 500;
+    padding: 1px 7px;
+    border: 1px solid currentColor;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
-  .status-active { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
-  .status-completed { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
-  .status-abandoned { background: color-mix(in srgb, var(--text-muted) 15%, transparent); color: var(--text-muted); }
-  .status-on_hold { background: color-mix(in srgb, var(--warning) 15%, transparent); color: var(--warning); }
-  .status-unknown { background: color-mix(in srgb, var(--text-muted) 10%, transparent); color: var(--text-muted); }
+  .engine-badge { color: var(--ec); }
+  .status-active { color: var(--success); }
+  .status-completed { color: var(--accent); }
+  .status-abandoned { color: var(--text-muted); }
+  .status-on_hold { color: var(--warning); }
+  .status-unknown { color: var(--text-muted); }
 
   /* ── Grid ───────────────────────────────── */
-  .detail-grid {
-    display: grid;
-    grid-template-columns: 360px 1fr;
-    gap: 24px;
-    margin-bottom: 24px;
-  }
-
   .cover-section {
     display: flex;
-    justify-content: center;
   }
   .cover-img {
     display: block;
@@ -1127,46 +1161,65 @@
     width: auto;
     height: auto;
     max-width: 100%;
-    max-height: 540px;
-    border-radius: 8px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    max-height: 75vh;
+    outline: 1px solid var(--border);
+    outline-offset: -1px;
   }
   .cover-placeholder {
     width: 100%;
-    max-width: 240px;
     aspect-ratio: 3/4;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 8px;
-    background: var(--bg-tertiary);
-    border-radius: 8px;
+    background:
+      repeating-linear-gradient(to bottom, transparent 0 23px, var(--border) 23px 24px),
+      var(--bg-tertiary);
     color: var(--text-muted);
   }
-  .cover-icon { font-size: 40px; opacity: 0.4; }
+  .cover-ph-initials {
+    font-family: var(--font-display);
+    font-size: clamp(var(--text-4xl), 5vw, 96px);
+    font-weight: 600;
+    line-height: 1;
+    color: var(--text-primary);
+    opacity: 0.85;
+  }
+  .cover-ph-note {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+  }
 
+  /* Tabular record: label column + value, hairline between rows. */
   .meta-section {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    margin: var(--space-5) 0 var(--space-7);
   }
   .meta-row {
-    display: flex;
-    gap: 8px;
+    display: grid;
+    grid-template-columns: 140px minmax(0, 1fr);
+    gap: var(--space-4);
+    align-items: baseline;
+    padding: 7px 0;
+    border-bottom: var(--rule);
   }
   .meta-label {
-    min-width: 90px;
-    font-size: 12px;
+    font-family: var(--font-display);
+    font-size: var(--text-xs);
     font-weight: 600;
     color: var(--text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    flex-shrink: 0;
+    letter-spacing: var(--tracking-label);
   }
   .meta-value {
-    font-size: 14px;
+    font-size: var(--text-md);
     color: var(--text-primary);
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .meta-value a { color: var(--accent); text-decoration: none; }
   .meta-value a:hover { text-decoration: underline; }
@@ -1177,15 +1230,15 @@
   }
   .version-current {
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: var(--text-sm);
   }
 
   .tags { display: flex; flex-wrap: wrap; gap: 4px; }
   .tag {
     padding: 1px 6px;
-    border-radius: 4px;
+    border-radius: var(--radius-1);
     background: var(--bg-tertiary);
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--text-secondary);
   }
 
@@ -1194,33 +1247,33 @@
     width: 100%;
     padding: 12px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
     margin-bottom: 8px;
   }
-  .install-hint { margin: 0 0 8px; font-size: 12px; color: var(--text-secondary); }
-  .install-warn { margin: 8px 0 0; font-size: 12px; color: var(--warning); }
+  .install-hint { margin: 0 0 8px; font-size: var(--text-sm); color: var(--text-secondary); }
+  .install-warn { margin: 8px 0 0; font-size: var(--text-sm); color: var(--warning); }
   .install-row { display: flex; gap: 8px; align-items: center; }
   .install-select {
     flex: 1;
     padding: 6px 10px;
-    font-size: 12px;
+    font-size: var(--text-sm);
     font-family: var(--font-mono);
     background: var(--bg-tertiary);
     color: var(--text-primary);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
   }
   .install-progress { margin-top: 8px; }
   .install-bar-bg {
     height: 5px;
-    border-radius: 3px;
+    border-radius: var(--radius-1);
     background: var(--bg-tertiary);
     overflow: hidden;
   }
   .install-bar-fill {
     height: 100%;
-    border-radius: 3px;
+    border-radius: var(--radius-1);
     background: var(--accent);
     transition: width 0.2s ease;
   }
@@ -1237,10 +1290,10 @@
     align-items: center;
     gap: 5px;
     padding: 2px 4px 2px 8px;
-    border-radius: 10px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--accent) 16%, transparent);
     color: var(--accent);
-    font-size: 11px;
+    font-size: var(--text-xs);
     font-weight: 600;
   }
   .coll-chip-x {
@@ -1248,7 +1301,7 @@
     background: transparent;
     color: inherit;
     cursor: pointer;
-    font-size: 10px;
+    font-size: var(--text-2xs);
     line-height: 1;
     padding: 2px 3px;
     border-radius: 50%;
@@ -1259,36 +1312,38 @@
   .coll-select {
     margin-top: 6px;
     padding: 3px 8px;
-    font-size: 12px;
+    font-size: var(--text-sm);
     background: var(--bg-tertiary);
     color: var(--text-primary);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     cursor: pointer;
   }
   .coll-error {
     display: block;
     margin-top: 4px;
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--danger);
   }
 
   /* ── Overview ───────────────────────────── */
   .overview-section {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px;
+    padding-top: var(--space-3);
   }
-  .overview-section h3 {
-    font-size: 14px;
+  .overview-section h3,
+  .section-card h3 {
+    font-family: var(--font-display);
+    font-size: var(--text-xs);
     font-weight: 600;
-    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
     color: var(--text-secondary);
+    margin: 0 0 var(--space-3);
   }
   .overview-text {
-    font-size: 13px;
-    line-height: 1.6;
+    max-width: 78ch;
+    font-size: var(--text-md);
+    line-height: 1.65;
     color: var(--text-primary);
     white-space: pre-wrap;
   }
@@ -1303,7 +1358,7 @@
     background: none;
     border: none;
     color: var(--accent);
-    font-size: 13px;
+    font-size: var(--text-base);
     cursor: pointer;
     padding: 0;
   }
@@ -1333,10 +1388,10 @@
     flex: 1;
     padding: 6px 10px;
     border: 1px solid var(--accent);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-primary);
     color: var(--text-primary);
-    font-size: 20px;
+    font-size: var(--text-2xl);
     font-weight: 700;
     outline: none;
     min-width: 0;
@@ -1346,21 +1401,21 @@
   .btn {
     padding: 7px 16px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: transparent;
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     cursor: pointer;
     transition: background 0.12s;
   }
   .btn:hover { background: var(--bg-hover); }
   .btn-sm {
     padding: 4px 10px;
-    font-size: 12px;
+    font-size: var(--text-sm);
   }
   .btn-primary {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
     border-color: var(--accent);
   }
   .btn-primary:hover { background: var(--accent-hover); }
@@ -1391,10 +1446,10 @@
   .field-select {
     padding: 2px 22px 2px 8px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-primary);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     outline: none;
     cursor: pointer;
     max-width: 180px;
@@ -1414,10 +1469,10 @@
   .inline-edit-input {
     padding: 3px 6px;
     border: 1px solid var(--accent);
-    border-radius: 4px;
+    border-radius: var(--radius-1);
     background: var(--bg-primary);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     outline: none;
     width: 180px;
   }
@@ -1441,44 +1496,37 @@
   /* ── Button xs ─────────────────────────────── */
   .btn-xs {
     padding: 2px 8px;
-    font-size: 11px;
-    border-radius: 4px;
+    font-size: var(--text-xs);
+    border-radius: var(--radius-1);
   }
 
   /* ── Mono text ─────────────────────────────── */
   .mono {
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--text-sm);
   }
 
   /* ── Store Links ───────────────────────────── */
   .store-links { display: flex; flex-wrap: wrap; gap: 4px; }
   .store-badge {
     padding: 1px 7px;
-    border-radius: 4px;
-    font-size: 11px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-xs);
     font-weight: 600;
     background: color-mix(in srgb, var(--accent) 12%, transparent);
     color: var(--accent);
     text-decoration: none;
     text-transform: capitalize;
   }
-  .store-badge:hover { background: var(--accent); color: #fff; }
+  .store-badge:hover { background: var(--accent); color: var(--on-accent); }
 
   /* ── Section Cards ─────────────────────────── */
   .section-card {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px;
-    margin-top: 16px;
+    border-top: var(--rule-emph);
+    padding: var(--space-4) 0 0;
+    margin-top: var(--space-7);
   }
-  .section-card h3 {
-    font-size: 14px;
-    font-weight: 600;
-    margin: 0;
-    color: var(--text-secondary);
-  }
+  .section-card-header h3 { margin: 0; }
   .section-card-header {
     display: flex;
     align-items: center;
@@ -1488,14 +1536,14 @@
 
   /* ── Notes ─────────────────────────────────── */
   .notes-text {
-    font-size: 13px;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--text-primary);
     white-space: pre-wrap;
     margin: 0;
   }
   .notes-empty {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-muted);
     margin: 0;
     font-style: italic;
@@ -1504,10 +1552,10 @@
     width: 100%;
     padding: 8px 10px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-primary);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-family: inherit;
     outline: none;
     resize: vertical;
@@ -1528,8 +1576,8 @@
     align-items: center;
     gap: 8px;
     padding: 4px 8px;
-    font-size: 12px;
-    border-radius: 4px;
+    font-size: var(--text-sm);
+    border-radius: var(--radius-1);
     /* Button reset — the whole row is the open action */
     background: transparent;
     border: none;
@@ -1558,7 +1606,7 @@
   .dl-url {
     flex: 1;
     min-width: 0;
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--text-muted);
     font-family: var(--font-mono);
     overflow: hidden;
@@ -1566,13 +1614,13 @@
     white-space: nowrap;
   }
   .dl-platform {
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--text-muted);
     font-family: var(--font-mono);
     flex-shrink: 0;
   }
   .dl-dead {
-    font-size: 10px;
+    font-size: var(--text-2xs);
     color: var(--danger);
     font-weight: 600;
     text-transform: uppercase;
@@ -1592,8 +1640,8 @@
     align-items: center;
     gap: 8px;
     padding: 4px 8px;
-    font-size: 12px;
-    border-radius: 4px;
+    font-size: var(--text-sm);
+    border-radius: var(--radius-1);
   }
   .ph-row:hover { background: var(--bg-hover); }
   .ph-date {
@@ -1607,35 +1655,39 @@
   .ph-platform {
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--text-xs);
   }
   .ph-duration {
     color: var(--text-muted);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--text-xs);
     margin-left: auto;
   }
 
   /* ── Action Section ────────────────────────── */
+  /* Actions stack under the cover; Play is the full-width primary. */
   .action-section {
     display: flex;
-    gap: 8px;
-    margin-top: 24px;
-    padding-top: 16px;
-    border-top: 1px solid var(--border);
-    flex-wrap: wrap;
-    align-items: center;
+    flex-direction: column;
+    gap: var(--space-3);
+    align-items: stretch;
   }
+  .action-section > .btn { width: 100%; justify-content: center; }
 
   .btn-play {
+    padding-block: 10px;
+    font-family: var(--font-display);
+    font-size: var(--text-md);
     font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
   }
 
   .launch-notice {
     width: 100%;
     padding: 8px 12px;
-    border-radius: 6px;
-    font-size: 13px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-base);
   }
   .launch-ok {
     color: #2ecc71;
@@ -1655,8 +1707,8 @@
     gap: 8px;
     padding: 10px 14px;
     margin-bottom: 16px;
-    border-radius: 8px;
-    font-size: 13px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-base);
     color: var(--danger);
     background: color-mix(in srgb, var(--danger) 10%, transparent);
     border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);

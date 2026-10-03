@@ -162,32 +162,31 @@
   .update-dialog {
     flex: 1;
     overflow: auto;
-    padding: 32px;
-    max-width: 720px;
-    margin: 0 auto;
+    padding: var(--space-8) var(--gutter);
     width: 100%;
+    max-width: 1280px;
   }
 
   .update-header {
     margin-bottom: 24px;
   }
   .update-header h2 {
-    font-size: 20px;
+    font-size: var(--text-2xl);
     font-weight: 700;
     margin: 0 0 4px;
   }
   .update-subtitle {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     margin: 0;
   }
   .version-tag {
     font-family: var(--font-mono);
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 12%, transparent);
     padding: 1px 6px;
-    border-radius: 4px;
+    border-radius: var(--radius-1);
   }
 
   /* ── Action Bar ────────────────────── */
@@ -199,13 +198,13 @@
   .status-section {
     margin: 16px 0;
     padding: 16px;
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     display: flex;
     gap: 12px;
     align-items: flex-start;
   }
   .status-icon {
-    font-size: 18px;
+    font-size: var(--text-xl);
     font-weight: 700;
     flex-shrink: 0;
     line-height: 1.4;
@@ -215,12 +214,12 @@
     min-width: 0;
   }
   .status-title {
-    font-size: 15px;
+    font-size: var(--text-lg);
     font-weight: 600;
     margin: 0 0 4px;
   }
   .status-detail {
-    font-size: 13px;
+    font-size: var(--text-base);
     margin: 0;
   }
 
@@ -266,7 +265,7 @@
     align-items: center;
   }
   .status-loading .status-text {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     margin: 0;
   }
@@ -277,7 +276,7 @@
     align-items: center;
     gap: 8px;
     font-family: var(--font-mono);
-    font-size: 14px;
+    font-size: var(--text-md);
   }
   .version-old {
     color: var(--text-muted);
@@ -294,7 +293,7 @@
   .release-link {
     display: inline-block;
     margin-top: 8px;
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--accent);
     text-decoration: none;
   }
@@ -321,24 +320,24 @@
     margin: 16px 0;
     padding: 16px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
   }
   .progress-bar-bg {
     height: 6px;
-    border-radius: 3px;
+    border-radius: var(--radius-1);
     background: var(--bg-tertiary);
     overflow: hidden;
     margin-bottom: 8px;
   }
   .progress-bar-fill {
     height: 100%;
-    border-radius: 3px;
+    border-radius: var(--radius-1);
     background: var(--accent);
     transition: width 0.3s ease;
   }
   .progress-label {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     margin: 0;
   }
@@ -347,8 +346,8 @@
   .btn {
     padding: 7px 16px;
     border: none;
-    border-radius: 6px;
-    font-size: 13px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-base);
     cursor: pointer;
     white-space: nowrap;
     transition: all 0.12s;
@@ -360,7 +359,7 @@
 
   .btn-primary {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
   }
   .btn-primary:hover:not(:disabled) { background: var(--accent-hover, var(--accent)); }
 </style>

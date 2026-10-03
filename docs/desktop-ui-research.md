@@ -257,7 +257,50 @@ P0 items 1–4 are one coherent redesign of the primary surface (`GameList.svelt
 
 ---
 
-## 8. Sources
+## 8. Visual System — "Archive / catalog" (2026-10-03)
+
+The desktop app previously used stock system fonts, a violet accent, 6–12px rounded corners and drop shadows everywhere, and capped every secondary view at 640–960px centred, so a 2560px window was mostly empty margin. The redesign chooses a single direction: **a library catalog**. The app reads like a typeset index of cards rather than a generic dashboard.
+
+**Type.** IBM Plex, bundled through `@fontsource` (latin subset, woff2, nothing loaded from the network):
+- **Plex Sans Condensed** is for headings, nav, section labels, column heads and buttons that read as labels. Labels are uppercase and tracked (`.label`, `--tracking-label: 0.08em`).
+- **Plex Sans** is for body text (`--text-base` 13px, line-height 1.45).
+- **Plex Mono** is for versions, sizes, dates, paths, engine/status tags and counts, always with `font-variant-numeric: tabular-nums`.
+- Scale: `--text-2xs` 10px through `--text-4xl` 40px. Component CSS uses only the tokens, never literal px sizes.
+
+**Colour.** A warm near-black ground with paper-tinted text and **one** amber accent:
+
+| Token | Dark | Light |
+|---|---|---|
+| `--bg-primary` | `#14120e` | `#f2ede1` |
+| `--text-primary` | `#e8e1cf` | `#1c1913` |
+| `--accent` | `#d4a03a` | `#9a6a10` |
+| `--on-accent` (text on accent fills) | `#14120e` | `#fbf8f0` |
+| `--border` (hairline) / `--rule-strong` | `#2d2820` / `#4a4132` | `#d5cdba` / `#b3a88f` |
+
+Status colours (`--success`, `--warning`, `--danger`) are muted so they never compete with the accent. Engine colours still come from `internal/engine/engine-colors.json`, but they appear only as text and border on square tags, never as filled pills.
+
+**Shape and depth.** `--radius-0: 0` and `--radius-1: 2px` are the only radii. 50% remains only on spinners. Structure comes from 1px rules (`--rule`, `--rule-emph`) rather than elevation. Only floating layers (menus, modals) get `--shadow-pop`, which is a hairline plus a soft drop for separation.
+
+**Markers.** The visual vocabulary:
+- An update is an **amber edge** down the left of the cover, plus `0.4.12 → 0.4.15` in mono in the caption.
+- An unknown installed version shows `? → 0.5` in muted text.
+- The active nav row has an amber `▌`.
+- Missing covers become a typographic card: title initials on ruled stock, with the engine in mono (`initials.js`).
+- No emoji anywhere; `internal/util/noemoji_test.go` enforces this.
+
+**Layout and breakpoints.** Views fill the window with a fluid gutter, `--gutter: clamp(16px, 2vw, 48px)`.
+- **Tables** (Updates, Downloads, Trash, Collections, Browse, Duplicates) span the full width.
+- **Form views** (Add Game, Scan, Sync, app update) are left-anchored at up to 1280px instead of centred.
+- **Settings** splits its sections into two columns at ≥1600px.
+- **Library grid:** the base card width scales with the container, from about 176px at a 1440px window to 240px at 2560px. That base is multiplied by a persisted **Size** slider (`library.cardScale`, 0.7–1.6) and by 0.75 in compact density.
+  - The caption has fixed heights: index line (engine and version), then a two-line title. These are mirrored in `GameList.svelte`'s `gridTextHeight`, so virtualized rows never overlap.
+- **List:** the columns come from one `--table-cols` variable shared by the header and the rows. At ≥1700px it adds **Last played** and **Added** instead of stretching the title.
+- **Detail:** the side column (cover plus stacked actions, sticky) is `clamp(220px, 24vw, 520px)` and the record is a tabular label/value list with hairlines. At ≥2200px, download links and play history move into a third column. Below 900px everything stacks into one column.
+- Real modals keep a cap (`.dialog-content`).
+
+**Verifying.** Run `cd desktop/frontend && npx vite --config vite.mock.config.js`, then open `/mock.html`. The mock library has about 80 games covering every update state (including `unknown`) and some missing covers, and serves 3:4 portrait covers at the real `/cover/<id>[/thumb]` routes. Check at 2560×1440, 1920×1080 and 1200×800.
+
+## 9. Sources
 
 **Primary (product pages / official statements):**
 - Steam Library update (official): https://store.steampowered.com/libraryupdate
@@ -290,7 +333,7 @@ P0 items 1–4 are one coherent redesign of the primary surface (`GameList.svelt
 
 ---
 
-## 9. How This Document Was Produced (tooling)
+## 10. How This Document Was Produced (tooling)
 
 - **Phase A — reference research:** web research against the primary sources above (Steam official, Heroic GitHub issues/locales, NN/g, Laws of UX, Player Research, community threads).
 - **Phase B — evidence audit:** the desktop frontend was run standalone in Chromium via a dev-only mock Wails runtime (`desktop/frontend/mock/` + `src/mock-main.js` + `mock.html` + `vite.mock.config.js`), captured at 1440 × 900 dark; DOM measurements (row/column sizes, cover thumbs, button counts) taken programmatically; every claim cross-checked in source.

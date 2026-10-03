@@ -1131,8 +1131,8 @@
     gap: 8px;
     color: var(--text-secondary);
   }
-  .placeholder-view h2 { font-size: 18px; font-weight: 600; }
-  .placeholder-view p  { font-size: 14px; }
+  .placeholder-view h2 { font-size: var(--text-xl); font-weight: 600; }
+  .placeholder-view p  { font-size: var(--text-md); }
 
   .startup-error {
     flex: 1;
@@ -1144,30 +1144,30 @@
     padding: 32px;
     text-align: center;
   }
-  .startup-error h2 { font-size: 18px; font-weight: 700; color: var(--danger); margin: 0; }
+  .startup-error h2 { font-size: var(--text-xl); font-weight: 700; color: var(--danger); margin: 0; }
   .startup-error-msg {
-    font-size: 13px;
+    font-size: var(--text-base);
     font-family: var(--font-mono);
     color: var(--text-primary);
     max-width: 560px;
     margin: 0;
   }
   .startup-error-hint {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     max-width: 560px;
     margin: 0;
   }
 
-  .trash-view { flex: 1; overflow: auto; padding: 32px; max-width: 720px; margin: 0 auto; width: 100%; }
-  .trash-view h2 { font-size: 20px; font-weight: 700; margin: 0 0 16px; }
+  .trash-view { flex: 1; overflow: auto; padding: var(--space-8) var(--gutter); width: 100%; }
+  .trash-view h2 { font-size: var(--text-2xl); font-weight: 700; margin: 0 0 16px; }
   .trash-actions { margin-bottom: 16px; }
   .trash-view .table-header {
     display: grid;
     grid-template-columns: 1fr 110px 100px;
     gap: 8px;
     padding: 6px 12px;
-    font-size: 11px;
+    font-size: var(--text-xs);
     font-weight: 600;
     color: var(--text-muted);
     text-transform: uppercase;
@@ -1180,14 +1180,14 @@
     grid-template-columns: 1fr 110px 100px;
     gap: 8px;
     padding: 8px 12px;
-    font-size: 13px;
+    font-size: var(--text-base);
     border-bottom: 1px solid var(--border);
     align-items: center;
   }
   .trash-view .table-row:hover { background: var(--bg-hover); }
-  .btn-sm { padding: 4px 10px; font-size: 12px; cursor: pointer; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text-primary); }
+  .btn-sm { padding: 4px 10px; font-size: var(--text-sm); cursor: pointer; border: 1px solid var(--border); border-radius: var(--radius-1); background: transparent; color: var(--text-primary); }
   .btn-sm:hover { background: var(--bg-hover); }
-  .btn-danger { background: var(--danger); color: #fff; border: none; padding: 7px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  .btn-danger { background: var(--danger); color: #fff; border: none; padding: 7px 16px; border-radius: var(--radius-1); font-size: var(--text-base); cursor: pointer; }
   .btn-danger:hover { opacity: 0.9; }
-  .text-muted { color: var(--text-muted); font-size: 14px; }
+  .text-muted { color: var(--text-muted); font-size: var(--text-md); }
 </style>

@@ -375,28 +375,26 @@
   .collections-view {
     flex: 1;
     overflow: auto;
-    padding: 32px;
-    max-width: 860px;
-    margin: 0 auto;
+    padding: var(--space-8) var(--gutter);
     width: 100%;
   }
 
   .collections-header { margin-bottom: 20px; }
-  .collections-header h2 { font-size: 20px; font-weight: 700; margin: 0 0 4px; }
-  .collections-subtitle { font-size: 13px; color: var(--text-secondary); margin: 0; }
+  .collections-header h2 { font-size: var(--text-2xl); font-weight: 700; margin: 0 0 4px; }
+  .collections-subtitle { font-size: var(--text-base); color: var(--text-secondary); margin: 0; }
 
   .smart-header { margin: 36px 0 20px; }
-  .smart-header h3 { font-size: 16px; font-weight: 700; margin: 0 0 4px; }
+  .smart-header h3 { font-size: var(--text-lg); font-weight: 700; margin: 0 0 4px; }
 
   .add-row { display: flex; gap: 8px; margin-bottom: 16px; }
   .name-input {
     flex: 1;
     padding: 8px 12px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-primary);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     outline: none;
   }
   .name-input:focus { border-color: var(--accent); }
@@ -404,10 +402,10 @@
   .smart-select {
     padding: 8px 12px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-primary);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     outline: none;
   }
   .smart-select:focus { border-color: var(--accent); }
@@ -415,19 +413,19 @@
   .btn {
     padding: 7px 16px;
     border: none;
-    border-radius: 6px;
-    font-size: 13px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-base);
     cursor: pointer;
     white-space: nowrap;
   }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary { background: var(--accent); color: var(--on-accent); }
   .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
   .btn-remove {
     background: transparent;
     color: var(--text-muted);
     padding: 6px 10px;
-    font-size: 12px;
+    font-size: var(--text-sm);
   }
   .btn-remove:hover {
     color: var(--danger);
@@ -441,7 +439,7 @@
     align-items: center;
     gap: 6px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
     padding-right: 6px;
   }
@@ -456,7 +454,7 @@
     background: transparent;
     border: none;
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     cursor: pointer;
     text-align: left;
     min-width: 0;
@@ -464,8 +462,8 @@
   .coll-main:hover { background: var(--bg-hover); }
   .coll-info { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .coll-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .coll-count { font-size: 12px; color: var(--text-muted); }
-  .coll-caret { color: var(--text-muted); font-size: 11px; flex-shrink: 0; }
+  .coll-count { font-size: var(--text-sm); color: var(--text-muted); }
+  .coll-caret { color: var(--text-muted); font-size: var(--text-xs); flex-shrink: 0; }
 
   /* ── Collage tile (collapsed-view cover preview) ──────────────
      2x2-ish grid of member covers; degrades gracefully for 0/1/2/3 covers
@@ -475,7 +473,7 @@
     width: 56px;
     height: 56px;
     flex-shrink: 0;
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     overflow: hidden;
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -497,7 +495,7 @@
     background: var(--bg-primary);
     border: 1px dashed var(--border);
   }
-  .collage-empty-icon { font-size: 22px; opacity: 0.5; }
+  .collage-empty-icon { font-size: var(--text-2xl); opacity: 0.5; }
   .collage-img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .collage-cell-ph {
     display: flex;
@@ -506,7 +504,7 @@
     width: 100%;
     height: 100%;
     background: var(--bg-primary);
-    font-size: 14px;
+    font-size: var(--text-md);
     color: var(--text-muted);
   }
   .collage-more {
@@ -515,11 +513,11 @@
     right: 2px;
     background: rgba(0, 0, 0, 0.65);
     color: #fff;
-    font-size: 10px;
+    font-size: var(--text-2xs);
     font-weight: 700;
     line-height: 1;
     padding: 3px 5px;
-    border-radius: 8px;
+    border-radius: var(--radius-1);
   }
 
   .coll-games {
@@ -540,20 +538,20 @@
     padding: 6px 10px;
     background: transparent;
     border: none;
-    border-radius: 4px;
+    border-radius: var(--radius-1);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     cursor: pointer;
     text-align: left;
   }
   .game-row:hover { background: var(--bg-hover); }
   .game-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .game-version, .game-size { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+  .game-version, .game-size { font-size: var(--text-sm); color: var(--text-muted); font-family: var(--font-mono); }
 
   .game-thumb {
     width: 32px;
     height: 32px;
-    border-radius: 4px;
+    border-radius: var(--radius-1);
     overflow: hidden;
     display: flex;
     align-items: center;
@@ -562,13 +560,13 @@
     flex-shrink: 0;
   }
   .thumb-img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .thumb-ph { font-size: 14px; color: var(--text-muted); }
+  .thumb-ph { font-size: var(--text-md); color: var(--text-muted); }
 
   .engine-chip {
     justify-self: start;
     padding: 2px 8px;
-    border-radius: 10px;
-    font-size: 11px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-xs);
     font-weight: 600;
     background: color-mix(in srgb, var(--chip) 18%, transparent);
     color: var(--chip);
@@ -578,10 +576,10 @@
     padding: 40px;
     text-align: center;
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: var(--text-base);
     border: 1px dashed var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
   }
-  .muted { color: var(--text-muted); font-size: 13px; padding: 8px 10px; margin: 0; }
-  .error-line { color: var(--danger); font-size: 12px; margin: 0 0 12px; font-family: var(--font-mono); }
+  .muted { color: var(--text-muted); font-size: var(--text-base); padding: 8px 10px; margin: 0; }
+  .error-line { color: var(--danger); font-size: var(--text-sm); margin: 0 0 12px; font-family: var(--font-mono); }
 </style>

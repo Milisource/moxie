@@ -154,15 +154,18 @@
   .settings-view {
     flex: 1;
     overflow: auto;
-    padding: 32px;
-    max-width: 760px;
-    margin: 0 auto;
+    padding: var(--space-8) var(--gutter);
     width: 100%;
+    max-width: none;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    column-gap: var(--space-8);
   }
 
   .settings-header { margin-bottom: 24px; }
-  .settings-header h2 { font-size: 20px; font-weight: 700; margin: 0 0 4px; }
-  .settings-subtitle { font-size: 13px; color: var(--text-secondary); margin: 0; }
+  .settings-header h2 { font-size: var(--text-2xl); font-weight: 700; margin: 0 0 4px; }
+  .settings-subtitle { font-size: var(--text-base); color: var(--text-secondary); margin: 0; }
 
   .settings-section {
     margin-bottom: 32px;
@@ -179,22 +182,22 @@
   }
 
   .section-title {
-    font-size: 15px;
+    font-size: var(--text-lg);
     font-weight: 600;
     margin: 0 0 4px;
     color: var(--text-primary);
   }
 
   .section-hint {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-muted);
     margin: 0 0 12px;
   }
 
   .btn {
     padding: 6px 14px;
-    font-size: 12px;
-    border-radius: 6px;
+    font-size: var(--text-sm);
+    border-radius: var(--radius-1);
     cursor: pointer;
     border: 1px solid var(--border);
     background: transparent;
@@ -211,9 +214,9 @@
     gap: 10px;
     padding: 8px 12px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
-    font-size: 13px;
+    font-size: var(--text-base);
   }
   .dep-dot {
     width: 8px;
@@ -223,10 +226,10 @@
   }
   .dep-dot.dep-ok { background: var(--success); }
   .dep-name { font-weight: 500; }
-  .dep-status { font-size: 12px; color: var(--warning); }
+  .dep-status { font-size: var(--text-sm); color: var(--warning); }
   .dep-status.status-ok { color: var(--success); }
   .dep-details {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-muted);
     font-family: var(--font-mono);
     overflow: hidden;
@@ -241,12 +244,12 @@
     gap: 10px;
     padding: 8px 12px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
   }
-  .kv-key { font-size: 13px; color: var(--text-secondary); }
+  .kv-key { font-size: var(--text-base); color: var(--text-secondary); }
   .kv-value {
-    font-size: 12px;
+    font-size: var(--text-sm);
     font-family: var(--font-mono);
     color: var(--text-primary);
     overflow: hidden;
@@ -258,8 +261,13 @@
     margin-bottom: 16px;
     padding: 12px 16px;
     border: 1px solid var(--danger);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--danger) 8%, transparent);
   }
-  .error-box p { margin: 0; font-size: 13px; color: var(--danger); }
+  .error-box p { margin: 0; font-size: var(--text-base); color: var(--danger); }
+  /* Two columns of sections on wide screens; header/errors span both. */
+  @media (min-width: 1600px) {
+    .settings-view { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .settings-header, .settings-view > .error-box { grid-column: 1 / -1; }
+  }
 </style>

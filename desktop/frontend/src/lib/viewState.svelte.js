@@ -55,6 +55,10 @@ function writeStoredJSON(key, value) {
 
 const VIEW_MODE_KEY = 'moxie:library-view-mode'
 const DENSITY_KEY = 'moxie:library-density'
+const CARD_SCALE_KEY = 'moxie:library-card-scale'
+// Declared before `library` (which clamps with them at init) to avoid TDZ.
+export const CARD_SCALE_MIN = 0.7
+export const CARD_SCALE_MAX = 1.6
 const SMART_COLLECTIONS_KEY = 'moxie:smart-collections'
 const LAST_SYNC_KEY = 'moxie:last-sync'
 
@@ -80,6 +84,9 @@ export const library = $state({
   quickView: 'all',
   viewMode: readStored(VIEW_MODE_KEY, 'grid', ['grid', 'list']),
   density: readStored(DENSITY_KEY, 'comfortable', ['comfortable', 'compact']),
+  // cardScale — user grid card size multiplier (slider), on top of the
+  // width-based base size. Persisted; clamped on read.
+  cardScale: clampCardScale(Number(readStoredJSON(CARD_SCALE_KEY, 1))),
   sortColumn: 'recent',
   sortDesc: false,
   scrollTop: 0,
@@ -98,6 +105,15 @@ export const library = $state({
 export function setViewMode(mode) {
   library.viewMode = mode
   writeStored(VIEW_MODE_KEY, mode)
+}
+
+function clampCardScale(v) {
+  return Number.isFinite(v) ? Math.min(CARD_SCALE_MAX, Math.max(CARD_SCALE_MIN, v)) : 1
+}
+
+export function setCardScale(v) {
+  library.cardScale = clampCardScale(Number(v))
+  writeStoredJSON(CARD_SCALE_KEY, library.cardScale)
 }
 
 export function setDensity(density) {

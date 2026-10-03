@@ -275,22 +275,21 @@
   .add-game-dialog {
     flex: 1;
     overflow: auto;
-    padding: 32px;
-    max-width: 720px;
-    margin: 0 auto;
+    padding: var(--space-8) var(--gutter);
     width: 100%;
+    max-width: 1280px;
   }
 
   .add-game-header {
     margin-bottom: 24px;
   }
   .add-game-header h2 {
-    font-size: 20px;
+    font-size: var(--text-2xl);
     font-weight: 700;
     margin: 0 0 4px;
   }
   .add-game-subtitle {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
     margin: 0;
   }
@@ -305,10 +304,10 @@
     flex: 1;
     padding: 8px 12px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-primary);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     outline: none;
   }
   .path-input:focus { border-color: var(--accent); }
@@ -316,8 +315,8 @@
   .btn {
     padding: 7px 16px;
     border: none;
-    border-radius: 6px;
-    font-size: 13px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-base);
     cursor: pointer;
     white-space: nowrap;
     transition: all 0.12s;
@@ -329,7 +328,7 @@
 
   .btn-primary {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
   }
   .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
 
@@ -344,7 +343,7 @@
     background: color-mix(in srgb, var(--accent) 15%, transparent);
     color: var(--accent);
   }
-  .btn-detect:hover:not(:disabled) { background: var(--accent); color: #fff; }
+  .btn-detect:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
 
   /* ── Detecting spinner ────────────────── */
   .detecting-section {
@@ -354,9 +353,9 @@
     margin: 16px 0;
     padding: 16px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-secondary);
   }
 
@@ -378,11 +377,11 @@
     margin: 16px 0;
     padding: 20px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
   }
   .preview-title {
-    font-size: 15px;
+    font-size: var(--text-lg);
     font-weight: 600;
     margin: 0 0 16px;
     color: var(--text-primary);
@@ -396,7 +395,7 @@
   }
   .field-label {
     display: block;
-    font-size: 12px;
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--text-secondary);
     margin-bottom: 4px;
@@ -408,10 +407,10 @@
     width: 100%;
     padding: 8px 12px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-primary);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     outline: none;
     box-sizing: border-box;
   }
@@ -420,24 +419,24 @@
   .field-select {
     padding: 7px 10px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-primary);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     outline: none;
     cursor: pointer;
   }
   .field-select:focus { border-color: var(--accent); }
 
   .field-readonly {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-primary);
     margin: 0;
     padding: 6px 0;
   }
   .field-mono {
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
   }
 
@@ -449,8 +448,8 @@
   }
   .engine-badge {
     padding: 2px 10px;
-    border-radius: 4px;
-    font-size: 12px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-sm);
     font-weight: 600;
     background: color-mix(in srgb, var(--ec) 15%, transparent);
     color: var(--ec);
@@ -476,17 +475,17 @@
     margin: 16px 0;
     padding: 16px;
     border: 1px solid var(--success);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--success) 8%, transparent);
   }
   .result-title {
-    font-size: 15px;
+    font-size: var(--text-lg);
     font-weight: 600;
     color: var(--success);
     margin: 0 0 6px;
   }
   .result-detail {
-    font-size: 13px;
+    font-size: var(--text-base);
     color: var(--text-primary);
     margin: 0 0 4px;
   }
@@ -498,17 +497,17 @@
     margin: 16px 0;
     padding: 16px;
     border: 1px solid var(--danger);
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--danger) 8%, transparent);
   }
   .error-title {
-    font-size: 12px;
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--danger);
     margin: 0 0 4px;
   }
   .error-line {
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     margin: 0;
     font-family: var(--font-mono);

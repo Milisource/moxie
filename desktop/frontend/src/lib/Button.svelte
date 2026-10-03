@@ -36,7 +36,7 @@
   .btn {
     padding: 7px 16px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: transparent;
     color: var(--text-primary);
     font-size: var(--text-base);
@@ -59,12 +59,12 @@
   .btn-xs {
     padding: 2px 8px;
     font-size: var(--text-xs);
-    border-radius: 4px;
+    border-radius: var(--radius-1);
   }
 
   .btn-primary {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
     border-color: var(--accent);
   }
   .btn-primary:hover:not(:disabled) {

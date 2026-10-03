@@ -5,7 +5,8 @@
   import {engineColor} from './engineColors.js'
   import {library} from './viewState.svelte.js'
   import {statusLabel} from './statuses.js'
-  import {hasUpdate} from './useLibrarySort.svelte.js'
+  import {hasUpdate, updateUnknown, lastPlayedDate, relativePlayed, tsVal} from './useLibrarySort.svelte.js'
+  import {initials} from './initials.js'
 
   let {
     game,
@@ -46,21 +47,16 @@
         loading="lazy"
         onerror={() => markFailed(game.id)}
       />
-    {:else if game.hasCover && coverBase}
-      <span class="cover-placeholder" title="Cover unavailable — retries after the next sync or cover fetch">
-        <span class="cover-icon">⊠</span>
-      </span>
     {:else}
-      <span class="cover-placeholder" title="No cover — use Covers in the sidebar to fetch one">
-        <span class="cover-icon">▭</span>
+      <span class="cover-placeholder" title={game.hasCover && coverBase
+        ? 'Cover unavailable — retries after the next sync or cover fetch'
+        : 'No cover — use Covers in the sidebar to fetch one'}>
+        <span class="cover-icon">{initials(game.title)}</span>
       </span>
     {/if}
   </span>
   <span class="col-title game-title">
     {game.title}
-    {#if hasUpdate(game)}
-      <span class="update-dot" title="Update available: {game.latestVersion}">●</span>
-    {/if}
   </span>
   <span class="col-engine">
     {#if game.engine}
@@ -75,6 +71,9 @@
     {#if hasUpdate(game)}
       <span class="version-old">{game.version}</span>
       <span class="version-new" title="Latest: {game.latestVersion}">→ {game.latestVersion}</span>
+    {:else if updateUnknown(game)}
+      <span class="version-unknown" title="Installed version unknown">?</span>
+      <span class="version-latest" title="Latest: {game.latestVersion}">→ {game.latestVersion}</span>
     {:else}
       {game.version || '—'}
     {/if}
@@ -84,6 +83,12 @@
     <span class="status-badge status-{game.status || 'unknown'}">
       {statusLabel(game.status)}
     </span>
+  </span>
+  <span class="col-wide col-played">
+    {lastPlayedDate(game) ? relativePlayed(lastPlayedDate(game)) : '—'}
+  </span>
+  <span class="col-wide col-added">
+    {tsVal(game, 'createdAt') !== null ? new Date(tsVal(game, 'createdAt')).toLocaleDateString() : '—'}
   </span>
   <span class="col-play">
     <button
@@ -115,11 +120,11 @@
     left: 0;
     right: 0;
     display: grid;
-    /* First column width must match GameList.svelte's .table-header grid. */
-    grid-template-columns: 56px 1fr 110px 130px 80px 100px 64px;
+    /* Shared with GameList.svelte's .table-header (--table-cols). */
+    grid-template-columns: var(--table-cols);
     gap: 8px;
     padding: 4px 12px;
-    font-size: 13px;
+    font-size: var(--text-base);
     border-bottom: 1px solid var(--border);
     cursor: pointer;
     transition: background 0.08s;
@@ -132,10 +137,10 @@
     outline-offset: -2px;
   }
 
-  :global(.density-compact) .table-row { padding: 2px 12px; font-size: 11px; }
+  :global(.density-compact) .table-row { padding: 2px 12px; font-size: var(--text-xs); }
   :global(.density-compact) .cover-thumb,
   :global(.density-compact) .cover-placeholder { width: 22px; height: 30px; }
-  :global(.density-compact) .cover-icon { font-size: 12px; }
+  :global(.density-compact) .cover-icon { font-size: var(--text-2xs); }
 
   .game-title {
     font-weight: 500;
@@ -144,23 +149,28 @@
     white-space: nowrap;
   }
 
-  .update-dot {
-    display: inline-block;
-    margin-left: 4px;
-    color: var(--warning);
-    font-size: 10px;
-    vertical-align: super;
-  }
-
   .engine-badge {
     display: inline-block;
-    padding: 1px 7px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 600;
-    background: color-mix(in srgb, var(--ec) 15%, transparent);
+    padding: 0 5px;
+    border: 1px solid color-mix(in srgb, var(--ec) 55%, transparent);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    line-height: 16px;
+    text-transform: uppercase;
     color: var(--ec);
   }
+
+  .col-version, .col-size, .col-played, .col-added {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .col-played, .col-added { color: var(--text-secondary); }
+  .version-unknown { color: var(--text-muted); margin-right: 4px; }
+  .version-latest { color: var(--text-muted); }
 
   .version-old {
     text-decoration: line-through;
@@ -168,12 +178,11 @@
     margin-right: 4px;
   }
   .version-new {
-    color: var(--warning);
-    font-weight: 600;
-    font-size: 12px;
+    color: var(--accent);
+    font-weight: 500;
   }
 
-  .col-size { font-size: 12px; color: var(--text-secondary); }
+  .col-size { color: var(--text-secondary); }
 
   .col-play {
     display: flex;
@@ -186,16 +195,16 @@
     gap: 4px;
     padding: 3px 8px;
     border: 1px solid var(--accent-dim);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: color-mix(in srgb, var(--accent) 10%, transparent);
     color: var(--accent);
-    font-size: 11px;
+    font-size: var(--text-xs);
     font-weight: 600;
     cursor: pointer;
     transition: all 0.12s;
     white-space: nowrap;
   }
-  .row-play:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .row-play:hover { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   .row-play:disabled { opacity: 0.7; cursor: default; }
   .row-play.state-playing { background: var(--success); color: #07140b; border-color: var(--success); }
   .row-play.state-error { background: var(--danger); color: #fff; border-color: var(--danger); }
@@ -216,7 +225,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 10px;
+    font-size: var(--text-2xs);
     color: var(--text-muted);
   }
 
@@ -228,7 +237,7 @@
     width: 30px;
     height: 40px;
     object-fit: cover;
-    border-radius: 3px;
+    border-radius: var(--radius-1);
     background: var(--bg-secondary);
     flex-shrink: 0;
   }
@@ -239,22 +248,27 @@
     justify-content: center;
     width: 30px;
     height: 40px;
-    border-radius: 3px;
+    border-radius: var(--radius-1);
     background: var(--bg-tertiary);
     flex-shrink: 0;
   }
 
   .cover-icon {
-    font-size: 16px;
-    opacity: 0.3;
+    font-family: var(--font-display);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--text-secondary);
   }
 
   .status-badge {
     display: inline-block;
-    padding: 1px 7px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 500;
+    padding: 0 5px;
+    border: 1px solid currentColor;
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    line-height: 16px;
+    text-transform: uppercase;
+    background: transparent !important;
   }
   .status-active { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
   .status-completed { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }

@@ -65,7 +65,7 @@
   .prompt-label {
     display: block;
     margin-bottom: 6px;
-    font-size: 12px;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
   }
   .prompt-input {
@@ -74,10 +74,10 @@
     padding: 8px 10px;
     margin-bottom: 20px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-1);
     background: var(--bg-primary);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
   }
   .prompt-input:focus {
     outline: none;

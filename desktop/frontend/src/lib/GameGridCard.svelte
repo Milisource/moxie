@@ -4,7 +4,8 @@
   // the parent, which supplies playControl/coverSrc/callbacks as props.
   import {engineColor} from './engineColors.js'
   import {library} from './viewState.svelte.js'
-  import {isVirtual, hasUpdate, lastPlayedDate, relativePlayed} from './useLibrarySort.svelte.js'
+  import {isVirtual, hasUpdate, updateUnknown, lastPlayedDate, relativePlayed} from './useLibrarySort.svelte.js'
+  import {initials} from './initials.js'
 
   let {
     game,
@@ -42,20 +43,21 @@
         loading="lazy"
         onerror={() => markFailed(game.id)}
       />
-    {:else if game.hasCover && coverBase}
-      <span class="cover-ph" title="Cover unavailable — retries after the next sync or cover fetch">
-        <span class="cover-ph-icon">⊠</span>
-      </span>
     {:else}
-      <span class="cover-ph" title="No cover — use Covers in the sidebar to fetch one">
-        <span class="cover-ph-icon">▭</span>
+      <!-- Typographic catalog card: initials on ruled stock. -->
+      <span
+        class="cover-ph"
+        title={game.hasCover && coverBase
+          ? 'Cover unavailable — retries after the next sync or cover fetch'
+          : 'No cover — use Covers in the sidebar to fetch one'}
+      >
+        <span class="cover-ph-initials">{initials(game.title)}</span>
+        <span class="cover-ph-engine">{game.engine || ''}</span>
       </span>
     {/if}
 
     {#if hasUpdate(game)}
-      <span class="card-badge badge-update" title="Update available: {game.latestVersion}">
-        ⇪ {game.version} → {game.latestVersion}
-      </span>
+      <span class="update-edge" title="Update available: {game.version} → {game.latestVersion}"></span>
     {/if}
     {#if isVirtual(game)}
       <span class="card-badge badge-virtual">Not installed</span>
@@ -82,23 +84,30 @@
     </button>
   </div>
 
-  <div class="card-title" title={game.title}>{game.title}</div>
   <div class="card-meta">
     {#if game.engine}
       <span class="card-engine" style="--ec: {engineColor(game.engine)}">{game.engine}</span>
     {/if}
-    {#if lastPlayedDate(game)}
-      <span class="card-last-played" title="Last played {lastPlayedDate(game).toLocaleString()}">
-        ▶︎ {relativePlayed(lastPlayedDate(game))}
+    {#if hasUpdate(game)}
+      <span class="card-version card-version-update" title="Update available">
+        {game.version} → {game.latestVersion}
       </span>
+    {:else if updateUnknown(game)}
+      <span class="card-version" title="Installed version unknown; latest {game.latestVersion}">? → {game.latestVersion}</span>
+    {:else if lastPlayedDate(game)}
+      <span class="card-version" title="Last played {lastPlayedDate(game).toLocaleString()}">
+        {relativePlayed(lastPlayedDate(game))}
+      </span>
+    {:else if game.version}
+      <span class="card-version">{game.version}</span>
     {/if}
   </div>
+  <div class="card-title" title={game.title}>{game.title}</div>
 </div>
 
 <style>
   .card {
     cursor: pointer;
-    border-radius: 12px;
     outline: none;
     transition: background 0.1s;
     padding: 6px;
@@ -106,27 +115,27 @@
   }
   .card:hover { background: var(--bg-hover); }
   .card:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
+    outline: 1px solid var(--accent);
+    outline-offset: 0;
   }
 
   .cover-frame {
     position: relative;
-    border-radius: 10px;
     overflow: hidden;
-    /* F95Zone covers are native 3:4 portrait art; matching it here (was
-       16:9) avoids object-fit: cover chewing off most of the artwork. Must
-       track GameList.svelte's updateGridLayout coverHeight math (also 4/3),
-       which the grid virtualizer's row-height depends on. */
+    /* F95Zone covers are native 3:4 portrait art. Must track GameList's
+       updateGridLayout coverHeight math (also 4/3), which the grid
+       virtualizer's row height depends on. */
     aspect-ratio: 3 / 4;
     background: var(--bg-tertiary);
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+    outline: 1px solid var(--border);
+    outline-offset: -1px;
   }
+  .card:hover .cover-frame { outline-color: var(--rule-strong); }
   .cover-frame::after {
     content: '';
     position: absolute;
     inset: 0;
-    background: linear-gradient(to top, rgba(0, 0, 0, 0.65), transparent 55%);
+    background: linear-gradient(to top, rgba(10, 8, 5, 0.7), transparent 55%);
     opacity: 0;
     transition: opacity 0.15s;
     pointer-events: none;
@@ -147,35 +156,61 @@
 
   .cover-ph {
     display: flex;
-    align-items: center;
-    justify-content: center;
+    flex-direction: column;
+    justify-content: space-between;
     width: 100%;
     height: 100%;
-    background: var(--bg-tertiary);
+    padding: 12% 10%;
+    background:
+      repeating-linear-gradient(to bottom, transparent 0 23px, var(--border) 23px 24px),
+      var(--bg-tertiary);
+    color: var(--text-secondary);
   }
-  .cover-ph-icon { font-size: 28px; opacity: 0.3; }
+  .cover-ph-initials {
+    font-family: var(--font-display);
+    font-size: var(--text-4xl);
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    color: var(--text-primary);
+    opacity: 0.85;
+  }
+  .cover-ph-engine {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    color: var(--text-muted);
+  }
 
-  /* Play-state badges on the cover (update / not installed) */
+  /* Update marker: an amber edge down the cover's left side. */
+  .update-edge {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 4px;
+    background: var(--accent);
+    z-index: 2;
+  }
+
   .card-badge {
     position: absolute;
     top: 8px;
-    padding: 2px 8px;
-    border-radius: 10px;
-    font-size: 10px;
+    padding: 2px 6px;
+    font-family: var(--font-display);
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
     pointer-events: none;
     z-index: 2;
   }
-  .badge-update {
-    left: 8px;
-    background: var(--warning);
-    color: #1a1a10;
-  }
   .badge-virtual {
     right: 8px;
-    background: color-mix(in srgb, var(--text-muted) 85%, transparent);
-    color: #fff;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    border: 1px solid var(--rule-strong);
   }
 
   /* Hover Play (Steam/itch card pattern) */
@@ -189,17 +224,19 @@
     gap: 6px;
     padding: 6px 18px;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--radius-1);
     background: var(--accent);
-    color: #fff;
-    font-size: 13px;
-    font-weight: 700;
+    color: var(--on-accent);
+    font-family: var(--font-display);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
     cursor: pointer;
     z-index: 3;
-    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
     opacity: 0;
     visibility: hidden;
-    transition: opacity 0.15s, transform 0.15s, background 0.12s;
+    transition: opacity 0.15s, background 0.12s;
   }
   .card:hover .card-play,
   .card:focus-visible .card-play,
@@ -208,79 +245,89 @@
     opacity: 1;
     visibility: visible;
   }
-  .card:hover .card-play { transform: translate(-50%, -50%) scale(1.04); }
   .card-play:hover { background: var(--accent-hover); }
   .card-play:disabled { opacity: 0.85; cursor: default; }
   .card-play.state-launching { background: var(--accent-dim); }
   .card-play.state-playing {
     background: var(--success);
-    color: #07140b;
-    opacity: 1;
-    visibility: visible;
+    color: var(--on-accent);
     animation: pulse-success 1.2s ease-in-out infinite;
   }
-  .card-play.state-error { background: var(--danger); opacity: 1; visibility: visible; }
+  .card-play.state-error { background: var(--danger); color: var(--on-accent); }
 
   @keyframes pulse-success {
-    0%, 100% { box-shadow: 0 4px 18px rgba(74, 222, 128, 0.35); }
-    50%      { box-shadow: 0 4px 26px rgba(74, 222, 128, 0.7); }
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.8; }
   }
 
   .play-spinner {
     width: 12px;
     height: 12px;
-    border: 2px solid rgba(255, 255, 255, 0.5);
-    border-top-color: #fff;
+    border: 2px solid color-mix(in srgb, var(--on-accent) 40%, transparent);
+    border-top-color: var(--on-accent);
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* Caption: index line (engine, version) then title. Heights are fixed
+     and mirrored by GameList's gridTextHeight (comfortable 8 + 18 + 6 + 34,
+     compact 6 + 16 + 4 + 30). */
   .card-title {
-    margin-top: 8px;
-    font-size: 13px;
+    margin-top: 6px;
+    height: 34px;
+    font-family: var(--font-display);
+    font-size: var(--text-md);
     font-weight: 500;
+    line-height: 17px;
     color: var(--text-primary);
-    line-height: 1.25;
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
-    min-height: 2.5em;
   }
 
   .card-meta {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-top: 4px;
-    min-height: 18px;
+    margin-top: 8px;
+    height: 18px;
+    overflow: hidden;
   }
   .card-engine {
-    display: inline-block;
-    padding: 1px 7px;
-    border-radius: 4px;
-    font-size: 10px;
-    font-weight: 600;
-    background: color-mix(in srgb, var(--ec) 15%, transparent);
+    flex-shrink: 0;
+    padding: 0 5px;
+    border: 1px solid color-mix(in srgb, var(--ec) 55%, transparent);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    line-height: 16px;
+    text-transform: uppercase;
     color: var(--ec);
   }
-  .card-last-played {
-    font-size: 10px;
+  .card-version {
+    min-width: 0;
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
     color: var(--text-muted);
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
   }
+  .card-version-update { color: var(--accent); }
 
-  /* Density: compact (P1 item 7) — mirrors GameList's gridTextHeight, which
-     the virtualizer's row-height math depends on; change one, change both. */
   :global(.density-compact) .card-title {
-    margin-top: 6px;
-    font-size: 11px;
-    min-height: 32px;
+    margin-top: 4px;
+    height: 30px;
+    font-size: var(--text-sm);
+    line-height: 15px;
   }
   :global(.density-compact) .card-meta {
-    margin-top: 3px;
-    min-height: 16px;
+    margin-top: 6px;
+    height: 16px;
     gap: 6px;
   }
+  :global(.density-compact) .cover-ph-initials { font-size: var(--text-3xl); }
 </style>
