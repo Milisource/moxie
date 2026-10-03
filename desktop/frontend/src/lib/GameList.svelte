@@ -669,7 +669,7 @@
           <DropdownMenu.Sub>
             <DropdownMenu.SubTrigger class="ctx-item">
               <span>Set Status</span>
-              <span class="ctx-arrow">▶</span>
+              <span class="ctx-arrow">▸</span>
             </DropdownMenu.SubTrigger>
             <DropdownMenu.Portal>
               <DropdownMenu.SubContent class="context-menu">

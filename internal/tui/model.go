@@ -307,7 +307,7 @@ func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) m
 
 	fi := textinput.New()
 	fi.Placeholder = "filter by title…"
-	fi.Prompt = "🔍 "
+	fi.Prompt = "/ "
 	fi.CharLimit = 60
 	fi.PromptStyle = lipgloss.NewStyle().Foreground(purple)
 	fi.PlaceholderStyle = lipgloss.NewStyle().Foreground(subtle)

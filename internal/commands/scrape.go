@@ -22,7 +22,7 @@ func Scrape(args []string) {
 	cookieFile := fs.String("cookie-file", "", "File containing cookie header")
 	threadURL := fs.String("url", "", "F95Zone thread URL")
 	autoMode := fs.Bool("auto", false, "Auto-associate games using Firefox cookies + search")
-	unsafe := fs.Bool("unsafe", false, "⚠ Skip rate limiting (fast but risky — may get IP banned)")
+	unsafe := fs.Bool("unsafe", false, "Skip rate limiting (unsafe: fast but risky, may get IP banned)")
 	fs.Parse(args)
 
 	// Get cookie string — try Firefox auto-detect first.
@@ -69,7 +69,7 @@ func Scrape(args []string) {
 	data, err := client.ScrapeThread(url)
 	if err != nil {
 		if util.IsBlocked(err) {
-			fmt.Fprintf(os.Stderr, "\n⚠ BLOCKED: %v\n", err)
+			fmt.Fprintf(os.Stderr, "\n! BLOCKED: %v\n", err)
 			fmt.Fprintf(os.Stderr, "Try refreshing your F95Zone session in Firefox and running again.\n")
 			os.Exit(1)
 		}
@@ -114,7 +114,7 @@ func Scrape(args []string) {
 	if len(data.DownloadLinks) > 0 {
 		// Clear existing links for this game to avoid duplicates.
 		if err := database.DeleteDownloadLinksByGameID(game.ID); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠ Failed to clear stale download links: %v\n", err)
+			fmt.Fprintf(os.Stderr, "! Failed to clear stale download links: %v\n", err)
 		}
 
 		fmt.Printf("Download links: %d found\n", len(data.DownloadLinks))
@@ -224,7 +224,7 @@ func ScrapeBatch(args []string) {
 		td, err := client.ScrapeThread(e.url)
 		if err != nil {
 			if util.IsBlocked(err) {
-				fmt.Fprintf(os.Stderr, "\n⚠ BLOCKED: %v\nStopping batch.\n", err)
+				fmt.Fprintf(os.Stderr, "\n! BLOCKED: %v\nStopping batch.\n", err)
 				os.Exit(1)
 			}
 			fmt.Fprintf(os.Stderr, "  ✗ %v\n", err)
@@ -256,7 +256,7 @@ func ScrapeBatch(args []string) {
 				CoverURL:  td.CoverURL,
 			}
 			if err := database.UpsertScrapedMeta(meta); err != nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", game.Title, err)
+				fmt.Fprintf(os.Stderr, "  ! Failed to save metadata for %q: %v\n", game.Title, err)
 			}
 		}
 

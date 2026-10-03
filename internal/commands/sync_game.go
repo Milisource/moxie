@@ -124,7 +124,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 			if !engine.EngineMatchesThread(detEngine, data.Tags, best.Title) {
 				result.EngineMismatch = true
 				if interactive {
-					fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread: %q, tags: %s)\n",
+					fmt.Fprintf(os.Stderr, "  ! Engine mismatch (scanner: %s, thread: %q, tags: %s)\n",
 						detEngine.Engine, util.Truncate(best.Title, 60), engine.FormatTagsBrief(data.Tags, 4))
 					fmt.Fprintf(os.Stderr, "  Associate anyway? [y/N]: ")
 					var answer string
@@ -156,7 +156,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 			}
 			if err := database.UpsertScrapedMeta(meta); err != nil {
 				if interactive {
-					fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", game.Title, err)
+					fmt.Fprintf(os.Stderr, "  ! Failed to save metadata for %q: %v\n", game.Title, err)
 				}
 			} else {
 				result.ScrapedMetadata = true
@@ -228,7 +228,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 
 		if err := database.UpdateGame(game); err != nil {
 			if interactive {
-				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save version data for %q: %v\n", game.Title, err)
+				fmt.Fprintf(os.Stderr, "  ! Failed to save version data for %q: %v\n", game.Title, err)
 			}
 			// Nothing was persisted — the caller must not report an update
 			// as available. SyncGame exits on this error before printing
@@ -245,7 +245,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 				CoverURL:  data.CoverURL,
 			}); err != nil {
 				if interactive {
-					fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", game.Title, err)
+					fmt.Fprintf(os.Stderr, "  ! Failed to save metadata for %q: %v\n", game.Title, err)
 				}
 			} else {
 				result.ScrapedMetadata = true

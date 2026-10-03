@@ -109,7 +109,7 @@ func (m model) buildDetailContent() string {
 
 	writeField(&b, labelStyle, "Title:", game.Title, valueStyle)
 	if game.LatestVersion != "" && game.Version != "" && game.LatestVersion != game.Version {
-		latestStr := fmt.Sprintf(" (latest: %s 🆕)", game.LatestVersion)
+		latestStr := fmt.Sprintf(" (latest: %s, new)", game.LatestVersion)
 		writeField(&b, labelStyle, "Version:", ver, valueStyle, updateAvailableStyle.Render(latestStr))
 	} else {
 		writeField(&b, labelStyle, "Version:", ver, valueStyle)

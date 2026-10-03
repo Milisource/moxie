@@ -942,7 +942,7 @@
             {/if}
           </div>
         {:else}
-          <button class="btn btn-primary btn-play" onclick={handlePlay}>▶ Play</button>
+          <button class="btn btn-primary btn-play" onclick={handlePlay}>▶︎ Play</button>
         {/if}
         {#if detail.f95Url}
           <button class="btn btn-primary" onclick={handleSync}>Sync from F95Zone</button>

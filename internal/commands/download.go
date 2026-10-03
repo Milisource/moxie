@@ -182,7 +182,7 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 				fmt.Fprintf(os.Stderr, "  Warning: Could not scrape F95Zone: %v\n", err)
 			} else if len(data.DownloadLinks) > 0 {
 				if err := database.DeleteDownloadLinksByGameID(game.ID); err != nil {
-					fmt.Fprintf(os.Stderr, "  ⚠ Failed to clear stale download links: %v\n", err)
+					fmt.Fprintf(os.Stderr, "  ! Failed to clear stale download links: %v\n", err)
 				}
 				for _, dl := range data.DownloadLinks {
 					linkPlatform := db.Platform(downloader.DetectPlatform(dl.Name, dl.URL))
@@ -381,7 +381,7 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 			})
 
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "\n    ⚠ Warning: %v\n", err)
+				fmt.Fprintf(os.Stderr, "\n    Warning: %v\n", err)
 			} else {
 				fmt.Fprintf(os.Stderr, "\n    Extracted %d files\n", result.FilesExtracted)
 				os.Remove(downloadedFile)
@@ -390,7 +390,7 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 				fmt.Fprintf(os.Stderr, "  Merging update into %s...\n", game.Path)
 				mergeResult, mergeErr := updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
 				if mergeErr != nil {
-					fmt.Fprintf(os.Stderr, "    ⚠ Warning: %v\n", mergeErr)
+					fmt.Fprintf(os.Stderr, "    Warning: %v\n", mergeErr)
 				} else {
 					fmt.Fprintf(os.Stderr, "    Files updated: %d  |  User files preserved: %d\n", mergeResult.FilesCopied, mergeResult.FilesPreserved)
 					if mergeResult.BackupPath != "" {

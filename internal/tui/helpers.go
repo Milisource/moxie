@@ -158,7 +158,7 @@ func (m *model) updateTableRows() {
 
 		// Update-available indicator (yellow)
 		if g.LatestVersion != "" && g.Version != "" && g.LatestVersion != g.Version {
-			indicator := updateAvailableStyle.Render(" 🔄")
+			indicator := updateAvailableStyle.Render(" ↑")
 			title += indicator
 		}
 

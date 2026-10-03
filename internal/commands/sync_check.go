@@ -153,7 +153,7 @@ func runBulkVersionCheck(database *db.Database, games []db.Game, public *scraper
 			"error", err,
 			"games", len(games),
 		)
-		fmt.Fprintf(os.Stderr, "  ⚠ Bulk version API unavailable (%v) — falling back to direct scraping\n", err)
+		fmt.Fprintf(os.Stderr, "  ! Bulk version API unavailable (%v) — falling back to direct scraping\n", err)
 		return games, nil, 0, nil
 	}
 
@@ -209,7 +209,7 @@ func runBulkVersionCheck(database *db.Database, games []db.Game, public *scraper
 		if newStatus := scraper.ResolveStatus(ct.Status, g2.Status); newStatus != g2.Status {
 			g2.Status = newStatus
 			if err := database.UpdateGame(&g2); err != nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save cache data for %q: %v\n", g.Title, err)
+				fmt.Fprintf(os.Stderr, "  ! Failed to save cache data for %q: %v\n", g.Title, err)
 			}
 		}
 		if ct.Developer != "" || ct.Description != "" || ct.ImageURL != "" {
@@ -219,7 +219,7 @@ func runBulkVersionCheck(database *db.Database, games []db.Game, public *scraper
 				Overview:  ct.Description,
 				CoverURL:  ct.ImageURL,
 			}); err != nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", g.Title, err)
+				fmt.Fprintf(os.Stderr, "  ! Failed to save metadata for %q: %v\n", g.Title, err)
 			}
 		}
 		if isNew {
@@ -265,7 +265,7 @@ func processBulkGame(database *db.Database, g db.Game, latest string) (UpdateRes
 	}
 	g.VersionCheckedAt = time.Now()
 	if err := database.UpdateGame(&g); err != nil {
-		fmt.Fprintf(os.Stderr, "  ⚠ Failed to save version data for %q: %v\n", g.Title, err)
+		fmt.Fprintf(os.Stderr, "  ! Failed to save version data for %q: %v\n", g.Title, err)
 	}
 
 	return UpdateResult{
@@ -281,11 +281,11 @@ func processBulkGame(database *db.Database, g db.Game, latest string) (UpdateRes
 func printBulkResult(index, total int, title, knownVer, latest, diff string) {
 	switch diff {
 	case version.Newer.String():
-		fmt.Fprintf(os.Stderr, "  [%d/%d] %q 🔄 %s → %s\n", index, total, title, knownVer, latest)
+		fmt.Fprintf(os.Stderr, "  [%d/%d] %q ↑ %s → %s\n", index, total, title, knownVer, latest)
 	case version.Changed.String():
 		fmt.Fprintf(os.Stderr, "  [%d/%d] %q ≠ %s → %s (ordering unclear)\n", index, total, title, knownVer, latest)
 	case version.Older.String():
-		fmt.Fprintf(os.Stderr, "  [%d/%d] %q ⚠ thread version %s is older than local %s\n", index, total, title, latest, knownVer)
+		fmt.Fprintf(os.Stderr, "  [%d/%d] %q ! thread version %s is older than local %s\n", index, total, title, latest, knownVer)
 	case version.Same.String():
 		if knownVer != "" {
 			fmt.Fprintf(os.Stderr, "  [%d/%d] %q ✓ %s\n", index, total, title, latest)
@@ -342,7 +342,7 @@ func refreshStatusViaCache(database *db.Database, entries []bulkGameEntry, publi
 			g.LatestVersion = ct.Version
 		}
 		if err := database.UpdateGame(&g); err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", g.Title, err)
+			fmt.Fprintf(os.Stderr, "  ! Failed to save metadata for %q: %v\n", g.Title, err)
 			continue
 		}
 		if statusChange != "" {
@@ -355,7 +355,7 @@ func refreshStatusViaCache(database *db.Database, entries []bulkGameEntry, publi
 				Overview:  ct.Description,
 				CoverURL:  ct.ImageURL,
 			}); err != nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", g.Title, err)
+				fmt.Fprintf(os.Stderr, "  ! Failed to save metadata for %q: %v\n", g.Title, err)
 			}
 		}
 	}
@@ -439,7 +439,7 @@ func runDirectUpdateCheck(database *db.Database, client *scraper.Client, games [
 			var engineWarn string
 			detEngine := engine.Detect(g.Path)
 			if !engine.EngineMatchesThread(detEngine, data.Tags, data.Title) {
-				engineWarn = fmt.Sprintf(" ⚠ engine mismatch (scanner: %s)",
+				engineWarn = fmt.Sprintf(" ! engine mismatch (scanner: %s)",
 					detEngine.Engine)
 			}
 
@@ -460,7 +460,7 @@ func runDirectUpdateCheck(database *db.Database, client *scraper.Client, games [
 			g.VersionCheckedAt = time.Now()
 			saveMu.Lock()
 			if err := database.UpdateGame(&g); err != nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save version data for %q: %v\n", g.Title, err)
+				fmt.Fprintf(os.Stderr, "  ! Failed to save version data for %q: %v\n", g.Title, err)
 			}
 			saveMu.Unlock()
 			// Save scraped metadata (cover, developer, overview).
@@ -471,7 +471,7 @@ func runDirectUpdateCheck(database *db.Database, client *scraper.Client, games [
 					Overview:  data.Overview,
 					CoverURL:  data.CoverURL,
 				}); err != nil {
-					fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", g.Title, err)
+					fmt.Fprintf(os.Stderr, "  ! Failed to save metadata for %q: %v\n", g.Title, err)
 				}
 			}
 
@@ -489,7 +489,7 @@ func runDirectUpdateCheck(database *db.Database, client *scraper.Client, games [
 			switch {
 			case diff == version.Newer:
 				updatesFound++
-				fmt.Fprintf(os.Stderr, "  [%d/%d] %s%s %q 🔄 %s → %s%s%s\n", idx, total, elapsed, eta, g.Title, knownVer, latest, statusChange, engineWarn)
+				fmt.Fprintf(os.Stderr, "  [%d/%d] %s%s %q ↑ %s → %s%s%s\n", idx, total, elapsed, eta, g.Title, knownVer, latest, statusChange, engineWarn)
 			case diff == version.Changed:
 				// Differs but not orderable (e.g. a date-form version
 				// replacing a numeric one) — surface it, flagged as unclear.
@@ -498,7 +498,7 @@ func runDirectUpdateCheck(database *db.Database, client *scraper.Client, games [
 			case diff == version.Older:
 				// The thread reports an older version than we hold. Almost
 				// always a parse problem or an edited thread, never an update.
-				fmt.Fprintf(os.Stderr, "  [%d/%d] %s%s %q ⚠ thread version %s is older than local %s%s%s\n", idx, total, elapsed, eta, g.Title, latest, knownVer, statusChange, engineWarn)
+				fmt.Fprintf(os.Stderr, "  [%d/%d] %s%s %q ! thread version %s is older than local %s%s%s\n", idx, total, elapsed, eta, g.Title, latest, knownVer, statusChange, engineWarn)
 			case knownVer != "":
 				// Local version is known and matches F95Zone.
 				fmt.Fprintf(os.Stderr, "  [%d/%d] %s%s %q ✓ %s%s%s\n", idx, total, elapsed, eta, g.Title, latest, statusChange, engineWarn)
@@ -534,7 +534,7 @@ func CheckUpdates(args []string) {
 	cookieStr := fs.String("cookie", "", "Cookie header (only needed for the direct-scrape fallback)")
 	cookieFile := fs.String("cookie-file", "", "Cookie file")
 	jsonOut := fs.Bool("json", false, "JSON output")
-	unsafe := fs.Bool("unsafe", false, "⚠ Skip rate limiting")
+	unsafe := fs.Bool("unsafe", false, "Skip rate limiting (unsafe)")
 	force := fs.Bool("force", false, "Force re-check even if checked within 24h")
 	// hoistFlags keeps flags written after positional args from being
 	// ignored (check-updates currently takes none, but stay consistent).

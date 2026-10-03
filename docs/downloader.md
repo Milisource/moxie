@@ -1,6 +1,6 @@
 # Downloader
 
-> **⚠️ Beta Feature** — The downloader works reliably for Pixeldrain and Buzzheavier. Most other hosts have anti-bot protection that HTTP clients cannot bypass. Downloaded files are validated and rejected if they aren't actual archives/executables. See [Host Feasibility](#host-feasibility) for per-host support levels.
+> **Beta Feature** — The downloader works reliably for Pixeldrain and Buzzheavier. Most other hosts have anti-bot protection that HTTP clients cannot bypass. Downloaded files are validated and rejected if they aren't actual archives/executables. See [Host Feasibility](#host-feasibility) for per-host support levels.
 
 ## What
 
@@ -59,14 +59,14 @@ The `HostResolver.Resolve()` dispatches to per-host resolvers based on the host 
 
 | Host | Strategy | Status |
 |------|----------|--------|
-| **Pixeldrain** | API: `pixeldrain.com/api/file/<ID>` — direct download via API endpoint | ✅ Verified |
-| **Buzzheavier** | Token flow (live-verified 2026-08-09): share page (`hx-get` server-signed `t=`) → HTMX `/download?t=&alt=true` → `hx-redirect` → **fafda.to** file URL (probe-validated; 503 origin outages retried with backoff) | ✅ Verified |
-| **Gofile** | Content API + direct download to `{fileID}.gofile.io/{fileID}` | ✅ Verified |
-| **Google Drive** | Two-step: `GET /uc?export=download&id=<ID>` → parse HTML for `confirm=` token (for >100 MB virus-scan interstitial) → re-request with `&confirm=<TOKEN>` | ✅ Verified |
-| **DataNodes** | Cookie + POST: `GET /download/<CODE>` for session cookies → parse hidden form fields → `POST` with cookies → follow 302 redirect to CDN | ⚡ May work |
-| **MixDrop** | Pass-through with User-Agent (no API call; some file pages may serve interstitial instead of direct download) | ⚡ May work |
-| **VikingFile** | Form POST: `GET /f/<HASH>` for hidden fields → `POST op=download1` → follow 302 redirect (blocked by Cloudflare Turnstile captcha) | ❌ Beta (blocked) |
-| **Mega** | Unsupported — encrypted protocol not HTTP-accessible. Deprioritized to -200 in host scoring; auto-fallbacks to next-best link. Manual workaround: `moxie install <id> <path>` | ❌ Unsupported |
+| **Pixeldrain** | API: `pixeldrain.com/api/file/<ID>` — direct download via API endpoint | Verified |
+| **Buzzheavier** | Token flow (live-verified 2026-08-09): share page (`hx-get` server-signed `t=`) → HTMX `/download?t=&alt=true` → `hx-redirect` → **fafda.to** file URL (probe-validated; 503 origin outages retried with backoff) | Verified |
+| **Gofile** | Content API + direct download to `{fileID}.gofile.io/{fileID}` | Verified |
+| **Google Drive** | Two-step: `GET /uc?export=download&id=<ID>` → parse HTML for `confirm=` token (for >100 MB virus-scan interstitial) → re-request with `&confirm=<TOKEN>` | Verified |
+| **DataNodes** | Cookie + POST: `GET /download/<CODE>` for session cookies → parse hidden form fields → `POST` with cookies → follow 302 redirect to CDN | May work |
+| **MixDrop** | Pass-through with User-Agent (no API call; some file pages may serve interstitial instead of direct download) | May work |
+| **VikingFile** | Form POST: `GET /f/<HASH>` for hidden fields → `POST op=download1` → follow 302 redirect (blocked by Cloudflare Turnstile captcha) | Beta (blocked) |
+| **Mega** | Unsupported — encrypted protocol not HTTP-accessible. Deprioritized to -200 in host scoring; auto-fallbacks to next-best link. Manual workaround: `moxie install <id> <path>` | Unsupported |
 
 All other detected hosts (40+) pass through for standard HTTP download. See [Host Feasibility](#host-feasibility) below for the full breakdown of which hosts work.
 
@@ -85,7 +85,7 @@ Download links are scored by combining platform priority with host reliability:
 
 Comprehensive research of all 44 F95Zone approved file hosts and their downloadability via HTTP:
 
-#### ✅ Direct (standard HTTP GET with User-Agent, no interstitial)
+#### Direct (standard HTTP GET with User-Agent, no interstitial)
 
 These hosts serve files directly at the URL — no download page, no ads, no timers.
 
@@ -98,7 +98,7 @@ These hosts serve files directly at the URL — no download page, no ads, no tim
 | **YourFileStore** | Direct file serving. 500 MB limit. Optional password protection |
 | **Files.dp.ua** | `files.dp.ua/<code>` — direct GET. 100 GB limit. 25-day retention |
 
-#### ⚠️ Interstitial / Download Page
+#### Interstitial / Download Page
 
 These are NOT direct — the URL returns an HTML page with a download button, timer, or ad. Simple HTTP GET downloads the HTML, not the file. These require a browser or JDownloader.
 
@@ -115,20 +115,20 @@ These are NOT direct — the URL returns an HTML page with a download button, ti
 
 Hosts already covered in other sections: WorkUpload (captcha), MediaFire (captcha), MixDrop (API), DataNodes (API), Anonymfile (Cloudflare).
 
-#### ⚡ API (needs API call, cookie, or header exchange for real URL)
+#### API (needs API call, cookie, or header exchange for real URL)
 
 | Host | Flow |
 |------|------|
 | **Pixeldrain** | Already implemented. Note: rate-limited files may trigger captcha at 3× views/downloads ratio. API key bypasses |
 | **Buzzheavier** | Token flow — share page `t=` token → `/download?t=&alt=true` (HTMX) → `hx-redirect` to fafda.to, probe-validated |
-| **Gofile** | Already implemented. ⚠ Breaking change March 2026: API may restrict to premium accounts |
+| **Gofile** | Already implemented. Breaking change March 2026: API may restrict to premium accounts |
 | **MixDrop** | Official API at `api.mixdrop.ag`. For zips/archives direct; for MP4 add `?download`. Domains: m1xdrop.click, mixdrop.co, etc. |
 | **DataNodes** | POST flow: visit `/download/<ID>` → acquire `file_code` cookie → POST for download URL. Has Cloudflare |
 | **Google Drive** | Two-step: `drive.google.com/uc?export=download&id=<ID>` → parse HTML for `confirm=` token → request with `&confirm=<token>`. Large files (>100MB) have virus-scan interstitial |
 | **WeTransfer** | Unofficial: POST `api/ui/transfers/<ID>/<hash>/download` → get S3 presigned URL. Official API deprecated. Free tier now limits to 10 transfers/month |
 | **Dropbox** | Shared link with `?dl=1` → redirect follows to direct file. ~20 GB/day bandwidth limit for free accounts |
 
-#### ⚠️ Difficult (captcha, login, Cloudflare, JS execution, or multi-step flow needed)
+#### Difficult (captcha, login, Cloudflare, JS execution, or multi-step flow needed)
 
 | Host | Obstacle |
 |------|----------|
@@ -151,7 +151,7 @@ Hosts already covered in other sections: WorkUpload (captcha), MediaFire (captch
 | **DropMeFiles** | Download button on page must be clicked first |
 | **WDHO** | Colored-button bot check ("click the colored button") + 3 MB/s speed cap |
 
-#### ❌ Impossible (encrypted protocol, premium-walled, or requires auth)
+#### Impossible (encrypted protocol, premium-walled, or requires auth)
 
 | Host | Reason |
 |------|--------|
@@ -234,16 +234,16 @@ UA + TLS fingerprint the clearance was minted to). Wiring:
 
 | Host | Strategy | Status |
 |------|----------|--------|
-| **Pixeldrain** | API: `pixeldrain.com/api/file/<ID>` — direct download | ✅ |
-| **Buzzheavier** | Token flow: share page `t=` → HTMX `/download?t=&alt=true` → `hx-redirect` to fafda.to; probe-validated with 503 backoff + token-refetch | ✅ Verified (F95-hs4y) |
-| **Gofile** | Guest token + dynamic `X-Website-Token` (SHA-256 `UA::lang::token::4h-slot::secret`) + contents API; CDN hop needs `Cookie: accountToken=<token>` | ✅ |
-| **Mediafire** | Page CDN href / base64 `data-scrambled-url` (allow-listed host) + API fallback | ✅ |
-| **Workupload** | SHA-256 proof-of-work puzzle (`/puzzle` → solve → `/captcha`) + `getDownloadServer` API | ✅ |
-| **VikingFile** | Scraper: form POST + redirect follow (blocked by Cloudflare Turnstile — browser fallback only) | ❌ Beta |
-| **DataNodes** | Cookie + POST flow to extract CDN URL (mostly dead links + captcha) | ⚡ Beta |
-| **MixDrop** | Pass-through with User-Agent (blocked by interstitial on file pages) | ❌ Beta |
-| **Google Drive** | Two-step confirm token extraction for large files | ⚡ Beta |
-| **Mega** | Megatools subprocess (`megatools dl`) when the binary is installed; informative error otherwise (Arch: AUR-only) | ⚡ Binary-gated |
+| **Pixeldrain** | API: `pixeldrain.com/api/file/<ID>` — direct download | Yes |
+| **Buzzheavier** | Token flow: share page `t=` → HTMX `/download?t=&alt=true` → `hx-redirect` to fafda.to; probe-validated with 503 backoff + token-refetch | Verified (F95-hs4y) |
+| **Gofile** | Guest token + dynamic `X-Website-Token` (SHA-256 `UA::lang::token::4h-slot::secret`) + contents API; CDN hop needs `Cookie: accountToken=<token>` | Yes |
+| **Mediafire** | Page CDN href / base64 `data-scrambled-url` (allow-listed host) + API fallback | Yes |
+| **Workupload** | SHA-256 proof-of-work puzzle (`/puzzle` → solve → `/captcha`) + `getDownloadServer` API | Yes |
+| **VikingFile** | Scraper: form POST + redirect follow (blocked by Cloudflare Turnstile — browser fallback only) | Beta |
+| **DataNodes** | Cookie + POST flow to extract CDN URL (mostly dead links + captcha) | Beta |
+| **MixDrop** | Pass-through with User-Agent (blocked by interstitial on file pages) | Beta |
+| **Google Drive** | Two-step confirm token extraction for large files | Beta |
+| **Mega** | Megatools subprocess (`megatools dl`) when the binary is installed; informative error otherwise (Arch: AUR-only) | Binary-gated |
 
 All other detected hosts (40+) pass through for standard HTTP download. See [Host Feasibility](#host-feasibility) below for the full breakdown of which hosts work.
 

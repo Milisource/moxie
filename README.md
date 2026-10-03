@@ -35,13 +35,13 @@ Unlike manually organizing game folders and checking announcement threads one by
 
 ```
 ┌──────────┐     ┌──────────────┐     ┌───────────────┐     ┌──────────┐
-│  Scan    │────▶│  Scrape      │────▶│  Sync +       │────▶│  TUI /   │
+│  Scan    │────►│  Scrape      │────►│  Sync +       │────►│  TUI /   │
 │  ~/Games │     │  Web Thread  │     │  Check Updates│     │  CLI     │
 └──────────┘     └──────────────┘     └───────┬───────┘     └──────────┘
                                                │
                                                ▼
                                         ┌──────────────┐     ┌──────────┐
-                                        │  Steam Add   │────▶│  Play    │
+                                        │  Steam Add   │────►│  Play    │
                                         │  + Artwork   │     │  Launch  │
                                         └──────────────┘     └──────────┘
 ```

@@ -85,7 +85,7 @@ func RunSync(database *db.Database, cfg SyncConfig) error {
 	var client *scraper.Client
 	if cfg.Unsafe {
 		client = scraper.NewUnsafeClient(cookie)
-		fmt.Fprintln(os.Stderr, "⚠  --unsafe: rate limiting disabled. You may get IP-banned or Cloudflare-blocked.")
+		fmt.Fprintln(os.Stderr, "! --unsafe: rate limiting disabled. You may get IP-banned or Cloudflare-blocked.")
 		fmt.Fprintln(os.Stderr)
 	} else {
 		client = scraper.NewClient(cookie)
@@ -148,7 +148,7 @@ func SyncGame(id int64, cookie string, unsafe bool, force bool) {
 		}
 		// For other errors, check whether it was a blocked response.
 		if util.IsBlocked(err) {
-			fmt.Fprintf(os.Stderr, "  ⚠ BLOCKED: %v\n", err)
+			fmt.Fprintf(os.Stderr, "  ! BLOCKED: %v\n", err)
 		} else if strings.Contains(errStr, "no F95Zone results found for") {
 			fmt.Fprintf(os.Stderr, "  ✗ No F95Zone results found for %q.\n", game.Title)
 		} else {
@@ -186,12 +186,12 @@ func SyncGame(id int64, cookie string, unsafe bool, force bool) {
 		if title == "" {
 			title = game.Title
 		}
-		fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread: %q, tags: %s)\n",
+		fmt.Fprintf(os.Stderr, "  ! Engine mismatch (scanner: %s, thread: %q, tags: %s)\n",
 			detEngine.Engine, util.Truncate(title, 60), engine.FormatTagsBrief(result.ThreadData.Tags, 4))
 	}
 
 	if result.VersionUpdated {
-		fmt.Fprintf(os.Stderr, "  🔄 Update available: %s → %s\n", result.OldVersion, result.NewVersion)
+		fmt.Fprintf(os.Stderr, "  ↑ Update available: %s → %s\n", result.OldVersion, result.NewVersion)
 	} else if result.OldVersion != "" {
 		fmt.Fprintf(os.Stderr, "  ✓ Up to date: %s\n", result.NewVersion)
 	} else if result.NewVersion != "" {
@@ -213,7 +213,7 @@ func Sync(args []string) {
 	fs := flag.NewFlagSet("sync", flag.ExitOnError)
 	cookieStr := fs.String("cookie", "", "Cookie header (only needed for the direct-scrape fallback)")
 	cookieFile := fs.String("cookie-file", "", "Cookie file")
-	unsafe := fs.Bool("unsafe", false, "⚠ Skip rate limiting")
+	unsafe := fs.Bool("unsafe", false, "Skip rate limiting (unsafe)")
 	force := fs.Bool("force", false, "Force re-check even if checked within 24h")
 	parallel := fs.Int("parallel", 3, "Number of concurrent scrapers (default 3)")
 	// hoistFlags keeps flags written after an id (e.g. `sync <id> --force`)
@@ -424,7 +424,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 							resultCh <- workResult{
 								game: game, query: query,
 								interrupted: true,
-								msg:         fmt.Sprintf("  ⚠ BLOCKED: %v\n  Try refreshing your F95Zone session.\n", err),
+								msg:         fmt.Sprintf("  ! BLOCKED: %v\n  Try refreshing your F95Zone session.\n", err),
 							}
 							return nil // worker stops on block
 						}
@@ -448,7 +448,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 							resultCh <- workResult{
 								game: game, query: query,
 								interrupted: true,
-								msg:         fmt.Sprintf("  ⚠ BLOCKED: %v\n  Try refreshing your F95Zone session.\n", err),
+								msg:         fmt.Sprintf("  ! BLOCKED: %v\n  Try refreshing your F95Zone session.\n", err),
 							}
 							return nil // worker stops on block
 						}
@@ -466,7 +466,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 					saveMu.Lock()
 					game.VersionCheckedAt = time.Now()
 					if err := database.UpdateGame(&game); err != nil {
-						fmt.Fprintf(os.Stderr, "  ⚠ Failed to update cooldown for %q: %v\n", game.Title, err)
+						fmt.Fprintf(os.Stderr, "  ! Failed to update cooldown for %q: %v\n", game.Title, err)
 					}
 					saveMu.Unlock()
 					resultCh <- workResult{
@@ -529,7 +529,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 					saveMu.Lock()
 					game.VersionCheckedAt = time.Now()
 					if err := database.UpdateGame(&game); err != nil {
-						fmt.Fprintf(os.Stderr, "  ⚠ Failed to update cooldown for %q: %v\n", game.Title, err)
+						fmt.Fprintf(os.Stderr, "  ! Failed to update cooldown for %q: %v\n", game.Title, err)
 					}
 					saveMu.Unlock()
 					resultCh <- workResult{
@@ -565,7 +565,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 							resultCh <- workResult{
 								game: game, query: query,
 								skipped: true,
-								msg: fmt.Sprintf("  ⚠ Engine mismatch (scanner: %s, thread engine: %s) — skipping\n",
+								msg: fmt.Sprintf("  ! Engine mismatch (scanner: %s, thread engine: %s) — skipping\n",
 									detEngine.Engine, eng),
 							}
 							continue
@@ -603,7 +603,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 								Overview:  ct.Description,
 								CoverURL:  ct.ImageURL,
 							}); err != nil {
-								fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", game.Title, err)
+								fmt.Fprintf(os.Stderr, "  ! Failed to save metadata for %q: %v\n", game.Title, err)
 							}
 							saveMu.Unlock()
 						}
@@ -637,7 +637,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 				}
 
 				// Association path 2: direct thread scrape (cookie path).
-				fmt.Fprintf(os.Stderr, "  ⬇ Scraping %s...\n", best.URL)
+				fmt.Fprintf(os.Stderr, "  ↓ Scraping %s...\n", best.URL)
 				data, err := client.ScrapeThreadWithContext(ctx, best.URL)
 				if err != nil {
 					if util.IsBlocked(err) {
@@ -645,7 +645,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 						resultCh <- workResult{
 							game: game, query: query,
 							interrupted: true,
-							msg:         fmt.Sprintf("  ⚠ BLOCKED: %v\n  Try refreshing your F95Zone session.\n", err),
+							msg:         fmt.Sprintf("  ! BLOCKED: %v\n  Try refreshing your F95Zone session.\n", err),
 						}
 						return nil // worker stops on block
 					}
@@ -664,7 +664,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 					resultCh <- workResult{
 						game: game, query: query,
 						skipped: true,
-						msg: fmt.Sprintf("  ⚠ Engine mismatch (scanner: %s, thread: %q, tags: %s) — skipping\n",
+						msg: fmt.Sprintf("  ! Engine mismatch (scanner: %s, thread: %q, tags: %s) — skipping\n",
 							detEngine.Engine, util.Truncate(best.Title, 60), engine.FormatTagsBrief(data.Tags, 4)),
 					}
 					continue
@@ -702,7 +702,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 						CoverURL:  data.CoverURL,
 					}
 					if err := database.UpsertScrapedMeta(meta); err != nil {
-						fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", game.Title, err)
+						fmt.Fprintf(os.Stderr, "  ! Failed to save metadata for %q: %v\n", game.Title, err)
 					}
 					saveMu.Unlock()
 				}

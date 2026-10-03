@@ -30,7 +30,7 @@ func (m model) libraryView() string {
 
 	// ── Startup tip (auto-dismiss) ─────────────────────────────
 	if m.showStartupTip {
-		tip := noticeStyle.Render("  💡 Press / to search  •  s to sort  •  Ctrl+E/S to filter  •  Enter for details  •  ? for help  ")
+		tip := noticeStyle.Render("  Tip: press / to search  •  s to sort  •  Ctrl+E/S to filter  •  Enter for details  •  ? for help  ")
 		b.WriteString(tip)
 		b.WriteString("\n")
 	}
@@ -79,7 +79,7 @@ func (m model) libraryView() string {
 
 	downloadInfo := ""
 	if dlCount > 0 {
-		downloadInfo = fmt.Sprintf("  ⬇ %d", dlCount)
+		downloadInfo = fmt.Sprintf("  ↓ %d", dlCount)
 	}
 
 	spinnerView := ""
@@ -110,7 +110,7 @@ func (m model) libraryView() string {
 		dimFilter := filterInputStyle.Copy().BorderForeground(subtle)
 		if m.filterText != "" {
 			dimFilter = dimFilter.Foreground(subtle)
-			b.WriteString(dimFilter.Render("🔍 " + m.filterText))
+			b.WriteString(dimFilter.Render("/ " + m.filterText))
 		} else {
 			b.WriteString(dimFilter.Render("type to filter..."))
 		}

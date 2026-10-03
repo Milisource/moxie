@@ -43,7 +43,7 @@ func resolveBestLink(database *db.Database, game db.Game, cookie, targetPlatform
 		data, err := client.ScrapeThread(scrapeURL)
 		if err == nil && len(data.DownloadLinks) > 0 {
 			if err := database.DeleteDownloadLinksByGameID(game.ID); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠ Failed to clear stale download links: %v\n", err)
+				fmt.Fprintf(os.Stderr, "! Failed to clear stale download links: %v\n", err)
 			}
 			for _, dl := range data.DownloadLinks {
 				linkPlatform := db.Platform(downloader.DetectPlatform(dl.Name, dl.URL))
@@ -311,7 +311,7 @@ func installDownloadedArchive(database *db.Database, game *db.Game, archivePath 
 		fmt.Fprintf(os.Stderr, "    Merging into %s...\n", game.Path)
 		mergeResult, mergeErr := updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
 		if mergeErr != nil {
-			fmt.Fprintf(os.Stderr, "    ⚠ Merge warning: %v\n", mergeErr)
+			fmt.Fprintf(os.Stderr, "    Merge warning: %v\n", mergeErr)
 		} else {
 			fmt.Fprintf(os.Stderr, "    Files updated: %d  |  Preserved: %d\n", mergeResult.FilesCopied, mergeResult.FilesPreserved)
 		}

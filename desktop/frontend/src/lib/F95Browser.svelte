@@ -230,7 +230,7 @@
     </div>
   {:else if cookieStatus === 'not_found'}
     <div class="cookie-status cookie-missing">
-      <span class="cookie-icon">⚠</span>
+      <span class="cookie-icon">!</span>
       <div class="cookie-body">
         <p class="cookie-title">Log into F95Zone in your browser first</p>
         <p class="cookie-detail">

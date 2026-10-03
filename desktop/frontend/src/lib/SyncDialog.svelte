@@ -64,7 +64,7 @@
     </div>
   {:else if cookieStatus === 'not_found'}
     <div class="cookie-status cookie-missing">
-      <span class="cookie-icon">⚠</span>
+      <span class="cookie-icon">!</span>
       <div class="cookie-body">
         <p class="cookie-title">No F95Zone cookies found</p>
         <p class="cookie-detail">

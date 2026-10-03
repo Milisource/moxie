@@ -46,7 +46,7 @@ func main() {
 		// First-run welcome if no database exists yet
 		dbPath := config.DbPath()
 		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-			fmt.Fprintln(os.Stderr, "👋 Welcome to moxie! It looks like this is your first run.")
+			fmt.Fprintln(os.Stderr, "Welcome to moxie! It looks like this is your first run.")
 			fmt.Fprintln(os.Stderr)
 			fmt.Fprintln(os.Stderr, "   Quick start:")
 			fmt.Fprintln(os.Stderr, "     moxie scan ~/Downloads       Scan a directory for games")
@@ -228,7 +228,7 @@ COMMON FLAGS
   sync, check-updates:
     --cookie <str>            Cookie header (only needed for the direct-scrape fallback)
     --cookie-file <path>      Read cookie from file
-    --unsafe                  ⚠ Skip rate limiting (may get IP-banned)
+    --unsafe                  Skip rate limiting (unsafe: may get IP-banned)
     --force                   Re-check even if checked within 24h
 
   scrape:

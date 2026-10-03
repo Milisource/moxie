@@ -228,7 +228,7 @@ func DisassociateGame(database *db.Database, g *db.Game) {
 	g.F95URL = ""
 	g.F95ThreadID = 0
 	if err := database.UpdateGame(g); err != nil {
-		fmt.Fprintf(os.Stderr, "  ⚠ Failed to disassociate #%d: %v\n", g.ID, err)
+		fmt.Fprintf(os.Stderr, "  ! Failed to disassociate #%d: %v\n", g.ID, err)
 	} else {
 		fmt.Fprintf(os.Stderr, "  ✓ Disassociated #%d\n", g.ID)
 	}
@@ -260,7 +260,7 @@ func RefreshVersions(args []string) {
 		oldVer := g.Version
 		g.Version = dirVer
 		if err := database.UpdateGame(&g); err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠ %q: failed to update version: %v\n", g.Title, err)
+			fmt.Fprintf(os.Stderr, "  ! %q: failed to update version: %v\n", g.Title, err)
 			continue
 		}
 		updated++

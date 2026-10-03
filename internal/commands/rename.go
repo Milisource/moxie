@@ -48,7 +48,7 @@ func Rename(args []string) {
 		// Skip if new path already exists (different game).
 		if newPath != g.Path {
 			if _, err := os.Stat(newPath); err == nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ Skipping %q — target already exists: %q\n",
+				fmt.Fprintf(os.Stderr, "  ! Skipping %q — target already exists: %q\n",
 					filepath.Base(g.Path), newName)
 				continue
 			}
@@ -97,7 +97,7 @@ func Rename(args []string) {
 		// Update DB path.
 		p.game.Path = p.newPath
 		if err := database.UpdateGame(&p.game); err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠ Renamed dir but failed to update DB for %s: %v\n",
+			fmt.Fprintf(os.Stderr, "  ! Renamed dir but failed to update DB for %s: %v\n",
 				p.newName, err)
 		}
 		fmt.Fprintf(os.Stderr, "  ✓ %s → %s\n", filepath.Base(p.oldPath), p.newName)

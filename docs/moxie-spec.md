@@ -109,7 +109,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] File-based version extraction from `Game.ini` (RPG Maker), `package.json` (HTML/NW.js), and `game/options.rpy` (Ren'Py) — catches versions missed in directory names
 - [x] Single/double-digit version pattern added — `v5`, `v01`, `v0` now detected
 - [x] Trailing build letter support — `v0.7.7i` captured as `"0.7.7i"` instead of missed
-- [x] TUI `🔄` update indicator fixed — requires both `Version` and `LatestVersion` non-empty (previously triggered on empty local version, falsely marking every game with scraped metadata as having an update)
+- [x] TUI update indicator (now `↑`) fixed — requires both `Version` and `LatestVersion` non-empty (previously triggered on empty local version, falsely marking every game with scraped metadata as having an update)
 - [x] Empty versions display as `"unknown"` in TUI table, detail view, and `moxie list` CLI output (replaces bare `-`)
 - [x] Stale `? no version detected` output suppressed in `RunUpdateCheck()` and `SyncGame()` during sync — no action needed from user
 - [x] Status backfill (F95-v9lz) — `ResolveStatus` defaults unknown statuses to `active` on every association/update path (F95Zone has no "active" tag; absence of Completed/Abandoned/On-Hold tags means in development), never clobbering user-set statuses; cache-API metadata refresh now also re-fetches threads whose status is unknown even when unchanged

@@ -73,11 +73,11 @@
       {#if ctl.state === 'launching'}
         <span class="play-spinner"></span><span>Launching…</span>
       {:else if ctl.state === 'playing'}
-        <span>⏸ Playing</span>
+        <span>‖ Playing</span>
       {:else if ctl.state === 'error'}
         <span>↻ Retry</span>
       {:else}
-        <span>▶ Play</span>
+        <span>▶︎ Play</span>
       {/if}
     </button>
   </div>
@@ -89,7 +89,7 @@
     {/if}
     {#if lastPlayedDate(game)}
       <span class="card-last-played" title="Last played {lastPlayedDate(game).toLocaleString()}">
-        ▶ {relativePlayed(lastPlayedDate(game))}
+        ▶︎ {relativePlayed(lastPlayedDate(game))}
       </span>
     {/if}
   </div>

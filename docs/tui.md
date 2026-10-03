@@ -41,7 +41,7 @@ The TUI has four visual modes, switched via the `viewMode` field in the model:
 1. **Library view** — the default. Shows a sortable table of all games with a startup tip (auto-dismisses after 6s), a status bar (`12/82 games | Unity | Active | ID ↑ | Filter: — | Collections: RPG`), a filter input overlay (`/` to activate), and a dynamic footer with key hints.
 
 2. **Detail view** — shows full game info when you press Enter on a row. Organized in sections:
-   - **Core Info**: Title, Version (with `🆕` update indicator if newer version exists), Engine (color-coded), Status (with interactive selector showing all 5 statuses as `[a] active [c] completed ...`)
+   - **Core Info**: Title, Version (with a `(latest: X, new)` suffix if a newer version exists), Engine (color-coded), Status (with interactive selector showing all 5 statuses as `[a] active [c] completed ...`)
    - **F95Zone**: URL (with copy hint), Developer, Cover URL (with copy hint), Tags (rendered as styled chips), Overview (expanded text), Last Scraped date
    - **Metadata**: Path, Exe, Size, Created/Updated dates
    Action keys are displayed in the header.
@@ -59,7 +59,7 @@ The TUI has four visual modes, switched via the `viewMode` field in the model:
 - **Sort cycling** — `s` cycles ID → Title → Engine → Version (desc). The active sort field and direction appear in the status bar as `Title ↑` or `Version ↓`.
 - **Reverse sort** — `r` reverses the current sort direction.
 - **Engine colors** — each engine type has a distinct color mirroring F95Zone's "Latest Updates" page palette (Unity = orange, Ren'Py = purple, Java = teal, etc.). The palette is the shared canonical map in `internal/engine/engine-colors.json` (also imported by the desktop frontend), applied per-row via `engineColor(e)`.
-- **Update indicators** — a `🔄` marker appears next to game titles where both `latest_version` and `version` are known and differ. If the local version is empty (no version found in the directory name), no indicator is shown — an unknown local version cannot confirm an update.
+- **Update indicators** — an `↑` marker appears next to game titles where both `latest_version` and `version` are known and differ. If the local version is empty (no version found in the directory name), no indicator is shown — an unknown local version cannot confirm an update.
 - **Unknown versions** — games without a detected version show the scraped `LatestVersion` from F95Zone when available, falling back to `"unknown"` only when neither source has a version.
 
 ### Detail View Actions

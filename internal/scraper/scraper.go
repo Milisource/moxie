@@ -125,7 +125,7 @@ func NewClient(cookieStr string) *Client {
 }
 
 // NewUnsafeClient creates a scraper client that skips rate limiting.
-// ⚠ This may trigger IP bans or Cloudflare blocks. Use only for testing
+// WARNING: This may trigger IP bans or Cloudflare blocks. Use only for testing
 // or when you're willing to risk being temporarily blocked.
 func NewUnsafeClient(cookieStr string) *Client {
 	return newClient(cookieStr, true)

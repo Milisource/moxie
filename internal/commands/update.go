@@ -39,7 +39,7 @@ func Update(version string) {
 
 	release, err := fetchLatestRelease()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "  ⚠ Failed to check for updates: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  ! Failed to check for updates: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -61,20 +61,20 @@ func Update(version string) {
 		}
 	}
 	if downloadURL == "" {
-		fmt.Fprintf(os.Stderr, "  ⚠ No binary found for %s in release %s\n", assetName, release.TagName)
+		fmt.Fprintf(os.Stderr, "  ! No binary found for %s in release %s\n", assetName, release.TagName)
 		os.Exit(1)
 	}
 
 	fmt.Fprintf(os.Stderr, "  Downloading %s...\n", assetName)
 	tmpPath, err := downloadBinary(downloadURL, expectedDigest)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "  ⚠ Download failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  ! Download failed: %v\n", err)
 		os.Exit(1)
 	}
 	defer os.Remove(tmpPath)
 
 	if err := replaceBinary(tmpPath); err != nil {
-		fmt.Fprintf(os.Stderr, "  ⚠ Failed to install update: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  ! Failed to install update: %v\n", err)
 		os.Exit(1)
 	}
 

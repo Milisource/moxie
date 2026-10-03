@@ -469,7 +469,7 @@ var (
          │
          ▼
 ┌──────────────────┐     ┌─────────────────────┐
-│ 1. Open DB       │────▶│ db.GetGame(42)       │
+│ 1. Open DB       │────►│ db.GetGame(42)       │
 │    (~/.config/   │     │ db.GetScrapedMeta(42) │
 │     moxie/     │     └─────────┬─────────────┘
 │     games.db)    │               │ game: { Title, ExePath, Engine, StoreLinks }
@@ -484,9 +484,9 @@ var (
          ▼
 ┌──────────────────┐
 │ 3. steam.         │
-│    FindSteamRoot()│──▶ ~/.steam/steam/  (or flatpak path)
-│    IsSteamRunning()│──▶ if true → ERROR "close Steam first"
-│    FindSteamUsers()│──▶ [123456789]     (could be multiple)
+│    FindSteamRoot()│──► ~/.steam/steam/  (or flatpak path)
+│    IsSteamRunning()│──► if true → ERROR "close Steam first"
+│    FindSteamUsers()│──► [123456789]     (could be multiple)
 └──────┬───────────┘
        │
        ▼
@@ -537,7 +537,7 @@ var (
 │      User: 123456789                                              │
 │      Proton: proton_experimental (Linux)                          │
 │      Artwork: from F95Zone cover                                  │
-│    ⚠ Restart Steam to see the game in your library.               │
+│    ! Restart Steam to see the game in your library.               │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -730,36 +730,36 @@ moxie steam add 42 --name "My Custom Title"
 
 **Output (success):**
 ```
-⚙  Checking Steam... installed at ~/.steam/steam
-⚠  Steam is running — please close Steam before continuing.
+- Checking Steam... installed at ~/.steam/steam
+!  Steam is running — please close Steam before continuing.
    (Press Enter after closing Steam, or Ctrl+C to cancel)
 
 ✓ Steam is closed.
 
-📂 Game: "Summer Scent" (Unity, ID 42)
+- Game: "Summer Scent" (Unity, ID 42)
    Path: /home/user/Games/SummerScent-v1.0
    Exe:  /home/user/Games/SummerScent-v1.0/SummerScent.exe
 
-🔍 Steam User: 123456789
+- Steam User: 123456789
    Backup: ~/.steam/steam/userdata/123456789/config/shortcuts.vdf.backup-20260502T143000Z
 
-📝 Adding to shortcuts.vdf...
+- Adding to shortcuts.vdf...
    AppID: 0x81234567
    Tags: [F95Zone, Unity]
 
-🖼  Downloading cover art...
+- Downloading cover art...
    Source: https://attachments.f95zone.to/2024/12/1234567_cover.png
    ✓ Vertical grid (600×900)
    ✓ Horizontal grid (460×215)
    ✓ Hero banner (1920×620)
 
-🐧 Setting Proton: proton_experimental
+- Setting Proton: proton_experimental
 
 ✓ Added "Summer Scent" to Steam library
   AppID: 0x81234567
   Proton: proton_experimental
 
-⚠  RESTART STEAM to see the game in your library.
+!  RESTART STEAM to see the game in your library.
    If shortcuts disappear, restore from:
    ~/.steam/steam/userdata/123456789/config/shortcuts.vdf.backup-20260502T143000Z
 ```

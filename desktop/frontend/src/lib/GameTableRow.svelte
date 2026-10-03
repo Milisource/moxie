@@ -98,11 +98,11 @@
       {#if ctl.state === 'launching'}
         <span class="play-spinner small"></span>
       {:else if ctl.state === 'playing'}
-        ⏸
+        ‖
       {:else if ctl.state === 'error'}
         ↻
       {:else}
-        ▶ Play
+        ▶︎ Play
       {/if}
     </button>
   </span>

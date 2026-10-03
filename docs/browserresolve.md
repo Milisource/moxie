@@ -239,13 +239,13 @@ overrides. Errors stay typed (`ErrNoChrome` → rename/generalize to
 > mints the token via the Turnstile flow, Go downloads the bytes
 > (challenge-free zone, resume + progress).
 
-1. ✅ Live: **Firefox engine** headless against a local server — real
+1. Done (live): **Firefox engine** headless against a local server — real
    Firefox 153.0.1 downloaded 1 MiB via the full pipeline (1.65 s);
    headless→headful escalation tested with a fake binary.
-2. ✅ Live: **`InstallDownloaderFallback`** production wiring — installed
+2. Done (live): **`InstallDownloaderFallback`** production wiring — installed
    with `MOXIE_BROWSER=firefox`; the Go path stays primary and only
    challenge responses trigger the browser.
-3. ⚠️ Vikingfile/datanodes E2E needs **click automation** — the raw-launch
+3. Open: Vikingfile/datanodes E2E needs **click automation** — the raw-launch
    engine only auto-downloads URLs that start a download on navigation;
    free-download-button hosts need a rod/CDP interaction pass (future work).
 4. OS matrix at least on Linux (this machine) + one Windows/macOS smoke test
