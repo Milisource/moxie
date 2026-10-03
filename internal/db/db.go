@@ -95,7 +95,7 @@ func (db *Database) Close() error {
 //     resolves of the same link skip the rate-limited unwrap endpoint.
 //     created_at is unix seconds; entries older than ResolvedURLTTL
 //     (7 days) are auto-pruned — unwraps can go stale.
-const currentSchemaVersion = 10
+const currentSchemaVersion = 11
 
 // gamesTableColumns is the games table column definition, shared between the
 // fresh-DB CREATE TABLE and the v8 rebuild (the engine CHECK constraint
@@ -592,6 +592,23 @@ func migrateVersionStep(conn *sql.DB, version int) error {
 			CREATE INDEX IF NOT EXISTS idx_resolved_urls_created_at ON resolved_urls(created_at);
 		`); err != nil {
 			return fmt.Errorf("create resolved_urls: %w", err)
+		}
+	case 11:
+		// Data repair: older syncs stored F95 status labels as the latest
+		// version ("Translation Request", "Full Steam", "English Ver.")
+		// because StripVersionQualifier passed digitless strings through.
+		// Clear them (keeping the "Final" sentinel) and reset the check
+		// time so the next sync refetches a real value.
+		if !columnExists(tx, "games", "latest_version") {
+			break // bare/partial schemas (tests) have nothing to repair
+		}
+		if _, err := tx.Exec(`
+			UPDATE games SET latest_version = NULL, version_checked_at = NULL
+			WHERE latest_version IS NOT NULL
+			  AND latest_version NOT GLOB '*[0-9]*'
+			  AND lower(latest_version) <> 'final'
+		`); err != nil {
+			return fmt.Errorf("clear digitless latest_version: %w", err)
 		}
 	default:
 		return fmt.Errorf("unknown migration version %d", version)

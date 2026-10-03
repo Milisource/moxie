@@ -24,6 +24,15 @@ var (
 	// bareVerInBrackets matches bare versions like [1.0] without v prefix.
 	// Safe from false positives on [Ch. 1.5] because \] must be immediate.
 	bareVerInBrackets = regexp.MustCompile(`\[(\d+\.\d+(?:\.\d+)*)\]`)
+	// singleVerInBrackets matches one-number versions: [v5], [v12b].
+	singleVerInBrackets = regexp.MustCompile(`(?i)\[(?:[^\]]*?[^a-z0-9\]])?v(\d+[a-z]?)(?:[^a-z0-9.\]][^\]]*)?\]`)
+	// episodicInBrackets matches episodic releases with no dotted version:
+	// [Ep. 3], [Episode 4], [Ch.2], [Chapter 5], [Part 2], [Season 1],
+	// [Build 123], [Act 2]. The label is kept: "Ep. 3" vs "Ep. 4" still
+	// compares numerically, and a bare "3" would read as a version. Ranges
+	// ("[Ch. 1-5]", a bundle) are rejected by requiring "]" or a space plus a
+	// non-dash after the number.
+	episodicInBrackets = regexp.MustCompile(`(?i)\[[^\]]*?\b((?:ep(?:isode)?|ch(?:apter)?|part|season|build|act|book)\.?\s*\d+(?:\.\d+)*)(?:\s*\]|\s+[^\]\-\d][^\]]*\])`)
 	// finalInBrackets matches [Final] — complete game sentinel with no version.
 	finalInBrackets = regexp.MustCompile(`(?i)\[final\]`)
 )
@@ -109,7 +118,8 @@ func truncateAtSectionHeader(text string) string {
 //  1. [v1.31], [ver 2.0], [version 1.5.2], [Ch. 2 v3.0], [v1.0 Alpha]
 //  2. [2018-07-18] — date-based (per F95Zone title format rules)
 //  3. [1.0] — bare version without v prefix
-//  4. [Final] — complete game sentinel
+//  4. [v5], then episodic labels: [Ep. 3], [Ch.2], [Build 123], [Season 1]
+//  5. [Final] — complete game sentinel
 //
 // Returns the version string (without v/ver prefix), or "" if none found.
 func extractVersionFromBrackets(title string) string {
@@ -126,7 +136,14 @@ func extractVersionFromBrackets(title string) string {
 	if m := bareVerInBrackets.FindStringSubmatch(title); len(m) > 1 {
 		return m[1]
 	}
-	// 4. [Final] — complete game, no version number.
+	// 4. One-number v-versions, then episodic labels.
+	if m := singleVerInBrackets.FindStringSubmatch(title); len(m) > 1 {
+		return m[1]
+	}
+	if m := episodicInBrackets.FindStringSubmatch(title); len(m) > 1 {
+		return m[1]
+	}
+	// 5. [Final] — complete game, no version number.
 	if finalInBrackets.MatchString(title) {
 		return "Final"
 	}

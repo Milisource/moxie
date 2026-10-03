@@ -900,6 +900,15 @@ func TestExtractVersionFromBrackets(t *testing.T) {
 		{"Game [Final] [Dev]", "Final"},
 		{"Game [final] [Dev]", "Final"},
 
+		// One-number v-versions and episodic labels
+		{"Game [v5] [Dev]", "5"},
+		{"Game [v12b] [Dev]", "12b"},
+		{"Game [Ep. 3] [Dev]", "Ep. 3"},
+		{"Game [Episode 4 Remake] [Dev]", "Episode 4 Remake"[:9]},
+		{"Game [Ch.2] [Dev]", "Ch.2"},
+		{"Game [Build 123] [Dev]", "Build 123"},
+		{"Game [Season 1] [Dev]", "Season 1"},
+
 		// Not versions — ranges, days, chapters without embedded v
 		{"No Version Brackets", ""},
 		{"Game [Ch. 1-5]", ""},  // range, no v

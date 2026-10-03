@@ -214,6 +214,7 @@ Each `migrateVersionStep` handles a specific version:
 - **v8**: Godot engine — `games.engine` CHECK constraint gains `'Godot'` (table rebuilt; indexes + FTS triggers recreated). The rebuild pins a single pooled connection: `PRAGMA foreign_keys` is per-connection, so the OFF/ON toggles and the rebuild transaction must land on the same connection or `DROP TABLE games` fails with an FK constraint error. A `PRAGMA foreign_key_check` runs after the rebuild.
 - **v9**: Scraped size (`size INTEGER DEFAULT 0` on `download_links`; 0 = unknown)
 - **v10**: Masked-URL unwrap cache (`resolved_urls` table + `idx_resolved_urls_created_at`; see schema above)
+- **v11**: Data repair — clears digitless `latest_version` values (F95 status labels like "Translation Request" stored by older syncs), keeping `Final`, and resets `version_checked_at` so the next sync refetches
 
 This replaces the earlier approach of running bare `ALTER TABLE` statements that ignored errors. All migration steps are idempotent (use `columnExists` checks for ALTER TABLE, `CREATE TABLE IF NOT EXISTS` for new tables).
 

@@ -195,7 +195,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Protect user-curated fields (Version/Engine/ExePath) during background rescan — only overwritten when empty or "Unknown"
 - [x] Scan tracking columns (`last_scanned_at`, `dir_mtime`) — per-game directory mtime tracking for incremental scanning
 - [x] Incremental scan by default — `moxie scan <dir>` skips known, unchanged directories; `--force` for full rescan
-- [x] `scan --force` refresh semantics — a forced rescan overwrites scanner-owned fields (version/engine/exe_path) with fresh detection; non-force upserts (watcher/desktop auto) still fill only unset fields
+- [x] `scan --force` refresh semantics — a forced rescan overwrites scanner-owned fields (version/engine/exe_path) with fresh detection, except that an empty version detection keeps the known version (most folders carry none); non-force upserts (watcher/desktop auto) still fill only unset fields
 - [x] Flags accepted before or after the directory/id — `moxie scan <dir> --force` works like `moxie scan --force <dir>` (same for `sync`/`check-updates`); previously stdlib flag parsing swallowed flags typed after a positional arg
 - [x] CLI scan relocates moved games — a game folder renamed within the scan root keeps its row (path updated in place, curation preserved) instead of being duplicated; vanished dirs are soft-deleted (shared `UpsertDetected`/`RemoveMissingUnder` with the desktop watcher)
 - [x] `.old` directory exclusion — scanner skips updater backup dirs; `ListActiveGames()` filters them from all commands (list, sync, rename, download, tui, etc.)

@@ -296,7 +296,10 @@ func HasNonGamePrefix(prefixes []int) bool {
 // StripVersionQualifier reduces a checker.php / cache-API version string to
 // its numeric core so "v21.0.0 wip.7944" compares equal to "21.0.0" (the form
 // the HTML parser stores). The first whitespace-delimited token that looks
-// like a version wins; without one, the whole string is kept ("Final").
+// like a version wins. Without one, "Final"/"Complete" collapse to "Final"
+// and anything else ("Translation Request", "Full Steam", "English Ver.")
+// yields "" — those are status labels, and storing them as a version made
+// every comparison against them meaningless.
 // Compare with version.Compare after stripping — stored versions from older
 // runs may carry qualifiers that would otherwise surface as phantom updates.
 func StripVersionQualifier(v string) string {
@@ -306,7 +309,10 @@ func StripVersionQualifier(v string) string {
 			return tok
 		}
 	}
-	return v
+	if l := strings.ToLower(v); strings.Contains(l, "final") || strings.Contains(l, "complete") {
+		return "Final"
+	}
+	return ""
 }
 
 // looksLikeVersion reports whether a token plausibly carries a version:

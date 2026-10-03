@@ -528,7 +528,12 @@ func (db *Database) UpdateGameScanFields(id int64, version, engine, exePath stri
 	engSet := "CASE WHEN engine IS NULL OR engine IN ('', 'Unknown') THEN ? ELSE engine END"
 	exeSet := "CASE WHEN exe_path IS NULL OR exe_path = '' THEN ? ELSE exe_path END"
 	if force {
-		verSet = "?"
+		// A forced rescan never erases a known version with "nothing
+		// detected": most game folders carry no version at all, so
+		// overwriting with NULL wiped versions the user had set or an
+		// install had recorded (nullableString maps "" to NULL). A stale
+		// exe_path, by contrast, is cleared — the file is gone.
+		verSet = "COALESCE(?, version)"
 		engSet = "?"
 		exeSet = "?"
 	}

@@ -129,6 +129,12 @@ func TestStripVersionQualifier(t *testing.T) {
 		{"B.0.10.8.12", "B.0.10.8.12"},
 		{"", ""},
 		{"  v1.0  ", "v1.0"},
+		{"[Completed]", "Final"},
+		{"Translation Request", ""},
+		{"[Translation Request", ""},
+		{"Full Steam", ""},
+		{"English Ver.", ""},
+		{"Ep. 3", "3"},
 	}
 	for _, tt := range tests {
 		got := StripVersionQualifier(tt.in)

@@ -161,8 +161,9 @@ func TestUpdateGameScanFields_ForceOverwritesSetFields(t *testing.T) {
 	}
 }
 
-// force=true with an empty detection must clear a stale scan-owned value — an
-// explicit rescan reflects what is on disk right now.
+// force=true with an empty detection clears a stale exe_path (the file is
+// gone) but keeps the known version: most game folders carry no version, and
+// erasing it on every forced rescan wiped installed versions library-wide.
 func TestUpdateGameScanFields_ForceClearsStale(t *testing.T) {
 	d := setupTestDB(t)
 	id, err := d.InsertGame(&Game{
@@ -187,10 +188,43 @@ func TestUpdateGameScanFields_ForceClearsStale(t *testing.T) {
 	if err != nil || g == nil {
 		t.Fatalf("GetGame: %v", err)
 	}
-	if g.Version != "" {
-		t.Errorf("version = %q, want cleared by force rescan", g.Version)
+	if g.Version != "1.0" {
+		t.Errorf("version = %q, want 1.0 preserved when nothing was detected", g.Version)
 	}
 	if g.ExePath != "" {
 		t.Errorf("exePath = %q, want cleared by force rescan", g.ExePath)
+	}
+}
+
+// Migration v11 clears status labels stored as latest_version by older
+// syncs, keeping real versions and the "Final" sentinel.
+func TestMigrateV11ClearsDigitlessLatestVersion(t *testing.T) {
+	d := setupTestDB(t)
+	cases := map[string]string{
+		"Translation Request": "",
+		"Full Steam":          "",
+		"Final":               "Final",
+		"v1.03":               "v1.03",
+		"P2":                  "P2",
+	}
+	ids := map[string]int64{}
+	for lv := range cases {
+		id, err := d.InsertGame(&Game{Title: "G " + lv, Path: "/g/" + lv, Engine: "RenPy", Status: "active", LatestVersion: lv})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[lv] = id
+	}
+	if err := migrateVersionStep(d.conn, 11); err != nil {
+		t.Fatalf("migrate v11: %v", err)
+	}
+	for lv, want := range cases {
+		g, err := d.GetGame(ids[lv])
+		if err != nil || g == nil {
+			t.Fatal(err)
+		}
+		if g.LatestVersion != want {
+			t.Errorf("latest %q after v11 = %q, want %q", lv, g.LatestVersion, want)
+		}
 	}
 }

@@ -41,7 +41,7 @@ At least one detection criterion is required. Custom profiles can override built
 
 ### Version Extraction
 
-`ExtractVersion(name)` extracts a version string from a directory or file name using regex patterns tried in priority order:
+`ExtractVersion(name)` extracts a version string from a directory or file name using regex patterns tried in priority order. Spelled-out prefixes are normalised to `v` first (`ver1.11`, `Ver.0.80`, `version 2`, `v.0.1`, `ov1.0.3`):
 
 1. **Date** — `\d{4}-\d{2}-\d{2}` (e.g. `2025-11-14`, `Game-2025-11-14`)
 2. **Compact date** — `YYYYMMDD` without separators (e.g. `Data20260403`, `Game-20260403`). Uses `\D` boundary so dates attached to words are matched. Year/month/day validation prevents false positives on arbitrary 8-digit numbers.
@@ -55,7 +55,8 @@ When the directory name yields no version, the scanner escalates through additio
 - **File contents** (`ExtractVersionFromDir`) — checks known files inside the game directory:
   - `Game.ini` (RPG Maker) — parses the `Title=` line, normalizes common version prefixes (`ver` → `v`, `version` → `v`) and applies the same regex patterns
   - `package.json` (HTML/NW.js) — reads the `"version"` field
-  - `game/options.rpy` (Ren'Py) — reads `config.version`
+  - `www/data/System.json` / `data/System.json` (RPG Maker MV/MZ) — runs `gameTitle` through `ExtractVersion` (`"Demons Roots v1.03"` → `1.03`)
+  - Ren'Py `config.version`, from `game/options.rpy`, else the compiled `game/options.rpyc` (RPC2 slots zlib-inflated; the AST keeps source strings), else any `game/*.rpa` archive ≤ 64 MiB (smallest first; scripts are stored inside as `.rpy` text and/or `.rpyc` blobs). Format strings such as `"%s %s" % (...)` are rejected
 - **Parent directory name** — many games are nested (e.g. `Game v1.0/Game Windows/Game.exe`), so the scanner checks the parent dir for version when the game dir itself has none
 - **Executable filename** — some games only have the version in the executable name (e.g. `[Full]EmberDoors_v0.1.7_Linux.x86_64` → `0.1.7`)
 

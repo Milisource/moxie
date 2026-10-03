@@ -280,7 +280,11 @@ var (
 	// File-content version regexes (used by ExtractVersionFromDir).
 	verIniRE = regexp.MustCompile(`(?i)\bver(?:sion)?\.?\s*`)
 	pkgVerRE = regexp.MustCompile(`"version"\s*:\s*"([^"]+)"`)
-	rpyVerRE = regexp.MustCompile(`(?i)define\s+config\.version\s*=\s*"([^"]+)"`)
+
+	// verPrefixRE normalises spelled-out version prefixes to a bare "v" so
+	// the patterns above see them: "ver1.11", "Ver.0.80", "version 2",
+	// "v.0.1", and the odd "ov1.0.3" some RPGM titles carry.
+	verPrefixRE = regexp.MustCompile(`(?i)\b(?:ver(?:sion)?|o?v)\.?\s*(\d)`)
 )
 
 // ExtractVersion attempts to pull a version string from a directory/file name.
@@ -291,6 +295,7 @@ func ExtractVersion(name string) string {
 	if name == "" {
 		return ""
 	}
+	name = verPrefixRE.ReplaceAllString(name, "v$1")
 	// Try date pattern first (most specific).
 	if m := dateVerRE.FindStringSubmatch(name); len(m) > 1 {
 		return m[1]
@@ -577,7 +582,8 @@ func nestedInGameTree(path, root string) bool {
 // ExtractVersionFromDir tries to extract a version string from known files
 // inside the game directory when the directory name itself contains no version.
 // Checks, in order: Game.ini Title= field, package.json "version" field,
-// game/options.rpy config.version (Ren'Py).
+// RPG Maker MV/MZ System.json gameTitle, then Ren'Py config.version (from
+// options.rpy, compiled options.rpyc, or a small .rpa archive).
 func ExtractVersionFromDir(dir string) string {
 	// Try Game.ini (RPG Maker games) — Title= frequently contains a version.
 	// Common patterns: "v1.05", "ver0.31", "v3.26", "B.0.7.9.1".
@@ -607,14 +613,8 @@ func ExtractVersionFromDir(dir string) string {
 		}
 	}
 
-	// Try game/options.rpy (Ren'Py games).
-	if data, err := os.ReadFile(filepath.Join(dir, "game", "options.rpy")); err == nil {
-		if m := rpyVerRE.FindStringSubmatch(string(data)); len(m) > 1 {
-			if ver := m[1]; ver != "" {
-				return ver
-			}
-		}
+	if ver := rpgmVersionFromDir(dir); ver != "" {
+		return ver
 	}
-
-	return ""
+	return renpyVersionFromDir(dir)
 }

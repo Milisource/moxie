@@ -82,7 +82,7 @@ F95Zone exposes several JSON endpoints that require **no login and no cookies** 
 
 `PublicAPI` (`latestapi.go`) wraps these with the same pacing/retry/breaker machinery: a **paced** client for F95Zone's own endpoints (politeness) and an **unpaced** client for api.f95checker.dev (that service exists to serve programmatic clients — F95Checker itself runs 10 concurrent connections).
 
-**Version normalization:** checker.php and cache versions carry qualifiers (`"v21.0.0 wip.7944"`, `"v1.03 + DLC"`, `"DX v5.0.5s"`). `StripVersionQualifier` reduces them to the numeric core before comparison so they don't surface as phantom updates against the cleaner versions the HTML parser stores.
+**Version normalization:** checker.php and cache versions carry qualifiers (`"v21.0.0 wip.7944"`, `"v1.03 + DLC"`, `"DX v5.0.5s"`). `StripVersionQualifier` reduces them to the numeric core before comparison so they don't surface as phantom updates against the cleaner versions the HTML parser stores. A string with no version-like token is not a version: `Final`/`Complete…` become `"Final"`, and status labels (`"Translation Request"`, `"Full Steam"`, `"English Ver."`) become `""` instead of being stored as the latest version. Schema migration v11 clears such labels already in the database.
 
 **Prefix IDs:** search responses include F95Zone's internal prefix IDs. `EngineNameFromPrefixes` maps the ~15 engine IDs (RPGM=13, RenPy=14, Unity=19, HTML=5, …) to moxie engine names for engine-mismatch validation; `HasNonGamePrefix` rejects mods/tools/requests/comics threads. Unknown IDs are ignored (the set grows over time).
 
@@ -124,7 +124,8 @@ The bracketed-title fallback (`extractVersionFromBrackets`) follows F95Zone's [o
 1. **`[vX.Y]` / `[ver X.Y]` / `[version X.Y]`** — explicit prefix, also matches embedded forms like `[Ch. 2 v3.0]` and `[v1.0 Alpha]`
 2. **`[YYYY-MM-DD]`** — date-based version for games without a version number
 3. **`[X.Y]`** — bare version without v/ver prefix (safe: `]` must be immediate, so `[Ch. 1.5]` is not a false positive)
-4. **`[Final]`** — sentinel for complete games with no version number
+4. **`[v5]`**, then episodic labels **`[Ep. 3]` / `[Ch.2]` / `[Part 2]` / `[Season 1]` / `[Build 123]`** — kept with their label (`"Ep. 3"`); ranges like `[Ch. 1-5]` are rejected
+5. **`[Final]`** — sentinel for complete games with no version number
 
 ### Auto-Association (`scrape --auto`)
 
