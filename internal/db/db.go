@@ -25,15 +25,27 @@ type Database struct {
 	conn *sql.DB
 }
 
+// dsnForPath builds the SQLite DSN for path.
+//
+// It is built by hand rather than with url.URL because url.URL puts a Windows
+// drive-qualified path ("C:\...") in the URI *authority* ("file://C:/...");
+// the WASM VFS then resolves "//C:/..." instead of the database, so every
+// command failed on Windows with a GetFileAttributesEx error. "file:" plus the
+// escaped path keeps the drive letter in the path component ("file:/home/..."
+// on POSIX, "file:C:/..." on Windows), which SQLite hands to the VFS verbatim.
+func dsnForPath(path string) string {
+	p := (&url.URL{Path: filepath.ToSlash(path)}).EscapedPath()
+	return "file:" + p + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+}
+
 // Open creates or opens the SQLite database at the given path, runs
 // migrations, and returns a Database handle.
 func Open(path string) (*Database, error) {
 	// foreign_keys and busy_timeout are per-connection settings, so they
 	// are applied via DSN _pragma options: every connection the pool
 	// opens gets them, not just the first one.
-	dsn := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
-	dsn.RawQuery = "_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
-	conn, err := sql.Open("sqlite3", dsn.String())
+	dsn := dsnForPath(path)
+	conn, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err
 	}
