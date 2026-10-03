@@ -103,7 +103,7 @@ func backfillMarkerName() string {
 	if v == "" {
 		v = "unknown"
 	}
-	return ".backfill-complete-" + v
+	return ".backfill-complete-" + v + "-" + coverThumbFormat
 }
 
 var backfillMu sync.Mutex
@@ -158,17 +158,13 @@ func backfillCoverThumbs(ctxs ...context.Context) int {
 			continue
 		}
 		name := e.Name()
-		if strings.HasSuffix(name, ".thumb") {
-			continue
-		}
 		if _, err := strconv.ParseInt(name, 10, 64); err != nil {
 			continue // not a cover file
 		}
 		full := filepath.Join(dir, name)
 		// Deliberately no "does .thumb already exist" skip here: this pass
 		// only runs once per app version (gated by the marker above), and a
-		// version bump that changes coverThumbMaxDim or the scale filter
-		// (e.g. the ApproxBiLinear -> CatmullRom, 320 -> 480 fix) needs to
+		// coverThumbFormat bump (thumbnail geometry/filter change) needs to
 		// regenerate thumbnails that already exist on disk, not just fill in
 		// covers that never got one. writeCoverThumb overwrites in place.
 		switch writeCoverThumb(full) {
@@ -190,9 +186,10 @@ func backfillCoverThumbs(ctxs ...context.Context) int {
 	return count
 }
 
-// handleCover serves /cover/<gameID> (full image) and
-// /cover/<gameID>/thumb (downscaled list thumbnail, falling back to the
-// full image when no thumbnail exists). Only numeric game IDs are accepted,
+// handleCover serves /cover/<gameID> (full image),
+// /cover/<gameID>/thumb (grid thumbnail, falling back to the full image when
+// no thumbnail exists) and /cover/<gameID>/large (detail-view variant, long
+// edge ≤ coverLargeMaxDim, generated on first request). Only numeric game IDs are accepted,
 // so the path can never escape the cover directory by construction.
 func (cs *coverServer) handleCover(w http.ResponseWriter, r *http.Request) {
 	// DNS-rebinding defense: the browser's Host header names the host it
@@ -206,10 +203,13 @@ func (cs *coverServer) handleCover(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/cover/")
 	rest = strings.TrimSuffix(rest, "/")
 
-	thumb := false
+	thumb, large := false, false
 	if strings.HasSuffix(rest, "/thumb") {
 		thumb = true
 		rest = strings.TrimSuffix(rest, "/thumb")
+	} else if strings.HasSuffix(rest, "/large") {
+		large = true
+		rest = strings.TrimSuffix(rest, "/large")
 	}
 
 	id, err := strconv.ParseInt(rest, 10, 64)
@@ -223,6 +223,12 @@ func (cs *coverServer) handleCover(w http.ResponseWriter, r *http.Request) {
 		if _, err := os.Stat(path + ".thumb"); err == nil {
 			path += ".thumb"
 		}
+	} else if large {
+		if _, err := resolveUnderCoverDir(path); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		path = ensureCoverLarge(path)
 	}
 
 	// Resolve symlinks and refuse anything that escapes the cover directory:

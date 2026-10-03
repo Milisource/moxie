@@ -602,6 +602,31 @@ func TestExtractCoverImage_ThumbAnchorPrefersFullRes(t *testing.T) {
 	}
 }
 
+// TestExtractCoverImage_BannerBeatsGallery: the OP's lazy-loaded banner
+// comes first; a later gallery screenshot with a full-size anchor must not
+// outrank it (it used to, by score).
+func TestExtractCoverImage_BannerBeatsGallery(t *testing.T) {
+	t.Parallel()
+
+	const html = `<div class="bbWrapper">
+<div class="lbContainer"><div class="lbContainer-zoomer" data-src="https://attachments.f95zone.to/2025/01/100_banner.png"></div>
+<img class="bbImage lazyload" data-src="https://attachments.f95zone.to/2025/01/100_banner.png" src="data:image/svg+xml;charset=utf-8,x" /></div>
+<p>Overview…</p>
+<a href="https://attachments.f95zone.to/2025/01/101_ss1.png"><img src="https://attachments.f95zone.to/2025/01/thumb/101_ss1.png" class="bbImage" /></a>
+<a href="https://attachments.f95zone.to/2025/01/102_ss2.png"><img src="https://attachments.f95zone.to/2025/01/thumb/102_ss2.png" class="bbImage" /></a>
+</div>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := extractCoverImage(doc.Find(".bbWrapper").First())
+	want := "https://attachments.f95zone.to/2025/01/100_banner.png"
+	if got != want {
+		t.Errorf("extractCoverImage = %q, want the banner %q", got, want)
+	}
+}
+
 // TestExtractCoverImage_PlainSrcStillWorks: legacy posts with a plain
 // bbImage src (no lazy-load, no lightbox) keep working.
 func TestExtractCoverImage_PlainSrcStillWorks(t *testing.T) {

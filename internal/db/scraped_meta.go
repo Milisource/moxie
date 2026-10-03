@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -23,7 +24,7 @@ func scanScrapedMeta(s scanner) (*ScrapedMeta, error) {
 		m.Overview = overview.String
 	}
 	if coverURL.Valid {
-		m.CoverURL = coverURL.String
+		m.CoverURL = CleanCoverURL(coverURL.String)
 	}
 	if lastScrapedStr.Valid {
 		m.LastScraped = parseTime(lastScrapedStr.String)
@@ -52,7 +53,7 @@ func (db *Database) UpsertScrapedMeta(m *ScrapedMeta) error {
 		m.GameID,
 		nullableString(m.Developer),
 		nullableString(m.Overview),
-		nullableString(m.CoverURL),
+		nullableString(CleanCoverURL(m.CoverURL)),
 		now,
 	)
 	return err
@@ -73,4 +74,14 @@ func (db *Database) GetScrapedMeta(gameID int64) (*ScrapedMeta, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+// CleanCoverURL returns u when it is an http(s) URL and "" otherwise —
+// F95Zone's API answers "missing" for threads without a cover image.
+func CleanCoverURL(u string) string {
+	u = strings.TrimSpace(u)
+	if strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://") {
+		return u
+	}
+	return ""
 }

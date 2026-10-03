@@ -6,6 +6,7 @@
   import {library} from './viewState.svelte.js'
   import {isVirtual, hasUpdate, updateUnknown, lastPlayedDate, relativePlayed} from './useLibrarySort.svelte.js'
   import {initials} from './initials.js'
+  import {coverFit, coverRev} from './cover.js'
 
   let {
     game,
@@ -21,6 +22,7 @@
   } = $props()
 
   let ctl = $derived(playControl(game))
+  let fit = $derived(coverFit(game))
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_tabindex -->
@@ -34,13 +36,15 @@
   onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenDetail(); } }}
   oncontextmenu={onContextMenu}
 >
-  <div class="cover-frame">
+  <div class="cover-frame" style:--cover-tone={fit === 'contain' ? game.coverTone : null}>
     {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
       <img
         class="cover-img"
-        src={coverSrc(game.id)}
+        class:fit-contain={fit === 'contain'}
+        src={coverSrc(game.id, 'thumb', coverRev(game))}
         alt="{game.title} cover"
         loading="lazy"
+        decoding="async"
         onerror={() => markFailed(game.id)}
       />
     {:else}
@@ -126,7 +130,7 @@
        updateGridLayout coverHeight math (also 4/3), which the grid
        virtualizer's row height depends on. */
     aspect-ratio: 3 / 4;
-    background: var(--bg-tertiary);
+    background: var(--cover-tone, var(--bg-tertiary));
     outline: 1px solid var(--border);
     outline-offset: -1px;
   }
@@ -153,6 +157,7 @@
     height: 100%;
     object-fit: cover;
   }
+  .cover-img.fit-contain { object-fit: contain; }
 
   .cover-ph {
     display: flex;

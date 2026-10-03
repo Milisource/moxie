@@ -16,9 +16,13 @@ import {library} from './viewState.svelte.js'
  * empty-string snapshot taken before the async fetch completes.
  */
 export function makeCoverHelpers(getCoverBase) {
-  function coverSrc(id, variant = 'thumb') {
-    const epoch = library.failedCovers.has(id) ? `?r=${library.coverEpoch}` : ''
-    return `${getCoverBase()}/cover/${id}/${variant}${epoch}`
+  // rev (see coverRev) busts the webview's HTTP cache when a cover is
+  // replaced — the server sends max-age=3600.
+  function coverSrc(id, variant = 'thumb', rev = '') {
+    const q = []
+    if (library.failedCovers.has(id)) q.push(`r=${library.coverEpoch}`)
+    if (rev) q.push(`v=${rev}`)
+    return `${getCoverBase()}/cover/${id}/${variant}${q.length ? '?' + q.join('&') : ''}`
   }
 
   function markFailed(id) {
@@ -26,4 +30,22 @@ export function makeCoverHelpers(getCoverBase) {
   }
 
   return {coverSrc, markFailed}
+}
+
+/** Cache-busting token for a game's current cover (size + provenance). */
+export function coverRev(game) {
+  return game?.coverW ? `${game.coverW}x${game.coverH}${game.coverSource ? '-' + game.coverSource : ''}` : ''
+}
+
+/**
+ * How the 3:4 grid card should fit a cover: wide banners (thumbs are
+ * uncropped above aspect 1.6, see desktop/covermeta.go) and tiny images are
+ * letterboxed over their tone instead of blown up into a crop.
+ */
+export function coverFit(game) {
+  const w = game?.coverW, h = game?.coverH
+  if (!w || !h) return 'cover'
+  if (w / h > 1.6) return 'contain'
+  if (Math.min(w, h) < 240) return 'contain'
+  return 'cover'
 }

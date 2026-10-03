@@ -33,7 +33,6 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/gen2brain/avif"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
-	"golang.org/x/image/draw"
 	"golang.org/x/image/webp"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
@@ -357,6 +356,13 @@ type DesktopGameSummary struct {
 	SizeBytes     int64  `json:"sizeBytes"`
 	SizeLabel     string `json:"sizeLabel"`
 	HasCover      bool   `json:"hasCover"`
+	// Cover geometry from the meta sidecar (0/"" when unknown): the grid
+	// letterboxes wide or low-resolution covers over CoverTone instead of
+	// blowing up a crop.
+	CoverW      int    `json:"coverW,omitempty"`
+	CoverH      int    `json:"coverH,omitempty"`
+	CoverTone   string `json:"coverTone,omitempty"`
+	CoverSource string `json:"coverSource,omitempty"`
 	// CreatedAt/LastPlayed are RFC3339, empty when unknown/never played. The
 	// desktop library's recency-first sort and "Recently played" quick view
 	// (89b6359) read these — until this change they only worked against the
@@ -1437,11 +1443,19 @@ func gameToSummaryCovers(g *db.Game, covers map[int64]bool, lastPlayed map[int64
 
 	if covers != nil {
 		s.HasCover = covers[g.ID]
+		if s.HasCover {
+			if m, ok := coverMetaFromDir()[g.ID]; ok {
+				s.CoverW, s.CoverH, s.CoverTone, s.CoverSource = m.W, m.H, m.Tone, m.Source
+			}
+		}
 	} else {
 		// Check if a cached cover exists on disk (cheap file stat).
 		coverPath := filepath.Join(config.CoverDir(), strconv.FormatInt(g.ID, 10))
 		if _, err := os.Stat(coverPath); err == nil {
 			s.HasCover = true
+			if m, ok := readCoverMeta(coverPath); ok {
+				s.CoverW, s.CoverH, s.CoverTone, s.CoverSource = m.W, m.H, m.Tone, m.Source
+			}
 		}
 	}
 
@@ -1485,9 +1499,10 @@ const coverSetCacheTTL = 2 * time.Second
 // invalidateCoverSetCache, so a freshly fetched cover shows up right away
 // instead of waiting out the TTL.
 var coverSetCache = struct {
-	mu  sync.Mutex
-	set map[int64]bool
-	at  time.Time
+	mu   sync.Mutex
+	set  map[int64]bool
+	meta map[int64]coverMeta
+	at   time.Time
 }{}
 
 // invalidateCoverSetCache forces the next coverSetFromDir call to re-read
@@ -1509,7 +1524,8 @@ func coverSetFromDir() map[int64]bool {
 		return coverSetCache.set
 	}
 
-	entries, err := os.ReadDir(config.CoverDir())
+	dir := config.CoverDir()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
@@ -1524,6 +1540,7 @@ func coverSetFromDir() map[int64]bool {
 		}
 	}
 	coverSetCache.set = set
+	coverSetCache.meta = loadCoverMetas(dir, entries)
 	coverSetCache.at = time.Now()
 	return set
 }
@@ -2752,6 +2769,7 @@ func (a *App) cacheCover(gameID int64, coverURL string) string {
 // worker immediately instead of blocking on a cover another goroutine is
 // still fetching.
 func (a *App) cacheCoverCtx(ctx context.Context, gameID int64, coverURL string) string {
+	coverURL = db.CleanCoverURL(coverURL)
 	if coverURL == "" {
 		return ""
 	}
@@ -2854,96 +2872,14 @@ func (a *App) fetchAndCacheCover(ctx context.Context, gameID int64, coverURL, co
 	// Record which URL this cover came from so a later URL change triggers a
 	// refresh (see cacheCoverCtx).
 	_ = os.WriteFile(coverPath+".url", []byte(coverURL), 0o644)
+	updateCoverMeta(coverPath, func(m *coverMeta) {
+		m.URL, m.Source = coverURL, coverSourceForURL(coverURL)
+	})
 	invalidateCoverSetCache()
 
 	thumb := writeCoverThumb(coverPath)
 	slog.Info("cover cached", "game_id", gameID, "bytes", len(data), "thumb", thumb.String(), "elapsed", time.Since(start))
 	return coverPath
-}
-
-// coverThumbMaxDim bounds the long edge of grid/list cover thumbnails. The
-// grid's cards are fluid-width (auto-fill, minmax(176px, 1fr) — see
-// GameList.svelte's updateGridLayout) and can render past 320px on wide
-// screens; a thumbnail capped there gets visibly upscaled and blurry. 480px
-// covers realistic card widths (and HiDPI 1x rendering of them) while still
-// being a fraction of the full image's bytes.
-const coverThumbMaxDim = 480
-
-// thumbResult classifies what writeCoverThumb did, so callers can count
-// genuine decode failures (corrupt files) and log one summary instead of
-// per-cover Warns.
-type thumbResult int
-
-const (
-	thumbWritten      thumbResult = iota // .thumb written
-	thumbNotNeeded                       // image already at or below the cap
-	thumbDecodeFailed                    // corrupt/undecodable data
-)
-
-func (r thumbResult) String() string {
-	switch r {
-	case thumbWritten:
-		return "written"
-	case thumbNotNeeded:
-		return "not-needed"
-	case thumbDecodeFailed:
-		return "decode-failed"
-	default:
-		return "unknown"
-	}
-}
-
-// writeCoverThumb decodes the cover at coverPath and writes a downscaled
-// JPEG thumbnail to coverPath+".thumb". Best-effort: if the image is already
-// small or fails to decode, no thumbnail is written and the cover server
-// falls back to serving the full image. Decode failures are logged as Warn.
-func writeCoverThumb(coverPath string) thumbResult {
-	data, err := os.ReadFile(coverPath)
-	if err != nil {
-		return thumbDecodeFailed
-	}
-
-	img, err := decodeCoverImage(data)
-	if err != nil {
-		slog.Warn("failed to decode cover for thumbnail", "path", coverPath, "error", err)
-		return thumbDecodeFailed
-	}
-
-	src := img.Bounds()
-	long := src.Dx()
-	if src.Dy() > long {
-		long = src.Dy()
-	}
-	if long <= coverThumbMaxDim {
-		return thumbNotNeeded
-	}
-
-	ratio := float64(coverThumbMaxDim) / float64(long)
-	w := int(float64(src.Dx()) * ratio)
-	h := int(float64(src.Dy()) * ratio)
-	if w < 1 {
-		w = 1
-	}
-	if h < 1 {
-		h = 1
-	}
-
-	// CatmullRom (bicubic) over ApproxBiLinear: the thumbnail is generated
-	// once and cached, so the extra cost buys a visibly sharper downscale —
-	// ApproxBiLinear's softness compounded with wide grid cards upscaling a
-	// small thumbnail was the main source of "crude" looking covers.
-	dst := image.NewRGBA(image.Rect(0, 0, w, h))
-	draw.CatmullRom.Scale(dst, dst.Bounds(), img, src, draw.Over, nil)
-
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 82}); err != nil {
-		return thumbDecodeFailed
-	}
-	if err := os.WriteFile(coverPath+".thumb", buf.Bytes(), 0644); err != nil {
-		slog.Warn("failed to write cover thumbnail", "path", coverPath, "error", err)
-		return thumbDecodeFailed
-	}
-	return thumbWritten
 }
 
 // decodeCoverImage decodes image bytes by sniffing the format first, so

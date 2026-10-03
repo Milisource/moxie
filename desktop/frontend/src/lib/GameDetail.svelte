@@ -1,5 +1,6 @@
 <script>
   import {initials} from './initials.js'
+  import {coverRev} from './cover.js'
   import {onMount} from 'svelte'
   import {
     GetGameDetail, PlayGame, RemoveGame, SetGameStatus, RenameGame,
@@ -94,7 +95,9 @@
     // fall back to the remote F95Zone URL. The effect must NOT return ''
     // here or it would immediately wipe the fallback handleCoverError set.
     if (coverFailed) return d.coverUrl || ''
-    if (d.hasCover && coverBase) return `${coverBase}/cover/${d.id}`
+    // /large: long edge ≤ 1400px — the full original can be 3840px, a
+    // ~60 MB decoded bitmap for one sidebar image.
+    if (d.hasCover && coverBase) return `${coverBase}/cover/${d.id}/large${coverRev(d) ? '?v=' + coverRev(d) : ''}`
     if (d.coverUrl) return d.coverUrl
     return ''
   }
@@ -516,6 +519,7 @@
               src={coverSrc}
               alt="{detail.title} cover"
               loading="lazy"
+              decoding="async"
               onerror={handleCoverError}
             />
           {:else}

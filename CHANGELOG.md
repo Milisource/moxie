@@ -20,6 +20,14 @@
 
 ### Fixed
 
+- **Sharper covers (F95-x2ml).**
+  - Grid thumbnails are shaped for the 3:4 card. Near-portrait art is centre-cropped and scaled to fit 600×800. Before, a long edge capped at 480 left banners about 270px tall, and the card blew them up 2–3×.
+  - Wide banners (aspect above 1.6) and tiny images are letterboxed over the cover's average colour instead of being cropped and upscaled.
+  - The detail view loads a new `/cover/<id>/large` variant (long edge ≤ 1400px) instead of the full original.
+  - Each cover now gets a `<id>.meta.json` sidecar recording its size, tone and source.
+  - Every existing thumbnail regenerates once.
+- **F95 cover picking.** The first image in the OP (the banner) is now the cover. Before, a later gallery screenshot with a full-size link could outrank it. Cover URLs that aren't http(s), such as the 7 rows holding F95's literal `missing` placeholder, are cleared so cover fetching retries them.
+
 - **Game updates pick the right file (F95-aftv):**
   - **Wrong platform build:** "unknown or unsupported archive format" on My Hentai Fantasy came from merging the Linux `.tar.bz2` build over a Windows install. Updates now keep to the installed build's platform, and Android links are never tried.
   - **New archive formats:** tar, tar.gz, tar.bz2 and tar.xz archives extract (pure Go). An unrecognised download now says what it is, for example "looks like an HTML page".

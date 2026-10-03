@@ -256,7 +256,7 @@ func TestWriteCoverThumbDownscales(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1000x500 → 480x240 (ratio preserved).
+	// 1000x500 is a wide banner (aspect > coverWideAspect) → 720x360, uncropped.
 	coverPath := filepath.Join(coverDir, "5")
 	if err := os.WriteFile(coverPath, makePNG(t, 1000, 500), 0o644); err != nil {
 		t.Fatal(err)
@@ -274,25 +274,32 @@ func TestWriteCoverThumbDownscales(t *testing.T) {
 		t.Fatalf("thumbnail is not a decodable JPEG: %v", err)
 	}
 	b := img.Bounds()
-	if b.Dx() != 480 || b.Dy() != 240 {
-		t.Errorf("thumbnail dims = %dx%d, want 480x240", b.Dx(), b.Dy())
+	if b.Dx() != 720 || b.Dy() != 360 {
+		t.Errorf("thumbnail dims = %dx%d, want 720x360", b.Dx(), b.Dy())
 	}
 }
 
-func TestWriteCoverThumbSkipsSmallImages(t *testing.T) {
+func TestWriteCoverThumbCropsSmallImagesWithoutUpscaling(t *testing.T) {
 	coverDir := testCoverDir(t)
 	if err := os.MkdirAll(coverDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	// Already smaller than the cap: no thumbnail file should appear.
+	// Smaller than the box: still cropped to 3:4 (the card's shape), at
+	// native resolution — never upscaled.
 	coverPath := filepath.Join(coverDir, "3")
 	if err := os.WriteFile(coverPath, makePNG(t, 100, 80), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	writeCoverThumb(coverPath)
-	if _, err := os.Stat(coverPath + ".thumb"); err == nil {
-		t.Error("thumbnail must not be written for images already at or below the cap")
+	f, err := os.Open(coverPath + ".thumb")
+	if err != nil {
+		t.Fatalf("thumbnail not written: %v", err)
+	}
+	defer f.Close()
+	cfg, err := jpeg.DecodeConfig(f)
+	if err != nil || cfg.Width != 60 || cfg.Height != 80 {
+		t.Errorf("thumbnail = %dx%d (%v), want 60x80", cfg.Width, cfg.Height, err)
 	}
 }
 
@@ -404,7 +411,7 @@ func TestBackfillCoverThumbs(t *testing.T) {
 	}
 	// Cover that already has a (stale) thumbnail — must be regenerated, not
 	// skipped, since this pass only runs once per app version and needs to
-	// pick up thumbnailing changes (e.g. a coverThumbMaxDim or filter bump)
+	// pick up thumbnailing changes (a coverThumbFormat bump)
 	// for covers thumbnailed under a previous version.
 	withThumb := filepath.Join(coverDir, "6")
 	if err := os.WriteFile(withThumb, makePNG(t, 800, 600), 0o644); err != nil {
@@ -413,7 +420,7 @@ func TestBackfillCoverThumbs(t *testing.T) {
 	if err := os.WriteFile(withThumb+".thumb", []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Small cover — no thumbnail expected.
+	// Small cover — gets a native-size 3:4 crop.
 	small := filepath.Join(coverDir, "7")
 	if err := os.WriteFile(small, makePNG(t, 100, 80), 0o644); err != nil {
 		t.Fatal(err)
@@ -424,8 +431,8 @@ func TestBackfillCoverThumbs(t *testing.T) {
 	}
 
 	n := backfillCoverThumbs()
-	if n != 2 {
-		t.Fatalf("backfillCoverThumbs wrote %d thumbnails, want 2", n)
+	if n != 3 {
+		t.Fatalf("backfillCoverThumbs wrote %d thumbnails, want 3", n)
 	}
 	if _, err := os.Stat(big + ".thumb"); err != nil {
 		t.Errorf("thumb for big cover not written: %v", err)
@@ -436,8 +443,8 @@ func TestBackfillCoverThumbs(t *testing.T) {
 	} else if string(staleThumb) == "stale" {
 		t.Error("stale thumb was not regenerated")
 	}
-	if _, err := os.Stat(small + ".thumb"); err == nil {
-		t.Error("thumb must not be written for small cover")
+	if _, err := os.Stat(small + ".thumb"); err != nil {
+		t.Errorf("thumb for small cover not written: %v", err)
 	}
 
 	// Idempotent: a second pass writes nothing new.

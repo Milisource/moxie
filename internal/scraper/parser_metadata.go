@@ -173,50 +173,52 @@ func extractTags(doc *goquery.Document) []string {
 // placeholder and the real URL sits in data-src (and on the wrapping
 // .lbContainer-zoomer div for the lightbox). Gallery thumbnails are
 // additionally served from a thumb/ subpath with the full-size original
-// linked from the wrapping anchor. Candidates are scored so the
-// full-size original wins over thumbnails and placeholders; data: URIs
-// and SVGs are always rejected.
+// linked from the wrapping anchor.
+//
+// The FIRST image in the post wins — on F95Zone that is the OP's banner,
+// while later images are gallery screenshots. (Scoring across all images
+// used to let a later screenshot's full-size anchor outrank the lazy-loaded
+// banner.) Within one image the best URL is taken: the lightbox zoomer's or
+// thumb anchor's full-size original, then data-src, then src. data: URIs and
+// SVGs are always rejected, as are images declared narrower than 100px
+// (icons, smilies).
 func extractCoverImage(content *goquery.Selection) string {
 	if content.Length() == 0 {
 		return ""
 	}
 
 	best := ""
-	bestScore := 0
-	consider := func(u string, score int) {
-		if !isValidCoverURL(u) {
-			return
+	content.Find(".lbContainer-zoomer, img.bbImage").EachWithBreak(func(_ int, el *goquery.Selection) bool {
+		if el.Is(".lbContainer-zoomer") {
+			// The zoomer precedes its <img> and carries the full-res URL.
+			if ds, ok := el.Attr("data-src"); ok && isValidCoverURL(ds) {
+				best = ds
+				return false
+			}
+			return true
 		}
-		if score > bestScore {
-			best, bestScore = u, score
-		}
-	}
-
-	content.Find("img.bbImage").Each(func(_ int, img *goquery.Selection) {
-		// A thumbnail wrapped in an anchor links to the full-size original
-		// of the same image — prefer the anchor href.
-		if a := img.Closest("a").First(); a.Length() > 0 {
-			if href, ok := a.Attr("href"); ok && isValidCoverURL(href) {
-				if src, ok := img.Attr("src"); ok && strings.Contains(src, "/thumb/") {
-					consider(href, 3)
-				}
+		if w, ok := el.Attr("width"); ok {
+			if pw, err := strconv.Atoi(w); err == nil && pw < 100 {
+				return true
 			}
 		}
-		if ds, ok := img.Attr("data-src"); ok {
-			consider(ds, 2) // lazy-load real URL
+		src, _ := el.Attr("src")
+		if a := el.Closest("a").First(); a.Length() > 0 && strings.Contains(src, "/thumb/") {
+			if href, ok := a.Attr("href"); ok && isValidCoverURL(href) {
+				best = href
+				return false
+			}
 		}
-		if src, ok := img.Attr("src"); ok {
-			consider(src, 1)
+		if ds, ok := el.Attr("data-src"); ok && isValidCoverURL(ds) {
+			best = ds
+			return false
 		}
+		if isValidCoverURL(src) {
+			best = src
+			return false
+		}
+		return true
 	})
-
-	// Lightbox zoomer divs always carry the full-res URL.
-	content.Find(".lbContainer-zoomer").Each(func(_ int, z *goquery.Selection) {
-		if ds, ok := z.Attr("data-src"); ok {
-			consider(ds, 2)
-		}
-	})
-
 	if best != "" {
 		return best
 	}

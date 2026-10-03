@@ -363,6 +363,14 @@ func migrate(conn *sql.DB) error {
 		log.Warn("resolved_urls auto-prune failed", "error", err)
 	}
 
+	// Scrapes once stored F95's literal "missing" placeholder as a cover URL;
+	// clear anything that isn't an http(s) URL so cover fetching retries.
+	if _, err := conn.Exec(
+		"UPDATE scraped_meta SET cover_url = NULL WHERE cover_url IS NOT NULL AND cover_url NOT LIKE 'http%'",
+	); err != nil {
+		log.Warn("scraped_meta cover cleanup failed", "error", err)
+	}
+
 	return nil
 }
 
