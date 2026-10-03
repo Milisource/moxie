@@ -3,6 +3,7 @@
   import {
     GetUpdatableGames,
     GetVersion,
+    EditGame,
   } from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
   import {formatBytes, formatSpeed} from './format.js'
@@ -118,13 +119,30 @@
   // started from a game's detail page.
   let updateInFlight = $derived(isUpdatingAny || !!batchState?.running || installRunning)
 
-  let count = $derived(games.length)
+  // GetUpdatableGames returns both verdicts (see gameUpdateState in Go).
+  // "unknown" rows can't be batch-updated: moxie doesn't know what is
+  // installed, so the user picks Update or Mark as current per game.
+  let available = $derived(games.filter(g => g.updateState !== 'unknown'))
+  let unknown = $derived(games.filter(g => g.updateState === 'unknown'))
+  let rows = $derived([...available, ...unknown])
+  let count = $derived(available.length)
+  let markError = $state('')
+
+  async function markAsCurrent(game) {
+    markError = ''
+    try {
+      await EditGame(game.id, {version: game.latestVersion})
+      await loadGames()
+    } catch (e) {
+      markError = `Failed to mark ${game.title} as current: ${String(e)}`
+    }
+  }
   // Count "done" only for games still in the current list. Counting every
   // gameStates entry is cumulative across the session; after a mixed batch the
   // refetched list drops succeeded games, so count - doneCount could go
   // negative (the button rendered "Update All (-1)").
   let doneCount = $derived(
-    games.filter(g => gameStates[g.id]?.phase === 'done').length
+    available.filter(g => gameStates[g.id]?.phase === 'done').length
   )
   let allDone = $derived(count > 0 && doneCount === count)
 
@@ -247,7 +265,7 @@
       <div class="action-bar">
         <button
           class="btn btn-primary"
-          onclick={() => onUpdateAll(games)}
+          onclick={() => onUpdateAll(available)}
           disabled={updateInFlight}
         >
           {#if batchState?.running}
@@ -275,8 +293,12 @@
       </div>
     {/if}
 
+    {#if markError}
+      <div class="batch-error">{markError}</div>
+    {/if}
+
     <!-- ── Game List ─────────────────────────────────────────── -->
-    {#if count > 0 && !allDone}
+    {#if (count > 0 && !allDone) || unknown.length > 0}
       <div class="table-header">
         <span class="col-title">Title</span>
         <span class="col-engine">Engine</span>
@@ -285,9 +307,18 @@
       </div>
 
       <div class="table-body">
-        {#each games as game (game.id)}
+        {#each rows as game (game.id)}
           {@const gs = getGS(game.id)}
           {@const phase = gs.phase || 'idle'}
+          {@const isUnknown = game.updateState === 'unknown'}
+          {#if isUnknown && game.id === unknown[0]?.id}
+            <div class="section-divider">
+              <span class="section-divider-title">Installed version unknown</span>
+              <span class="section-divider-hint">
+                moxie couldn't detect which version is installed. Update to {unknown.length === 1 ? 'the' : 'each'} latest build, or mark it as current if you already have it.
+              </span>
+            </div>
+          {/if}
           <div
             class="table-row"
             class:row-done={phase === 'done'}
@@ -318,11 +349,11 @@
                   <span class="version-new-done">{game.latestVersion}</span>
                 {/if}
               {:else if phase === 'error'}
-                <span class="version-current">{game.version || '?'}</span>
+                <span class="version-current">{game.version || 'unknown'}</span>
                 <span class="version-arrow">→</span>
                 <span class="version-latest">{game.latestVersion}</span>
               {:else}
-                <span class="version-current">{game.version || '?'}</span>
+                <span class="version-current">{game.version || 'unknown'}</span>
                 <span class="version-arrow">→</span>
                 <span class="version-latest">{game.latestVersion}</span>
               {/if}
@@ -337,6 +368,16 @@
                 >
                   Update
                 </button>
+                {#if isUnknown}
+                  <button
+                    class="btn btn-sm btn-outline"
+                    onclick={() => markAsCurrent(game)}
+                    disabled={updateInFlight}
+                    title="Record {game.latestVersion} as installed without downloading"
+                  >
+                    Mark as current
+                  </button>
+                {/if}
 
               {:else if phase === 'downloading'}
                 <div class="cell-download-progress">
@@ -649,6 +690,25 @@
   .batch-summary-fail {
     color: var(--danger);
   }
+  .section-divider {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 14px 12px 8px;
+    border-top: 1px solid var(--border);
+  }
+  .section-divider-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary, var(--text-muted));
+  }
+  .section-divider-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
   .batch-error {
     font-size: 12px;
     color: var(--danger);

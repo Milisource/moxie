@@ -669,6 +669,34 @@ func (db *Database) GamesNeedingUpdate() ([]Game, error) {
 	return games, rows.Err()
 }
 
+// GamesWithLatestVersion returns every active game with a known F95Zone
+// version, whatever its installed version — including games whose installed
+// version is unknown (NULL), which GamesNeedingUpdate's raw inequality drops
+// (NULL != x is NULL in SQL). The desktop classifies these in Go.
+func (db *Database) GamesWithLatestVersion() ([]Game, error) {
+	rows, err := db.conn.Query(`
+		SELECT ` + gameColumns + `
+		FROM games
+		WHERE path NOT LIKE '%.old'
+		  AND deleted_at IS NULL
+		  AND latest_version IS NOT NULL AND latest_version != ''
+		ORDER BY title COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var games []Game
+	for rows.Next() {
+		g, err := scanGame(rows)
+		if err != nil {
+			return nil, err
+		}
+		games = append(games, *g)
+	}
+	return games, rows.Err()
+}
+
 // GamesWithF95URL returns games that have an F95Zone URL (i.e., are associated).
 // Excludes backup directories (.old paths).
 func (db *Database) GamesWithF95URL() ([]Game, error) {

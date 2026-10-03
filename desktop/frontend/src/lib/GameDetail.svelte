@@ -342,6 +342,19 @@
     }
   }
 
+  // "Mark as current": the installed version is unknown but the user knows
+  // they already have the latest build. Same write path as the manual edit.
+  async function markAsCurrent() {
+    editError = ''
+    try {
+      await EditGame(gameId, {version: detail.latestVersion})
+      await loadDetail()
+      onUpdate()
+    } catch (err) {
+      editError = `Failed to save version: ${fmtErr(err)}`
+    }
+  }
+
   async function saveVersion() {
     editError = ''
     try {
@@ -507,8 +520,12 @@
             <button class="btn btn-sm" onclick={() => showRenameInput = false}>Cancel</button>
           {:else}
             <h1>{detail.title}</h1>
-            {#if detail.latestVersion && detail.version && detail.latestVersion !== detail.version}
-              <span class="update-badge" title="Update: {detail.version} → {detail.latestVersion}">Update Available</span>
+            {#if detail.updateState === 'available' || detail.updateState === 'unknown' || updateError || manualRequired}
+              {#if detail.updateState === 'unknown'}
+                <span class="update-badge update-badge-unknown" title="Installed version unknown; latest is {detail.latestVersion}">Installed: unknown</span>
+              {:else if detail.updateState === 'available'}
+                <span class="update-badge" title="Update: {detail.version} → {detail.latestVersion}">Update Available</span>
+              {/if}
               <button
                 class="update-btn"
                 onclick={() => onUpdateGame(gameId)}
@@ -517,6 +534,14 @@
               >
                 {updating ? 'Downloading…' : lockBusyElsewhere ? 'Updating…' : '↓ Download Update'}
               </button>
+              {#if detail.updateState === 'unknown'}
+                <button
+                  class="btn btn-sm"
+                  onclick={markAsCurrent}
+                  disabled={updating}
+                  title="Record {detail.latestVersion} as the installed version without downloading"
+                >Mark as current ({detail.latestVersion})</button>
+              {/if}
               {#if updateError}
                 <span class="update-error" title={updateError}>{updateError}</span>
               {/if}
@@ -612,8 +637,10 @@
                     title="Click to edit"
                   >
                     {detail.version || 'unknown'}
-                    {#if detail.latestVersion && detail.latestVersion !== detail.version}
+                    {#if detail.updateState === 'available' || detail.updateState === 'unknown'}
                       <span class="version-update">→ {detail.latestVersion}</span>
+                    {:else if detail.latestVersion && detail.updateState === 'current'}
+                      <span class="version-current" title="Latest on F95Zone: {detail.latestVersion}">(latest)</span>
                     {/if}
                   </span>
                 {/if}
@@ -1011,6 +1038,11 @@
     font-size: 12px;
     font-weight: 600;
   }
+  .update-badge-unknown {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+  }
   .update-btn {
     padding: 3px 12px;
     border: 1px solid var(--accent);
@@ -1142,6 +1174,10 @@
   .version-update {
     color: var(--warning);
     font-weight: 600;
+  }
+  .version-current {
+    color: var(--text-muted);
+    font-size: 12px;
   }
 
   .tags { display: flex; flex-wrap: wrap; gap: 4px; }

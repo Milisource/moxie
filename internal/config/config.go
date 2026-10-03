@@ -77,6 +77,14 @@ func EngineProfilesDir() string {
 
 // CoverDir returns the directory where cover art images are cached on disk.
 // Cached cover files are named by gameID (no extension) and stored here.
+// WorkDir returns the scratch directory for game downloads and archive
+// extraction. It lives under the config directory, on real disk: os.TempDir()
+// is commonly a RAM-backed tmpfs a few GiB in size, which multi-GiB game
+// archives (downloaded and then extracted alongside) overflow.
+func WorkDir() string {
+	return filepath.Join(ConfigDir(), "work")
+}
+
 func CoverDir() string {
 	return filepath.Join(ConfigDir(), "covers")
 }

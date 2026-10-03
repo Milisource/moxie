@@ -360,6 +360,10 @@ type DesktopGameSummary struct {
 	// docs/desktop-perf-virtualization-handoff.md's backend-track note).
 	CreatedAt  string `json:"createdAt,omitempty"`
 	LastPlayed string `json:"lastPlayed,omitempty"`
+	// UpdateState is the single update verdict the frontend renders (see
+	// gameUpdateState): "available", "unknown", "current", or "" when there
+	// is no F95Zone version to compare against.
+	UpdateState string `json:"updateState"`
 }
 
 // DesktopGameDetail is the full game data for the detail view.
@@ -459,30 +463,30 @@ func (a *App) GetGameCount() (int, error) {
 // Update / version-check methods
 // ---------------------------------------------------------------------------
 
-// GetUpdatableGames returns all games where latestVersion differs from
-// the locally installed version (i.e., an update is available on F95Zone).
+// GetUpdatableGames returns the games the Updates view lists: those with an
+// update available (UpdateState "available") and those whose installed
+// version is unknown ("unknown") — the latter can still be updated, or marked
+// current, from the view. Classification is gameUpdateState, the same verdict
+// the library badge and detail view render, so no surface can advertise an
+// update the apply path rejects.
 func (a *App) GetUpdatableGames() ([]DesktopGameSummary, error) {
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	games, err := a.db.GamesNeedingUpdate()
+	games, err := a.db.GamesWithLatestVersion()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list updatable games: %w", err)
 	}
 
-	// The SQL predicate is raw string inequality (latest_version != version),
-	// but the apply path gates on the semantic isGameUpdate. Filter here so
-	// the list can't advertise an update the pipeline will reject (e.g.
-	// "v0.8" vs "0.8", which normalize equal).
 	result := make([]DesktopGameSummary, 0, len(games))
 	covers := coverSetFromDir()
 	lastPlayed := lastPlayedMap(a)
 	for _, g := range games {
-		if !isGameUpdate(g.LatestVersion, g.Version) {
-			continue
+		switch gameUpdateState(g.LatestVersion, g.Version) {
+		case updateAvailable, updateUnknown:
+			result = append(result, gameToSummaryCovers(&g, covers, lastPlayed))
 		}
-		result = append(result, gameToSummaryCovers(&g, covers, lastPlayed))
 	}
 	return result, nil
 }
@@ -493,16 +497,15 @@ func (a *App) GetUpdatableCount() (int, error) {
 		return 0, fmt.Errorf("database not initialized")
 	}
 
-	// Count the semantically-filtered list, not the raw SQL count, so the
-	// sidebar badge agrees with GetUpdatableGames and the apply path (see the
-	// filter there for why raw != over-counts).
-	games, err := a.db.GamesNeedingUpdate()
+	// The badge counts confirmed updates only; unknown-version games are
+	// listed in the Updates view but would otherwise flood the count.
+	games, err := a.db.GamesWithLatestVersion()
 	if err != nil {
 		return 0, fmt.Errorf("failed to count updatable games: %w", err)
 	}
 	n := 0
 	for _, g := range games {
-		if isGameUpdate(g.LatestVersion, g.Version) {
+		if gameUpdateState(g.LatestVersion, g.Version) == updateAvailable {
 			n++
 		}
 	}
@@ -992,6 +995,38 @@ func (a *App) GetAllDownloadLinks() ([]DesktopDownloadLinkWithGame, error) {
 // context is cancelled. The function retries up to 3 times on transient
 // network errors with a 2-second backoff between attempts.
 func (a *App) downloadGameFile(ctx context.Context, evPrefix string, gameID int64, link db.DownloadLink) (string, error) {
+	return a.downloadGameFileOpts(ctx, evPrefix, gameID, link, true)
+}
+
+// errNoF95Cookies means no F95Zone session cookie is available. It is not
+// link-specific, so the multi-link fallback stops on it instead of trying
+// the next host.
+var errNoF95Cookies = errors.New("F95Zone cookies not available. Log into F95Zone in your browser first")
+
+// gameWorkTempDir creates an isolated scratch dir under config.WorkDir().
+func gameWorkTempDir(pattern string) (string, error) {
+	if err := os.MkdirAll(config.WorkDir(), 0o700); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(config.WorkDir(), pattern)
+}
+
+// downloadGameFileOpts is downloadGameFile with control over whether
+// link-specific failures emit <evPrefix>:error. The multi-link fallback
+// passes false for every link but the last, so the frontend does not render a
+// terminal error while another host is still being tried. A missing cookie is
+// always emitted (it fails every link alike).
+func (a *App) downloadGameFileOpts(ctx context.Context, evPrefix string, gameID int64, link db.DownloadLink, emitErrors bool) (string, error) {
+	emitErr := func(step, msg string) {
+		if !emitErrors {
+			return
+		}
+		runtime.EventsEmit(a.ctx, evPrefix+":error", map[string]interface{}{
+			"gameID":  gameID,
+			"step":    step,
+			"message": msg,
+		})
+	}
 	if a.db == nil {
 		return "", fmt.Errorf("database not initialized")
 	}
@@ -1002,24 +1037,19 @@ func (a *App) downloadGameFile(ctx context.Context, evPrefix string, gameID int6
 	// Obtain the F95Zone cookie for masked URL resolution.
 	cookie, err := browser.GetF95Cookies()
 	if err != nil || cookie == "" {
-		errMsg := "F95Zone cookies not available. Log into F95Zone in your browser first"
 		runtime.EventsEmit(a.ctx, evPrefix+":error", map[string]interface{}{
 			"gameID":  gameID,
 			"step":    "cookie",
-			"message": errMsg,
+			"message": errNoF95Cookies.Error(),
 		})
-		return "", fmt.Errorf("%s", errMsg)
+		return "", errNoF95Cookies
 	}
 
-	// Create a temp directory to hold the downloaded file.
-	// Using MkdirTemp so each download gets its own isolated directory.
-	tempDir, err := os.MkdirTemp(os.TempDir(), fmt.Sprintf("moxie-update-%d-*", gameID))
+	// Each download gets its own isolated directory under the on-disk work
+	// dir (not os.TempDir(), often a small tmpfs).
+	tempDir, err := gameWorkTempDir(fmt.Sprintf("moxie-update-%d-*", gameID))
 	if err != nil {
-		runtime.EventsEmit(a.ctx, evPrefix+":error", map[string]interface{}{
-			"gameID":  gameID,
-			"step":    "temp",
-			"message": fmt.Sprintf("Failed to create temp directory: %v", err),
-		})
+		emitErr("temp", fmt.Sprintf("Failed to create temp directory: %v", err))
 		return "", fmt.Errorf("create temp dir: %w", err)
 	}
 
@@ -1057,12 +1087,7 @@ func (a *App) downloadGameFile(ctx context.Context, evPrefix string, gameID int6
 			)
 		})
 	if lastErr != nil {
-		errMsg := fmt.Sprintf("Download failed after %d attempts: %v", attempts, lastErr)
-		runtime.EventsEmit(a.ctx, evPrefix+":error", map[string]interface{}{
-			"gameID":  gameID,
-			"step":    "download",
-			"message": errMsg,
-		})
+		emitErr("download", fmt.Sprintf("Download failed after %d attempts: %v", attempts, lastErr))
 		os.RemoveAll(tempDir)
 		return "", fmt.Errorf("download after %d attempts: %w", attempts, lastErr)
 	}
@@ -1070,6 +1095,8 @@ func (a *App) downloadGameFile(ctx context.Context, evPrefix string, gameID int6
 	// Find the downloaded file in the temp directory.
 	bestFile, err := pickDownloadedFile(tempDir)
 	if err != nil {
+		// Without this event the frontend sat on "downloading" forever.
+		emitErr("download", err.Error())
 		os.RemoveAll(tempDir)
 		return "", err
 	}
@@ -1180,6 +1207,17 @@ func pickDownloadedFile(tempDir string) (string, error) {
 // cross-platform > unknown) combined with host reliability scoring.
 // Returns an error if no compatible link is found.
 func selectDownloadLink(links []DesktopDownloadLink) (*DesktopDownloadLink, error) {
+	ranked, err := rankDownloadLinks(links)
+	if err != nil {
+		return nil, err
+	}
+	return &ranked[0], nil
+}
+
+// rankDownloadLinks returns the usable links (not dead, not online-only,
+// platform-compatible) best first, by platform priority plus host
+// reliability. Ties keep their stored order. Errors when none qualify.
+func rankDownloadLinks(links []DesktopDownloadLink) ([]DesktopDownloadLink, error) {
 	if len(links) == 0 {
 		return nil, fmt.Errorf("no download links provided")
 	}
@@ -1220,14 +1258,12 @@ func selectDownloadLink(links []DesktopDownloadLink) (*DesktopDownloadLink, erro
 			currentPlatform, len(links))
 	}
 
-	best := candidates[0]
-	for _, c := range candidates[1:] {
-		if c.score > best.score {
-			best = c
-		}
+	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
+	ranked := make([]DesktopDownloadLink, len(candidates))
+	for i, c := range candidates {
+		ranked[i] = c.link
 	}
-
-	return &best.link, nil
+	return ranked, nil
 }
 
 // isTransientDownloadError returns true if the error is likely a transient
@@ -1280,6 +1316,7 @@ func gameToSummaryCovers(g *db.Game, covers map[int64]bool, lastPlayed map[int64
 		ExePath:       g.ExePath,
 		SizeBytes:     g.SizeBytes,
 		SizeLabel:     formatBytes(g.SizeBytes),
+		UpdateState:   gameUpdateState(g.LatestVersion, g.Version),
 	}
 
 	if covers != nil {
@@ -1830,6 +1867,43 @@ func isGameUpdate(latest, installed string) bool {
 	default:
 		return false
 	}
+}
+
+// Update verdicts surfaced to the frontend as DesktopGameSummary.UpdateState.
+const (
+	updateAvailable = "available" // F95Zone version is newer (or unorderably different)
+	updateUnknown   = "unknown"   // installed version unknown, F95Zone has a numbered version
+	updateCurrent   = "current"   // installed is the same or newer
+)
+
+// updatable reports whether a single-game update may run: a newer version is
+// known, or the installed version is unknown and the user chose to update.
+func updatable(latest, installed string) bool {
+	st := gameUpdateState(latest, installed)
+	return st == updateAvailable || st == updateUnknown
+}
+
+// gameUpdateState classifies a game for every update surface (library
+// badge, detail button, Updates view, sidebar count). Most installs carry no
+// detectable version, so an empty installed version is its own state rather
+// than being hidden (the old SQL dropped NULLs) or treated as outdated. A
+// "Final" release with an unknown install stays quiet: there is no number to
+// show, and most such installs are the final build.
+func gameUpdateState(latest, installed string) string {
+	latest = strings.TrimSpace(latest)
+	if latest == "" {
+		return ""
+	}
+	if strings.TrimSpace(installed) == "" {
+		if strings.EqualFold(scraper.StripVersionQualifier(latest), "final") {
+			return ""
+		}
+		return updateUnknown
+	}
+	if isGameUpdate(latest, installed) {
+		return updateAvailable
+	}
+	return updateCurrent
 }
 
 // isNewerVersion reports whether the moxie release latest is newer than the
@@ -4482,24 +4556,99 @@ func (a *App) syncDownloadLinks(gameID int64, links []scraper.DownloadLink) {
 // a game. It wraps GetGameDownloadLinks with selectDownloadLink and converts
 // the result to db.DownloadLink for use with downloadGameFile.
 func (a *App) GetGameDownloadLinksForUpdate(gameID int64) (*db.DownloadLink, error) {
-	links, err := a.GetGameDownloadLinks(gameID)
+	ranked, err := a.rankedDownloadLinks(gameID)
+	if err != nil {
+		return nil, err
+	}
+	return &ranked[0], nil
+}
+
+// maxDownloadFallbackLinks bounds how many ranked links an update/install
+// tries before handing off to the manual-file fallback.
+const maxDownloadFallbackLinks = 3
+
+// rankedDownloadLinks returns the game's usable download links best first
+// (see rankDownloadLinks), as full db records so the scraped Size — the
+// downloader's expected total — survives (the DesktopDownloadLink DTO drops
+// it).
+func (a *App) rankedDownloadLinks(gameID int64) ([]db.DownloadLink, error) {
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	links, err := a.db.ListDownloadLinks(gameID, "", true)
 	if err != nil {
 		return nil, fmt.Errorf("get download links: %w", err)
 	}
-
-	best, err := selectDownloadLink(links)
+	byID := make(map[int64]db.DownloadLink, len(links))
+	dtos := make([]DesktopDownloadLink, 0, len(links))
+	for _, l := range links {
+		byID[l.ID] = l
+		dtos = append(dtos, DesktopDownloadLink{
+			ID: l.ID, URL: l.URL, Host: l.Host, Name: l.Name,
+			Platform: string(l.Platform), IsDead: l.IsDead,
+		})
+	}
+	ranked, err := rankDownloadLinks(dtos)
 	if err != nil {
 		return nil, fmt.Errorf("select download link: %w", err)
 	}
+	out := make([]db.DownloadLink, len(ranked))
+	for i, r := range ranked {
+		out[i] = byID[r.ID]
+	}
+	return out, nil
+}
 
-	return &db.DownloadLink{
-		ID:       best.ID,
-		URL:      best.URL,
-		Host:     best.Host,
-		Name:     best.Name,
-		Platform: db.Platform(best.Platform),
-		IsDead:   best.IsDead,
-	}, nil
+// downloadWithLinkFallback tries up to maxDownloadFallbackLinks ranked links
+// in order and returns the first archive downloaded, plus the link that
+// produced it. Only the final attempt emits <evPrefix>:error; earlier
+// failures are logged and announced as a "downloading" phase naming the next
+// host. A missing F95 cookie or a cancelled context stops immediately.
+func (a *App) downloadWithLinkFallback(ctx context.Context, evPrefix string, gameID int64, links []db.DownloadLink) (string, db.DownloadLink, error) {
+	return tryDownloadLinks(ctx, links,
+		func(link db.DownloadLink, last bool) (string, error) {
+			return a.downloadGameFileOpts(ctx, evPrefix, gameID, link, last)
+		},
+		func(failed, next db.DownloadLink, err error) {
+			slog.Warn("download failed; trying next link", "gameID", gameID, "host", failed.Host, "next", next.Host, "error", err)
+			runtime.EventsEmit(a.ctx, evPrefix+":phase", map[string]interface{}{
+				"gameID": gameID,
+				"phase":  "downloading",
+				"host":   next.Host,
+			})
+		})
+}
+
+// tryDownloadLinks is the event-free core of downloadWithLinkFallback: it
+// calls download for up to maxDownloadFallbackLinks links in order (last=true
+// only on the final attempt) and onRetry before moving to the next one. It
+// stops early on missing F95 cookies (every link needs them) or cancellation.
+func tryDownloadLinks(ctx context.Context, links []db.DownloadLink,
+	download func(link db.DownloadLink, last bool) (string, error),
+	onRetry func(failed, next db.DownloadLink, err error),
+) (string, db.DownloadLink, error) {
+	if len(links) == 0 {
+		return "", db.DownloadLink{}, fmt.Errorf("no download links")
+	}
+	if len(links) > maxDownloadFallbackLinks {
+		links = links[:maxDownloadFallbackLinks]
+	}
+	var lastErr error
+	for i, link := range links {
+		last := i == len(links)-1
+		archive, err := download(link, last)
+		if err == nil {
+			return archive, link, nil
+		}
+		lastErr = err
+		if errors.Is(err, errNoF95Cookies) || ctx.Err() != nil {
+			return "", link, err
+		}
+		if !last {
+			onRetry(link, links[i+1], err)
+		}
+	}
+	return "", links[len(links)-1], lastErr
 }
 
 // runSingleGameUpdate executes the full update pipeline for a single game.
@@ -4588,7 +4737,7 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 	// Check whether an update is actually needed. Compare normalized forms
 	// so "v0.8" and "0.8" are recognised as the same version rather than
 	// kicking off a pointless re-download.
-	if game.LatestVersion == "" || !isGameUpdate(game.LatestVersion, game.Version) {
+	if !updatable(game.LatestVersion, game.Version) {
 		err = fmt.Errorf("no update available (current version: %s)", game.Version)
 		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
 			"gameID":  gameID,
@@ -4605,24 +4754,25 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 		"phase":  "selecting-link",
 	})
 
-	selectedLink, err := a.GetGameDownloadLinksForUpdate(gameID)
+	links, err := a.rankedDownloadLinks(gameID)
 	if err != nil {
 		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
 			"gameID":  gameID,
 			"step":    "select-link",
 			"message": err.Error(),
 		})
-		return fmt.Errorf("select download link: %w", err)
+		return err
 	}
 
 	// Phase: downloading
-	slog.Info("game update: downloading", "gameID", gameID, "host", selectedLink.Host)
+	slog.Info("game update: downloading", "gameID", gameID, "host", links[0].Host, "candidates", len(links))
 	runtime.EventsEmit(a.ctx, "game-update:phase", map[string]interface{}{
 		"gameID": gameID,
 		"phase":  "downloading",
+		"host":   links[0].Host,
 	})
 
-	archivePath, err := a.downloadGameFile(ctx, "game-update", gameID, *selectedLink)
+	archivePath, selectedLink, err := a.downloadWithLinkFallback(ctx, "game-update", gameID, links)
 	if err != nil {
 		// downloadGameFile already emits its own error events. Automatic
 		// downloads are frequently blocked by Cloudflare-protected hosts
@@ -4667,7 +4817,7 @@ func (a *App) applyGameUpdateArchive(ctx context.Context, game *db.Game, archive
 		"phase":  "extracting",
 	})
 
-	extractDir, err := os.MkdirTemp(os.TempDir(), fmt.Sprintf("moxie-extract-%d-*", gameID))
+	extractDir, err := gameWorkTempDir(fmt.Sprintf("moxie-extract-%d-*", gameID))
 	if err != nil {
 		a.emitUpdateError(gameID, "extract",
 			fmt.Sprintf("Failed to create extraction temp directory: %v", err))
@@ -4938,6 +5088,11 @@ func (a *App) DownloadAllUpdates() error {
 			if strings.HasPrefix(g.Path, db.VirtualPathPrefix) {
 				continue
 			}
+			// Unknown-version games are listed for a deliberate per-game
+			// choice (Update or Mark as current), never swept into a batch.
+			if g.UpdateState != updateAvailable {
+				continue
+			}
 			games = append(games, g)
 		}
 		if skipped := len(all) - len(games); skipped > 0 {
@@ -5050,7 +5205,7 @@ func (a *App) ProvideUpdateFile(gameID int64) error {
 				fmt.Sprintf("%q was added from F95Zone but not yet downloaded — install it from the Downloads view before updating", game.Title))
 			return
 		}
-		if game.LatestVersion == "" || !isGameUpdate(game.LatestVersion, game.Version) {
+		if !updatable(game.LatestVersion, game.Version) {
 			a.emitUpdateError(gameID, "check",
 				fmt.Sprintf("no update available (current version: %s)", game.Version))
 			return
@@ -5227,13 +5382,13 @@ func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent strin
 	}()
 
 	phase("selecting-link")
-	selectedLink, err := a.GetGameDownloadLinksForUpdate(gameID)
+	links, err := a.rankedDownloadLinks(gameID)
 	if err != nil {
 		return emitErr("select-link", err)
 	}
 
 	phase("downloading")
-	archivePath, err := a.downloadGameFile(ctx, "game-install", gameID, *selectedLink)
+	archivePath, _, err := a.downloadWithLinkFallback(ctx, "game-install", gameID, links)
 	if err != nil {
 		// downloadGameFile emits its own error events.
 		return fmt.Errorf("download game file: %w", err)
@@ -5241,7 +5396,7 @@ func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent strin
 	downloadTempDir = filepath.Dir(archivePath)
 
 	phase("extracting")
-	extractDir, err = os.MkdirTemp(os.TempDir(), fmt.Sprintf("moxie-install-%d-*", gameID))
+	extractDir, err = gameWorkTempDir(fmt.Sprintf("moxie-install-%d-*", gameID))
 	if err != nil {
 		return emitErr("extract", fmt.Errorf("create extract temp dir: %w", err))
 	}

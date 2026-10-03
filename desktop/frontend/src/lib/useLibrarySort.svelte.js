@@ -148,9 +148,16 @@ export function sortCompare(a, b) {
 }
 
 // ── Per-game display helpers (shared by grid card + table row) ─
+// updateState is computed in Go (gameUpdateState) with the same version
+// comparison the updater uses, so "0.4" vs "v0.4" is never a phantom update.
 export function hasUpdate(game) {
-  return game.latestVersion && game.version &&
-         game.latestVersion !== game.version
+  return game.updateState === 'available'
+}
+
+// The latest version is known but the installed one isn't, so moxie can't
+// tell whether an update is due.
+export function updateUnknown(game) {
+  return game.updateState === 'unknown'
 }
 
 export function lastPlayedDate(g) {

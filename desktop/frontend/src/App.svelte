@@ -908,6 +908,18 @@
         }
         retryInFlight = null
       }
+      // idle means the backend lock is released, so nothing is running. Any
+      // row still in a busy phase missed its terminal event (e.g. a pipeline
+      // that bailed without :error) — surface it instead of spinning forever.
+      const stuck = Object.entries(gameStates)
+        .filter(([, gs]) => gs && UPDATE_BUSY_PHASES.includes(gs.phase))
+      if (stuck.length) {
+        const next = {...gameStates}
+        for (const [id, gs] of stuck) {
+          next[id] = {...gs, phase: 'error', error: gs.error || 'Update stopped before finishing'}
+        }
+        gameStates = next
+      }
       // Always pump: also covers the lock-race path where startUpdateGame was
       // rejected while the previous pipeline still held the lock and the game
       // was re-queued.

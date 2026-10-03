@@ -118,6 +118,13 @@ func main() {
 		case "history":
 			commands.History(args[1:])
 		case "update":
+			// "update" is moxie's self-update. Game updates are a separate
+			// command; refuse extra args rather than silently self-updating.
+			if len(args) > 1 {
+				fmt.Fprintf(os.Stderr, "moxie update takes no arguments (it updates moxie itself).\n")
+				fmt.Fprintf(os.Stderr, "To apply a game update archive: moxie install <id|name> <archive-path>\n")
+				os.Exit(1)
+			}
 			commands.Update(version)
 		case "cleanup":
 			commands.Cleanup(args[1:])
