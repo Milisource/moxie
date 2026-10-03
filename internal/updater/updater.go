@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -223,12 +224,17 @@ func shouldPreserve(relPath, destPath string, patterns []string) bool {
 // matchPath checks whether a glob-like pattern matches a relative file path.
 // Patterns can be: "saves/*" (dir prefix), "*.sav" (extension), "Game.ini" (exact basename).
 func matchPath(pattern, relPath string) bool {
+	// relPath comes from filepath.Walk/Rel, so on Windows it uses
+	// backslashes; patterns are written with forward slashes. Normalize to
+	// slash form and match with path.Match, which treats "/" as the only
+	// separator on every platform, so behaviour is identical everywhere.
+	relPath = filepath.ToSlash(relPath)
 	// Exact path match
-	if matched, _ := filepath.Match(pattern, relPath); matched {
+	if matched, _ := path.Match(pattern, relPath); matched {
 		return true
 	}
 	// Basename match
-	if matched, _ := filepath.Match(pattern, filepath.Base(relPath)); matched {
+	if matched, _ := path.Match(pattern, path.Base(relPath)); matched {
 		return true
 	}
 	// Directory prefix match: "saves/*" matches "saves/anything"
