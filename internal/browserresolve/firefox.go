@@ -51,37 +51,44 @@ func firefoxProfileRoots() []string {
 	return nil
 }
 
-// detectFirefoxBinary returns the Firefox executable: the MOXIE_FIREFOX_BIN
-// override, a PATH match, or a per-OS standard install location.
+// firefoxInstallCandidates returns the per-OS standard Firefox install
+// locations probed when no firefox is on PATH. It is a variable so tests can
+// make discovery hermetic: developer machines and CI runners commonly have a
+// real Firefox installed, which would otherwise leak into engine selection.
+var firefoxInstallCandidates = func() []string {
+	home, _ := os.UserHomeDir()
+	switch runtime.GOOS {
+	case "darwin":
+		return []string{
+			filepath.Join("/Applications", "Firefox.app", "Contents", "MacOS", "firefox"),
+			filepath.Join(home, "Applications", "Firefox.app", "Contents", "MacOS", "firefox"),
+		}
+	case "windows":
+		var out []string
+		for _, root := range []string{
+			os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("LOCALAPPDATA"),
+		} {
+			if root != "" {
+				out = append(out, filepath.Join(root, "Mozilla Firefox", "firefox.exe"))
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// detectFirefoxBinary returns the Firefox executable: a PATH match, then a
+// per-OS standard install location. (The MOXIE_FIREFOX_BIN override is applied
+// by the engine before this is consulted.)
 func detectFirefoxBinary() (string, error) {
 	for _, name := range firefoxBinaryCandidates {
 		if p, err := exec.LookPath(name); err == nil {
 			return p, nil
 		}
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = ""
-	}
-	switch runtime.GOOS {
-	case "darwin":
-		for _, base := range []string{"/Applications", filepath.Join(home, "Applications")} {
-			candidate := filepath.Join(base, "Firefox.app", "Contents", "MacOS", "firefox")
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate, nil
-			}
-		}
-	case "windows":
-		for _, root := range []string{
-			os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("LOCALAPPDATA"),
-		} {
-			if root == "" {
-				continue
-			}
-			candidate := filepath.Join(root, "Mozilla Firefox", "firefox.exe")
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate, nil
-			}
+	for _, candidate := range firefoxInstallCandidates() {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
 		}
 	}
 	return "", exec.ErrNotFound

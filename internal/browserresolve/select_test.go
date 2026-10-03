@@ -4,16 +4,20 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/mili/moxie/internal/config"
 )
 
-// fakeBin creates an executable script at dir/<name> so binary detection
-// finds it on PATH.
+// fakeBin creates an executable file at dir/<name> so binary detection finds
+// it on PATH. On Windows the .exe extension is required for exec.LookPath.
 func fakeBin(t *testing.T, dir, name string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
 	script := filepath.Join(dir, name)
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -31,9 +35,26 @@ func pathWith(t *testing.T, dir string, includeOrig bool) {
 	t.Setenv("PATH", path)
 }
 
+// isolateBrowserDiscovery hides the per-OS standard install locations so a
+// real Chrome/Firefox on the machine (or a CI runner) cannot leak into
+// engine selection. Callers still scrub PATH, and HOME to hide the Playwright
+// cache.
+func isolateBrowserDiscovery(t *testing.T) {
+	t.Helper()
+	oldFirefox := firefoxInstallCandidates
+	oldBrowser := browserInstallCandidates
+	firefoxInstallCandidates = func() []string { return nil }
+	browserInstallCandidates = func() []string { return nil }
+	t.Cleanup(func() {
+		firefoxInstallCandidates = oldFirefox
+		browserInstallCandidates = oldBrowser
+	})
+}
+
 // TestSelectEngine_FirefoxOnly picks the firefox engine when only a firefox
 // binary exists.
 func TestSelectEngine_FirefoxOnly(t *testing.T) {
+	isolateBrowserDiscovery(t)
 	old := cookieBrowsersForHost
 	defer func() { cookieBrowsersForHost = old }()
 	cookieBrowsersForHost = func(string) []string { return nil }
@@ -54,6 +75,7 @@ func TestSelectEngine_FirefoxOnly(t *testing.T) {
 // TestSelectEngine_ChromePreferredOverFirefox verifies the design order:
 // Chrome-family beats Firefox when both are installed.
 func TestSelectEngine_ChromePreferredOverFirefox(t *testing.T) {
+	isolateBrowserDiscovery(t)
 	old := cookieBrowsersForHost
 	defer func() { cookieBrowsersForHost = old }()
 	cookieBrowsersForHost = func(string) []string { return nil }
@@ -74,6 +96,7 @@ func TestSelectEngine_ChromePreferredOverFirefox(t *testing.T) {
 // TestSelectEngine_CookieHolderWins verifies the browser holding cookies
 // for the host is chosen even when another browser is installed.
 func TestSelectEngine_CookieHolderWins(t *testing.T) {
+	isolateBrowserDiscovery(t)
 	binDir := t.TempDir()
 	fakeBin(t, binDir, "google-chrome")
 	fakeBin(t, binDir, "firefox")
@@ -94,6 +117,7 @@ func TestSelectEngine_CookieHolderWins(t *testing.T) {
 
 // TestSelectEngine_ChromeCookieHolderWins similarly for chrome cookies.
 func TestSelectEngine_ChromeCookieHolderWins(t *testing.T) {
+	isolateBrowserDiscovery(t)
 	binDir := t.TempDir()
 	fakeBin(t, binDir, "firefox")
 	pathWith(t, binDir, false)
@@ -114,6 +138,7 @@ func TestSelectEngine_ChromeCookieHolderWins(t *testing.T) {
 // TestSelectEngine_NoBrowser verifies ErrNoBrowser when nothing is
 // installed and no cookies point at a browser.
 func TestSelectEngine_NoBrowser(t *testing.T) {
+	isolateBrowserDiscovery(t)
 	pathWith(t, t.TempDir(), false)
 	t.Setenv("HOME", t.TempDir()) // hide playwright-cached chromium
 	old := cookieBrowsersForHost

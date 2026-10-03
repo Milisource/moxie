@@ -45,31 +45,23 @@ func (e *rodEngine) profileDir(override string) (string, error) {
 	return discoverProfileDir(override)
 }
 
-// detectBrowserBinary returns the first Chrome-family executable on PATH,
-// in a per-OS standard install location, or in the Playwright cache
-// (rod's own launcher discovery covers the same ground at launch time;
-// this is the cheap selection-time check).
-func detectBrowserBinary() (string, error) {
-	for _, name := range browserBinaryCandidates {
-		if p, err := exec.LookPath(name); err == nil {
-			return p, nil
-		}
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = ""
-	}
+// browserInstallCandidates returns the per-OS standard Chrome-family install
+// locations probed when none is on PATH. It is a variable so tests can make
+// discovery hermetic: developer machines and CI runners commonly have a real
+// browser installed, which would otherwise leak into engine selection.
+var browserInstallCandidates = func() []string {
+	home, _ := os.UserHomeDir()
 	switch runtime.GOOS {
 	case "darwin":
+		var out []string
 		for _, app := range []string{"Google Chrome.app", "Microsoft Edge.app", "Brave Browser.app"} {
 			for _, base := range []string{"/Applications", filepath.Join(home, "Applications")} {
-				candidate := filepath.Join(base, app, "Contents", "MacOS", app[:len(app)-4])
-				if _, err := os.Stat(candidate); err == nil {
-					return candidate, nil
-				}
+				out = append(out, filepath.Join(base, app, "Contents", "MacOS", app[:len(app)-4]))
 			}
 		}
+		return out
 	case "windows":
+		var out []string
 		for _, root := range []string{
 			os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("LOCALAPPDATA"),
 		} {
@@ -81,14 +73,34 @@ func detectBrowserBinary() (string, error) {
 				filepath.Join("Microsoft", "Edge", "Application", "msedge.exe"),
 				filepath.Join("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
 			} {
-				candidate := filepath.Join(root, app)
-				if _, err := os.Stat(candidate); err == nil {
-					return candidate, nil
-				}
+				out = append(out, filepath.Join(root, app))
 			}
+		}
+		return out
+	}
+	return nil
+}
+
+// detectBrowserBinary returns the first Chrome-family executable on PATH,
+// in a per-OS standard install location, or in the Playwright cache
+// (rod's own launcher discovery covers the same ground at launch time;
+// this is the cheap selection-time check).
+func detectBrowserBinary() (string, error) {
+	for _, name := range browserBinaryCandidates {
+		if p, err := exec.LookPath(name); err == nil {
+			return p, nil
+		}
+	}
+	for _, candidate := range browserInstallCandidates() {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
 		}
 	}
 	// Playwright-cached Chromium builds (dev machines, CI, playwright users).
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
 	if home != "" {
 		for _, pattern := range []string{
 			filepath.Join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux64", "chrome"),

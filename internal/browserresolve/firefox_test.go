@@ -378,6 +378,7 @@ func TestFirefoxEngine_Run_HeadfulEscalation(t *testing.T) {
 // TestFirefoxEngine_NoBinary verifies ErrNoBrowser when no firefox binary
 // can be found.
 func TestFirefoxEngine_NoBinary(t *testing.T) {
+	isolateBrowserDiscovery(t)
 	e := newFirefoxEngine(Options{})
 	t.Setenv(firefoxEnvBin, "")
 	// Force a PATH without firefox: replace PATH with an empty dir.
