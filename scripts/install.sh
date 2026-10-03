@@ -4,9 +4,9 @@
 # Installer script for Linux and macOS
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh | bash -s -- --version v0.3.3-alpha
-#   curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh | bash -s -- --binary ./moxie
+#   curl -fsSL https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.sh | bash -s -- --version v0.3.3-alpha
+#   curl -fsSL https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.sh | bash -s -- --binary ./moxie
 #
 # Environment variables:
 #   MOXIE_VERSION    Version to install (e.g., v0.3.3-alpha). Takes priority,
@@ -25,7 +25,7 @@ set -euo pipefail
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 BINARY="moxie"
-GH_REPO="mili/moxie"
+GH_REPO="Milisource/moxie"
 GH_URL="https://github.com/${GH_REPO}"
 API_URL="https://api.github.com/repos/${GH_REPO}/releases"
 DEFAULT_INSTALL_DIR="${HOME}/.local/bin"
@@ -77,9 +77,9 @@ ${BOLD}ENVIRONMENT${RESET}
     ${BOLD}MOXIE_INSTALL${RESET}       Install directory (default: ${DEFAULT_INSTALL_DIR}).
 
 ${BOLD}EXAMPLES${RESET}
-    curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh | bash
-    curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh | bash -s -- --version v0.3.3-alpha
-    curl -fsSL https://raw.githubusercontent.com/mili/moxie/main/scripts/install.sh | bash -s -- --binary ./moxie
+    curl -fsSL https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.sh | bash -s -- --version v0.3.3-alpha
+    curl -fsSL https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.sh | bash -s -- --binary ./moxie
     MOXIE_VERSION=v0.3.3-alpha MOXIE_INSTALL=/usr/local/bin ./scripts/install.sh
 
 EOF

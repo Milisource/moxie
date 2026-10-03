@@ -50,7 +50,7 @@ ENVIRONMENT
     MOXIE_INSTALL       Install directory (default: `$env:LOCALAPPDATA\moxie\bin).
 
 EXAMPLES
-    iwr https://raw.githubusercontent.com/mili/moxie/main/scripts/install.ps1 -OutFile install.ps1
+    iwr https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.ps1 -OutFile install.ps1
     .\install.ps1
     .\install.ps1 -Version v0.3.3-alpha
     .\install.ps1 -Binary .\moxie.exe
@@ -62,7 +62,7 @@ EXAMPLES
 
 # ── Configuration ─────────────────────────────────────────────────
 $BinaryName  = 'moxie'
-$GhRepo      = 'mili/moxie'
+$GhRepo      = 'Milisource/moxie'
 $defaultDir  = "$env:LOCALAPPDATA\$BinaryName\bin"
 $InstallDir  = if ($env:MOXIE_INSTALL) { $env:MOXIE_INSTALL } else { $defaultDir }
 $InstallPath = "$InstallDir\$BinaryName.exe"
@@ -285,7 +285,7 @@ try {
     Write-Host ''
     Write-Err $_.Exception.Message
     Write-Host ''
-    Write-Warn 'Need help? Open an issue at https://github.com/mili/moxie/issues/new'
+    Write-Warn 'Need help? Open an issue at https://github.com/Milisource/moxie/issues/new'
     Write-Host ''
     exit 1
 }
