@@ -320,7 +320,7 @@
             >
               <div class="result-thumb">
                 {#if result.thumbnailUrl}
-                  <img src={result.thumbnailUrl} alt={result.title} loading="lazy" />
+                  <img src={result.thumbnailUrl} alt={result.title} loading="lazy" decoding="async" />
                 {:else}
                   <div class="result-thumb-placeholder">
                     <span class="placeholder-icon">▭</span>
@@ -370,7 +370,7 @@
           <!-- Cover Art -->
           <div class="preview-cover">
             {#if browser.preview.coverUrl}
-              <img src={browser.preview.coverUrl} alt={browser.preview.title} />
+              <img src={browser.preview.coverUrl} alt={browser.preview.title} decoding="async" />
             {:else}
               <div class="preview-cover-placeholder">
                 <span>▭</span>

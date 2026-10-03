@@ -7,6 +7,7 @@
   import {statusLabel} from './statuses.js'
   import {hasUpdate, updateUnknown, lastPlayedDate, relativePlayed, tsVal} from './useLibrarySort.svelte.js'
   import {initials} from './initials.js'
+  import {coverRev} from './cover.js'
 
   let {
     game,
@@ -42,9 +43,10 @@
     {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
       <img
         class="cover-thumb"
-        src={coverSrc(game.id)}
+        src={coverSrc(game.id, 'thumb', coverRev(game))}
         alt="{game.title} cover"
         loading="lazy"
+        decoding="async"
         onerror={() => markFailed(game.id)}
       />
     {:else}

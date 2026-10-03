@@ -146,6 +146,9 @@ func (a *App) upgradeCoversRun(ctx context.Context, opts coverart.Options) (Cove
 		slog.Info("cover upgraded", "game_id", g.ID, "title", g.Title, "from", fmt.Sprintf("%dx%d", w, h), "to", fmt.Sprintf("%dx%d", pick.W, pick.H), "source", pick.Source)
 		res.Replaced++
 	}
+	if res.Replaced > 0 {
+		releaseDecoderMemory()
+	}
 	slog.Info("cover upgrade complete", "checked", res.Checked, "replaced", res.Replaced, "failed", res.Failed)
 	return res, nil
 }

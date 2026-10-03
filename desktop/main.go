@@ -65,6 +65,7 @@ func main() {
 		},
 		Linux: &linux.Options{
 			WindowIsTranslucent: false,
+			WebviewGpuPolicy:    webviewGpuPolicy(),
 		},
 	})
 

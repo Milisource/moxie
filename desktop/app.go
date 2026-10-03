@@ -2682,6 +2682,9 @@ func (a *App) fetchCoversRun(ctx context.Context) {
 	// whose thumbnail is missing) get one locally. No network involved. The
 	// backfill's own backfillMu serializes it against the startup walk.
 	backfilled := backfillCoverThumbs(ctx)
+	if fetched > 0 {
+		releaseDecoderMemory()
+	}
 
 	log.Info("cover fetch complete",
 		"fetched", fetched, "failed", failed, "skipped", skipped,

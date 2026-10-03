@@ -178,6 +178,11 @@ func backfillCoverThumbs(ctxs ...context.Context) int {
 		"count", count,
 		"skippedOther", skippedOther,
 		"elapsed", time.Since(start))
+	if count > 0 {
+		// Decoding every original (AVIF especially) leaves a few hundred MB
+		// of freed decoder memory mapped; hand it back now the walk is done.
+		releaseDecoderMemory()
+	}
 
 	// Full pass completed: mark it done so later startups skip the walk.
 	if err := os.WriteFile(filepath.Join(dir, backfillMarkerName()), []byte(appVersion+"\n"), 0o644); err != nil {

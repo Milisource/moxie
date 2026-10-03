@@ -36,6 +36,7 @@
   - The detail view loads a new `/cover/<id>/large` variant (long edge ≤ 1400px) instead of the full original.
   - Each cover now gets a `<id>.meta.json` sidecar recording its size, tone and source.
   - Every existing thumbnail regenerates once.
+- **Desktop memory (F95-37w4).** A cover thumbnail backfill used to leave the app process about 360 MB larger for the rest of the session (601 MB vs a 240 MB baseline). The memory was AVIF decoding through the system libavif/dav1d stranded in glibc malloc arenas. Glibc arenas are now capped at 2, and freed decoder memory is handed back after backfills, cover fetches and upgrades, so the same run settles at about 343 MB. On the library grid, WebKitWebProcess sits around 280 MB now that the grid and list load thumbnails and the detail view loads the `large` variant. Before WS5, AVIF covers had no thumbnails, so every card decoded the full original. `MOXIE_GPU_POLICY=always|ondemand|never` overrides WebKitGTK's GPU policy for drivers that render badly. `never` costs about 130 MB more, and `ondemand` measured the same as the default `always`.
 - **F95 cover picking.** The first image in the OP (the banner) is now the cover. Before, a later gallery screenshot with a full-size link could outrank it. Cover URLs that aren't http(s), such as the 7 rows holding F95's literal `missing` placeholder, are cleared so cover fetching retries them.
 
 - **Game updates pick the right file (F95-aftv):**

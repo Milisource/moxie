@@ -215,7 +215,7 @@
     {:else}
       {#each ids as id (id)}
         {#if coverBase && !library.failedCovers.has(id)}
-          <img class="collage-img" src={coverSrc(id)} alt="" loading="lazy" onerror={() => markFailed(id)} />
+          <img class="collage-img" src={coverSrc(id)} alt="" loading="lazy" decoding="async" onerror={() => markFailed(id)} />
         {:else}
           <span class="collage-cell-ph">⊠</span>
         {/if}
@@ -229,7 +229,7 @@
 
 {#snippet gameThumb(g)}
   {#if g.hasCover && coverBase && !library.failedCovers.has(g.id)}
-    <img class="thumb-img" src={coverSrc(g.id)} alt="" loading="lazy" onerror={() => markFailed(g.id)} />
+    <img class="thumb-img" src={coverSrc(g.id)} alt="" loading="lazy" decoding="async" onerror={() => markFailed(g.id)} />
   {:else}
     <span class="thumb-ph">▭</span>
   {/if}
