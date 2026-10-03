@@ -135,10 +135,12 @@ const maxZipTotalBytes int64 = 100 * 1024 * 1024 * 1024
 // ".." — and absolute paths. Names that merely contain ".." as part of a
 // longer segment (e.g. "Game v1.0..beta/file.bin") are allowed.
 func sanitizeZipPath(name string) error {
-	// Reject absolute paths. isWindowsAbsPath is needed because
-	// filepath.IsAbs only recognizes Windows drive paths on Windows, but
-	// zips are portable and must behave the same on every target.
-	if filepath.IsAbs(name) || isWindowsAbsPath(name) {
+	// Reject absolute paths. filepath.IsAbs only recognizes the host's own
+	// absolute form (Unix "/x" on Unix, "C:\x" on Windows), but zips are
+	// portable and must behave the same on every target, so check both
+	// forms explicitly. A leading separator is also rooted on Windows
+	// ("\evil.exe") and must be rejected there too.
+	if filepath.IsAbs(name) || isWindowsAbsPath(name) || isRootedPath(name) {
 		return ErrPathTraversal
 	}
 	// Reject traversal components. Both separators are treated as path
@@ -151,6 +153,14 @@ func sanitizeZipPath(name string) error {
 		}
 	}
 	return nil
+}
+
+// isRootedPath reports whether name begins with a path separator. On Windows
+// a leading "\" is rooted (drive-relative) and a leading "/" is rooted on
+// both Unix and Windows. Archive entry names are always relative, so either
+// prefix is unsafe to extract.
+func isRootedPath(name string) bool {
+	return strings.HasPrefix(name, "/") || strings.HasPrefix(name, `\`)
 }
 
 // isWindowsAbsPath reports whether name looks like a Windows absolute path
