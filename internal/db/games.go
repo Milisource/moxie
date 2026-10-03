@@ -461,6 +461,14 @@ func (db *Database) UpdateGameWinePrefix(id int64, prefix string) error {
 	return err
 }
 
+// SetGameSteamAppIDIfEmpty records a Steam AppID matched by title (cover
+// art lookup) without overwriting one that is already set.
+func (db *Database) SetGameSteamAppIDIfEmpty(id, appID int64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.conn.Exec("UPDATE games SET steam_app_id = ?, updated_at = ? WHERE id = ? AND (steam_app_id IS NULL OR steam_app_id = 0)", appID, now, id)
+	return err
+}
+
 // UpdateGame updates all columns of the given game. It sets UpdatedAt to the
 // current UTC time before writing.
 func (db *Database) UpdateGame(g *Game) error {

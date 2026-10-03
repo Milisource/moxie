@@ -74,6 +74,10 @@ export function FetchCovers() {
   return window['go']['main']['App']['FetchCovers']();
 }
 
+export function FindCoverCandidates(arg1) {
+  return window['go']['main']['App']['FindCoverCandidates'](arg1);
+}
+
 export function FindDuplicateGames() {
   return window['go']['main']['App']['FindDuplicateGames']();
 }
@@ -96,6 +100,10 @@ export function GetConfigDir() {
 
 export function GetCookieStatus() {
   return window['go']['main']['App']['GetCookieStatus']();
+}
+
+export function GetCoverArtSettings() {
+  return window['go']['main']['App']['GetCoverArtSettings']();
 }
 
 export function GetCoverBaseURL() {
@@ -222,6 +230,10 @@ export function RestoreGame(arg1) {
   return window['go']['main']['App']['RestoreGame'](arg1);
 }
 
+export function RevertCover(arg1) {
+  return window['go']['main']['App']['RevertCover'](arg1);
+}
+
 export function ScanDirectory(arg1, arg2) {
   return window['go']['main']['App']['ScanDirectory'](arg1, arg2);
 }
@@ -234,12 +246,28 @@ export function SearchGames(arg1) {
   return window['go']['main']['App']['SearchGames'](arg1);
 }
 
+export function SetCoverLocked(arg1, arg2) {
+  return window['go']['main']['App']['SetCoverLocked'](arg1, arg2);
+}
+
+export function SetCoverSources(arg1, arg2) {
+  return window['go']['main']['App']['SetCoverSources'](arg1, arg2);
+}
+
+export function SetGameCover(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetGameCover'](arg1, arg2, arg3);
+}
+
 export function SetGameStatus(arg1, arg2) {
   return window['go']['main']['App']['SetGameStatus'](arg1, arg2);
 }
 
 export function SetGameWinePrefix(arg1, arg2) {
   return window['go']['main']['App']['SetGameWinePrefix'](arg1, arg2);
+}
+
+export function SetSteamGridDBKey(arg1) {
+  return window['go']['main']['App']['SetSteamGridDBKey'](arg1);
 }
 
 export function SetUpdateConcurrency(arg1) {
@@ -252,4 +280,8 @@ export function SyncAllGames(arg1) {
 
 export function SyncSingleGame(arg1) {
   return window['go']['main']['App']['SyncSingleGame'](arg1);
+}
+
+export function UpgradeCovers() {
+  return window['go']['main']['App']['UpgradeCovers']();
 }

@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Added
+
+- **Portrait cover art (F95-x2ml).** Covers → **Upgrade to Portrait Art** swaps landscape, missing or under-600px covers for real box art:
+  - Sources are Steam library capsules (600×900, no key needed), SteamGridDB grids (with an API key) and VNDB covers (opt-in).
+  - A cover is only replaced on an exact title match, and only when the new art is portrait and at least as sharp.
+  - A game's detail view has **Choose cover…** (pick from every source), **Lock** (never auto-replace) and **Undo** (restore the previous cover).
+  - Settings → Cover Art toggles the sources and stores the SteamGridDB key. Only its last 4 characters are ever shown.
+  - CLI: `moxie covers upgrade [--dry-run]`.
+  - See `docs/cover-art.md`.
+
 ### Changed
 
 - **Parallel game updates (F95-jxk1).** Update All, Retry Failed and per-game updates now run several games at once: 2 by default, settable from 1 to 4 under Settings → Game Updates (config key `update-concurrency`). Extra games show **Queued…**. Each update row has its own Cancel, and the toolbar button is now **Cancel all**. Masked-link unwrapping and the browser fallback are still paced once for the whole app (one unwrap every 3 s, one browser window at a time), so F95Zone isn't hit harder (F95-cbv5). One game can't have two runs at once, and scans still wait for every update to finish.

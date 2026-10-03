@@ -161,7 +161,8 @@ func TestCoverServerThumbFallsBackToFullImage(t *testing.T) {
 	if err := os.MkdirAll(coverDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data := makePNG(t, 100, 100)
+	// Undecodable bytes: no thumb can be built, so the original is served.
+	data := []byte("not an image at all")
 	if err := os.WriteFile(filepath.Join(coverDir, "7"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +183,41 @@ func TestCoverServerThumbFallsBackToFullImage(t *testing.T) {
 	}
 	got, _ := io.ReadAll(resp.Body)
 	if !bytes.Equal(got, data) {
-		t.Error("thumb endpoint must fall back to the full image when no thumbnail exists")
+		t.Error("thumb endpoint must fall back to the full image when no thumbnail can be built")
+	}
+}
+
+func TestCoverServerThumbGeneratedOnDemand(t *testing.T) {
+	coverDir := testCoverDir(t)
+	if err := os.MkdirAll(coverDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := makePNG(t, 100, 100)
+	if err := os.WriteFile(filepath.Join(coverDir, "7"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cs := startCoverServer()
+	if cs == nil {
+		t.Fatal("startCoverServer returned nil")
+	}
+	t.Cleanup(cs.Close)
+
+	resp, err := http.Get(cs.BaseURL() + "/cover/7/thumb")
+	if err != nil {
+		t.Fatalf("GET /cover/7/thumb: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	thumb, err := os.ReadFile(filepath.Join(coverDir, "7.thumb"))
+	if err != nil {
+		t.Fatalf("thumb not generated on first request: %v", err)
+	}
+	if !bytes.Equal(got, thumb) {
+		t.Error("thumb endpoint must serve the freshly generated thumbnail")
 	}
 }
 

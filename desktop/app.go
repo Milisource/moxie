@@ -390,6 +390,7 @@ type DesktopGameDetail struct {
 	WinePrefix    string                `json:"winePrefix"`
 	DownloadLinks []DesktopDownloadLink `json:"downloadLinks"`
 	PlayHistory   []DesktopPlayEntry    `json:"playHistory"`
+	CoverLocked   bool                  `json:"coverLocked"`
 }
 
 // DesktopDownloadLink is a download link for the detail view.
@@ -558,6 +559,9 @@ func (a *App) GetGameDetail(id int64) (*DesktopGameDetail, error) {
 		detail.Developer = meta.Developer
 		detail.Overview = meta.Overview
 		detail.CoverURL = meta.CoverURL
+	}
+	if m, ok := readCoverMeta(coverPathFor(id)); ok {
+		detail.CoverLocked = m.Locked
 	}
 
 	// Download links
@@ -2782,6 +2786,9 @@ func (a *App) cacheCoverCtx(ctx context.Context, gameID int64, coverURL string) 
 	// thread's cover art can change; without this check the old image is
 	// served forever. The sidecar URL marker is written alongside each cover.
 	if _, err := os.Stat(coverPath); err == nil {
+		if coverPinned(coverPath) {
+			return coverPath
+		}
 		if b, rerr := os.ReadFile(coverPath + ".url"); rerr == nil {
 			if strings.TrimSpace(string(b)) == coverURL {
 				return coverPath

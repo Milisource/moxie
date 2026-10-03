@@ -8,6 +8,7 @@
     GetCollections, GetGameCollections, AddGameToCollection, RemoveGameFromCollection,
     GetInstallTargets, GetCoverBaseURL,
     OpenDownloadURL, OpenUpdateDownloadPage,
+    FindCoverCandidates, SetGameCover, SetCoverLocked, RevertCover,
   } from '../../wailsjs/go/main/App'
   import {engineColor, engineOptions} from './engineColors.js'
   import {safeExternalUrl} from './sanitizeUrl.js'
@@ -214,6 +215,52 @@
       error = String(e)
     }
     loading = false
+  }
+
+  // ── Cover picker ─────────────────────────────────────
+  // Candidates from Steam / SteamGridDB / VNDB (Settings → Cover art). Picking
+  // one installs and locks it; Lock pins the current cover against syncs and
+  // upgrades; Undo restores the cover the last pick/upgrade replaced.
+  let picker = $state({open: false, loading: false, error: '', items: [], saving: ''})
+  let coverMsg = $state('')
+  async function openPicker() {
+    picker = {open: true, loading: true, error: '', items: [], saving: ''}
+    try {
+      const items = await FindCoverCandidates(Number(gameId))
+      picker = {...picker, loading: false, items: items || []}
+    } catch (e) {
+      picker = {...picker, loading: false, error: fmtErr(e)}
+    }
+  }
+  async function pickCover(c) {
+    picker = {...picker, saving: c.url, error: ''}
+    try {
+      await SetGameCover(Number(gameId), c.url, c.source)
+      picker = {...picker, open: false, saving: ''}
+      coverMsg = `Cover set from ${c.source} (locked)`
+      await loadDetail()
+      onUpdate()
+    } catch (e) {
+      picker = {...picker, saving: '', error: fmtErr(e)}
+    }
+  }
+  async function toggleCoverLock() {
+    try {
+      await SetCoverLocked(Number(gameId), !detail.coverLocked)
+      await loadDetail()
+    } catch (e) {
+      coverMsg = fmtErr(e)
+    }
+  }
+  async function undoCover() {
+    try {
+      await RevertCover(Number(gameId))
+      coverMsg = 'Previous cover restored (locked)'
+      await loadDetail()
+      onUpdate()
+    } catch (e) {
+      coverMsg = fmtErr(e)
+    }
   }
 
   // Recompute the cover source whenever the detail, the cover server base,
@@ -529,6 +576,48 @@
             </div>
           {/if}
         </div>
+        <div class="cover-tools">
+          <button class="cover-tool" onclick={openPicker} disabled={picker.loading}>
+            {picker.loading ? 'Searching…' : 'Choose cover…'}
+          </button>
+          {#if detail.hasCover}
+            <button class="cover-tool" class:cover-tool-on={detail.coverLocked} onclick={toggleCoverLock}
+              title={detail.coverLocked ? 'Locked — syncs and upgrades leave this cover alone' : 'Lock this cover against syncs and upgrades'}>
+              {detail.coverLocked ? 'Locked' : 'Lock'}
+            </button>
+          {/if}
+          {#if detail.coverSource && detail.coverSource !== 'f95'}
+            <button class="cover-tool" onclick={undoCover} title="Restore the cover this one replaced">Undo</button>
+          {/if}
+          {#if detail.coverW}
+            <span class="cover-dims" title="Source: {detail.coverSource || 'f95'}">{detail.coverW}×{detail.coverH} · {detail.coverSource || 'f95'}</span>
+          {/if}
+        </div>
+        {#if coverMsg}<p class="cover-msg">{coverMsg}</p>{/if}
+        {#if picker.open}
+          <div class="cover-picker">
+            <div class="cover-picker-head">
+              <span>Cover candidates</span>
+              <button class="cover-tool" onclick={() => picker = {...picker, open: false}}>Close</button>
+            </div>
+            {#if picker.loading}
+              <p class="cover-msg">Searching…</p>
+            {:else if picker.error}
+              <p class="cover-msg cover-msg-err">{picker.error}</p>
+            {:else if picker.items.length === 0}
+              <p class="cover-msg">No exact title match on the enabled sources (Settings → Cover art).</p>
+            {/if}
+            <div class="cover-picker-grid">
+              {#each picker.items as c (c.url)}
+                <button class="cand" onclick={() => pickCover(c)} disabled={!!picker.saving} title={c.note || c.source}>
+                  <img src={c.thumb || c.url} alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" />
+                  <span class="cand-meta">{c.source} · {c.w}×{c.h}{c.h <= c.w ? ' · landscape' : ''}</span>
+                  {#if picker.saving === c.url}<span class="cand-saving">Saving…</span>{/if}
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
 
         <!-- Action Buttons -->
         <div class="action-section">
@@ -1185,6 +1274,43 @@
   /* ── Grid ───────────────────────────────── */
   .cover-section {
     display: flex;
+  }
+  .cover-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+  .cover-tool {
+    padding: 3px 9px;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+  .cover-tool:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+  .cover-tool:disabled { opacity: 0.5; cursor: default; }
+  .cover-tool-on { border-color: var(--accent); color: var(--accent); }
+  .cover-dims { margin-left: auto; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); }
+  .cover-msg { margin: 6px 0 0; font-size: var(--text-xs); color: var(--text-muted); }
+  .cover-msg-err { color: var(--danger); }
+  .cover-picker { margin-top: 10px; padding: 10px; border: 1px solid var(--border); background: var(--bg-secondary); }
+  .cover-picker-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: var(--text-sm); color: var(--text-secondary); }
+  .cover-picker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+  .cand {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 0;
+    border: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    cursor: pointer;
+    text-align: left;
+  }
+  .cand:hover:not(:disabled) { border-color: var(--accent); }
+  .cand img { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; display: block; }
+  .cand-meta { padding: 0 6px 5px; font-size: var(--text-xs); font-family: var(--font-mono); color: var(--text-muted); }
+  .cand-saving {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, 0.6); color: var(--text-primary); font-size: var(--text-sm);
   }
   .cover-img {
     display: block;

@@ -7,6 +7,9 @@
     GetVersion,
     GetUpdateConcurrency,
     SetUpdateConcurrency,
+    GetCoverArtSettings,
+    SetCoverSources,
+    SetSteamGridDBKey,
   } from '../../wailsjs/go/main/App'
   import ScanPaths from './ScanPaths.svelte'
   import UpdateDialog from './UpdateDialog.svelte'
@@ -62,6 +65,37 @@
   onMount(async () => {
     try { concurrency = await GetUpdateConcurrency() } catch (e) { /* keep default */ }
   })
+  // Cover art sources (Steam keyless, SteamGridDB key, VNDB opt-in). The
+  // key is write-only from here: the backend only reports its last 4 chars.
+  let coverArt = $state({steam: true, vndb: false, sgdbKeySet: false, sgdbKeyHint: '', sgdbFromEnv: false})
+  let sgdbInput = $state('')
+  let coverArtMsg = $state('')
+  async function loadCoverArt() {
+    try { coverArt = await GetCoverArtSettings() } catch (e) { /* keep defaults */ }
+  }
+  onMount(loadCoverArt)
+  async function toggleSource(key) {
+    coverArtMsg = ''
+    const next = {...coverArt, [key]: !coverArt[key]}
+    try {
+      await SetCoverSources(next.steam, next.vndb)
+      coverArt = next
+    } catch (e) {
+      coverArtMsg = `Could not save: ${e}`
+    }
+  }
+  async function saveSGDBKey(clear = false) {
+    coverArtMsg = ''
+    try {
+      await SetSteamGridDBKey(clear ? '' : sgdbInput)
+      sgdbInput = ''
+      await loadCoverArt()
+      coverArtMsg = clear ? 'Key removed.' : 'Key saved.'
+    } catch (e) {
+      coverArtMsg = `Could not save: ${e}`
+    }
+  }
+
   async function saveConcurrency(n) {
     concurrencyError = ''
     try {
@@ -149,6 +183,53 @@
       </div>
     </div>
     {#if concurrencyError}<p class="section-hint error-text">{concurrencyError}</p>{/if}
+  </section>
+
+  <!-- ── Cover Art ──────────────────────────────────────── -->
+  <section class="settings-section">
+    <h3 class="section-title">Cover Art</h3>
+    <p class="section-hint">
+      Where Covers → Upgrade to Portrait Art and a game's "Choose cover…" look
+      for box art. Matches need an exact title.
+    </p>
+    <div class="kv-list">
+      <label class="kv-row toggle-row">
+        <span class="kv-key">Steam <span class="muted">— library capsules, no key</span></span>
+        <input type="checkbox" checked={coverArt.steam} onchange={() => toggleSource('steam')} />
+      </label>
+      <label class="kv-row toggle-row">
+        <span class="kv-key">VNDB <span class="muted">— visual novel covers, often small</span></span>
+        <input type="checkbox" checked={coverArt.vndb} onchange={() => toggleSource('vndb')} />
+      </label>
+      <div class="kv-row">
+        <span class="kv-key">SteamGridDB key</span>
+        <span class="kv-value">
+          {#if coverArt.sgdbKeySet}
+            ••••{coverArt.sgdbKeyHint}{coverArt.sgdbFromEnv ? ' (from STEAMGRIDDB_KEY)' : ''}
+          {:else}
+            not set
+          {/if}
+        </span>
+      </div>
+    </div>
+    <div class="key-row">
+      <input
+        class="key-input"
+        type="password"
+        autocomplete="off"
+        placeholder={coverArt.sgdbKeySet ? 'Replace key…' : 'Paste a SteamGridDB API key'}
+        bind:value={sgdbInput}
+      />
+      <button class="btn btn-outline" disabled={!sgdbInput.trim()} onclick={() => saveSGDBKey(false)}>Save key</button>
+      {#if coverArt.sgdbKeySet && !coverArt.sgdbFromEnv}
+        <button class="btn btn-outline" onclick={() => saveSGDBKey(true)}>Remove</button>
+      {/if}
+    </div>
+    <p class="section-hint">
+      Free key: steamgriddb.com → Preferences → API. Shared with the CLI
+      (<code>moxie config set steamgriddb-key</code>).
+    </p>
+    {#if coverArtMsg}<p class="section-hint">{coverArtMsg}</p>{/if}
   </section>
 
   <!-- ── Storage ────────────────────────────────────────── -->
@@ -296,6 +377,19 @@
   .seg-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
   .seg-btn.seg-active { background: var(--accent); color: var(--on-accent); }
   .error-text { color: var(--danger); }
+  .kv-row.toggle-row { cursor: pointer; grid-template-columns: 1fr auto; }
+  .toggle-row input { accent-color: var(--accent); width: 16px; height: 16px; justify-self: end; }
+  .muted { color: var(--text-muted); font-size: var(--text-sm); }
+  .key-row { display: flex; gap: 8px; margin-top: 8px; }
+  .key-input {
+    flex: 1;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+  }
+  .key-input:focus { outline: 1px solid var(--accent); }
   .kv-list { display: flex; flex-direction: column; gap: 4px; }
   .kv-row {
     display: grid;

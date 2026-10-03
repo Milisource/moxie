@@ -220,6 +220,13 @@ func (cs *coverServer) handleCover(w http.ResponseWriter, r *http.Request) {
 
 	path := filepath.Join(config.CoverDir(), strconv.FormatInt(id, 10))
 	if thumb {
+		if _, err := os.Stat(path + ".thumb"); err != nil {
+			// Replaced covers (upgrade, CLI) drop their thumb; rebuild it on
+			// first request rather than serving the full image to the grid.
+			if _, err := resolveUnderCoverDir(path); err == nil && writeCoverThumb(path) == thumbWritten {
+				invalidateCoverSetCache()
+			}
+		}
 		if _, err := os.Stat(path + ".thumb"); err == nil {
 			path += ".thumb"
 		}

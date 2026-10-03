@@ -263,6 +263,25 @@ const App = {
   GetAllDownloadLinks: () => delay().then(() => DOWNLOAD_LINKS),
   GetGameDownloadLinks: (id) => delay().then(() => DOWNLOAD_LINKS),
   OpenDownloadURL:     () => delay().then(() => {}),
+  GetCoverArtSettings: () => delay().then(() => ({steam: true, vndb: false, sgdbKeySet: true, sgdbKeyHint: 'a1b2', sgdbFromEnv: false})),
+  SetCoverSources:     () => delay().then(() => {}),
+  SetSteamGridDBKey:   () => delay().then(() => {}),
+  UpgradeCovers:       () => delay().then(() => {
+    let i = 0
+    const t = setInterval(() => {
+      i++
+      emit('covers:upgrade-progress', {current: i, total: 5, title: GAMES[i]?.title || '', phase: 'searching'})
+      if (i === 5) { clearInterval(t); emit('covers:upgrade-complete', {checked: 5, replaced: 3, failed: 0, errors: ['Some Game: vndb: HTTP 429']}) }
+    }, 400)
+  }),
+  FindCoverCandidates: () => delay(600).then(() => [
+    {url: 'https://picsum.photos/seed/a/600/900', w: 600, h: 900, source: 'steam', note: 'Steam library capsule'},
+    {url: 'https://picsum.photos/seed/b/660/930', w: 660, h: 930, source: 'steamgriddb', note: 'SteamGridDB grid · score 4'},
+    {url: 'https://picsum.photos/seed/c/256/360', w: 256, h: 360, source: 'vndb', note: 'VNDB v1'},
+  ]),
+  SetGameCover:        () => delay().then(() => {}),
+  SetCoverLocked:      () => delay().then(() => {}),
+  RevertCover:         () => delay().then(() => {}),
   OpenUpdateDownloadPage: () => delay().then(() => 'https://pixeldrain.com/u/aQiB1niF'),
   GetInstallTargets:   () => delay().then(() => INSTALL_TARGETS),
   InstallGame:         () => delay().then(() => {}),

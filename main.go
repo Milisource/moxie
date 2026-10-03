@@ -130,6 +130,8 @@ func main() {
 			commands.Cleanup(args[1:])
 		case "refresh-versions":
 			commands.RefreshVersions(args[1:])
+		case "covers":
+			commands.Covers(args[1:])
 		case "download":
 			commands.Download(args[1:])
 		case "install":
@@ -192,6 +194,7 @@ F95ZONE
   scrape <id> [flags]         Scrape F95Zone metadata for a game
   check-updates [flags]       Check all games for newer versions on F95Zone
   refresh-versions [flags]    Re-detect installed versions from folders and game files
+  covers upgrade [flags]      Replace landscape/low-res covers with portrait art (Steam, SteamGridDB, VNDB)
 
 DOWNLOADS
   download <id> [flags]       Download a game from F95Zone links

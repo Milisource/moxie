@@ -1,3 +1,30 @@
+export namespace coverart {
+	
+	export class Candidate {
+	    url: string;
+	    thumb?: string;
+	    w: number;
+	    h: number;
+	    source: string;
+	    note?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Candidate(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.thumb = source["thumb"];
+	        this.w = source["w"];
+	        this.h = source["h"];
+	        this.source = source["source"];
+	        this.note = source["note"];
+	    }
+	}
+
+}
+
 export namespace db {
 	
 	export class DownloadLink {
@@ -57,6 +84,26 @@ export namespace db {
 
 export namespace main {
 	
+	export class CoverArtSettings {
+	    steam: boolean;
+	    vndb: boolean;
+	    sgdbKeySet: boolean;
+	    sgdbKeyHint: string;
+	    sgdbFromEnv: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CoverArtSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.steam = source["steam"];
+	        this.vndb = source["vndb"];
+	        this.sgdbKeySet = source["sgdbKeySet"];
+	        this.sgdbKeyHint = source["sgdbKeyHint"];
+	        this.sgdbFromEnv = source["sgdbFromEnv"];
+	    }
+	}
 	export class DependencyStatus {
 	    name: string;
 	    status: string;
@@ -169,6 +216,10 @@ export namespace main {
 	    sizeBytes: number;
 	    sizeLabel: string;
 	    hasCover: boolean;
+	    coverW?: number;
+	    coverH?: number;
+	    coverTone?: string;
+	    coverSource?: string;
 	    createdAt?: string;
 	    lastPlayed?: string;
 	    updateState: string;
@@ -183,6 +234,7 @@ export namespace main {
 	    winePrefix: string;
 	    downloadLinks: DesktopDownloadLink[];
 	    playHistory: DesktopPlayEntry[];
+	    coverLocked: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new DesktopGameDetail(source);
@@ -201,6 +253,10 @@ export namespace main {
 	        this.sizeBytes = source["sizeBytes"];
 	        this.sizeLabel = source["sizeLabel"];
 	        this.hasCover = source["hasCover"];
+	        this.coverW = source["coverW"];
+	        this.coverH = source["coverH"];
+	        this.coverTone = source["coverTone"];
+	        this.coverSource = source["coverSource"];
 	        this.createdAt = source["createdAt"];
 	        this.lastPlayed = source["lastPlayed"];
 	        this.updateState = source["updateState"];
@@ -215,6 +271,7 @@ export namespace main {
 	        this.winePrefix = source["winePrefix"];
 	        this.downloadLinks = this.convertValues(source["downloadLinks"], DesktopDownloadLink);
 	        this.playHistory = this.convertValues(source["playHistory"], DesktopPlayEntry);
+	        this.coverLocked = source["coverLocked"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -247,6 +304,10 @@ export namespace main {
 	    sizeBytes: number;
 	    sizeLabel: string;
 	    hasCover: boolean;
+	    coverW?: number;
+	    coverH?: number;
+	    coverTone?: string;
+	    coverSource?: string;
 	    createdAt?: string;
 	    lastPlayed?: string;
 	    updateState: string;
@@ -268,6 +329,10 @@ export namespace main {
 	        this.sizeBytes = source["sizeBytes"];
 	        this.sizeLabel = source["sizeLabel"];
 	        this.hasCover = source["hasCover"];
+	        this.coverW = source["coverW"];
+	        this.coverH = source["coverH"];
+	        this.coverTone = source["coverTone"];
+	        this.coverSource = source["coverSource"];
 	        this.createdAt = source["createdAt"];
 	        this.lastPlayed = source["lastPlayed"];
 	        this.updateState = source["updateState"];

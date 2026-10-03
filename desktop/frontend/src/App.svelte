@@ -2,7 +2,7 @@
   import {onMount, tick} from 'svelte'
   import {fly} from 'svelte/transition'
   import {EventsOn} from '../wailsjs/runtime/runtime'
-  import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted, GetCookieStatus, SyncAllGames, DownloadGameUpdate, DownloadAllUpdates, CancelGameUpdate, CancelGameUpdateFor, CancelSync, ProvideUpdateFile, ScanDirectory, FetchCovers, GetGameCount, CheckForUpdate, DownloadUpdate, ApplyUpdate, InstallGame} from '../wailsjs/go/main/App'
+  import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted, GetCookieStatus, SyncAllGames, DownloadGameUpdate, DownloadAllUpdates, CancelGameUpdate, CancelGameUpdateFor, CancelSync, ProvideUpdateFile, ScanDirectory, FetchCovers, UpgradeCovers, GetGameCount, CheckForUpdate, DownloadUpdate, ApplyUpdate, InstallGame} from '../wailsjs/go/main/App'
   import Sidebar from './lib/Sidebar.svelte'
   import GameList from './lib/GameList.svelte'
   import GameDetail from './lib/GameDetail.svelte'
@@ -103,6 +103,8 @@
     fetching: false,
     progress: {current: 0, total: 0, title: '', phase: ''},
     result: null,              // {fetched, failed, skipped, total, backfilled} or null
+    upgrading: false,          // UpgradeCovers run (shares the backend guard)
+    upgradeResult: null,       // {checked, replaced, failed, errors} or null
     coverError: '',
   }, {
     'covers:progress': (s, r) => {
@@ -131,6 +133,21 @@
     'covers:error': (s, r) => {
       s.coverError = r?.error || 'Cover fetch failed'
       s.fetching = false
+      s.upgrading = false
+    },
+    'covers:upgrade-progress': (s, r) => {
+      s.progress = r
+      s.upgrading = true
+    },
+    'covers:upgrade-complete': async (s, r) => {
+      s.upgradeResult = r
+      s.upgrading = false
+      try {
+        await refreshGames()
+        statusMsg = `Cover upgrade complete — ${r?.replaced ?? 0} replaced`
+      } catch (e) {
+        statusMsg = `Covers upgraded, but the library refresh failed — ${e}`
+      }
     },
   })
   let coverState = coverPipeline.state
@@ -587,6 +604,20 @@
     }
   }
 
+  async function startCoverUpgrade() {
+    if (coverState.fetching || coverState.upgrading) return
+    coverState.coverError = ''
+    coverState.upgradeResult = null
+    coverState.progress = {current: 0, total: 0, title: '', phase: ''}
+    coverState.upgrading = true
+    try {
+      await UpgradeCovers()
+    } catch (e) {
+      coverState.coverError = String(e)
+      coverState.upgrading = false
+    }
+  }
+
   async function loadGames() {
     loading = true
     try {
@@ -999,7 +1030,11 @@
               progress={coverState.progress}
               result={coverState.result}
               coverError={coverState.coverError}
+              upgrading={coverState.upgrading}
+              upgradeResult={coverState.upgradeResult}
               onFetch={startCoverFetch}
+              onUpgrade={startCoverUpgrade}
+              onNavigate={(id) => activeView = id}
             />
           {:else if activeView === 'add'}
             <AddGameDialog onGameAdded={refreshGames}/>

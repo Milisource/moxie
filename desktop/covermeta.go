@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -17,6 +16,7 @@ import (
 	"golang.org/x/image/draw"
 
 	"github.com/mili/moxie/internal/config"
+	"github.com/mili/moxie/internal/coverart"
 )
 
 // Cover cache layout (config.CoverDir()):
@@ -48,36 +48,23 @@ const (
 	coverThumbFormat = "t2"
 )
 
-// coverMeta is the <id>.meta.json sidecar.
-type coverMeta struct {
-	W      int    `json:"w"`                // original width
-	H      int    `json:"h"`                // original height
-	Tone   string `json:"tone,omitempty"`   // average colour, "#rrggbb"
-	Source string `json:"source,omitempty"` // f95, steam, steamgriddb, vndb, manual
-	URL    string `json:"url,omitempty"`
-	Locked bool   `json:"locked,omitempty"` // never auto-replaced
-}
+// coverMeta is the <id>.meta.json sidecar (format shared with the CLI).
+type coverMeta = coverart.Meta
 
 func coverPathFor(id int64) string {
 	return filepath.Join(config.CoverDir(), strconv.FormatInt(id, 10))
 }
 
-// readCoverMeta loads coverPath's sidecar; ok is false when missing/corrupt.
-func readCoverMeta(coverPath string) (coverMeta, bool) {
-	var m coverMeta
-	b, err := os.ReadFile(coverPath + ".meta.json")
-	if err != nil || json.Unmarshal(b, &m) != nil {
-		return coverMeta{}, false
-	}
-	return m, true
-}
+func readCoverMeta(coverPath string) (coverMeta, bool) { return coverart.ReadMeta(coverPath) }
 
-func writeCoverMeta(coverPath string, m coverMeta) error {
-	b, err := json.Marshal(m)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(coverPath+".meta.json", b, 0o644)
+func writeCoverMeta(coverPath string, m coverMeta) error { return coverart.WriteMeta(coverPath, m) }
+
+// coverPinned reports whether the cached cover must not be replaced by the
+// F95 thread's cover: the user locked it, or it came from another source
+// (an upgrade). Without this the next sync would re-fetch the banner.
+func coverPinned(coverPath string) bool {
+	m, ok := readCoverMeta(coverPath)
+	return ok && (m.Locked || (m.Source != "" && m.Source != "f95"))
 }
 
 // updateCoverMeta read-modify-writes the sidecar.
