@@ -4,7 +4,7 @@
 
 - **Desktop redesign: "Archive / catalog" visual system** (F95-nks0, docs/desktop-ui-research.md §8):
   - Bundled IBM Plex type (Condensed for labels, Sans for body text, Mono for data).
-  - A warm dark palette with one amber accent, and 2px or square corners.
+  - The violet palette (matching the app icon), with 2px or square corners.
   - Hairline rules instead of shadows.
   - Square mono engine and status tags.
 - **The desktop layout now uses the full window.** Views no longer centre in a 640–960px column:
@@ -12,9 +12,15 @@
   - The list view adds Last played and Added columns on wide screens.
   - The detail view is a two-column catalog record (cover and actions | metadata), with a third column for links and history at ≥2200px.
   - Settings splits into two columns at ≥1600px.
-- Missing covers render as typographic cards (title initials). The grid marks updates with an amber cover edge and shows `old → new` in the caption.
+- Missing covers render as typographic cards (title initials). The grid marks updates with an accent cover edge and shows `old → new` in the caption.
 
 ### Fixed
+
+- **Desktop polish (F95-irgo):**
+  - Restored the violet palette after a brief amber experiment.
+  - Dropdowns in Collections, the game detail view and Add Game were white text on a white native widget. Every `<select>` now uses a themed style, and `color-scheme` is declared.
+  - The Covers view's "Fetch Missing Covers" is a proper styled button.
+  - Update progress shows two decimals (`42.07%`) instead of the raw float.
 
 - **Game updates work for real libraries** (F95-8igb):
   - The update verdict is computed once in Go (`updateState`), which ends phantom `0.4` vs `v0.4` updates.

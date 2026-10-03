@@ -13,23 +13,24 @@
 @import '@fontsource/ibm-plex-mono/latin-500.css';
 
 :root {
-  /* ── Palette: warm near-black, paper text, one amber accent ─── */
-  --bg-primary: #14120e;
-  --bg-secondary: #1a1712;
-  --bg-tertiary: #221e17;
-  --bg-hover: #2a251c;
-  --text-primary: #e8e1cf;
-  --text-secondary: #a59c86;
-  --text-muted: #6f6856;
-  --accent: #d4a03a;
-  --accent-hover: #e4b65c;
-  --accent-dim: #96702a;
-  --on-accent: #14120e;          /* text on an accent fill */
-  --border: #2d2820;             /* hairline rule */
-  --rule-strong: #4a4132;        /* emphasised rule / focus edge */
-  --success: #8db36f;
-  --warning: #e0913c;
-  --danger: #cf6a4f;
+  /* ── Palette: violet ink on blue-black (matches the app icon) ─── */
+  color-scheme: dark;
+  --bg-primary: #121218;
+  --bg-secondary: #1a1a24;
+  --bg-tertiary: #22222e;
+  --bg-hover: #2a2a38;
+  --text-primary: #e0e0e8;
+  --text-secondary: #9090a0;
+  --text-muted: #606070;
+  --accent: #7c5cfc;
+  --accent-hover: #9b7cff;
+  --accent-dim: #5a3ec8;
+  --on-accent: #ffffff;          /* text on an accent fill */
+  --border: #2a2a38;             /* hairline rule */
+  --rule-strong: #3c3c50;        /* emphasised rule / focus edge */
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --danger: #f87171;
 
   --sidebar-width: 248px;
   --header-height: 48px;
@@ -81,23 +82,24 @@
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg-primary: #f2ede1;
-    --bg-secondary: #f9f6ee;
-    --bg-tertiary: #e8e2d3;
-    --bg-hover: #ded7c5;
-    --text-primary: #1c1913;
-    --text-secondary: #575041;
-    --text-muted: #8a826e;
-    --accent: #9a6a10;
-    --accent-hover: #b07c18;
-    --accent-dim: #7a540c;
-    --on-accent: #fbf8f0;
-    --border: #d5cdba;
-    --rule-strong: #b3a88f;
-    --success: #4f7a32;
-    --warning: #b4651b;
-    --danger: #a8402a;
-    --shadow-pop: 0 0 0 1px var(--rule-strong), 0 16px 32px -16px rgba(60, 45, 20, 0.35);
+    color-scheme: light;
+    --bg-primary: #f8f8fc;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #eef0f6;
+    --bg-hover: #e4e6f0;
+    --text-primary: #1a1a2e;
+    --text-secondary: #5a5a70;
+    --text-muted: #9090a8;
+    --accent: #6a48f0;
+    --accent-hover: #7c5cfc;
+    --accent-dim: #5a3ec8;
+    --on-accent: #ffffff;
+    --border: #dcdce8;
+    --rule-strong: #c4c4d4;
+    --success: #16a34a;
+    --warning: #b45309;
+    --danger: #dc2626;
+    --shadow-pop: 0 0 0 1px var(--rule-strong), 0 16px 32px -16px rgba(30, 30, 60, 0.3);
   }
 }
 
@@ -195,4 +197,26 @@ button, input, select, textarea {
   font-size: var(--text-base);
   color: var(--text-secondary);
   line-height: 1.5;
+}
+
+/* Native <select>: WebKitGTK paints its own light widget and keeps our light
+   text on top (white-on-white). Strip the widget everywhere and draw a caret
+   with two gradients. Components set background-color/padding, never the
+   `background`/`padding-right` shorthands, so the caret survives. */
+select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%),
+    linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
+  background-position: calc(100% - 13px) 50%, calc(100% - 9px) 50%;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+}
+select option {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
 }

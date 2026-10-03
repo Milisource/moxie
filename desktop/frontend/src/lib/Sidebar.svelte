@@ -127,7 +127,7 @@
 </aside>
 
 <style>
-  /* Index-style navigation: hairline-separated rows, an amber ▌ marker on
+  /* Index-style navigation: hairline-separated rows, an accent ▌ marker on
      the active row, condensed uppercase labels (docs/desktop-ui-research.md §8). */
   .sidebar {
     width: var(--sidebar-width);

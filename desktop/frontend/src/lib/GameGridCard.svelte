@@ -183,7 +183,7 @@
     color: var(--text-muted);
   }
 
-  /* Update marker: an amber edge down the cover's left side. */
+  /* Update marker: an accent edge down the cover's left side. */
   .update-edge {
     position: absolute;
     top: 0;

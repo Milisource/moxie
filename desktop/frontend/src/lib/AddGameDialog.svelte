@@ -417,10 +417,10 @@
   .field-input:focus { border-color: var(--accent); }
 
   .field-select {
-    padding: 7px 10px;
+    padding: 7px 28px 7px 10px;
     border: 1px solid var(--border);
     border-radius: var(--radius-1);
-    background: var(--bg-primary);
+    background-color: var(--bg-primary);
     color: var(--text-primary);
     font-size: var(--text-base);
     outline: none;

@@ -784,7 +784,7 @@
     }))
     subs.push(EventsOn('game-update:download-progress', (data) => {
       updateGS(data.gameID, {
-        percent: Math.min(data.percent ?? 0, 100),
+        percent: Math.round(Math.min(data.percent ?? 0, 100) * 100) / 100,
         speed: data.speedBytesPerSec ?? 0,
         bytesDownloaded: data.bytesDownloaded ?? 0,
         totalBytes: data.totalBytes ?? 0,

@@ -221,7 +221,7 @@
     user-select: none;
   }
   .sync-force input {
-    accent-color: var(--accent, #7c5cff);
+    accent-color: var(--accent);
   }
 
   /* ── Cookie Status ─────────────────── */

@@ -267,24 +267,26 @@ The desktop app previously used stock system fonts, a violet accent, 6–12px ro
 - **Plex Mono** is for versions, sizes, dates, paths, engine/status tags and counts, always with `font-variant-numeric: tabular-nums`.
 - Scale: `--text-2xs` 10px through `--text-4xl` 40px. Component CSS uses only the tokens, never literal px sizes.
 
-**Colour.** A warm near-black ground with paper-tinted text and **one** amber accent:
+**Colour.** A blue-black ground with cool grey text and **one** violet accent, matching the app icon (`desktop/build/appicon.png`, `#5838fa`/`#6e50ff`). This was briefly a warm amber palette; users preferred the violet, so it was restored on 2026-10-03 while keeping the type, shape and layout rules:
 
 | Token | Dark | Light |
 |---|---|---|
-| `--bg-primary` | `#14120e` | `#f2ede1` |
-| `--text-primary` | `#e8e1cf` | `#1c1913` |
-| `--accent` | `#d4a03a` | `#9a6a10` |
-| `--on-accent` (text on accent fills) | `#14120e` | `#fbf8f0` |
-| `--border` (hairline) / `--rule-strong` | `#2d2820` / `#4a4132` | `#d5cdba` / `#b3a88f` |
+| `--bg-primary` | `#121218` | `#f8f8fc` |
+| `--text-primary` | `#e0e0e8` | `#1a1a2e` |
+| `--accent` | `#7c5cfc` | `#6a48f0` |
+| `--on-accent` (text on accent fills) | `#ffffff` | `#ffffff` |
+| `--border` (hairline) / `--rule-strong` | `#2a2a38` / `#3c3c50` | `#dcdce8` / `#c4c4d4` |
 
-Status colours (`--success`, `--warning`, `--danger`) are muted so they never compete with the accent. Engine colours still come from `internal/engine/engine-colors.json`, but they appear only as text and border on square tags, never as filled pills.
+`:root` declares `color-scheme: dark` (`light` in the light media query) so native controls, scrollbars and `<option>` popups follow the theme. All `<select>` elements drop the native WebKitGTK widget (`appearance: none`) and draw a gradient caret from `app.css`; components set `background-color`, never the `background` shorthand, so the caret survives.
+
+Status colours are `--success`, `--warning` and `--danger`. Engine colours still come from `internal/engine/engine-colors.json`, but they appear only as text and border on square tags, never as filled pills.
 
 **Shape and depth.** `--radius-0: 0` and `--radius-1: 2px` are the only radii. 50% remains only on spinners. Structure comes from 1px rules (`--rule`, `--rule-emph`) rather than elevation. Only floating layers (menus, modals) get `--shadow-pop`, which is a hairline plus a soft drop for separation.
 
 **Markers.** The visual vocabulary:
-- An update is an **amber edge** down the left of the cover, plus `0.4.12 → 0.4.15` in mono in the caption.
+- An update is an **accent edge** down the left of the cover, plus `0.4.12 → 0.4.15` in mono in the caption.
 - An unknown installed version shows `? → 0.5` in muted text.
-- The active nav row has an amber `▌`.
+- The active nav row has an accent `▌`.
 - Missing covers become a typographic card: title initials on ruled stock, with the engine in mono (`initials.js`).
 - No emoji anywhere; `internal/util/noemoji_test.go` enforces this.
 

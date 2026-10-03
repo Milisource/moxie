@@ -26,3 +26,9 @@ export function formatSpeed(bps) {
   const val = (bps / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)
   return `${val} ${units[i]}`
 }
+
+/** Progress percent for display: two decimals, clamped to 0–100 ("42.07"). */
+export function formatPercent(p) {
+  const n = Math.min(Math.max(Number(p) || 0, 0), 100)
+  return n.toFixed(2)
+}

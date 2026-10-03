@@ -1256,10 +1256,10 @@
   .install-row { display: flex; gap: 8px; align-items: center; }
   .install-select {
     flex: 1;
-    padding: 6px 10px;
+    padding: 6px 26px 6px 10px;
     font-size: var(--text-sm);
     font-family: var(--font-mono);
-    background: var(--bg-tertiary);
+    background-color: var(--bg-tertiary);
     color: var(--text-primary);
     border: 1px solid var(--border);
     border-radius: var(--radius-1);
@@ -1311,9 +1311,9 @@
 
   .coll-select {
     margin-top: 6px;
-    padding: 3px 8px;
+    padding: 3px 26px 3px 8px;
     font-size: var(--text-sm);
-    background: var(--bg-tertiary);
+    background-color: var(--bg-tertiary);
     color: var(--text-primary);
     border: 1px solid var(--border);
     border-radius: var(--radius-1);
@@ -1447,7 +1447,7 @@
     padding: 2px 22px 2px 8px;
     border: 1px solid var(--border);
     border-radius: var(--radius-1);
-    background: var(--bg-primary);
+    background-color: var(--bg-primary);
     color: var(--text-primary);
     font-size: var(--text-base);
     outline: none;
@@ -1690,9 +1690,9 @@
     font-size: var(--text-base);
   }
   .launch-ok {
-    color: #2ecc71;
-    background: color-mix(in srgb, #2ecc71 12%, transparent);
-    border: 1px solid color-mix(in srgb, #2ecc71 35%, transparent);
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
   }
   .launch-error {
     color: var(--danger);

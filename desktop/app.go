@@ -15,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -1066,7 +1067,7 @@ func (a *App) downloadGameFileOpts(ctx context.Context, evPrefix string, gameID 
 			"bytesDownloaded":  p.BytesDownloaded,
 			"totalBytes":       p.TotalBytes,
 			"speedBytesPerSec": p.SpeedBytesPerSec,
-			"percent":          p.Percent,
+			"percent":          math.Round(p.Percent*100) / 100,
 		})
 	}
 

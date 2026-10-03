@@ -1,4 +1,6 @@
 <script>
+  import Button from './Button.svelte'
+
   // Presentational only — cover-fetch state and the covers:* event
   // subscriptions live in the app shell (App.svelte) so an in-flight run
   // survives tab switches, exactly like sync/scan/update state. This view
@@ -48,17 +50,9 @@
 
   <!-- ── Fetch Button ───────────────────────────────────────── -->
   <div class="action-bar">
-    <button
-      class="btn btn-primary"
-      onclick={onFetch}
-      disabled={fetching}
-    >
-      {#if fetching}
-        Fetching…
-      {:else}
-        Fetch Missing Covers
-      {/if}
-    </button>
+    <Button variant="primary" onclick={onFetch} disabled={fetching}>
+      {fetching ? 'Fetching…' : 'Fetch Missing Covers'}
+    </Button>
   </div>
 
   <!-- ── Progress ───────────────────────────────────────────── -->
@@ -107,6 +101,7 @@
 </div>
 
 <style>
+  .text-muted { color: var(--text-muted); }
   .covers-view {
     flex: 1;
     display: flex;
@@ -123,7 +118,7 @@
 
   .covers-subtitle {
     margin: 0 0 8px;
-    color: var(--text-muted, #9aa0a6);
+    color: var(--text-muted);
     max-width: 640px;
     line-height: 1.5;
   }
@@ -143,14 +138,14 @@
 
   .progress-bar-bg {
     height: 10px;
-    background: var(--bg-elevated, #232331);
+    background: var(--bg-secondary);
     border-radius: var(--radius-1);
     overflow: hidden;
   }
 
   .progress-bar-fill {
     height: 100%;
-    background: var(--accent, #7c5cff);
+    background: var(--accent);
     border-radius: var(--radius-1);
     transition: width 0.2s ease;
   }
@@ -173,8 +168,8 @@
     flex-direction: column;
     gap: 8px;
     padding: 14px 16px;
-    background: var(--bg-elevated, #232331);
-    border: 1px solid var(--border, #333342);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
     border-radius: var(--radius-1);
   }
 
@@ -185,7 +180,7 @@
   }
 
   .result-icon {
-    color: #4caf50;
+    color: var(--success);
     font-size: var(--text-xl);
   }
 
@@ -198,7 +193,7 @@
   }
 
   .result-summary {
-    color: var(--text-muted, #9aa0a6);
+    color: var(--text-muted);
     font-size: var(--text-base);
   }
 
@@ -212,13 +207,13 @@
   .error-title {
     margin: 0 0 4px;
     font-weight: 600;
-    color: #e57373;
+    color: var(--danger);
   }
 
   .error-line {
     margin: 0;
     font-size: var(--text-base);
-    color: #e57373;
+    color: var(--danger);
     word-break: break-word;
   }
 </style>

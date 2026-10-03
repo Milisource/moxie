@@ -6,7 +6,7 @@
     EditGame,
   } from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
-  import {formatBytes, formatSpeed} from './format.js'
+  import {formatBytes, formatSpeed, formatPercent} from './format.js'
 
   // Presentational view: the game-update pipeline state (gameStates,
   // batchState) and its event subscriptions live in App.svelte so they
@@ -388,7 +388,7 @@
                     ></div>
                   </div>
                   <span class="cell-progress-text">
-                    {gs.percent || 0}%
+                    {formatPercent(gs.percent)}%
                     {#if gs.speed}
                       <span class="cell-speed">— {formatSpeed(gs.speed)}</span>
                     {/if}

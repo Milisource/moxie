@@ -400,10 +400,10 @@
   .name-input:focus { border-color: var(--accent); }
 
   .smart-select {
-    padding: 8px 12px;
+    padding: 8px 28px 8px 12px;
     border: 1px solid var(--border);
     border-radius: var(--radius-1);
-    background: var(--bg-primary);
+    background-color: var(--bg-primary);
     color: var(--text-primary);
     font-size: var(--text-base);
     outline: none;
