@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -453,6 +454,12 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 		return fmt.Errorf("close: %w", err)
 	}
 
+	// Prefer the server's filename (Content-Disposition) over the URL's
+	// last path segment: hosts like pixeldrain serve /api/file/<id>, which
+	// would otherwise save an extension-less "<id>" and hide the format.
+	if name := contentDispositionFilename(resp.Header.Get("Content-Disposition")); name != "" && name != base {
+		finalPath = filepath.Join(destDir, name)
+	}
 	if err := os.Rename(partPath, finalPath); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
@@ -515,4 +522,27 @@ func IsValidGameFile(path string) bool {
 		return true
 	}
 	return false
+}
+
+// contentDispositionFilename returns a safe base filename from a
+// Content-Disposition header ("" when absent or unusable). The RFC 5987
+// filename* form is decoded by mime.ParseMediaType.
+func contentDispositionFilename(header string) string {
+	if header == "" {
+		return ""
+	}
+	_, params, err := mime.ParseMediaType(header)
+	if err != nil {
+		return ""
+	}
+	name := params["filename"]
+	if name == "" {
+		return ""
+	}
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = filepath.Base(name)
+	if name == "." || name == "/" || name == ".." || strings.HasPrefix(name, ".") {
+		return ""
+	}
+	return name
 }

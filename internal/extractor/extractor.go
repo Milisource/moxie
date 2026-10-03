@@ -1,16 +1,22 @@
-// Package extractor extracts game archives (.zip, .7z, .rar) to a
+// Package extractor extracts game archives (.zip, .7z, .rar, .tar[.gz|.bz2|.xz]) to a
 // temporary directory, with support for zip-slip protection, context
 // cancellation, progress callbacks, and single-folder unwrapping suitable
 // for passing directly to updater.Merge().
 package extractor
 
 import (
+	"bytes"
+	"compress/bzip2"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ulikunitz/xz"
 )
 
 // Common errors returned by this package.
@@ -32,7 +38,9 @@ type Progress struct {
 type ProgressFunc func(Progress)
 
 // DetectArchiveType detects the archive type by reading magic bytes.
-// Returns "zip", "7z", "rar", or an error if unknown/corrupt.
+// Returns "zip", "7z", "rar", "tar", "tar.gz", "tar.bz2" or "tar.xz", or
+// an error wrapping ErrUnknownFormat that describes what the file looks
+// like (an HTML page, an empty file, or the leading bytes).
 func DetectArchiveType(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -40,25 +48,99 @@ func DetectArchiveType(path string) (string, error) {
 	}
 	defer f.Close()
 
-	header := make([]byte, 8)
-	if _, err := f.Read(header); err != nil {
+	header := make([]byte, 512)
+	n, err := io.ReadFull(f, header)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 		return "", fmt.Errorf("read header: %w", err)
 	}
+	header = header[:n]
 
-	// .zip: starts with PK\x03\x04
-	if len(header) >= 4 && header[0] == 'P' && header[1] == 'K' && header[2] == 0x03 && header[3] == 0x04 {
+	switch {
+	case bytes.HasPrefix(header, []byte("PK\x03\x04")):
 		return "zip", nil
-	}
-	// .7z: starts with 7z\xBC\xAF\x27\x1C
-	if len(header) >= 6 && header[0] == '7' && header[1] == 'z' && header[2] == 0xBC && header[3] == 0xAF && header[4] == 0x27 && header[5] == 0x1C {
+	case bytes.HasPrefix(header, []byte("7z\xBC\xAF\x27\x1C")):
 		return "7z", nil
-	}
-	// .rar: starts with Rar!\x1A\x07
-	if len(header) >= 6 && header[0] == 'R' && header[1] == 'a' && header[2] == 'r' && header[3] == '!' && header[4] == 0x1A && header[5] == 0x07 {
+	case bytes.HasPrefix(header, []byte("Rar!\x1A\x07")):
 		return "rar", nil
+	case isTarHeader(header):
+		return "tar", nil
+	case bytes.HasPrefix(header, []byte{0x1f, 0x8b}):
+		if compressedTar(path, "tar.gz") {
+			return "tar.gz", nil
+		}
+		return "", fmt.Errorf("%w: gzip file that is not a tar archive: %s", ErrUnknownFormat, path)
+	case bytes.HasPrefix(header, []byte("BZh")):
+		if compressedTar(path, "tar.bz2") {
+			return "tar.bz2", nil
+		}
+		return "", fmt.Errorf("%w: bzip2 file that is not a tar archive: %s", ErrUnknownFormat, path)
+	case bytes.HasPrefix(header, []byte{0xFD, '7', 'z', 'X', 'Z', 0x00}):
+		if compressedTar(path, "tar.xz") {
+			return "tar.xz", nil
+		}
+		return "", fmt.Errorf("%w: xz file that is not a tar archive: %s", ErrUnknownFormat, path)
 	}
+	return "", fmt.Errorf("%w (%s): %s", ErrUnknownFormat, describeHeader(header), path)
+}
 
-	return "", fmt.Errorf("%w: %s", ErrUnknownFormat, path)
+// isTarHeader reports whether b starts with a POSIX/GNU tar header
+// ("ustar" magic at offset 257).
+func isTarHeader(b []byte) bool {
+	return len(b) >= 262 && string(b[257:262]) == "ustar"
+}
+
+// compressedTar decompresses just enough of a gzip/bzip2/xz stream to
+// check for a tar header.
+func compressedTar(path, typ string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var r io.Reader
+	switch typ {
+	case "tar.gz":
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return false
+		}
+		defer gz.Close()
+		r = gz
+	case "tar.bz2":
+		r = bzip2.NewReader(f)
+	case "tar.xz":
+		xr, err := xz.NewReader(f)
+		if err != nil {
+			return false
+		}
+		r = xr
+	}
+	buf := make([]byte, 512)
+	n, _ := io.ReadFull(r, buf)
+	return isTarHeader(buf[:n])
+}
+
+// describeHeader names what an unrecognised file looks like, so a failed
+// update says "HTML page" instead of just "unknown format".
+func describeHeader(b []byte) string {
+	if len(b) == 0 {
+		return "empty file"
+	}
+	trimmed := bytes.TrimLeft(b, " \t\r\n\xef\xbb\xbf")
+	if len(trimmed) > 0 && trimmed[0] == '<' {
+		return "looks like an HTML page, not an archive"
+	}
+	if bytes.HasPrefix(b, []byte("MZ")) {
+		return "Windows executable or self-extracting installer"
+	}
+	if bytes.HasPrefix(b, []byte("\x7fELF")) {
+		return "Linux executable"
+	}
+	head := b
+	if len(head) > 8 {
+		head = head[:8]
+	}
+	return fmt.Sprintf("leading bytes % x", head)
 }
 
 // Extract extracts an archive to destDir and returns the extracted root
@@ -106,6 +188,8 @@ func Extract(ctx context.Context, archivePath, destDir string, progress Progress
 		err = extract7z(ctx, archivePath, tmpDir)
 	case "rar":
 		err = extractRar(ctx, archivePath, tmpDir)
+	case "tar", "tar.gz", "tar.bz2", "tar.xz":
+		err = extractTar(ctx, archivePath, typ, tmpDir, progress)
 	default:
 		os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("%w: %s", ErrUnknownFormat, typ)

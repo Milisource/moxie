@@ -261,6 +261,19 @@ Downloads are ranked by compatibility with the user's OS:
 | **Windows**| native (100) > cross-platform (50) > unknown (25) > Linux/Mac (0) |
 | **Mac**    | native (100) > cross-platform (50) > unknown (25) > Linux/Windows (0) |
 
+**Platform detection.** `DetectPlatform` classifies the trailing segment of a link name first (names are "section · platform", so "DOWNLOAD Win · Mac" is a Mac build), then the section, then the URL. Android links (`android`, `.apk`) are `android` and never match a desktop install. Combined "Win/Linux" builds are `all`. Distro names match only as whole words, so "search" is no longer Linux. Linux archives include `.tar.bz2` and `.tar.xz`.
+
+**Updating an existing install (`InstallPlatformPriority`).** The desktop updater infers the installed build from the launcher path (`InstalledPlatform`: `.exe`/`.bat` → Windows; `.sh`, `.x86_64` or an extension-less binary → Linux; `.app` → macOS). When it's known, links for any other explicit platform are rejected: same platform scores 100, `all` 90 and `unknown` 25. Before this, Linux scored above Windows on a Linux host, so a Linux `.tar.bz2` was merged over a Windows install (game 74, 2026-10-03).
+
+**Link kinds (`linkkind.go`).** `ClassifyLink` reads a link's section label:
+- **full**: the game itself ("DOWNLOAD", "All", "Win/Linux", a bare host name).
+- **patch**: "Update Only (v0.17 -> v0.18)", "Update-only", "Patch v0.4.1 to v0.4.2". The optional version range is parsed into `FromVersion`/`ToVersion`.
+- **extra**: mods, translations, walkthroughs, cheats, decensor patches, DLC, multi-part pieces ("Part 2"), old builds, soundtracks, torrents.
+
+The desktop ranking (`rankDownloadLinksFor`) drops extras. It uses a patch only when its range starts at the installed version, and ends at the latest version when stated. An applicable patch gets +30 because it's a much smaller download. A patch is applied with `updater.MergeOverlay`, which overwrites in place and deletes nothing. Any archive that doesn't contain the game's launcher, including a hand-picked file, is treated as a patch too.
+
+**Saved filenames.** The downloader prefers the server's `Content-Disposition` filename over the URL's last segment, so pixeldrain saves keep their real name and extension (`MyHentaiFantasy-0.18.1-linux.tar.bz2`, not `aQiB1niF`).
+
 ### Download Validation (`downloader.go`)
 
 ```go

@@ -1215,15 +1215,54 @@ func selectDownloadLink(links []DesktopDownloadLink) (*DesktopDownloadLink, erro
 	return &ranked[0], nil
 }
 
-// rankDownloadLinks returns the usable links (not dead, not online-only,
-// platform-compatible) best first, by platform priority plus host
-// reliability. Ties keep their stored order. Errors when none qualify.
+// rankOpts tailors link ranking to an existing install. The zero value
+// ranks for a fresh install on this machine.
+type rankOpts struct {
+	// Installed is the build platform already on disk (from the launcher
+	// path). When known, links for any other explicit platform are dropped
+	// — merging a Linux .tar.bz2 over a Windows install broke game 74.
+	Installed downloader.Platform
+	// InstalledVersion / LatestVersion gate "Update only" patch links: a
+	// patch is used only when its stated range starts at the installed
+	// version (and ends at the latest one, when stated).
+	InstalledVersion string
+	LatestVersion    string
+}
+
+// updateRankOpts builds ranking options for updating an existing install.
+func updateRankOpts(g *db.Game) rankOpts {
+	return rankOpts{
+		Installed:        downloader.InstalledPlatform(g.ExePath),
+		InstalledVersion: g.Version,
+		LatestVersion:    g.LatestVersion,
+	}
+}
+
+// sameGameVersion reports whether two free-form game versions are the same
+// release (qualifier-stripped, "v0.4" == "0.4").
+func sameGameVersion(a, b string) bool {
+	a, b = scraper.StripVersionQualifier(a), scraper.StripVersionQualifier(b)
+	return a != "" && b != "" && version.Compare(a, b) == version.Same
+}
+
+// rankDownloadLinks ranks links for a fresh install; see rankDownloadLinksFor.
 func rankDownloadLinks(links []DesktopDownloadLink) ([]DesktopDownloadLink, error) {
+	return rankDownloadLinksFor(links, rankOpts{})
+}
+
+// rankDownloadLinksFor returns the usable links best first. A link is
+// usable when it is not dead, not online-only, is a full build (or an
+// applicable "Update only" patch — see rankOpts) and its platform fits
+// either the existing install or this machine. Score = platform priority +
+// host reliability (+30 for an applicable patch, which is a far smaller
+// download). Ties keep their stored order. Errors when none qualify.
+func rankDownloadLinksFor(links []DesktopDownloadLink, opts rankOpts) ([]DesktopDownloadLink, error) {
 	if len(links) == 0 {
 		return nil, fmt.Errorf("no download links provided")
 	}
 
 	currentPlatform := downloader.CurrentPlatform()
+	installKnown := opts.Installed != "" && opts.Installed != downloader.PlatformUnknown
 
 	type scoredLink struct {
 		link  DesktopDownloadLink
@@ -1231,6 +1270,7 @@ func rankDownloadLinks(links []DesktopDownloadLink) ([]DesktopDownloadLink, erro
 	}
 
 	var candidates []scoredLink
+	skippedExtra, skippedPatch, skippedPlatform := 0, 0, 0
 	for _, link := range links {
 		// Skip dead links.
 		if link.IsDead {
@@ -1242,21 +1282,49 @@ func rankDownloadLinks(links []DesktopDownloadLink) ([]DesktopDownloadLink, erro
 			continue
 		}
 
-		// Filter by platform compatibility.
-		dlPlatform := downloader.Platform(link.Platform)
-		if !downloader.PlatformMatches(dlPlatform, currentPlatform) {
+		bonus := 0
+		switch class := downloader.ClassifyLink(link.Name); class.Kind {
+		case downloader.LinkExtra:
+			skippedExtra++
 			continue
+		case downloader.LinkPatch:
+			if !sameGameVersion(class.FromVersion, opts.InstalledVersion) ||
+				(class.ToVersion != "" && opts.LatestVersion != "" && !sameGameVersion(class.ToVersion, opts.LatestVersion)) {
+				skippedPatch++
+				continue
+			}
+			bonus = 30
 		}
 
-		// Composite score: platform priority + host reliability.
-		score := downloader.PlatformPriority(dlPlatform, currentPlatform) +
-			downloader.ScoreLinkHost(link.Host)
+		// Platform: re-detect from the label (stored values may predate
+		// the current detector) and match the install, else this machine.
+		dlPlatform := downloader.DetectPlatform(link.Name, link.URL)
+		var platformScore int
+		if installKnown {
+			platformScore = downloader.InstallPlatformPriority(dlPlatform, opts.Installed)
+			if platformScore < 0 {
+				skippedPlatform++
+				continue
+			}
+		} else {
+			if !downloader.PlatformMatches(dlPlatform, currentPlatform) {
+				skippedPlatform++
+				continue
+			}
+			platformScore = downloader.PlatformPriority(dlPlatform, currentPlatform)
+		}
+
+		score := platformScore + downloader.ScoreLinkHost(link.Host) + bonus
 		candidates = append(candidates, scoredLink{link: link, score: score})
 	}
 
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no compatible download link found for platform %s (have %d links total)",
-			currentPlatform, len(links))
+		target := string(currentPlatform)
+		if installKnown {
+			target = string(opts.Installed) + " install"
+		}
+		return nil, fmt.Errorf("no compatible download link found for %s (have %d links: %d extras/mods, %d patches for other versions, %d other platforms)",
+			target, len(links), skippedExtra, skippedPatch, skippedPlatform)
 	}
 
 	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
@@ -4518,8 +4586,9 @@ func (a *App) syncDownloadLinks(gameID int64, links []scraper.DownloadLink) {
 		if existing, ok := byURL[dl.URL]; ok {
 			// Unchanged URL — keep ID and IsDead state, but refresh the name
 			// so section/platform labels from a newer parser flow through.
-			if existing.Name != dl.Name {
+			if p := db.Platform(downloader.DetectPlatform(dl.Name, dl.URL)); existing.Name != dl.Name || existing.Platform != p {
 				existing.Name = dl.Name
+				existing.Platform = p
 				if err := a.db.UpdateDownloadLink(&existing); err != nil {
 					slog.Warn("failed to refresh download link name", "game_id", gameID, "error", err)
 				}
@@ -4557,7 +4626,13 @@ func (a *App) syncDownloadLinks(gameID int64, links []scraper.DownloadLink) {
 // a game. It wraps GetGameDownloadLinks with selectDownloadLink and converts
 // the result to db.DownloadLink for use with downloadGameFile.
 func (a *App) GetGameDownloadLinksForUpdate(gameID int64) (*db.DownloadLink, error) {
-	ranked, err := a.rankedDownloadLinks(gameID)
+	opts := rankOpts{}
+	if a.db != nil {
+		if g, err := a.db.GetGame(gameID); err == nil && g != nil {
+			opts = updateRankOpts(g)
+		}
+	}
+	ranked, err := a.rankedDownloadLinks(gameID, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -4572,7 +4647,7 @@ const maxDownloadFallbackLinks = 3
 // (see rankDownloadLinks), as full db records so the scraped Size — the
 // downloader's expected total — survives (the DesktopDownloadLink DTO drops
 // it).
-func (a *App) rankedDownloadLinks(gameID int64) ([]db.DownloadLink, error) {
+func (a *App) rankedDownloadLinks(gameID int64, opts rankOpts) ([]db.DownloadLink, error) {
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
@@ -4589,7 +4664,7 @@ func (a *App) rankedDownloadLinks(gameID int64) ([]db.DownloadLink, error) {
 			Platform: string(l.Platform), IsDead: l.IsDead,
 		})
 	}
-	ranked, err := rankDownloadLinks(dtos)
+	ranked, err := rankDownloadLinksFor(dtos, opts)
 	if err != nil {
 		return nil, fmt.Errorf("select download link: %w", err)
 	}
@@ -4755,7 +4830,7 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 		"phase":  "selecting-link",
 	})
 
-	links, err := a.rankedDownloadLinks(gameID)
+	links, err := a.rankedDownloadLinks(gameID, updateRankOpts(game))
 	if err != nil {
 		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
 			"gameID":  gameID,
@@ -4792,7 +4867,7 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 
 	// Phases: extracting → merging → updating-db (shared with the manual
 	// fallback path so both routes behave identically).
-	err = a.applyGameUpdateArchive(ctx, game, archivePath)
+	err = a.applyGameUpdateArchive(ctx, game, archivePath, downloader.ClassifyLink(selectedLink.Name).Kind == downloader.LinkPatch)
 
 	// The downloaded archive is ours — drop it and its temp dir regardless
 	// of outcome (the user-provided fallback file is never touched).
@@ -4806,7 +4881,7 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 // game whose new-version archive is already available at archivePath. The
 // archive itself is treated as caller-owned and is never deleted; callers
 // that downloaded it into a temp dir clean that dir up themselves.
-func (a *App) applyGameUpdateArchive(ctx context.Context, game *db.Game, archivePath string) error {
+func (a *App) applyGameUpdateArchive(ctx context.Context, game *db.Game, archivePath string, patch bool) error {
 	gameID := game.ID
 	title := game.Title
 	oldVersion := game.Version
@@ -4849,10 +4924,38 @@ func (a *App) applyGameUpdateArchive(ctx context.Context, game *db.Game, archive
 		"phase":  "merging",
 	})
 
-	mergeResult, err := updater.Merge(ctx, game.Path, game.Engine, extractedRoot, true)
+	// A patch ("Update only" link, or any archive that doesn't carry the
+	// game's launcher — e.g. a hand-picked patch file) is overlaid in
+	// place. A full Merge would rebuild the game dir from the archive and
+	// drop every file the patch doesn't contain.
+	exeRel := ""
+	if game.ExePath != "" {
+		if rel, err := filepath.Rel(game.Path, game.ExePath); err == nil && !strings.HasPrefix(rel, "..") {
+			exeRel = rel
+		}
+	}
+	overlay := patch || !updater.ContainsLauncher(extractedRoot, exeRel)
+	var mergeResult *updater.MergeResult
+	if overlay {
+		slog.Info("game update: overlaying patch", "gameID", gameID, "linkPatch", patch)
+		mergeResult, err = updater.MergeOverlay(ctx, game.Path, game.Engine, extractedRoot)
+	} else {
+		mergeResult, err = updater.Merge(ctx, game.Path, game.Engine, extractedRoot, true)
+	}
 	if err != nil {
 		a.emitUpdateError(gameID, "merge", fmt.Sprintf("Merge failed: %v", err))
 		return fmt.Errorf("merge update: %w", err)
+	}
+	// Drop the full-merge snapshot once the launcher is confirmed present;
+	// otherwise keep <game>.old so the user can recover by hand.
+	if !overlay && mergeResult.BackupPath != "" {
+		if _, statErr := os.Stat(game.ExePath); game.ExePath == "" || statErr == nil {
+			if err := updater.RemoveBackup(game.Path); err != nil {
+				slog.Warn("game update: remove backup", "gameID", gameID, "error", err)
+			}
+		} else {
+			slog.Warn("game update: launcher missing after merge; keeping backup", "gameID", gameID, "backup", mergeResult.BackupPath)
+		}
 	}
 
 	slog.Info("game update merged", "game", title, "copied", mergeResult.FilesCopied,
@@ -5223,7 +5326,7 @@ func (a *App) ProvideUpdateFile(gameID int64) error {
 		archivePath, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
 			Title: "Select Downloaded Update Archive",
 			Filters: []runtime.FileFilter{
-				{DisplayName: "Game Archives", Pattern: "*.zip;*.7z;*.rar;*.tar;*.gz;*.tar.gz"},
+				{DisplayName: "Game Archives", Pattern: "*.zip;*.7z;*.rar;*.tar;*.gz;*.tgz;*.bz2;*.tbz2;*.xz;*.txz"},
 				{DisplayName: "All Files", Pattern: "*.*"},
 			},
 		})
@@ -5249,12 +5352,12 @@ func (a *App) ProvideUpdateFile(gameID int64) error {
 		}
 		if !archive.IsArchiveFile(archivePath) {
 			a.emitUpdateError(gameID, "select-file",
-				"Selected file is not a recognized archive (zip, 7z, rar, tar.gz)")
+				"Selected file is not a recognized archive (zip, 7z, rar, tar, tar.gz, tar.bz2, tar.xz)")
 			return
 		}
 
 		slog.Info("game update: manual archive provided", "gameID", gameID, "file", archivePath)
-		a.applyGameUpdateArchive(ctx, game, archivePath)
+		a.applyGameUpdateArchive(ctx, game, archivePath, false)
 	})
 
 	return nil
@@ -5383,7 +5486,7 @@ func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent strin
 	}()
 
 	phase("selecting-link")
-	links, err := a.rankedDownloadLinks(gameID)
+	links, err := a.rankedDownloadLinks(gameID, rankOpts{})
 	if err != nil {
 		return emitErr("select-link", err)
 	}

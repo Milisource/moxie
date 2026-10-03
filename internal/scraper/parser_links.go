@@ -15,10 +15,13 @@ var (
 	// platformLabelRe matches thread row labels like "<b>Win</b>:".
 	platformLabelRe = regexp.MustCompile(`(?i)^\s*(win|windows|mac|macos|linux|android|web)\s*:?\s*$`)
 	// sectionHeadingRe matches short bold headings that name a download
-	// section ("Part 2", "Update 26", "v1.0", "DOWNLOAD", …). Anchors need a
+	// section ("Part 2", "Update 26", "v1.0", "DOWNLOAD", "All", "Update Only
+	// (v0.17 -> v0.18)", "Unofficial Mod", …). Row labels such as "All" and
+	// "Unofficial Mod" must stop the walk, or a mod row would inherit the
+	// "Update Only" heading above it and be applied as a patch. Anchors need a
 	// guard like this so random bold words in prose are never mistaken for
 	// section headings.
-	sectionHeadingRe = regexp.MustCompile(`(?i)\b(part|update|patch|hotfix|dlc|demo|beta|alpha|final|chapter|ch\.|version|ver|v\s?\d|download|win|windows|mac|macos|linux|android|web)\b`)
+	sectionHeadingRe = regexp.MustCompile(`(?i)\b(part|update|patch|hotfix|dlc|demo|beta|alpha|final|chapter|ch\.|version|ver|v\s?\d|download|win|windows|mac|macos|linux|android|web|all|others?|extras?|mods?|walkthrough|translation|cheats?|decensor|uncensor|compressed|full|bonus|soundtrack|torrent)\b`)
 	// sizeRe matches human-readable file sizes as posted on F95Zone
 	// download rows: "[228.3 MB]", "1.2 GB", "346.6MB", "500 KB", "1.5 GiB".
 	// A version like "v1.2b" matches the shape but has no unit, and

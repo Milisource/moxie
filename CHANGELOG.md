@@ -16,6 +16,13 @@
 
 ### Fixed
 
+- **Game updates pick the right file (F95-aftv):**
+  - **Wrong platform build:** "unknown or unsupported archive format" on My Hentai Fantasy came from merging the Linux `.tar.bz2` build over a Windows install. Updates now keep to the installed build's platform, and Android links are never tried.
+  - **New archive formats:** tar, tar.gz, tar.bz2 and tar.xz archives extract (pure Go). An unrecognised download now says what it is, for example "looks like an HTML page".
+  - **"Update only" links:** used when they apply to the installed version, and overlaid in place so files the patch doesn't carry survive. Mods, translations and other extras are never applied as updates. Resolves the patch case of F95-cp4g.
+  - **Leftover backups:** the `<game>.old` backup is removed after a successful update instead of piling up.
+  - **Saved filenames:** downloads keep the server's filename, so logs show the real archive name.
+
 - **Desktop polish (F95-irgo):**
   - Restored the violet palette after a brief amber experiment.
   - Dropdowns in Collections, the game detail view and Add Game were white text on a white native widget. Every `<select>` now uses a themed style, and `color-scheme` is declared.

@@ -458,3 +458,19 @@ func TestMergeBrowserCookies_NoOpCases(t *testing.T) {
 		t.Errorf("empty source: Cookie = %q, want empty", got)
 	}
 }
+
+func TestContentDispositionFilename(t *testing.T) {
+	cases := map[string]string{
+		``: ``,
+		`attachment; filename="MyHentaiFantasy-0.18.1-linux.tar.bz2"`: `MyHentaiFantasy-0.18.1-linux.tar.bz2`,
+		`attachment; filename*=UTF-8''Game%20v1.0.zip`:                `Game v1.0.zip`,
+		`attachment; filename="../../etc/passwd"`:                     `passwd`,
+		`attachment; filename=".hidden"`:                              ``,
+		`inline`:                                                      ``,
+	}
+	for in, want := range cases {
+		if got := contentDispositionFilename(in); got != want {
+			t.Errorf("%q → %q, want %q", in, got, want)
+		}
+	}
+}

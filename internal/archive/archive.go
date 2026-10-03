@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/mili/moxie/internal/extractor"
 )
@@ -29,7 +28,7 @@ func (f Format) String() string {
 	case FormatZip:
 		return "zip"
 	case FormatTarGz:
-		return "tar.gz"
+		return "tar"
 	case FormatSevenZip:
 		return "7z"
 	case FormatRar:
@@ -52,11 +51,9 @@ func DetectFormat(path string) Format {
 		return FormatSevenZip
 	case "rar":
 		return FormatRar
-	}
-
-	// Check for tar.gz via extension (not detected by magic bytes alone)
-	lower := strings.ToLower(path)
-	if strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz") {
+	case "tar", "tar.gz", "tar.bz2", "tar.xz":
+		// All tar variants share one Format value; the extractor picks
+		// the decompressor from the magic bytes.
 		return FormatTarGz
 	}
 

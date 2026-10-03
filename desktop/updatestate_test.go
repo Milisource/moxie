@@ -163,3 +163,63 @@ func TestUpdatableGate(t *testing.T) {
 		t.Error("same/absent latest must not be updatable")
 	}
 }
+
+// Game 74 (My Hentai Fantasy, Windows install) picked the Linux .tar.bz2
+// and failed extraction. With install-aware ranking only Win links remain,
+// and Android links (stored as "unknown") are never candidates.
+func TestRankForInstall_Game74(t *testing.T) {
+	var links []DesktopDownloadLink
+	id := int64(1)
+	for _, plat := range []string{"Android", "Win", "Linux", "Mac"} {
+		for _, host := range []string{"buzzheavier", "datanodes", "pixeldrain", "vikingfile", "mega"} {
+			links = append(links, DesktopDownloadLink{ID: id, Host: host, Name: "DOWNLOAD · " + plat, URL: "https://f95zone.to/masked/" + host + ".com/1/2/x"})
+			id++
+		}
+	}
+	opts := updateRankOpts(&db.Game{ExePath: "/g/My Hentai Fantasy/My_hentai_fantasy.exe", Version: "0.11", LatestVersion: "0.18.1"})
+	ranked, err := rankDownloadLinksFor(links, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ranked) != 5 {
+		t.Fatalf("got %d candidates, want the 5 Win links", len(ranked))
+	}
+	for _, l := range ranked {
+		if l.Name != "DOWNLOAD · Win" {
+			t.Errorf("non-Win candidate %q (%s)", l.Name, l.Host)
+		}
+	}
+	if ranked[0].Host != "pixeldrain" {
+		t.Errorf("best host = %s, want pixeldrain", ranked[0].Host)
+	}
+}
+
+func TestRankPatchLinks(t *testing.T) {
+	links := []DesktopDownloadLink{
+		{ID: 1, Host: "pixeldrain", Name: "All · Win"},
+		{ID: 2, Host: "pixeldrain", Name: "Update Only (v0.17 -> v0.18) · Win"},
+		{ID: 3, Host: "pixeldrain", Name: "Unofficial Mod · Win"},
+	}
+	g := &db.Game{ExePath: "/g/B/Bunker.exe", Version: "0.17", LatestVersion: "0.18"}
+	ranked, err := rankDownloadLinksFor(links, updateRankOpts(g))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ranked) != 2 || ranked[0].ID != 2 || ranked[1].ID != 1 {
+		t.Fatalf("ranked = %+v, want patch first then full build, no mod", ranked)
+	}
+
+	// Installed 0.16: the 0.17→0.18 patch doesn't apply.
+	g.Version = "0.16"
+	ranked, _ = rankDownloadLinksFor(links, updateRankOpts(g))
+	if len(ranked) != 1 || ranked[0].ID != 1 {
+		t.Fatalf("ranked = %+v, want only the full build", ranked)
+	}
+
+	// Unknown installed version: never patch.
+	g.Version = ""
+	ranked, _ = rankDownloadLinksFor(links, updateRankOpts(g))
+	if len(ranked) != 1 || ranked[0].ID != 1 {
+		t.Fatalf("ranked = %+v, want only the full build", ranked)
+	}
+}

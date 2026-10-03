@@ -1698,3 +1698,31 @@ A game with a real post image.</div></article>
 		t.Errorf("CoverURL = %q, want body image to win over JSON-LD", td.CoverURL)
 	}
 }
+
+// Condemned Bunker's OP: full build, an "Update Only" patch row and a mod
+// row. Each row's label must become the link's section so the updater can
+// tell the patch (and its version range) from the full build and the mod.
+func TestDownloadLinkSectionPatchRows(t *testing.T) {
+	t.Parallel()
+
+	body := `<b>DOWNLOAD</b><br />
+<b>All</b>: <a href="https://f95zone.to/masked/mega.nz/1/1">MEGA</a> - <a href="https://f95zone.to/masked/pixeldrain.com/1/2">PIXELDRAIN</a><br />
+<b>Update Only (v0.17 -&gt; v0.18)</b>: <a href="https://f95zone.to/masked/pixeldrain.com/1/3">PIXELDRAIN</a><br />
+<br />
+<b>Others</b><br />
+<b>Unofficial Mod</b>: <a href="https://f95zone.to/masked/gofile.io/1/4">GOFILE</a><br />`
+
+	td, err := parseThreadHTML(threadHTMLWith("Condemned Bunker [v0.18] [Testoviron]", body), "https://f95zone.to/threads/condemned-bunker.269869/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	want := []string{"All", "All", "Update Only (v0.17 -> v0.18)", "Unofficial Mod"}
+	if len(td.DownloadLinks) != len(want) {
+		t.Fatalf("got %d links: %+v", len(td.DownloadLinks), td.DownloadLinks)
+	}
+	for i, w := range want {
+		if got := td.DownloadLinks[i].Name; got != w {
+			t.Errorf("link[%d] name = %q, want %q", i, got, w)
+		}
+	}
+}
