@@ -20,6 +20,7 @@ require (
 	github.com/ncruces/go-sqlite3 v0.34.0
 	github.com/refraction-networking/utls v1.8.2
 	github.com/rkosegi/jdownloader-go v1.0.3
+	github.com/ulikunitz/xz v0.5.17
 	github.com/wailsapp/wails/v2 v2.13.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/image v0.40.0
@@ -84,7 +85,6 @@ require (
 	github.com/tam7t/hpkp v0.0.0-20160821193359-2b70b4024ed5 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	github.com/tkrajina/go-reflector v0.5.8 // indirect
-	github.com/ulikunitz/xz v0.5.17 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
