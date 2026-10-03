@@ -35,6 +35,19 @@ type githubAsset struct {
 
 // Update checks for a new moxie release, downloads it, and replaces the binary.
 func Update(version string) {
+	// The dev channel ships from the dev branch, not from GitHub Releases.
+	// Following the stable /latest release here would overwrite moxie-dev
+	// with a main-channel binary (wrong name and data dir), so dev builds
+	// deliberately do not self-update from stable. The rolling dev prerelease
+	// built by .github/workflows/dev.yml can be wired in later.
+	if config.Channel() == "dev" {
+		fmt.Fprintf(os.Stderr, "  This is a dev build (%s); it does not update from stable releases.\n", version)
+		fmt.Fprintln(os.Stderr, "  Reinstall the dev channel from the dev branch:")
+		fmt.Fprintln(os.Stderr, "    ./scripts/install-dev.sh          # Linux / macOS")
+		fmt.Fprintln(os.Stderr, "    .\\scripts\\install-dev.ps1         # Windows")
+		return
+	}
+
 	fmt.Fprintf(os.Stderr, "  Checking for updates (current: %s)...\n", version)
 
 	release, err := fetchLatestRelease()

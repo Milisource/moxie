@@ -15,7 +15,14 @@ import (
 
 var version = "0.4.0-alpha"
 
+// channel selects the release channel at build time via
+// -ldflags "-X main.channel=dev". It defaults to the stable "main" channel.
+// The dev channel uses a distinct binary name (moxie-dev) and data directory
+// (moxie-dev) so a dev build and a stable install can coexist safely.
+var channel = "main"
+
 func main() {
+	config.SetChannel(channel)
 	log.Init(config.LogDir())
 
 	// Parse global flags before command dispatch.

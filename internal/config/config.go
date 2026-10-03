@@ -16,6 +16,36 @@ import (
 // server and thumbnail pipeline without touching a real home directory.
 var configDirOverride string
 
+// channel is the build-time release channel ("main" or "dev"), set by
+// SetChannel from the main package's -X main.channel ldflag. It only changes
+// the on-disk directory name, so a dev build never shares a database or
+// config with a stable install.
+var channel = "main"
+
+// SetChannel records the release channel. Anything other than "dev" keeps
+// the stable directory name, so a binary built without the ldflag stays
+// backward compatible.
+func SetChannel(c string) {
+	if strings.EqualFold(strings.TrimSpace(c), "dev") {
+		channel = "dev"
+	} else {
+		channel = "main"
+	}
+}
+
+// Channel returns the active release channel ("main" or "dev").
+func Channel() string {
+	return channel
+}
+
+// appDirName is the per-channel directory name under the platform data root.
+func appDirName() string {
+	if channel == "dev" {
+		return "moxie-dev"
+	}
+	return "moxie"
+}
+
 // SetConfigDirForTest redirects ConfigDir (and thus CoverDir, DbPath, ...)
 // to dir. Pass an empty string to restore platform-standard behaviour.
 func SetConfigDirForTest(dir string) {
@@ -27,6 +57,7 @@ func ConfigDir() string {
 	if configDirOverride != "" {
 		return configDirOverride
 	}
+	name := appDirName()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.TempDir()
@@ -35,15 +66,15 @@ func ConfigDir() string {
 	switch runtime.GOOS {
 	case "windows":
 		if appData := os.Getenv("APPDATA"); appData != "" {
-			return filepath.Join(appData, "moxie")
+			return filepath.Join(appData, name)
 		}
 		// APPDATA unset (services/CI): fall back to the conventional path
 		// instead of a relative "moxie" dir under the CWD.
-		return filepath.Join(home, "AppData", "Roaming", "moxie")
+		return filepath.Join(home, "AppData", "Roaming", name)
 	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "moxie")
+		return filepath.Join(home, "Library", "Application Support", name)
 	default:
-		return filepath.Join(home, ".config", "moxie")
+		return filepath.Join(home, ".config", name)
 	}
 }
 

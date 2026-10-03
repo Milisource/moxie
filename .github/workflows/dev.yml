@@ -1,0 +1,86 @@
+name: Dev build
+
+# Rolling dev-channel artifacts. Every push to `dev` rebuilds the CLI for all
+# six targets and refreshes a single prerelease tagged `dev`. The binaries are
+# named `moxie-dev-<os>-<arch>` and are built with `-X main.channel=dev`, so
+# they use the moxie-dev data directory and never collide with a stable
+# install.
+#
+# scripts/install-dev.sh currently builds from source; this workflow is the
+# prebuilt source it can consume once wired up. Until then it also serves as a
+# "does dev still compile for every target" check.
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dev-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Set dev version
+        id: version
+        run: |
+          SHA="$(git rev-parse --short HEAD)"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "version=dev-${SHA}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build dev binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          VERSION="${{ steps.version.outputs.version }}"
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.channel=dev"
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            OS="${target%%/*}"; ARCH="${target##*/}"
+            EXT=""
+            [ "$OS" = "windows" ] && EXT=".exe"
+            OUT="dist/moxie-dev-${OS}-${ARCH}${EXT}"
+            echo "-> ${OUT}"
+            CGO_ENABLED=0 GOOS="$OS" GOARCH="$ARCH" go build -ldflags="$LDFLAGS" -o "$OUT" .
+          done
+
+      - name: Verify binaries
+        run: |
+          ls -lh dist/
+          file dist/moxie-dev-linux-amd64
+
+      - name: Publish rolling dev prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          name: moxie dev (rolling)
+          prerelease: true
+          make_latest: false
+          body: |
+            Rolling dev build from `dev` @ `${{ steps.version.outputs.sha }}` (${{ steps.version.outputs.date }}).
+
+            These are development binaries, not a release: expect rough edges.
+
+            | Platform | Arch | Binary |
+            |----------|------|--------|
+            | Linux | amd64 | `moxie-dev-linux-amd64` |
+            | Linux | arm64 | `moxie-dev-linux-arm64` |
+            | macOS | amd64 | `moxie-dev-macos-amd64` |
+            | macOS | arm64 | `moxie-dev-macos-arm64` |
+            | Windows | amd64 | `moxie-dev-windows-amd64.exe` |
+            | Windows | arm64 | `moxie-dev-windows-arm64.exe` |
+
+            Installed as `moxie-dev`, with data in `~/.config/moxie-dev` so it
+            never touches a stable install. Build from source today with
+            `./scripts/install-dev.sh` (Linux/macOS) or `.\scripts\install-dev.ps1` (Windows).
+          files: dist/*
+          fail_on_unmatched_files: true

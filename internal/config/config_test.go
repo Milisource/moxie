@@ -9,6 +9,44 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Channel
+// ---------------------------------------------------------------------------
+
+// TestChannelSelectsDataDir verifies the dev channel gets its own directory
+// name, so a dev install cannot share (or migrate) the stable database.
+//
+// Not parallel: it mutates the package-level channel and must not run
+// concurrently with the parallel ConfigDir tests.
+func TestChannelSelectsDataDir(t *testing.T) {
+	t.Cleanup(func() { SetChannel("main") })
+
+	SetChannel("main")
+	if got := Channel(); got != "main" {
+		t.Fatalf("Channel() = %q, want main", got)
+	}
+	if got := appDirName(); got != "moxie" {
+		t.Errorf("appDirName() for main = %q, want moxie", got)
+	}
+
+	SetChannel("dev")
+	if got := Channel(); got != "dev" {
+		t.Fatalf("Channel() = %q, want dev", got)
+	}
+	if got := appDirName(); got != "moxie-dev" {
+		t.Errorf("appDirName() for dev = %q, want moxie-dev", got)
+	}
+	if got := ConfigDir(); !strings.HasSuffix(got, string(filepath.Separator)+"moxie-dev") {
+		t.Errorf("ConfigDir() for dev = %q, want suffix %q", got, string(filepath.Separator)+"moxie-dev")
+	}
+
+	// Anything that is not "dev" stays on the stable directory.
+	SetChannel("nightly")
+	if got := appDirName(); got != "moxie" {
+		t.Errorf("appDirName() for unknown channel = %q, want moxie", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // ConfigDir / DbPath / ConfigPath
 // ---------------------------------------------------------------------------
 
@@ -201,7 +239,7 @@ func TestConfig_LegacyMigration(t *testing.T) {
 
 	// Write config in legacy map[string]string format.
 	legacy := map[string]string{
-		"cookie":         "xf_session=abc",
+		"cookie":          "xf_session=abc",
 		"steamgriddb-key": "some-key",
 	}
 	data, _ := json.MarshalIndent(legacy, "", "  ")
