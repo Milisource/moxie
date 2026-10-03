@@ -12,6 +12,7 @@ import (
 func TestSlogDefaultWiredToFile(t *testing.T) {
 	dir := t.TempDir()
 	InitWithConsole(dir)
+	t.Cleanup(Close)
 	slog.Info("desktop-style log", "key", "value")
 	Flush()
 
@@ -29,6 +30,7 @@ func TestMOXIELogLevelEnv(t *testing.T) {
 	t.Setenv("MOXIE_LOG_LEVEL", "debug")
 	dir := t.TempDir()
 	InitWithConsole(dir)
+	t.Cleanup(Close)
 	Debug("debug-line")
 	slog.Debug("debug-line-slog")
 	Flush()
@@ -46,6 +48,7 @@ func TestMOXIELogLevelEnv(t *testing.T) {
 func TestSetLevelKeepsFileOutput(t *testing.T) {
 	dir := t.TempDir()
 	Init(dir)
+	t.Cleanup(Close)
 	SetLevel(slog.LevelDebug)
 	Debug("debug-after-setlevel")
 	Flush()

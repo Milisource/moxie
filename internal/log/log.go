@@ -167,6 +167,25 @@ func Flush() {
 	}
 }
 
+// Close flushes and closes the daily log file, if one is open, and falls back
+// to stderr until Init/InitWithConsole is called again. Safe to call multiple
+// times. Release the handle on shutdown: Windows cannot delete or replace a
+// log file that is still open.
+func Close() {
+	mu.Lock()
+	if bufWriter != nil {
+		bufWriter.Flush()
+		bufWriter = nil
+	}
+	if old, ok := fileWriter.(io.Closer); ok {
+		old.Close()
+	}
+	fileWriter = nil
+	console = false
+	mu.Unlock()
+	rebuildLogger()
+}
+
 // rotateOldLogs removes log files older than logRetentionDays from the log directory.
 // Only removes files matching the moxie-YYYY-MM-DD.log pattern.
 func rotateOldLogs(dir string) {
