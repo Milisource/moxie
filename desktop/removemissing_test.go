@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/mili/moxie/internal/db"
@@ -58,6 +59,9 @@ func TestRemoveMissingUnderDeletesOnlyVanishedDirs(t *testing.T) {
 // A stat failure that is not "does not exist" — an unmounted drive, a
 // permission error, ENOTDIR — must never be read as "the game is gone".
 func TestRemoveMissingUnderIgnoresAmbiguousStatErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows maps ERROR_PATH_NOT_FOUND (the ENOTDIR case) to fs.ErrNotExist, so it is indistinguishable from a vanished directory; a permission error is still ErrPermission and still guarded")
+	}
 	a := newTestApp(t)
 	root := t.TempDir()
 

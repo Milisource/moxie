@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mili/moxie/internal/config"
 )
@@ -22,10 +24,10 @@ import (
 // running executable is locked and cannot be renamed or replaced — and
 // consumed by the swap-agent process spawned from the staged binary.
 type pendingUpdateMarker struct {
-	Staged string   `json:"staged"`            // path of the downloaded binary
-	Exe    string   `json:"exe"`               // path of the installed executable
-	Args   []string `json:"args"`              // original command-line arguments to replay
-	SHA256 string   `json:"sha256,omitempty"`  // expected SHA-256 of the staged binary (optional)
+	Staged string   `json:"staged"`           // path of the downloaded binary
+	Exe    string   `json:"exe"`              // path of the installed executable
+	Args   []string `json:"args"`             // original command-line arguments to replay
+	SHA256 string   `json:"sha256,omitempty"` // expected SHA-256 of the staged binary (optional)
 }
 
 func pendingUpdateMarkerPath() string {
@@ -398,13 +400,28 @@ var (
 	updateAgentLogger  *slog.Logger
 )
 
+// appendFileWriter appends each Write to path, opening and closing the file
+// per call. The swap agent is short-lived and emits a handful of lines, so the
+// per-write open is negligible — and it means the process never holds a handle
+// to update-agent.log, which Windows cannot delete or replace while open.
+type appendFileWriter struct{ path string }
+
+func (w appendFileWriter) Write(p []byte) (int, error) {
+	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	return f.Write(p)
+}
+
 // updateAgentLog returns a logger that writes to update-agent.log under
 // config.LogDir(). The swap agent runs before the app's logging is
 // initialized, so the default slog logger would write to the stderr of a
 // detached, console-less process — invisible when something goes wrong. The
 // file handler guarantees the failure lands somewhere the user (or support)
-// can find it. Falls back to the default logger when the file cannot be
-// opened.
+// can find it. Falls back to the default logger when the directory cannot be
+// created.
 func updateAgentLog() *slog.Logger {
 	updateAgentLogOnce.Do(func() {
 		dir := config.LogDir()
@@ -412,13 +429,9 @@ func updateAgentLog() *slog.Logger {
 			updateAgentLogger = slog.Default()
 			return
 		}
-		f, err := os.OpenFile(filepath.Join(dir, "update-agent.log"),
-			os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-		if err != nil {
-			updateAgentLogger = slog.Default()
-			return
-		}
-		updateAgentLogger = slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		updateAgentLogger = slog.New(slog.NewTextHandler(
+			appendFileWriter{path: filepath.Join(dir, "update-agent.log")},
+			&slog.HandlerOptions{Level: slog.LevelDebug}))
 	})
 	return updateAgentLogger
 }
@@ -427,7 +440,12 @@ func updateAgentLog() *slog.Logger {
 // agent runs before the Wails runtime exists (runtime.MessageDialog is not
 // available), so on Windows a PowerShell message box is used; on every other
 // platform the failure has already been written to update-agent.log.
-func showFatalError(title, msg string) {
+//
+// It is a variable so tests can substitute a no-op: the dialog blocks until
+// dismissed and can never appear on a headless runner.
+var showFatalError = showFatalErrorDialog
+
+func showFatalErrorDialog(title, msg string) {
 	if runtime.GOOS != "windows" {
 		return
 	}
@@ -435,7 +453,11 @@ func showFatalError(title, msg string) {
 	title = strings.ReplaceAll(title, "'", "''")
 	msg = strings.ReplaceAll(msg, "'", "''")
 	ps := fmt.Sprintf("Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('%s','%s','OK','Error')", msg, title)
-	if err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps).Run(); err != nil {
+	// Bound the wait: a message box that cannot be shown (headless session,
+	// locked desktop) must not block the agent forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", ps).Run(); err != nil {
 		updateAgentLog().Warn("could not show error dialog", "error", err)
 	}
 }
