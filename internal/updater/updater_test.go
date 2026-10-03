@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -435,6 +436,9 @@ func TestMerge_StaleBackupReplacedOnSuccess(t *testing.T) {
 // their +x permission after a merge — os.Create would otherwise drop it
 // to 0666 & umask and the game would stop launching.
 func TestMerge_PreservesExecutableBits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no executable permission bits")
+	}
 	gameDir := t.TempDir()
 	os.MkdirAll(gameDir, 0755)
 	os.WriteFile(filepath.Join(gameDir, "game.sh"), []byte("old-launcher"), 0755)

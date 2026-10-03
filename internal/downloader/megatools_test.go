@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,9 @@ func stubFindMegatools(path string, err error) func() {
 // megatools downloads ever run in tests.
 func writeFakeMegatools(t *testing.T, script string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake megatools is a POSIX shell script; megatools is Unix-only")
+	}
 	path := filepath.Join(t.TempDir(), "megatools")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake megatools script: %v", err)
