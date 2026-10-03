@@ -56,18 +56,24 @@ var skippedProfileDirs = map[string]bool{
 }
 
 // discoverProfileDir locates the user's browser profile root ("User Data"
-// dir containing Local State and Default/), honoring an explicit override
-// option first, then the MOXIE_CHROME_PROFILE_DIR environment variable,
-// then the standard per-OS locations.
+// dir containing Local State and Default/). An explicit override option or
+// the MOXIE_CHROME_PROFILE_DIR environment variable is authoritative: if it
+// is not a usable profile root, ErrNoProfile is returned rather than
+// silently falling back to a different browser's profile. Without either,
+// the standard per-OS locations are probed.
 func discoverProfileDir(override string) (string, error) {
-	var candidates []string
-	if override != "" {
-		candidates = append(candidates, override)
+	explicit := override
+	if explicit == "" {
+		explicit = os.Getenv(profileEnvVar)
 	}
-	if env := os.Getenv(profileEnvVar); env != "" && override == "" {
-		candidates = append(candidates, env)
+	if explicit != "" {
+		if isProfileRoot(explicit) {
+			return explicit, nil
+		}
+		return "", fmt.Errorf("%w: %q is not an existing profile dir", ErrNoProfile, explicit)
 	}
 
+	var candidates []string
 	home, err := os.UserHomeDir()
 	if err != nil {
 		// Discovery can still proceed from the environment-based
@@ -106,9 +112,6 @@ func discoverProfileDir(override string) (string, error) {
 		if isProfileRoot(c) {
 			return c, nil
 		}
-	}
-	if override != "" {
-		return "", fmt.Errorf("%w: %q is not an existing profile dir", ErrNoProfile, override)
 	}
 	return "", fmt.Errorf("%w: looked in %s", ErrNoProfile, strings.Join(candidates, ", "))
 }
