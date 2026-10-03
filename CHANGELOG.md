@@ -10,7 +10,11 @@
   - CLI: `moxie covers upgrade [--dry-run]`.
   - See `docs/cover-art.md`.
 
+- **Dev install channel (F95-1p5r).** A dev build now installs separately from stable: `scripts/install-dev.sh` / `scripts/install-dev.ps1` build the `dev` branch as `moxie-dev`, with its own data directory (`~/.config/moxie-dev`, `%APPDATA%\moxie-dev`) selected by a build-time channel. The stable `moxie` install and its database are never touched. `moxie-dev update` does not self-update from stable releases.
+
 ### Changed
+
+- **CI covers the dev branch (F95-4ucz).** CI now runs on pushes and pull requests to `dev`, and a new `dev.yml` workflow publishes rolling `moxie-dev-*` prerelease artifacts tagged `dev` for future use by the dev installer.
 
 - **Parallel game updates (F95-jxk1).** Update All, Retry Failed and per-game updates now run several games at once: 2 by default, settable from 1 to 4 under Settings → Game Updates (config key `update-concurrency`). Extra games show **Queued…**. Each update row has its own Cancel, and the toolbar button is now **Cancel all**. Masked-link unwrapping and the browser fallback are still paced once for the whole app (one unwrap every 3 s, one browser window at a time), so F95Zone isn't hit harder (F95-cbv5). One game can't have two runs at once, and scans still wait for every update to finish.
 
@@ -29,6 +33,14 @@
 - Missing covers render as typographic cards (title initials). The grid marks updates with an accent cover edge and shows `old → new` in the caption.
 
 ### Fixed
+
+- **Install scripts pointed at the wrong repository (F95-0u3u).** `install.sh`, `install.ps1` and `release.sh` used `mili/moxie`, which returns 404; they now use `Milisource/moxie`, so the documented install command works again.
+
+- **Windows: database could not be opened (F95-jkcf).** The SQLite DSN was built with `url.URL`, which put a Windows drive-qualified path in the URI authority (`file://C:/...`); the WASM VFS then resolved `//C:/...` and every command failed with a `GetFileAttributesEx` error. The DSN is now `file:` plus the path, keeping the drive letter in the path component.
+
+- **Windows: `go vet`/tests could not compile `internal/browserresolve` (F95-jkcf).** `firefox_live_test.go` (cross-platform) called `buildFirefoxFixture`, which lived in the `!windows` `firefox_test.go`. The helper now lives in an untagged `firefox_fixture_test.go`.
+
+- **Association cache ignored the channel and platform (F95-1p5r).** `scraper.AssociationCachePath` hardcoded `~/.config/moxie/associations.json` on every OS, so a dev build wrote into the stable directory and Windows/macOS used a non-standard path. It now derives from `config.ConfigDir()`.
 
 - **Sharper covers (F95-x2ml).**
   - Grid thumbnails are shaped for the 3:4 card. Near-portrait art is centre-cropped and scaled to fit 600×800. Before, a long edge capped at 480 left banners about 270px tall, and the card blew them up 2–3×.

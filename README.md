@@ -89,14 +89,14 @@ Before using moxie, ensure you have:
 #### macOS / Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/milisource/moxie/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.sh | bash
 ```
 
 The script downloads the latest pre-built binary for your platform to `~/.local/bin/` and adds it to your shell config. Restart your terminal or run `source ~/.bashrc` for PATH changes to take effect.
 
 **To pin a specific version:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/milisource/moxie/main/scripts/install.sh | bash -s -- --version v0.3.3-alpha
+curl -fsSL https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.sh | bash -s -- --version v0.3.3-alpha
 ```
 
 **Install from a local build:**
@@ -111,18 +111,48 @@ curl -fsSL https://raw.githubusercontent.com/milisource/moxie/main/scripts/insta
 Open **PowerShell** (not Command Prompt) and run:
 
 ```powershell
-irm https://raw.githubusercontent.com/milisource/moxie/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.ps1 | iex
 ```
 
 The script downloads `moxie.exe` to `%LOCALAPPDATA%\moxie\bin\` and adds it to your user PATH.
 
 **Available flags:** `-Version <ver>`, `-Binary <path>`, `-NoModifyPath`, `-Help`
 
+#### Dev build (moxie-dev)
+
+There are two release channels. They install side by side and are kept entirely
+separate, so a dev build can never damage a stable install:
+
+| Channel | Binary | Data directory | Source |
+|---------|--------|----------------|--------|
+| Stable (main) | `moxie` | `~/.config/moxie` / `%APPDATA%\moxie` | GitHub Releases |
+| Dev | `moxie-dev` | `~/.config/moxie-dev` / `%APPDATA%\moxie-dev` | `dev` branch |
+
+The dev channel builds from source, so it needs git and a Go 1.26+ toolchain:
+
+```bash
+git clone https://github.com/Milisource/moxie.git
+cd moxie
+./scripts/install-dev.sh          # build this checkout → ~/.local/bin/moxie-dev
+./scripts/install-dev.sh --clone  # or shallow-clone the dev branch first
+```
+
+Windows (PowerShell):
+
+```powershell
+.\scripts\install-dev.ps1
+.\scripts\install-dev.ps1 -Clone
+```
+
+Because the dev build has its own database, a dev schema migration can never
+strand the stable install. `moxie-dev` also refuses to self-update from stable
+releases (`moxie update`); rebuild/reinstall the dev channel instead.
+
 #### Build from source
 
 ```bash
 # Quick build for current platform
-git clone https://github.com/milisource/moxie.git
+git clone https://github.com/Milisource/moxie.git
 cd moxie
 make build                    # produces dist/moxie
 sudo make install             # copies to /usr/local/bin/moxie
@@ -366,7 +396,7 @@ You can safely delete `games.db` to reset your library — it will be recreated 
 
 ## How to get help
 
-- **Bug reports & feature requests** — Open an [issue on GitHub](https://github.com/milisource/moxie/issues)
+- **Bug reports & feature requests** — Open an [issue on GitHub](https://github.com/Milisource/moxie/issues)
 - **Documentation** — See the [docs/](docs/) directory for detailed component documentation
 - **Quick reference** — Run `moxie` without arguments for the full command reference
 
