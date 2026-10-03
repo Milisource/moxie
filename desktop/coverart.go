@@ -105,7 +105,7 @@ func (a *App) upgradeCoversRun(ctx context.Context, opts coverart.Options) (Cove
 	}
 	var todo []db.Game
 	for _, g := range games {
-		if strings.HasPrefix(g.Path, db.VirtualPathPrefix) {
+		if db.IsVirtualPath(g.Path) {
 			continue
 		}
 		p := coverPathFor(g.ID)

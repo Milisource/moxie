@@ -4,13 +4,23 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
 // VirtualPathPrefix is the prefix for games that aren't locally installed.
 // These are placeholders created by the desktop app's AddGameFromF95Zone.
+// Paths are stored with the host separator (filepath.Join), so prefer
+// IsVirtualPath over comparing against this constant directly.
 const VirtualPathPrefix = "/virtual/"
+
+// IsVirtualPath reports whether path is a virtual (not-locally-installed)
+// game path. It normalizes separators first, so both "/virtual/..." and
+// Windows' "\virtual\..." match.
+func IsVirtualPath(path string) bool {
+	return strings.HasPrefix(filepath.ToSlash(path), VirtualPathPrefix)
+}
 
 // gameColumnNames is the games column list scanGame reads, in scan order.
 //
@@ -831,7 +841,7 @@ func (db *Database) AllGamePaths() ([]GamePathEntry, error) {
 			return nil, err
 		}
 		// Skip virtual paths (browser-added games not downloaded yet).
-		if strings.HasPrefix(e.Path, VirtualPathPrefix) {
+		if IsVirtualPath(e.Path) {
 			continue
 		}
 		if dirMTimeStr.Valid {

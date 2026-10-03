@@ -88,7 +88,7 @@ func CoversUpgrade(args []string) {
 		if *only != 0 && g.ID != *only {
 			continue
 		}
-		if strings.HasPrefix(g.Path, db.VirtualPathPrefix) && *only == 0 {
+		if db.IsVirtualPath(g.Path) && *only == 0 {
 			continue
 		}
 		coverPath := filepath.Join(dir, strconv.FormatInt(g.ID, 10))

@@ -621,7 +621,7 @@ func (a *App) PlayGame(id int64) (string, error) {
 	exe := launcher.ResolveExecutable(game.Path, game.ExePath)
 	if exe == "" {
 		// Virtual game added from F95Zone but not yet downloaded.
-		if strings.HasPrefix(game.Path, db.VirtualPathPrefix) {
+		if db.IsVirtualPath(game.Path) {
 			return "", fmt.Errorf("%q was added from F95Zone but not yet downloaded. Use Install on its detail page to download it.", game.Title)
 		}
 		return "", fmt.Errorf("no executable found for %q", game.Title)
@@ -3103,7 +3103,7 @@ func (a *App) RenameGame(id int64, newTitle string) error {
 	// Games added from the F95Zone browser have no directory on disk — their
 	// path is a /virtual/ placeholder. There is nothing to rename, and the
 	// placeholder encodes the thread, so refuse.
-	if strings.HasPrefix(game.Path, db.VirtualPathPrefix) {
+	if db.IsVirtualPath(game.Path) {
 		return fmt.Errorf("%q was added from F95Zone and has no directory yet — rename it after installing", game.Title)
 	}
 
@@ -4793,7 +4793,7 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 	// path is a /virtual/ placeholder. There is nothing to merge into, so the
 	// pipeline would extract over a nonexistent tree. They must be downloaded
 	// through the Downloads view first.
-	if strings.HasPrefix(game.Path, db.VirtualPathPrefix) {
+	if db.IsVirtualPath(game.Path) {
 		err = fmt.Errorf("%q was added from F95Zone but not yet downloaded — install it from the Downloads view before updating", title)
 		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
 			"gameID":  gameID,
@@ -5269,7 +5269,7 @@ func (a *App) DownloadAllUpdates() error {
 		}
 		var jobs []job
 		for _, g := range all {
-			if strings.HasPrefix(g.Path, db.VirtualPathPrefix) {
+			if db.IsVirtualPath(g.Path) {
 				continue
 			}
 			// Unknown-version games are listed for a deliberate per-game
@@ -5391,7 +5391,7 @@ func (a *App) ProvideUpdateFile(gameID int64) error {
 			a.emitUpdateError(gameID, "lookup", fmt.Sprintf("game with id %d not found", gameID))
 			return
 		}
-		if strings.HasPrefix(game.Path, db.VirtualPathPrefix) {
+		if db.IsVirtualPath(game.Path) {
 			a.emitUpdateError(gameID, "check",
 				fmt.Sprintf("%q was added from F95Zone but not yet downloaded — install it from the Downloads view before updating", game.Title))
 			return
@@ -5530,7 +5530,7 @@ func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent strin
 
 	// Refuse to install over an existing installation — that is what the
 	// update pipeline is for, and it knows how to preserve saves.
-	if !strings.HasPrefix(game.Path, db.VirtualPathPrefix) {
+	if !db.IsVirtualPath(game.Path) {
 		if _, serr := os.Stat(game.Path); serr == nil {
 			return emitErr("check", fmt.Errorf("%q is already installed at %s — use Update to upgrade it", game.Title, game.Path))
 		}
