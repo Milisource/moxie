@@ -69,6 +69,8 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] `developerPattern1` regex fixed — `^Developer` anchor prevents mid-sentence false matches
 - [x] Installer scripts rewritten — `install.sh` (592 lines) and `install.ps1` (287 lines) with progress bars, version pinning, PATH auto-modification, release verification, and GitHub Actions support
 - [x] GitHub Actions release workflow — auto-builds 6 platform binaries on tag push, creates release with `softprops/action-gh-release`
+- [x] Dev install channel — `install-dev.sh` / `install-dev.ps1` build the dev branch as `moxie-dev` with its own data dir (`~/.config/moxie-dev`, `%APPDATA%\moxie-dev`), selected by `-X main.channel=dev`; a stable `moxie` install and its database are never touched
+- [x] Dev CI — `ci.yml` runs on the `dev` branch; `dev.yml` publishes rolling `moxie-dev-*` prerelease artifacts tagged `dev`
 - [x] Engine-aware scoring for auto-association — thread candidates with matching engine keywords get +0.15 score boost
 - [x] Single-pass scanner with inline size accumulation — eliminates O(N×F) redundant filesystem calls
 - [x] Parallel engine detection — bounded worker pool (`runtime.NumCPU()`) for per-game detection in scanner second pass
