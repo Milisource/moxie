@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 
+	"github.com/mili/moxie/internal/config"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -14,7 +15,18 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// channel selects the release channel at build time via
+// -ldflags "-X main.channel=dev". It defaults to the stable "main" channel.
+// It routes the desktop app at the same per-channel data directory the CLI
+// uses (moxie vs moxie-dev), so a dev desktop and a stable install never share
+// a database or config.
+var channel = "main"
+
 func main() {
+	// Route to the per-channel data directory before any path is resolved (the
+	// staged-update swap agent below already reads config dirs).
+	config.SetChannel(channel)
+
 	// On Windows the staged-update swap agent runs inside this binary (the
 	// downloaded copy); it swaps binaries and relaunches, never opening the
 	// app. On every other platform this returns false immediately.

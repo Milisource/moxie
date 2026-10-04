@@ -6,6 +6,14 @@
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
+  "nsisType": "single",
+  "info": {
+    "companyName": "Milisource",
+    "productName": "Moxie",
+    "productVersion": "0.0.0",
+    "copyright": "Copyright (c) 2026 Milisource",
+    "comments": "Game Library Manager for F95Zone games"
+  },
   "author": {
     "name": "Milisource",
     "email": "natsukilover45+github@gmail.com"

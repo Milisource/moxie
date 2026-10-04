@@ -1618,6 +1618,16 @@ func updateStagePath(assetName string) (string, error) {
 // CheckForUpdate checks GitHub for a newer release and returns structured
 // results for the frontend.
 func (a *App) CheckForUpdate() UpdateInfo {
+	// Dev builds follow the dev branch, not stable releases: updating from
+	// /latest would replace a dev desktop with a main-channel binary and route
+	// it at the wrong data dir. Mirror the CLI's refusal (commands/update.go).
+	if config.Channel() == "dev" {
+		return UpdateInfo{
+			CurrentVersion: appVersion,
+			Error:          "This is a dev build; it does not update from stable releases. Reinstall the dev channel.",
+		}
+	}
+
 	// Blocking network binding — serialized like the other network calls so
 	// stacked calls cannot pile up goroutines.
 	if !a.netBusy.CompareAndSwap(false, true) {
@@ -1674,6 +1684,12 @@ func (a *App) CheckForUpdate() UpdateInfo {
 func (a *App) DownloadUpdate() error {
 	if a.ctx == nil {
 		return fmt.Errorf("application context not initialized")
+	}
+
+	// Dev builds do not self-update from stable releases (mirrors CheckForUpdate
+	// and the CLI). Reinstalling the dev channel is the supported path.
+	if config.Channel() == "dev" {
+		return fmt.Errorf("this is a dev build; it does not update from stable releases")
 	}
 
 	if !a.updateGate().claimExclusive() {
