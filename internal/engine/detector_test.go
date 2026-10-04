@@ -123,6 +123,79 @@ func TestDetectRPGMIniNoContent(t *testing.T) {
 	}
 }
 
+// TestDetectRPGMNWJSRequiresNwDll guards the regression where icudtl.dat
+// alone (present in every Chromium/Electron app) matched the RPG Maker MV/MZ
+// profile and dumped Electron games into RPGM.
+func TestDetectRPGMNWJSRequiresNwDll(t *testing.T) {
+	dir := makeDir(t, "icudtl.dat", "Game.exe")
+	if got := Detect(dir); got.Engine == RPGM {
+		t.Errorf("icudtl.dat + Game.exe without nw.dll must not be RPGM, got RPGM (%s)", got.MatchedBy)
+	}
+}
+
+func TestDetectRPGMNWJSWithNwDll(t *testing.T) {
+	dir := makeDir(t, "icudtl.dat", "nw.dll")
+	if got := Detect(dir); got.Engine != RPGM {
+		t.Errorf("expected RPGM (icudtl.dat + nw.dll), got %s (%s)", got.Engine, got.MatchedBy)
+	}
+}
+
+// TestDetectElectronWithIcudtlMapsToOthers verifies a Chromium/Electron app
+// is classified as Others even though it carries icudtl.dat.
+func TestDetectElectronWithIcudtlMapsToOthers(t *testing.T) {
+	dir := makeDir(t, "icudtl.dat", "chrome_100_percent.pak", "CoC II.exe")
+	if got := Detect(dir); got.Engine != Others {
+		t.Errorf("expected Others (Electron), got %s (%s)", got.Engine, got.MatchedBy)
+	}
+}
+
+// TestDetectRPGMLinuxNWJS verifies the Linux MV/MZ layout (bare `nw` binary,
+// root package.json + www/) is still RPGM via the www + package.json profile.
+func TestDetectRPGMLinuxNWJS(t *testing.T) {
+	dir := makeDir(t, "icudtl.dat", "nw", "package.json", "www/index.html")
+	result := Detect(dir)
+	if result.Engine != RPGM {
+		t.Errorf("expected RPGM (Linux nw.js layout), got %s (%s)", result.Engine, result.MatchedBy)
+	}
+}
+
+// TestDetectOtherRuntimeFamilies verifies non-F95 engines classify as Others
+// with a descriptive MatchedBy rather than leaking into a canonical engine.
+func TestDetectOtherRuntimeFamilies(t *testing.T) {
+	cases := []struct {
+		label string
+		file  string
+		want  string
+	}{
+		{"gamemaker", "data.win", "GameMaker"},
+		{"kirikiri", "krkr.console.log", "KiriKiri"},
+		{"kirikiri-xp3", "data.xp3", "KiriKiri"},
+		{"nscripter", "nscript.dat", "NScripter"},
+		{"hsp", "hspext.dll", "HSP"},
+		{"flutter", "flutter_windows.dll", "Flutter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			got := Detect(makeDir(t, tc.file))
+			if got.Engine != Others {
+				t.Errorf("%s: expected Others, got %s (%s)", tc.label, got.Engine, got.MatchedBy)
+			}
+			if !strings.Contains(got.MatchedBy, tc.want) {
+				t.Errorf("%s: MatchedBy %q missing %q", tc.label, got.MatchedBy, tc.want)
+			}
+		})
+	}
+}
+
+// TestDetectKiriKiriBeatsHTML verifies a KiriKiri game that ships a gallery
+// index.html is still Others, not HTML — the .xp3 profile precedes HTML.
+func TestDetectKiriKiriBeatsHTML(t *testing.T) {
+	dir := makeDir(t, "data.xp3", "index.html")
+	if got := Detect(dir); got.Engine != Others {
+		t.Errorf("expected Others (KiriKiri), got %s (%s)", got.Engine, got.MatchedBy)
+	}
+}
+
 func TestDetectUnrealEngine(t *testing.T) {
 	dir := makeDir(t, "Engine/", "Engine/Binaries/")
 	result := Detect(dir)

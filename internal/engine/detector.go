@@ -209,18 +209,82 @@ var builtinProfiles = []profile{
 	},
 	// Unity _Data folder handled separately in detectUnityDataFolder
 
+	// --- Other runtime families, mapped to Others ---
+	// Per project policy the canonical engine set is exactly F95Zone's engine
+	// taxonomy, and these engines are not in it — so they classify as Others.
+	// The profiles still matter: they give a truthful MatchedBy for diagnostics
+	// and keep these files from matching a weaker canonical profile (e.g. a
+	// KiriKiri gallery index.html being read as an HTML game). They sit before
+	// the weaker HTML/extension profiles for that reason.
+
+	{
+		engine: Others, confidence: 0.88,
+		files: []string{"data.win"},
+		name:  "GameMaker Studio (data.win)",
+	},
+	{
+		engine: Others, confidence: 0.85,
+		files: []string{"krkr.console.log", "krmovie.dll"},
+		name:  "KiriKiri (krkr.console.log)",
+	},
+	{
+		engine: Others, confidence: 0.82,
+		extensions: []string{".xp3"},
+		name:       "KiriKiri archive (.xp3)",
+	},
+	{
+		engine: Others, confidence: 0.85,
+		files: []string{"nscript.dat", "nslua.dll"},
+		name:  "NScripter (nscript.dat)",
+	},
+	{
+		engine: Others, confidence: 0.80,
+		extensions: []string{".nsa"},
+		name:       "NScripter archive (.nsa)",
+	},
+	{
+		engine: Others, confidence: 0.80,
+		files: []string{"hspext.dll"},
+		name:  "HSP (Hot Soup Processor)",
+	},
+	{
+		engine: Others, confidence: 0.78,
+		extensions: []string{".hpi"},
+		name:       "HSP plugin (.hpi)",
+	},
+	{
+		engine: Others, confidence: 0.80,
+		files: []string{"flutter_windows.dll"},
+		name:  "Flutter app (flutter_windows.dll)",
+	},
+
 	// --- RPG Maker variants (all map to RPGM) ---
+
+	// Electron/Chromium apps share icudtl.dat with RPG Maker's NW.js runtime,
+	// so they must be ruled out BEFORE the RPGM profiles below. The tell is
+	// the Chromium resource pak / license (RPG Maker's NW.js runtime ships
+	// nw_*.pak and nw.dll instead). Without this, every Electron game that
+	// carries icudtl.dat (CoC II, Kinky Dungeon, Trials in Tainted Space,
+	// TyranoScript titles, …) is dumped into RPGM.
+	{
+		engine: Others, confidence: 0.90,
+		files: []string{"chrome_100_percent.pak", "LICENSE.electron.txt"},
+		name:  "Chromium/Electron app",
+	},
 
 	// --- RPG Maker ---
 
 	// NW.js runtime markers — definitive for RPG Maker MV/MZ.
-	// icudtl.dat is the single best signal: present in 100% of MV/MZ games,
-	// absent from pure HTML games. Combined with Game.exe (renamed nw.exe)
-	// or nw_*.pak files for high-confidence detection.
+	// icudtl.dat alone is NOT enough: it ships with every Chromium/Electron
+	// app too. nw.dll (or the nw_*.pak set) is the NW.js-specific tell that
+	// distinguishes RPG Maker MV/MZ from plain Electron. Linux MV/MZ builds
+	// use a bare `nw` binary and are covered by the `www + package.json`
+	// profile below.
 	{
 		engine: RPGM, confidence: 0.96,
-		files: []string{"icudtl.dat", "Game.exe"},
-		name:  "RPG Maker MV/MZ (NW.js: icudtl.dat + Game.exe)",
+		files:    []string{"icudtl.dat", "nw.dll"},
+		filesAll: true,
+		name:     "RPG Maker MV/MZ (NW.js: icudtl.dat + nw.dll)",
 	},
 	{
 		engine: RPGM, confidence: 0.95,
