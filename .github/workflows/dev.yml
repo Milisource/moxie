@@ -1,14 +1,12 @@
 name: Dev build
 
 # Rolling dev-channel artifacts. Every push to `dev` rebuilds the CLI for all
-# six targets and refreshes a single prerelease tagged `dev`. The binaries are
-# named `moxie-dev-<os>-<arch>` and are built with `-X main.channel=dev`, so
-# they use the moxie-dev data directory and never collide with a stable
-# install.
-#
-# scripts/install-dev.sh currently builds from source; this workflow is the
-# prebuilt source it can consume once wired up. Until then it also serves as a
-# "does dev still compile for every target" check.
+# six targets plus the combined Windows desktop+CLI installer, and refreshes a
+# single prerelease tagged `dev`. The CLI binaries are named
+# `moxie-dev-<os>-<arch>` and built with `-X main.channel=dev`, so they use the
+# moxie-dev data directory and never collide with a stable install. The Windows
+# installer installs `Moxie Dev` (moxie-dev CLI + desktop) side by side with a
+# stable `Moxie` install.
 
 on:
   push:
@@ -18,9 +16,16 @@ on:
 permissions:
   contents: write
 
+env:
+  NODE_OPTIONS: "--max-old-space-size=4096"
+
 jobs:
-  dev-release:
+  # ── CLI: six dev binaries ──────────────────────────────────────────────────
+  cli:
     runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.version.outputs.sha }}
+      date: ${{ steps.version.outputs.date }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,6 +63,77 @@ jobs:
           ls -lh dist/
           file dist/moxie-dev-linux-amd64
 
+      - name: Upload CLI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-dist
+          path: dist/*
+          if-no-files-found: error
+
+  # ── Windows desktop + CLI: combined dev installer ──────────────────────────
+  desktop-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set dev version
+        id: version
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse --short HEAD).Trim()
+          $date = (Get-Date -AsUTC -Format "yyyy-MM-ddTHH:mm:ssZ")
+          "sha=$sha" | Out-File -Append $env:GITHUB_OUTPUT
+          "version=dev-$sha" | Out-File -Append $env:GITHUB_OUTPUT
+          "date=$date" | Out-File -Append $env:GITHUB_OUTPUT
+
+      - name: Install Wails CLI
+        shell: pwsh
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+          "$(go env GOPATH)\bin" | Out-File -Append $env:GITHUB_PATH
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          "C:\Program Files (x86)\NSIS" | Out-File -Append $env:GITHUB_PATH
+
+      - name: Build combined dev installer
+        shell: pwsh
+        run: |
+          ./scripts/package-windows.ps1 -Version "${{ steps.version.outputs.version }}" -Channel dev
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-desktop-dist
+          path: dist/*
+          if-no-files-found: error
+
+  # ── Publish rolling dev prerelease ─────────────────────────────────────────
+  release:
+    needs: [cli, desktop-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List release assets
+        run: ls -lh dist/
+
       - name: Publish rolling dev prerelease
         uses: softprops/action-gh-release@v2
         with:
@@ -66,12 +142,15 @@ jobs:
           prerelease: true
           make_latest: false
           body: |
-            Rolling dev build from `dev` @ `${{ steps.version.outputs.sha }}` (${{ steps.version.outputs.date }}).
+            Rolling dev build from `dev` @ `${{ needs.cli.outputs.sha }}` — these are development binaries, not a release: expect rough edges.
 
-            These are development binaries, not a release: expect rough edges.
+            **Windows (desktop + CLI):** download **`Moxie-Dev-Setup.exe`**. It installs
+            `Moxie Dev` (desktop + `moxie-dev` CLI) side by side with any stable install,
+            using `%APPDATA%\moxie-dev` so it never touches stable data.
 
-            | Platform | Arch | Binary |
-            |----------|------|--------|
+            | Platform | Arch | File |
+            |----------|------|------|
+            | Windows | amd64 + arm64 | `Moxie-Dev-Setup.exe` (desktop + CLI) |
             | Linux | amd64 | `moxie-dev-linux-amd64` |
             | Linux | arm64 | `moxie-dev-linux-arm64` |
             | macOS | amd64 | `moxie-dev-macos-amd64` |
@@ -79,8 +158,7 @@ jobs:
             | Windows | amd64 | `moxie-dev-windows-amd64.exe` |
             | Windows | arm64 | `moxie-dev-windows-arm64.exe` |
 
-            Installed as `moxie-dev`, with data in `~/.config/moxie-dev` so it
-            never touches a stable install. Build from source today with
-            `./scripts/install-dev.sh` (Linux/macOS) or `.\scripts\install-dev.ps1` (Windows).
+            Installed as `moxie-dev`, with data in `%APPDATA%\moxie-dev` so it never
+            touches a stable install.
           files: dist/*
           fail_on_unmatched_files: true

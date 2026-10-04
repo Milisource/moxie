@@ -9,10 +9,18 @@
     Defaults to latest. Takes priority over $env:MOXIE_VERSION.
 .PARAMETER Binary
     Path to a pre-downloaded moxie binary. Skips the download step.
+.PARAMETER Desktop
+    Install the combined desktop app + CLI using Moxie-Setup.exe instead of a
+    CLI-only binary. Installs per-user to %LOCALAPPDATA%\Programs\Moxie and
+    does not also copy a CLI into %LOCALAPPDATA%\moxie\bin.
+.PARAMETER Silent
+    With -Desktop, run the installer silently (no UI).
 .PARAMETER NoModifyPath
     Skip adding the install directory to your user PATH.
 .EXAMPLE
-    .\install.ps1                          # Latest release
+    .\install.ps1                          # Latest CLI-only release
+    .\install.ps1 -Desktop                 # Desktop app + CLI (installer)
+    .\install.ps1 -Desktop -Silent         # Same, no UI
     .\install.ps1 -Version v0.3.3          # Specific version
     .\install.ps1 -Binary .\moxie.exe      # Local binary
     .\install.ps1 -NoModifyPath            # No PATH changes
@@ -22,6 +30,8 @@ param(
     [Parameter(Position = 0)]
     [string]$Version,
     [string]$Binary,
+    [switch]$Desktop,
+    [switch]$Silent,
     [switch]$NoModifyPath,
     [switch]$Help
 )
@@ -41,6 +51,10 @@ OPTIONS
                         Defaults to the latest release.
     -Binary <path>      Install from a local binary file instead of
                         downloading from GitHub.
+    -Desktop            Install the combined desktop app + CLI via
+                        Moxie-Setup.exe (recommended for Windows desktop
+                        users). Per-user install, CLI added to PATH.
+    -Silent             With -Desktop, run the installer with no UI.
     -NoModifyPath       Skip adding the install directory to your
                         user PATH.
     -Help               Show this help message and exit.
@@ -52,6 +66,8 @@ ENVIRONMENT
 EXAMPLES
     iwr https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.ps1 -OutFile install.ps1
     .\install.ps1
+    .\install.ps1 -Desktop
+    .\install.ps1 -Desktop -Silent
     .\install.ps1 -Version v0.3.3-alpha
     .\install.ps1 -Binary .\moxie.exe
     `$env:MOXIE_VERSION = 'v0.3.3-alpha'; .\install.ps1 -NoModifyPath
@@ -159,6 +175,46 @@ function Install-Moxie {
     Write-Step 'Resolving version...'
     $ver = Resolve-Version
     Write-Ok "moxie $($ver.Display)"
+
+    # ── Combined desktop + CLI installer ────────────────────────
+    if ($Desktop) {
+        if ($Binary) { throw '-Desktop cannot be combined with -Binary.' }
+        $assetName = 'Moxie-Setup.exe'
+        $downloadUrl = if ($ver.Tag -eq 'latest') {
+            "$ReleaseUrl/latest/download/$assetName"
+        } else {
+            "$ReleaseUrl/download/$($ver.Tag)/$assetName"
+        }
+
+        Write-Step 'Checking for the combined desktop + CLI installer...'
+        if (-not (Test-UrlExists -Url $downloadUrl)) {
+            throw "No combined installer ($assetName) for $($ver.Display).`n" +
+                  "  URL checked: $downloadUrl`n" +
+                  "  This release may predate the bundled installer.`n" +
+                  "  Re-run without -Desktop to install the CLI only."
+        }
+
+        $null = New-Item -ItemType Directory -Force -Path $TempDir
+        $setupFile = "$TempDir\$assetName"
+        Write-Step "Downloading $assetName ($($ver.Display))..."
+        $ProgressPreference = 'SilentlyContinue'
+        try {
+            Invoke-WebRequest -Uri $downloadUrl -OutFile $setupFile -UseBasicParsing
+        } finally {
+            $ProgressPreference = 'Continue'
+        }
+
+        Write-Step 'Installing Moxie (desktop + CLI)...'
+        $installerArgs = if ($Silent) { @('/S') } else { @() }
+        $proc = Start-Process -FilePath $setupFile -ArgumentList $installerArgs -Wait -PassThru
+        if ($proc.ExitCode -ne 0) {
+            throw "Installer exited with code $($proc.ExitCode)."
+        }
+        Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Ok "Moxie $($ver.Display) installed (desktop + CLI)."
+        Write-Info 'Launch Moxie from the Start Menu; the CLI is on your PATH as moxie.'
+        return $ver
+    }
 
     # ── Already-installed check ─────────────────────────────────
     if ($ver.Tag -ne 'latest') {

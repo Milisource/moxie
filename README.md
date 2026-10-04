@@ -108,15 +108,30 @@ curl -fsSL https://raw.githubusercontent.com/Milisource/moxie/main/scripts/insta
 
 #### Windows
 
-Open **PowerShell** (not Command Prompt) and run:
+**Desktop app + CLI (recommended):** download **`Moxie-Setup.exe`** from the
+[latest release](https://github.com/Milisource/moxie/releases/latest) and run it.
+It installs the desktop app and the `moxie` CLI to
+`%LOCALAPPDATA%\Programs\Moxie` (per-user, no admin), adds the CLI to your PATH,
+and embeds the WebView2 bootstrapper (already present on a normal Windows 10/11
+install). One download works on both x64 and ARM64.
+
+**CLI only**, from PowerShell (not Command Prompt):
 
 ```powershell
 irm https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.ps1 | iex
 ```
 
-The script downloads `moxie.exe` to `%LOCALAPPDATA%\moxie\bin\` and adds it to your user PATH.
+**Both, via the script:**
 
-**Available flags:** `-Version <ver>`, `-Binary <path>`, `-NoModifyPath`, `-Help`
+```powershell
+irm https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.ps1 -OutFile install.ps1
+.\install.ps1 -Desktop          # add -Silent for no UI
+```
+
+CLI-only mode downloads `moxie.exe` to `%LOCALAPPDATA%\moxie\bin\` and adds it to
+your user PATH; `-Desktop` runs the bundled installer instead.
+
+**Available flags:** `-Version <ver>`, `-Binary <path>`, `-Desktop`, `-Silent`, `-NoModifyPath`, `-Help`
 
 #### Dev build (moxie-dev)
 
@@ -143,6 +158,11 @@ Windows (PowerShell):
 .\scripts\install-dev.ps1
 .\scripts\install-dev.ps1 -Clone
 ```
+
+**Windows dev desktop app:** download **`Moxie-Dev-Setup.exe`** from the rolling
+[`dev` release](https://github.com/Milisource/moxie/releases/tag/dev). It installs
+`Moxie Dev` (desktop + `moxie-dev` CLI) side by side with a stable install, using
+`%APPDATA%\moxie-dev` so it never touches stable data.
 
 Because the dev build has its own database, a dev schema migration can never
 strand the stable install. `moxie-dev` also refuses to self-update from stable
@@ -174,6 +194,18 @@ dir on your `PATH` (default `~/.local/bin`, override with `--bin-dir`), register
 the desktop app in your launcher, and verifies both. The desktop build needs the
 Wails CLI and, on Linux, webkit2gtk 4.1; pass `--skip-desktop` to skip it. Run
 `./scripts/install-local.sh --help` for all flags.
+
+**Windows combined installer:** `scripts/package-windows.ps1` builds the CLI
+(amd64 + arm64) and the desktop app, then produces a single `Moxie-Setup.exe` NSIS
+installer (desktop + CLI, CLI on PATH). It needs Go, Node, the Wails CLI and NSIS:
+
+```powershell
+.\scripts\package-windows.ps1 -Version 0.4.0            # stable
+.\scripts\package-windows.ps1 -Version dev-abc1234 -Channel dev
+```
+
+Both the stable release and the rolling `dev` prerelease publish this installer
+as `Moxie-Setup.exe` / `Moxie-Dev-Setup.exe`.
 
 #### Verify installation
 

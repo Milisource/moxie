@@ -254,6 +254,7 @@ A local game library manager for adult games. Scans directories, detects engines
   - [x] Wails production build: `make desktop` → `dist/moxie-desktop` (4.6s)
   - [x] Wails dev: `make desktop-dev` (hot-reload)
   - [x] Desktop installer: `make install-desktop` → per-platform app registration (Linux .desktop, macOS .app)
+  - [x] **Windows combined desktop + CLI installer (F95-9jfj)** — `scripts/package-windows.ps1` builds one per-user NSIS `Moxie-Setup.exe` (amd64+arm64) with the desktop app and the `moxie` CLI, CLI added to the user PATH and WebView2 bootstrapper embedded. Published from both the stable release and the rolling `dev` prerelease (`Moxie-Dev-Setup.exe`, `Moxie Dev`, `%APPDATA%\moxie-dev`). The desktop app gains a build-time `channel` matching the CLI's per-channel data directory
   - [x] Launch games from the desktop app — Play button in detail view, play history recording, launch errors surfaced in UI
   - [x] Wine prefix support in desktop app — editable per-game prefix, `PlayGame` honors the DB-stored prefix
   - [x] Directory watcher — fsnotify watches configured scan paths; debounced file changes trigger incremental rescans (insert/update/remove) with live library refresh
