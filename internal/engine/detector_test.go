@@ -47,6 +47,16 @@ func TestDetectUnityDataFolderOnly(t *testing.T) {
 	}
 }
 
+// TestDetectUnityLinuxDataFolder verifies the <exe>_Data pattern also matches
+// Linux launchers (.x86_64), not just Windows .exe.
+func TestDetectUnityLinuxDataFolder(t *testing.T) {
+	dir := makeDir(t, "EmberDoors.x86_64", "EmberDoors_Data/")
+	result := Detect(dir)
+	if result.Engine != Unity {
+		t.Errorf("expected Unity from Linux _Data folder, got %s (%s)", result.Engine, result.MatchedBy)
+	}
+}
+
 func TestDetectRenPy(t *testing.T) {
 	dir := makeDir(t, "renpy/", "game/")
 	result := Detect(dir)

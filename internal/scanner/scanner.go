@@ -1,8 +1,10 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -130,7 +132,7 @@ func ScanFiltered(ctx context.Context, root string, skipPaths map[string]bool, p
 		// Check if this directory looks like a game root using a single
 		// directory read (avoids redundant os.ReadDir in hasGameMarkers).
 		entries, readErr := os.ReadDir(path)
-		if readErr != nil || !hasGameMarkersFromEntries(entries) {
+		if readErr != nil || !isGameRoot(path, entries) {
 			return nil
 		}
 		// Skip tool/utility directories (decrypters, unpackers, RPG Maker
@@ -145,6 +147,14 @@ func ScanFiltered(ctx context.Context, root string, skipPaths map[string]bool, p
 		// If it's named after a known engine and has subdirectories,
 		// it's a category folder — walk children instead.
 		if isEngineName(strings.ToLower(name)) && hasSubDir(entries) {
+			return nil
+		}
+		// A directory that contains several complete games is a container
+		// (library root, or a release folder bundling multiple games), not a
+		// game itself — register its children instead. Without this a loose
+		// engine file at a library root (e.g. a top-level .swf) would register
+		// the whole library as a single game and swallow every child.
+		if isContainerDir(path, entries) {
 			return nil
 		}
 		gameDirs[path] = &trackedGame{}
@@ -354,13 +364,15 @@ func isUnderAnyGameDir(parent string, gameDirs map[string]*trackedGame) bool {
 
 // hasGameMarkersFromEntries checks a pre-read directory listing for game
 // engine files and executables. Extracted from hasGameMarkers so callers
-// can avoid redundant os.ReadDir calls.
+// can avoid redundant os.ReadDir calls. It does not read file contents; for
+// the full game-root test including the HTML content sniff use isGameRoot.
 func hasGameMarkersFromEntries(entries []os.DirEntry) bool {
 	hasExe := false
 	hasMarkers := false
 
 	for _, e := range entries {
 		name := e.Name()
+		lower := strings.ToLower(name)
 		if e.IsDir() {
 			switch {
 			case name == "renpy", name == "www", name == "Engine",
@@ -377,11 +389,22 @@ func hasGameMarkersFromEntries(entries []os.DirEntry) bool {
 				}
 			}
 			switch {
-			case name == "package.json",
-				strings.HasSuffix(name, ".pck"),
-				strings.HasSuffix(name, ".rpyc"),
-				strings.HasSuffix(name, ".rpa"),
-				strings.HasPrefix(name, "Game.rgss"):
+			case lower == "package.json",
+				lower == "data.win",
+				lower == "nscript.dat",
+				lower == "flutter_windows.dll",
+				strings.HasSuffix(lower, ".pck"),
+				strings.HasSuffix(lower, ".rpyc"),
+				strings.HasSuffix(lower, ".rpa"),
+				strings.HasPrefix(lower, "game.rgss"),
+				strings.HasSuffix(lower, ".swf"),
+				strings.HasSuffix(lower, ".jar"),
+				strings.HasSuffix(lower, ".qsp"),
+				strings.HasSuffix(lower, ".qsps"),
+				strings.HasSuffix(lower, ".taf"),
+				strings.HasSuffix(lower, ".gam"),
+				strings.HasSuffix(lower, ".t3"),
+				strings.HasSuffix(lower, ".wolf"):
 				hasMarkers = true
 			}
 		}
@@ -390,15 +413,207 @@ func hasGameMarkersFromEntries(entries []os.DirEntry) bool {
 	return hasExe || hasMarkers
 }
 
+// htmlSniffHead / htmlSniffTail bound the content-sniff read. Game entry
+// HTML pages (Twine exports, canvas apps) put their signature either near the
+// top (Twine <tw-storydata>, framework script tags) or at the end (Twine 1
+// story data), and can be tens of MB, so a bounded head+tail read is used
+// rather than reading the whole file.
+const (
+	htmlSniffHead = 256 << 10
+	htmlSniffTail = 128 << 10
+)
+
+// htmlGameMarkers are lowercase substrings that mark an HTML file as a
+// playable game rather than a static page, a docs site, or a viewer. Matched
+// case-insensitively against a bounded head+tail read.
+var htmlGameMarkers = [][]byte{
+	[]byte("tw-storydata"), // Twine (all story formats)
+	[]byte("sugarcube"),    // Twine SugarCube
+	[]byte("harlowe"),      // Twine Harlowe
+	[]byte("snowman"),      // Twine Snowman
+	[]byte("<canvas"),      // canvas-driven games
+	[]byte("pixi"),         // PixiJS
+	[]byte("phaser"),       // Phaser
+	[]byte("createjs"),     // CreateJS (Flash ports)
+	[]byte("easeljs"),      // CreateJS
+	[]byte("babylon"),      // Babylon.js
+	[]byte("rpg_core.js"),  // RPG Maker MV/MZ web build
+	[]byte("rpgmaker"),     // RPG Maker web
+	[]byte("unityloader"),  // Unity WebGL
+	[]byte("godot"),        // Godot web export
+	[]byte("gamefiles"),    // hand-rolled JS games (e.g. Hentai University)
+	[]byte("js/engine/"),   // hand-rolled JS game engines (e.g. A Lot of Ways)
+}
+
+// isGameRoot reports whether a directory is a game root, combining the
+// fast file/dir markers with the HTML content sniff. The scanner and
+// engine.Detect must agree on what counts as a game; this is the scanner side.
+func isGameRoot(dir string, entries []os.DirEntry) bool {
+	return hasGameMarkersFromEntries(entries) || hasHTMLGameSignature(dir, entries)
+}
+
+// engineInternalDirs names directories that belong to a game's own runtime or
+// assets rather than being a separate game. They are excluded when deciding
+// whether a directory is a container of multiple games.
+var engineInternalDirs = map[string]bool{
+	"game": true, "renpy": true, "www": true, "engine": true, "data": true,
+	"resources": true, "locales": true, "swiftshader": true, "plugin": true,
+	"chars": true, "stages": true, "sound": true, "font": true,
+	"img": true, "images": true, "js": true, "css": true, "lib": true,
+	"mod": true, "mods": true, "saves": true, "save": true, "savedata": true,
+	"audio": true, "bgm": true, "se": true, "voice": true, "movie": true,
+	"movies": true, "source": true, "src": true, "dist": true,
+	"node_modules": true, "__macosx": true, ".git": true, "downloads": true,
+	"credits": true, "docs": true, "video": true, "videos": true,
+	"bin": true, "obj": true, "build": true, "target": true, "cache": true,
+}
+
+// isContainerDir reports whether dir holds at least two complete games rather
+// than being a game itself (a library root, or a release folder bundling
+// several games). Such directories are not registered; the walk descends into
+// their children. Counting uses the stricter child predicate countsAsChildGame
+// so bundled runtimes and asset folders do not inflate the count.
+func isContainerDir(dir string, entries []os.DirEntry) bool {
+	count := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		lower := strings.ToLower(name)
+		if engineInternalDirs[lower] || strings.HasPrefix(lower, "jre") ||
+			strings.HasSuffix(lower, "_data") || shouldSkip(name) || isToolDirName(name) {
+			continue
+		}
+		if countsAsChildGame(filepath.Join(dir, name)) {
+			count++
+			if count >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// countsAsChildGame reports whether a child directory is a complete game: it
+// has a root-level executable, a game HTML entry page, or a strong engine
+// marker. It deliberately omits loose formats (.jar/.swf/...) and weak markers
+// so bundled runtimes (a jre*/ full of jars) and asset folders are not counted.
+func countsAsChildGame(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".exe", ".sh", ".app", ".x86_64", ".x86":
+			if !shouldSkip(e.Name()) {
+				return true
+			}
+		}
+	}
+	return hasHTMLGameSignature(dir, entries) || hasStrongEngineMarker(entries)
+}
+
+// hasStrongEngineMarker reports whether a directory listing holds an
+// unambiguous engine file or runtime directory. Used only for container
+// detection, so it omits loose formats that bundled runtimes carry (e.g. jars
+// inside a jre*/ directory).
+func hasStrongEngineMarker(entries []os.DirEntry) bool {
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			switch name {
+			case "renpy", "www", "Engine":
+				return true
+			}
+			if strings.HasSuffix(name, "_Data") {
+				return true
+			}
+			continue
+		}
+		lower := strings.ToLower(name)
+		switch {
+		case lower == "unityplayer.dll", lower == "data.win",
+			lower == "nw.dll", lower == "nscript.dat",
+			strings.HasSuffix(lower, ".pck"),
+			strings.HasSuffix(lower, ".rpyc"),
+			strings.HasSuffix(lower, ".rpa"),
+			strings.HasPrefix(lower, "game.rgss"):
+			return true
+		}
+	}
+	return false
+}
+
+// hasHTMLGameSignature reports whether a root-level .html file in dir carries
+// a recognizable game signature. Root-level only: a game's entry page lives at
+// its root, so asset subdirectories and nested source trees are not read here.
+func hasHTMLGameSignature(dir string, entries []os.DirEntry) bool {
+	for _, e := range entries {
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".html") {
+			continue
+		}
+		if htmlFileHasGameMarker(filepath.Join(dir, e.Name())) {
+			return true
+		}
+	}
+	return false
+}
+
+// htmlFileHasGameMarker reads a bounded head and tail of path and reports
+// whether any htmlGameMarkers appears.
+func htmlFileHasGameMarker(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	buf := make([]byte, htmlSniffHead)
+	n, _ := io.ReadFull(f, buf)
+	if containsHTMLMarker(bytes.ToLower(buf[:n])) {
+		return true
+	}
+
+	fi, err := f.Stat()
+	if err != nil || fi.Size() <= int64(htmlSniffHead) {
+		return false
+	}
+	off := fi.Size() - int64(htmlSniffTail)
+	if off < 0 {
+		off = 0
+	}
+	tail := make([]byte, htmlSniffTail)
+	if _, err := f.ReadAt(tail, off); err != nil {
+		return false
+	}
+	return containsHTMLMarker(bytes.ToLower(tail))
+}
+
+// containsHTMLMarker reports whether data (lowercased) contains any marker.
+func containsHTMLMarker(data []byte) bool {
+	for _, m := range htmlGameMarkers {
+		if bytes.Contains(data, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // hasGameMarkers checks for game engine files and executables by reading
-// the directory listing. Prefer hasGameMarkersFromEntries when the listing
-// has already been read to avoid redundant I/O.
+// the directory listing. Prefer isGameRoot when the listing has already
+// been read to avoid redundant I/O, or hasGameMarkersFromEntries when the HTML
+// content sniff is not required (e.g. locating nested tool directories).
 func hasGameMarkers(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
 	}
-	return hasGameMarkersFromEntries(entries)
+	return isGameRoot(dir, entries)
 }
 
 // hasSubDir returns true if the entries contain at least one subdirectory.

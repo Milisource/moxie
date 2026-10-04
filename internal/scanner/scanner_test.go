@@ -451,6 +451,109 @@ func TestLooksLikeGameRoot(t *testing.T) {
 	})
 }
 
+// TestLooksLikeGameRootHTMLAndLooseFormats covers the widened gate: HTML game
+// signatures (content sniff) and non-executable engine formats.
+func TestLooksLikeGameRootHTMLAndLooseFormats(t *testing.T) {
+	t.Run("twine html", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "index.html"),
+			[]byte("<html><body><tw-storydata name='x'></tw-storydata></body></html>"), 0644)
+		if !looksLikeGameRoot(dir) {
+			t.Error("Twine html should be a game root")
+		}
+	})
+	t.Run("canvas html", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "game.html"),
+			[]byte(`<html><canvas id="c"></canvas></html>`), 0644)
+		if !looksLikeGameRoot(dir) {
+			t.Error("canvas html should be a game root")
+		}
+	})
+	t.Run("plain html is not a game", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "index.html"),
+			[]byte("<html><body>just documentation</body></html>"), 0644)
+		if looksLikeGameRoot(dir) {
+			t.Error("plain html must not be a game root")
+		}
+	})
+	for _, tc := range []struct{ label, file string }{
+		{"flash", "game.swf"},
+		{"java", "game.jar"},
+		{"qsp", "game.qsp"},
+		{"adrift", "game.taf"},
+		{"tads-gam", "game.gam"},
+		{"tads-t3", "game.t3"},
+		{"wolf", "game.wolf"},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			dir := t.TempDir()
+			os.WriteFile(filepath.Join(dir, tc.file), []byte("x"), 0644)
+			if !looksLikeGameRoot(dir) {
+				t.Errorf("%s dir should be a game root", tc.label)
+			}
+		})
+	}
+}
+
+// TestScanHTMLGame verifies a Twine game (only an index.html, no exe) is
+// imported. This was the biggest class of missed games.
+func TestScanHTMLGame(t *testing.T) {
+	root := t.TempDir()
+	gdir := filepath.Join(root, "TwineGame")
+	os.MkdirAll(gdir, 0755)
+	os.WriteFile(filepath.Join(gdir, "index.html"),
+		[]byte("<html><body><tw-storydata name='x'></tw-storydata></body></html>"), 0644)
+
+	games, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 1 {
+		t.Fatalf("expected 1 game, got %d", len(games))
+	}
+	if games[0].Engine != engine.HTML {
+		t.Errorf("expected HTML, got %s", games[0].Engine)
+	}
+}
+
+// TestScanPlainHTMLNotImported verifies a directory with a plain .html file
+// and no game signature is not imported (D2: content sniff, not bare .html).
+func TestScanPlainHTMLNotImported(t *testing.T) {
+	root := t.TempDir()
+	gdir := filepath.Join(root, "Docs")
+	os.MkdirAll(gdir, 0755)
+	os.WriteFile(filepath.Join(gdir, "index.html"), []byte("<html><body>docs</body></html>"), 0644)
+
+	games, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 0 {
+		t.Errorf("expected 0 games, got %d (%v)", len(games), games)
+	}
+}
+
+// TestScanSaveDataNotImported verifies a KiriKiri save directory (only
+// krkr.console.log and .ksd files) is not mistaken for a game. The log file
+// is a classification signal, not a game-root marker.
+func TestScanSaveDataNotImported(t *testing.T) {
+	root := t.TempDir()
+	gdir := filepath.Join(root, "savedata")
+	os.MkdirAll(gdir, 0755)
+	os.WriteFile(filepath.Join(gdir, "krkr.console.log"), []byte("log"), 0644)
+	os.WriteFile(filepath.Join(gdir, "data999.ksd"), []byte("save"), 0644)
+
+	games, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 0 {
+		t.Errorf("expected 0 games, got %d (%v)", len(games), games)
+	}
+}
+
 // TestScanCategoryDirectory verifies that Scan skips category folders
 // (named after engines) and correctly identifies game subdirectories within them.
 func TestScanCategoryDirectory(t *testing.T) {

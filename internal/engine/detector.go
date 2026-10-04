@@ -640,7 +640,7 @@ func detectUnityDataFolder(dir string, entries []os.DirEntry) Result {
 				if !e2.IsDir() {
 					fname := e2.Name()
 					fnameNoExt := strings.TrimSuffix(fname, filepath.Ext(fname))
-					if strings.EqualFold(fnameNoExt, exeName) && isExe(fname) {
+					if strings.EqualFold(fnameNoExt, exeName) && isExecutableName(fname) {
 						exeNames = append(exeNames, fname)
 					}
 				}
@@ -818,9 +818,16 @@ func hasMatchingExtension(dir string, exts []string) bool {
 	return false
 }
 
-// isExe returns true if the filename has a .exe extension.
-func isExe(name string) bool {
-	return strings.HasSuffix(strings.ToLower(name), ".exe")
+// isExecutableName reports whether name looks like a runnable entry point on
+// any supported platform (Windows .exe, Linux .x86_64/.x86/.sh, macOS .app).
+// Unity ships a matching <exe>_Data folder next to its launcher, and the
+// launcher is not always a .exe (Linux builds use the binary's own name).
+func isExecutableName(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".exe", ".x86_64", ".x86", ".sh", ".app":
+		return true
+	}
+	return false
 }
 
 // String returns the engine name as a string.
