@@ -16,9 +16,17 @@ The scanner walks a directory tree, identifies which subdirectories are games, d
 
 3. **Skip already-detected game subdirectories** — once a directory is identified as a game root, its children are not walked. This prevents detecting engine subdirectories (like a `renpy/` folder inside a Ren'Py game) as separate games. WalkDir is depth-first, so the active game dir short-circuits all its descendants; a directory still visited afterwards is provably outside every game root, so no extra ancestor scan is needed.
 
-4. **Check if it's a game root** — `looksLikeGameRoot(path)` via `hasGameMarkers(dir)` checks for the presence of executables (`.exe`, `.sh`, `.app`, `.x86_64`, `.x86`) or engine markers (`renpy/`, `www/`, `_Data/`, a subdirectory exactly named `game`, `package.json`, `.rpyc`, `.rpa`, `Game.rgss*`). The `game` marker is an exact name match — `gamedata`/`gameplay`/`game2` folders are not promoted to game roots.
+4. **Check if it's a game root** — `isGameRoot(path, entries)` combines fast file/dir markers with an HTML content sniff:
+   - executables (`.exe`, `.sh`, `.app`, `.x86_64`, `.x86`)
+   - engine markers (`renpy/`, `www/`, `Engine/`, `_Data/`, a subdirectory exactly named `game`, `package.json`, `.pck`, `.rpyc`, `.rpa`, `Game.rgss*`, `.swf`, `.jar`, `.qsp`/`.qsps`, `.taf`, `.gam`/`.t3`, `.wolf`, `data.win`, `nscript.dat`, `flutter_windows.dll`)
+   - **HTML content sniff** — a root-level `.html` file is read (bounded 256 KiB head + 128 KiB tail) and must contain a game signature (`tw-storydata`/SugarCube/Harlowe/Snowman, `<canvas`, PixiJS, Phaser, CreateJS, RPG Maker web, Unity WebGL, `gamefiles`, `js/engine/`). A bare `index.html` (docs page) is not enough — this is what recovers Twine games while rejecting static pages.
+   The `game` marker is an exact name match — `gamedata`/`gameplay`/`game2` folders are not promoted to game roots.
 
-5. **Check for category directories** — if the directory name matches a known engine (`Unity`, `Ren'Py`, `RPGM`, `HTML`, etc.) **and** it contains subdirectories that look like games, it's treated as a category folder (not a game itself). The walk continues into its children.
+5. **Container detection** — a directory holding two or more complete games (each with a root executable, HTML signature, or strong engine marker) is a *container* (a library root, or a release folder bundling several games). It is not registered; the walk descends into its children. Engine-internal dirs (`game/`, `renpy/`, `www/`, `*_Data/`, `data/`, `resources/`, ...), `jre*/`, tool dirs, and `downloads/` never count as children. This stops a loose engine file at a library root from registering the whole library as one game.
+
+6. **Check for category directories** — if the directory name matches a known engine (`Unity`, `Ren'Py`, `RPGM`, `HTML`, etc.) **and** it contains subdirectories that look like games, it's treated as a category folder (not a game itself). The walk continues into its children.
+
+7. **Release-wrapper collapse** — a non-game directory holding exactly one game (possibly through nested wrappers) whose name matches that game (prefix, ignoring case/punctuation/version) is registered as the wrapper itself; engine detection, exe discovery, and version resolution then descend into the inner game directory. This yields clean paths (`Brothel King/`, not `Brothel King/Brothel King/`) and recovers the wrapper's version (`Fox Girls…v1.03.01`). Engine-named category folders and the scan root never collapse.
 
 ### Engine Detection
 
@@ -57,7 +65,8 @@ When the directory name yields no version, the scanner escalates through additio
   - `package.json` (HTML/NW.js) — reads the `"version"` field
   - `www/data/System.json` / `data/System.json` (RPG Maker MV/MZ) — runs `gameTitle` through `ExtractVersion` (`"Demons Roots v1.03"` → `1.03`)
   - Ren'Py `config.version`, from `game/options.rpy`, else the compiled `game/options.rpyc` (RPC2 slots zlib-inflated; the AST keeps source strings), else any `game/*.rpa` archive ≤ 64 MiB (smallest first; scripts are stored inside as `.rpy` text and/or `.rpyc` blobs). Format strings such as `"%s %s" % (...)` are rejected
-- **Parent directory name** — many games are nested (e.g. `Game v1.0/Game Windows/Game.exe`), so the scanner checks the parent dir for version when the game dir itself has none
+- **Parent directories** — many games are nested (e.g. `Game v1.0/Game Windows/Game.exe`), so the scanner checks up to three parent directories for a version when the game dir and its files yield none. For a collapsed release wrapper it prefers the more specific of the wrapper/inner name versions (`A_Lot_of_Ways_v0.2.2p` over `…_v0.2`)
+- **Release dates are not versions** — a bare date in a folder name (`…_2024-08-17`) is a release date and is only used when no non-date version exists anywhere
 - **Executable filename** — some games only have the version in the executable name (e.g. `[Full]EmberDoors_v0.1.7_Linux.x86_64` → `0.1.7`)
 
 **Boundary handling:** Go's regex `\b` treats `_` as a word character. Since most F95Zone game directories use underscores around versions (`FullEmberDoors_v0.1.7_Linux`), the patterns use explicit `(?:^|[^a-zA-Z0-9])` / `(?:$|[^a-zA-Z0-9])` instead of `\b` to prevent underscore-delimited versions from being missed.
@@ -101,7 +110,8 @@ PE/ELF binary scanning would be more precise but is 10x more complex. Pattern ma
 | | `<exe>_Data/` folder matching an .exe | 0.93 |
 | **Ren'Py** | `renpy/` directory | 0.98 |
 | | `.rpyc` / `.rpa` files + `game/` | 0.85 |
-| **RPGM** | `www/` + `package.json` (MV/MZ disambiguated) | 0.95 |
+| **RPGM** | `icudtl.dat` + `nw.dll` (NW.js — `icudtl.dat` alone is **not** enough) | 0.96 |
+| | `www/` + `package.json` (MV/MZ disambiguated) | 0.95 |
 | | `Game.rgss3a` (VX Ace) | 0.93 |
 | | `Game.rgss2a` (VX) | 0.90 |
 | | `Game.rgssad` (XP) | 0.88 |
@@ -111,6 +121,7 @@ PE/ELF binary scanning would be more precise but is 10x more complex. Pattern ma
 | **WebGL** | `index.html` + `Build/` | 0.75 |
 | **HTML** | `index.html` | 0.70 |
 | | `.html` files | 0.60 |
+| | *(scanner gate additionally requires an HTML game signature — see step 4)* | |
 | **Java** | `.jar` files | 0.90 |
 | | bundled JRE dir (`jre*/` with `.jar` inside) | 0.88 |
 | **Godot** | `.pck` files | 0.85 |
@@ -125,11 +136,20 @@ PE/ELF binary scanning would be more precise but is 10x more complex. Pattern ma
 | **RAGS** | `RAGS.exe` / `RAGS Player.exe` | 0.85 |
 | **Tads** | `.gam` / `.t3` files | 0.90 |
 
-### Community (3 engines → Others)
+### Non-F95 engines (→ Others)
+
+The canonical engine set is exactly F95Zone's engine taxonomy (15 names). Engines outside it classify as **Others** but keep a truthful `MatchedBy` (visible via `moxie detect`) and are matched *before* weaker canonical profiles so they can't leak (e.g. a KiriKiri gallery `index.html` is not read as HTML).
 
 | Detected As | Actual Engine | Signal | Confidence |
 |---|---|---|---|
-| Others | Godot | `.pck` files | 0.85 |
+| Others | Chromium/Electron app | `chrome_100_percent.pak` / `LICENSE.electron.txt` | 0.90 |
+| | GameMaker Studio | `data.win` | 0.88 |
+| | KiriKiri | `krkr.console.log` / `krmovie.dll` | 0.85 |
+| | KiriKiri archive | `.xp3` | 0.82 |
+| | NScripter | `nscript.dat` / `nslua.dll` | 0.85 |
+| | NScripter archive | `.nsa` | 0.80 |
+| | HSP (Hot Soup Processor) | `hspext.dll` / `.hpi` | 0.80 |
+| | Flutter app | `flutter_windows.dll` | 0.80 |
 | | Electron / nw.js | `resources.pak` + `package.json` | 0.80 |
 | | M.U.G.E.N. | 3+ of `{chars, data, stages, font, sound}` dirs | 0.92 |
 

@@ -61,6 +61,8 @@ games (
     series_id    INTEGER REFERENCES game_series(id),  -- FK to game series
     series_order INTEGER DEFAULT 0,      -- order within series
     deleted_at TEXT,                     -- soft delete timestamp (NULL = active)
+    engine_source  TEXT NOT NULL DEFAULT '',  -- ''/scanner | f95 | user (who set engine)
+    version_source TEXT NOT NULL DEFAULT '',  -- ''/scanner | f95 | user (who set version)
     created_at  TEXT DEFAULT (datetime('now')),
     updated_at  TEXT DEFAULT (datetime('now'))
 )
@@ -187,7 +189,7 @@ This means `latest_version` is the "last known F95Zone version," distinct from `
 Migrations use version-gated steps via `PRAGMA user_version`:
 
 ```go
-const currentSchemaVersion = 7
+const currentSchemaVersion = 12
 
 // Query current version
 var userVersion int
@@ -217,6 +219,9 @@ Each `migrateVersionStep` handles a specific version:
 - **v9**: Scraped size (`size INTEGER DEFAULT 0` on `download_links`; 0 = unknown)
 - **v10**: Masked-URL unwrap cache (`resolved_urls` table + `idx_resolved_urls_created_at`; see schema above)
 - **v11**: Data repair — clears digitless `latest_version` values (F95 status labels like "Translation Request" stored by older syncs), keeping `Final`, and resets `version_checked_at` so the next sync refetches
+- **v12**: Engine/version provenance — `engine_source` and `version_source TEXT NOT NULL DEFAULT ''` on games. Records who last set each field: `''`/`scanner` (scanner-owned, correctable by a rescan), `f95` (authoritative F95Zone association), or `user` (manual edit). A normal (non-force) scan overwrites engine/version unless the source is `user`/`f95`, so historical mis-detections self-correct while manual edits and associations survive. `--force` overwrites regardless (explicit full-rescan contract).
+
+The v8 table rebuild copies rows by the old table's own column names (`PRAGMA table_info`) rather than `SELECT *`, so columns added to `gamesTableColumns` after v8 (e.g. the v12 source columns) don't break the rebuild on an old database.
 
 This replaces the earlier approach of running bare `ALTER TABLE` statements that ignored errors. All migration steps are idempotent (use `columnExists` checks for ALTER TABLE, `CREATE TABLE IF NOT EXISTS` for new tables).
 

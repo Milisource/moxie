@@ -8,7 +8,7 @@
 
 ## Overview
 
-A local game library manager for adult games. Scans directories, detects engines (15 canonical + 3 community → Others), matches games to F95Zone threads for metadata, and presents results in a terminal UI. Built as a single static Go binary with embedded SQLite.
+A local game library manager for adult games. Scans directories, detects engines (15 F95Zone-canonical; non-F95 engines map to `Others`), matches games to F95Zone threads for metadata, and presents results in a terminal UI. Built as a single static Go binary with embedded SQLite.
 
 ---
 
@@ -42,7 +42,8 @@ A local game library manager for adult games. Scans directories, detects engines
 
 - [x] 29 CLI entry points: all previous + `cleanup`, `refresh-versions`, `scrape-batch`, `set-path`, `set-exe`, `set-wine-prefix`
 - [x] Recursive directory scanning with smart `SkipDir` on game roots
-- [x] Engine detection for 14 canonical engines + NW.js (RPG Maker MV/MZ) detection
+- [x] Engine detection for the 15 F95Zone-canonical engines (non-F95 engines map to `Others` with a descriptive `MatchedBy`)
+- [x] Engine/version detection overhaul: content-sniffed HTML/Twine game roots (recovers games with only an `index.html`), `icudtl.dat`+`nw.dll` RPG Maker signature (Electron no longer misread as RPGM), `Others` profiles for GameMaker/KiriKiri/NScripter/HSP/Flutter, container detection (register each child game), release-wrapper collapse, multi-level version with release-date guard, and `engine_source`/`version_source` provenance so rescans self-correct without clobbering manual edits (`moxie detect` explains a classification)
 - [x] SQLite database with WAL mode, foreign keys, CHECK constraints, LatestVersion tracking
 - [x] Cookie-based F95Zone scraping (Firefox auto-detect, explicit, SQLite fallback)
 - [x] Auto-association via F95Zone search with title scoring + engine mismatch prevention
