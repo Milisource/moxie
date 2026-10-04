@@ -47,6 +47,12 @@
   // a notice while the editor stays open with the user's value.
   let editError = $state('')
 
+  // Single-game F95Zone sync runs synchronously on the Wails call goroutine,
+  // so the button owns its own busy state and the outcome is reported inline
+  // next to the action buttons instead of the app-level status bar.
+  let syncing = $state(false)
+  let syncStatus = $state({msg: '', error: ''})
+
   // ── Game update (Update Available badge) ─────────────
   // Derived from the shared App-level gameStates entry: a busy phase means the
   // pipeline for THIS game is running. Other games' updates run in parallel
@@ -197,9 +203,11 @@
     }
   }
 
-  async function loadDetail() {
+  async function loadDetail(silent = false) {
     if (!gameId) return
-    loading = true
+    // A sync refreshes the record in place; don't blank the whole detail view
+    // for a frame just to re-show what the user is already looking at.
+    if (!silent) loading = true
     error = ''
     try {
       detail = await GetGameDetail(gameId)
@@ -478,14 +486,39 @@
   }
 
   async function handleSync() {
+    if (syncing) return
     editError = ''
+    syncStatus = {msg: '', error: ''}
+    // Capture what the user currently sees so the completion notice can name
+    // the fields the scrape actually changed.
+    const beforeLatest = detail?.latestVersion || ''
+    const beforeVersion = detail?.version || ''
+    syncing = true
     try {
       await SyncSingleGame(gameId)
-      await loadDetail()
+      await loadDetail(true)
       onUpdate()
+      syncStatus = {msg: syncSummary(beforeLatest, beforeVersion), error: ''}
     } catch (err) {
-      editError = `Failed to sync: ${fmtErr(err)}`
+      syncStatus = {msg: '', error: `Failed to sync: ${fmtErr(err)}`}
+    } finally {
+      syncing = false
     }
+  }
+
+  // Wording for the post-sync notice. SyncSingleGame preserves a curated local
+  // title and only refreshes F95Zone-sourced fields, so report the concrete
+  // changes rather than a generic "done" that looks like nothing happened.
+  function syncSummary(beforeLatest, beforeVersion) {
+    const parts = []
+    const latest = detail?.latestVersion || ''
+    const version = detail?.version || ''
+    if (latest && latest !== beforeLatest) parts.push(`latest version v${latest}`)
+    if (version && version !== beforeVersion) parts.push(`installed version v${version}`)
+    const base = parts.length
+      ? `Synced from F95Zone — ${parts.join(', ')}`
+      : 'Synced from F95Zone — metadata is up to date'
+    return detail?.updateState === 'available' ? `${base}. Update available.` : base
   }
 
   async function handlePlay() {
@@ -639,6 +672,12 @@
           {#if launchStatus.error}
             <div class="launch-notice launch-error">{launchStatus.error}</div>
           {/if}
+          {#if syncStatus.msg}
+            <div class="launch-notice launch-ok">{syncStatus.msg}</div>
+          {/if}
+          {#if syncStatus.error}
+            <div class="launch-notice launch-error">{syncStatus.error}</div>
+          {/if}
           {#if needsInstall}
             <div class="install-box">
               <p class="install-hint">
@@ -682,7 +721,9 @@
             <button class="btn btn-primary btn-play" onclick={handlePlay}>▶︎ Play</button>
           {/if}
           {#if detail.f95Url}
-            <button class="btn" onclick={handleSync}>Sync from F95Zone</button>
+            <button class="btn" onclick={handleSync} disabled={syncing}>
+              {syncing ? 'Syncing…' : 'Sync from F95Zone'}
+            </button>
           {/if}
           <button class="btn" onclick={handleEdit}>Edit</button>
           <button class="btn" onclick={handleRenameStart}>Rename</button>

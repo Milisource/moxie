@@ -3269,7 +3269,20 @@ func (a *App) EditGame(id int64, fields EditGameFields) error {
 		game.Tags = fields.Tags
 	}
 	if fields.F95URL != nil {
-		game.F95URL = strings.TrimSpace(*fields.F95URL)
+		newURL := strings.TrimSpace(*fields.F95URL)
+		// ResolveScrapeURL prefers F95ThreadID over the stored URL, so a URL
+		// edit must keep the canonical thread ID in sync. Otherwise a
+		// corrected URL is ignored (the stale ID wins) and ApplyThreadData
+		// then rewrites F95URL from the old thread — the edit silently
+		// reverts and the next sync re-scrapes the wrong thread.
+		if id := scraper.ThreadIDFromURL(newURL); id > 0 {
+			game.F95ThreadID = id
+		} else if newURL != game.F95URL {
+			// Changed to a non-thread URL (or cleared): drop the stale ID so
+			// the scrape uses the URL as typed.
+			game.F95ThreadID = 0
+		}
+		game.F95URL = newURL
 	}
 	if fields.StoreLinks != nil {
 		game.StoreLinks = fields.StoreLinks
@@ -4546,6 +4559,12 @@ func (a *App) GetCookieStatus() string {
 }
 
 // SyncSingleGame syncs metadata for a single game from the detail view.
+//
+// Cookies are optional. With a browser session it uses the full direct-scrape
+// path (thread metadata + download links). Without one — or when the scrape
+// cannot complete — it falls back to the cookie-free F95Checker cache API,
+// which carries version/status/developer/description/cover but no download
+// links. See docs/scraper.md, "Cookies vs. cookie-free".
 func (a *App) SyncSingleGame(id int64) error {
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
@@ -4566,27 +4585,46 @@ func (a *App) SyncSingleGame(id int64) error {
 		return fmt.Errorf("game with id %d not found", id)
 	}
 
-	cookie, err := browser.GetF95Cookies()
-	if err != nil || cookie == "" {
-		return fmt.Errorf("F95Zone cookies not available. Log into F95Zone in your browser first")
-	}
-
+	// Cookies are best-effort: a session enables the full scrape; without one
+	// the cache API still refreshes version and metadata.
+	cookie, _ := browser.GetF95Cookies()
 	client := scraper.NewClient(cookie)
+	public := scraper.NewPublicAPIWithCookie(cookie)
 
-	url := scraper.ResolveScrapeURL(game.F95URL, game.F95ThreadID)
-	if url == "" {
+	threadID := game.F95ThreadID
+	if threadID == 0 {
+		threadID = scraper.ThreadIDFromURL(game.F95URL)
+	}
+	url := scraper.ResolveScrapeURL(game.F95URL, threadID)
+	if url == "" && threadID == 0 {
 		return fmt.Errorf("game %q has no F95Zone URL or thread ID", game.Title)
 	}
 
-	slog.Info("scraping game", "id", id, "url", url)
+	// Prefer the full scrape when we have a session and a thread to fetch.
+	if cookie != "" && url != "" {
+		err := a.syncSingleViaScrape(game, client, url)
+		if err == nil {
+			return nil
+		}
+		// The cookie-free cache API is a different host and rarely blocked, so
+		// a failed scrape still leaves the user with fresh metadata.
+		slog.Warn("single-game scrape failed; falling back to cookie-free cache API",
+			"game", game.Title, "error", err)
+	}
+	return a.syncSingleViaCache(game, public, threadID)
+}
+
+// syncSingleViaScrape refreshes one game from a direct thread scrape (cookie
+// path): full metadata plus download links. ApplyThreadData rewrites the
+// title from the thread, but a single-game sync deliberately keeps the
+// curated local title — only a bulk association may replace it.
+func (a *App) syncSingleViaScrape(game *db.Game, client *scraper.Client, url string) error {
+	slog.Info("scraping game", "id", game.ID, "url", url)
 	data, err := client.ScrapeThread(url)
 	if err != nil {
 		return fmt.Errorf("scraping failed: %w", err)
 	}
 
-	// ApplyThreadData rewrites the title from the thread's; the CLI's
-	// single-game check deliberately does not touch a curated title, so
-	// preserve it here.
 	origTitle := game.Title
 	scraper.ApplyThreadData(game, data, url)
 	game.Title = origTitle
@@ -4597,21 +4635,7 @@ func (a *App) SyncSingleGame(id int64) error {
 		return fmt.Errorf("saving game data: %w", err)
 	}
 
-	// Save scraped metadata.
-	if data.Developer != "" || data.Overview != "" || data.CoverURL != "" {
-		meta := &db.ScrapedMeta{
-			GameID:    game.ID,
-			Developer: data.Developer,
-			Overview:  data.Overview,
-			CoverURL:  data.CoverURL,
-		}
-		if err := a.db.UpsertScrapedMeta(meta); err != nil {
-			slog.Warn("failed to save scraped metadata", "game", game.Title, "error", err)
-		}
-		if data.CoverURL != "" {
-			a.cacheCover(game.ID, data.CoverURL)
-		}
-	}
+	a.saveScrapedMeta(*game, data.Developer, data.Overview, data.CoverURL)
 
 	// Refresh download links from the scraped thread data, diffing against
 	// what is already stored: unchanged URLs keep their link IDs and their
@@ -4623,8 +4647,34 @@ func (a *App) SyncSingleGame(id int64) error {
 		a.syncDownloadLinks(game.ID, data.DownloadLinks)
 	}
 
-	slog.Info("game sync complete", "id", id, "title", data.Title, "version", data.Version,
+	slog.Info("game sync complete", "id", game.ID, "title", data.Title, "version", data.Version,
 		"downloadLinks", len(data.DownloadLinks))
+	return nil
+}
+
+// syncSingleViaCache refreshes one game from the cookie-free F95Checker cache
+// API: version, status, developer, description and cover (no download links).
+// It needs a thread ID — the game's own, or one parsed from its F95Zone URL.
+func (a *App) syncSingleViaCache(game *db.Game, public *scraper.PublicAPI, threadID int64) error {
+	if threadID == 0 {
+		return fmt.Errorf("game %q has no F95Zone thread ID", game.Title)
+	}
+	ct, err := public.CacheFullThread(context.Background(), threadID)
+	if err != nil {
+		return fmt.Errorf("F95Zone lookup failed: %w", err)
+	}
+
+	origTitle := game.Title
+	scraper.ApplyCacheThreadData(game, ct, threadID, nil, 1.0)
+	game.Title = origTitle
+	game.VersionCheckedAt = time.Now()
+	if err := a.db.UpdateGame(game); err != nil {
+		return fmt.Errorf("saving game data: %w", err)
+	}
+
+	a.saveScrapedMeta(*game, ct.Developer, ct.Description, ct.ImageURL)
+
+	slog.Info("game sync complete (cookie-free)", "id", game.ID, "title", game.Title, "version", ct.Version)
 	return nil
 }
 

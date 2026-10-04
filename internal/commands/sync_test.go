@@ -428,6 +428,54 @@ func TestSyncGameLogic_AlreadyAssociated_NoReassociation(t *testing.T) {
 	_ = id
 }
 
+// Without a session, a single-game sync still checks for updates through the
+// cookie-free endpoints (checker.php bulk versions).
+func TestSyncGameCookieFree_AlreadyAssociated(t *testing.T) {
+	t.Parallel()
+	database := setupTestDB(t)
+	defer database.Close()
+
+	game := &db.Game{
+		Title: "Kunoichi Sekiren", Engine: "Unity", Path: "/test/kunoichi",
+		F95URL: "https://f95zone.to/threads/276681/", F95ThreadID: 276681,
+		Status: "active",
+	}
+	id, err := database.InsertGame(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+	game.ID = id
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/sam/checker.php"):
+			fmt.Fprint(w, `{"status":"ok","msg":{"276681":"v0.1.0 Alpha"}}`)
+		case strings.HasPrefix(r.URL.Path, "/fast"):
+			fmt.Fprint(w, `{}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	public := scraper.NewPublicAPI()
+	public.Host = srv.URL
+	public.CacheHost = srv.URL
+
+	syncGameCookieFree(database, game, nil, public, true)
+
+	got, err := database.GetGame(id)
+	if err != nil || got == nil {
+		t.Fatalf("GetGame: %v", err)
+	}
+	if got.LatestVersion != "v0.1.0" {
+		t.Errorf("LatestVersion = %q, want v0.1.0", got.LatestVersion)
+	}
+	if got.VersionCheckedAt.IsZero() {
+		t.Error("VersionCheckedAt not stamped")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // RunUpdateCheck
 // ---------------------------------------------------------------------------

@@ -18,6 +18,8 @@
 
 ### Changed
 
+- **Single-game sync no longer requires a browser session (F95-porf).** The desktop detail view's **Sync from F95Zone** button and the CLI's `moxie sync <id>` now use cookies when they are available (the full thread scrape, which refreshes download links) and fall back to the cookie-free F95Checker cache API when they are not — still refreshing version, status, developer, overview and cover, just without download links. The bulk sync already worked either way. Which source each operation prefers, and why, is documented in `docs/scraper.md`.
+
 - **CI covers the dev branch (F95-4ucz).** CI now runs on pushes and pull requests to `dev`, and a new `dev.yml` workflow publishes rolling `moxie-dev-*` prerelease artifacts tagged `dev` for future use by the dev installer.
 
 - **Parallel game updates (F95-jxk1).** Update All, Retry Failed and per-game updates now run several games at once: 2 by default, settable from 1 to 4 under Settings → Game Updates (config key `update-concurrency`). Extra games show **Queued…**. Each update row has its own Cancel, and the toolbar button is now **Cancel all**. Masked-link unwrapping and the browser fallback are still paced once for the whole app (one unwrap every 3 s, one browser window at a time), so F95Zone isn't hit harder (F95-cbv5). One game can't have two runs at once, and scans still wait for every update to finish.
@@ -37,6 +39,8 @@
 - Missing covers render as typographic cards (title initials). The grid marks updates with an accent cover edge and shows `old → new` in the caption.
 
 ### Fixed
+
+- **Editing a game's F95Zone URL now sticks, and single-game sync shows feedback (F95-03ex).** `EditGame` set `F95URL` but left the stale `F95ThreadID`, which `ResolveScrapeURL` prefers; the next sync therefore re-scraped the old thread and `ApplyThreadData` rewrote `F95URL` back from it, so a corrected URL silently reverted and the detail view's **Sync from F95Zone** button looked like it did nothing. `EditGame` now resyncs `F95ThreadID` from the edited URL, and the button shows a busy state plus an inline result ("Synced from F95Zone — latest version vX") or the error.
 
 - **The game right-click menu was invisible (F95-b3bx).** It opened at the cursor but with no styling — transparent background, no border or padding — which read as "nothing happened" on the dark theme. bits-ui renders the menu into `<body>`, and Svelte 5 does not apply a component's scoped CSS to elements a child component renders from a `class` prop, so the component-scoped menu rules never matched. They are now global.
 

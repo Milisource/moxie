@@ -94,6 +94,19 @@ F95Zone exposes several JSON endpoints that require **no login and no cookies** 
 3. direct thread scrape (cookie path)   — last resort, per game
 ```
 
+**Cookies vs. cookie-free: which source, when.** Cookies are optional on every path — both syncs work without a browser session. Which *source* is used depends on what the operation needs, not on whether cookies exist:
+
+| Operation | Preferred source | Why |
+|---|---|---|
+| Bulk association search | `latest_data.php` (cookie-free) | No login, no CSRF token, no Cloudflare challenge. The XenForo POST search, which needs a session, is the fallback |
+| Bulk version/metadata check | `checker.php` + cache API (cookie-free) | One request covers up to 100 threads; a per-thread scrape would be ~100 paced requests and risk a block |
+| Single-game sync | **direct thread scrape (cookie)** | Only the full page carries download links and the exact overview/tags; a session unmasks links at download time |
+| Forced/full sync | **direct thread scrape (cookie)** | Refreshes the Downloads tab; the cheap bulk/cache paths never see links |
+
+A session cookie is still attached to the cookie-free endpoints whenever one is available (`NewPublicAPIWithCookie`) — F95Zone rate-limits anonymous requests hard ("Anonymous users have a limited amount of requests per hour"), and the F95Checker cache API lifts its anonymous per-hour cap for a cookie-carrying client. So "cookies when set, cookie-free when not" is the rule for *authentication*; the table above is the rule for *which endpoint*.
+
+If a single-game sync has no session (or its scrape cannot complete), it falls back to the cache API and still refreshes version, status, developer, overview and cover — it just cannot refresh download links. This applies to both the desktop **Sync from F95Zone** button and `moxie sync <id>`. So the direct scrape is the *more complete* source (links + exact fields); the cookie-free endpoints are the *more robust and efficient* source for breadth (no challenge, batched). Preference: cookies attached whenever available, direct scrape for full-thread operations, cookie-free endpoints for bulk lookup and session-less single-game syncs.
+
 **Desktop sync throughput:** the desktop app runs auto-association (the per-game search phase) on **3 parallel workers**, each with its own `PublicAPI` client so F95Zone pacing applies per worker rather than serializing the whole pool through one shared client. Two guards keep repeat runs cheap: unassociated games whose last search found nothing are skipped for 24h (`version_checked_at` cooldown), and the persistent association cache (`~/.config/moxie/associations.json`, shared with the CLI) short-circuits games whose thread was identified by an earlier run — no search round trip at all. A second sync start while one is running is rejected by a backend guard (the sync tab's state lives in the app shell, so it survives tab switches).
 
 ### Thread Parsing

@@ -272,3 +272,103 @@ func TestEditGameEmptyTitleRejected(t *testing.T) {
 		t.Error("EditGame with blank title: expected error, got nil")
 	}
 }
+
+// Editing the F95Zone URL must resync the canonical thread ID the syncer
+// actually scrapes. ResolveScrapeURL prefers F95ThreadID, so a stale ID makes
+// the corrected URL a no-op and ApplyThreadData then reverts F95URL to the old
+// thread — the edit silently undoes itself on the next sync.
+func TestEditGameF95URLEditUpdatesThreadID(t *testing.T) {
+	a := newTestApp(t)
+	id := addGame(t, a, "Game", "/games/game")
+	if err := a.db.UpdateGame(&db.Game{
+		ID: id, Title: "Game", Path: "/games/game", Engine: "RenPy", Status: "active",
+		F95URL: "https://f95zone.to/threads/wrong-slug.11111/", F95ThreadID: 11111,
+	}); err != nil {
+		t.Fatalf("UpdateGame: %v", err)
+	}
+
+	newURL := "https://f95zone.to/threads/right-slug.22222/"
+	if err := a.EditGame(id, EditGameFields{F95URL: &newURL}); err != nil {
+		t.Fatalf("EditGame: %v", err)
+	}
+
+	g, err := a.db.GetGame(id)
+	if err != nil || g == nil {
+		t.Fatalf("GetGame: %v", err)
+	}
+	if g.F95URL != newURL {
+		t.Errorf("F95URL = %q, want %q", g.F95URL, newURL)
+	}
+	if g.F95ThreadID != 22222 {
+		t.Errorf("F95ThreadID = %d, want 22222 (must follow the edited URL)", g.F95ThreadID)
+	}
+}
+
+// Re-saving an already-correct URL repairs a thread ID that drifted out of
+// sync before the fix, so users don't have to retype a working URL.
+func TestEditGameSameURLRepairsStaleThreadID(t *testing.T) {
+	a := newTestApp(t)
+	id := addGame(t, a, "Game", "/games/game")
+	url := "https://f95zone.to/threads/right-slug.22222/"
+	if err := a.db.UpdateGame(&db.Game{
+		ID: id, Title: "Game", Path: "/games/game", Engine: "RenPy", Status: "active",
+		F95URL: url, F95ThreadID: 11111,
+	}); err != nil {
+		t.Fatalf("UpdateGame: %v", err)
+	}
+
+	if err := a.EditGame(id, EditGameFields{F95URL: &url}); err != nil {
+		t.Fatalf("EditGame: %v", err)
+	}
+
+	g, _ := a.db.GetGame(id)
+	if g.F95ThreadID != 22222 {
+		t.Errorf("F95ThreadID = %d, want 22222 (repaired from the URL)", g.F95ThreadID)
+	}
+}
+
+// Clearing the URL drops the stale thread ID so the game is truly
+// disassociated rather than silently re-synced by ID.
+func TestEditGameClearingF95URLDropsThreadID(t *testing.T) {
+	a := newTestApp(t)
+	id := addGame(t, a, "Game", "/games/game")
+	if err := a.db.UpdateGame(&db.Game{
+		ID: id, Title: "Game", Path: "/games/game", Engine: "RenPy", Status: "active",
+		F95URL: "https://f95zone.to/threads/game.12345/", F95ThreadID: 12345,
+	}); err != nil {
+		t.Fatalf("UpdateGame: %v", err)
+	}
+
+	empty := ""
+	if err := a.EditGame(id, EditGameFields{F95URL: &empty}); err != nil {
+		t.Fatalf("EditGame: %v", err)
+	}
+
+	g, _ := a.db.GetGame(id)
+	if g.F95URL != "" || g.F95ThreadID != 0 {
+		t.Errorf("F95URL/F95ThreadID = %q/%d, want cleared/0", g.F95URL, g.F95ThreadID)
+	}
+}
+
+// An unrelated edit (URL field omitted) must leave the association untouched.
+func TestEditGameUnrelatedEditKeepsThreadID(t *testing.T) {
+	a := newTestApp(t)
+	id := addGame(t, a, "Game", "/games/game")
+	url := "https://f95zone.to/threads/game.12345/"
+	if err := a.db.UpdateGame(&db.Game{
+		ID: id, Title: "Game", Path: "/games/game", Engine: "RenPy", Status: "active",
+		F95URL: url, F95ThreadID: 12345,
+	}); err != nil {
+		t.Fatalf("UpdateGame: %v", err)
+	}
+
+	note := "hello"
+	if err := a.EditGame(id, EditGameFields{Notes: &note}); err != nil {
+		t.Fatalf("EditGame: %v", err)
+	}
+
+	g, _ := a.db.GetGame(id)
+	if g.F95URL != url || g.F95ThreadID != 12345 {
+		t.Errorf("unrelated edit changed association: %q/%d, want %q/12345", g.F95URL, g.F95ThreadID, url)
+	}
+}

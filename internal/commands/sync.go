@@ -137,6 +137,15 @@ func SyncGame(id int64, cookie string, unsafe bool, force bool) {
 
 	fmt.Fprintf(os.Stderr, "Syncing: %s\n", game.Title)
 
+	// Without a session, run the check entirely through F95Zone's cookie-free
+	// endpoints (checker.php / cache API) instead of the direct scrape — the
+	// same "cookies when set, cookie-free when not" rule as the desktop and
+	// the bulk sync.
+	if cookie == "" {
+		syncGameCookieFree(database, game, client, scraper.NewPublicAPI(), force)
+		return
+	}
+
 	result, err := SyncGameLogic(database, game, client, force, true)
 	if err != nil {
 		errStr := err.Error()
@@ -207,6 +216,29 @@ func SyncGame(id int64, cookie string, unsafe bool, force bool) {
 	}
 }
 
+// syncGameCookieFree checks one already-associated game for updates through
+// F95Zone's cookie-free endpoints (checker.php bulk versions, then the
+// F95Checker cache API), falling back to a session-less direct scrape. It
+// does not attempt association: that needs the search path, which requires a
+// session. Mirrors the desktop's single-game fallback.
+func syncGameCookieFree(database *db.Database, game *db.Game, client *scraper.Client, public *scraper.PublicAPI, force bool) {
+	if game.F95URL == "" && game.F95ThreadID == 0 {
+		fmt.Fprintf(os.Stderr, "  ✗ %q has no F95Zone URL or thread ID, and no session is available to search for one.\n", game.Title)
+		fmt.Fprintln(os.Stderr, "  Log into f95zone.to in your browser (or set the URL in the desktop app), then retry.")
+		os.Exit(1)
+	}
+
+	// RunUpdateCheck only considers games with an F95URL; synthesize the
+	// slug-agnostic URL when only the thread ID is known.
+	g := *game
+	if g.F95URL == "" {
+		g.F95URL = scraper.ThreadURL(g.F95ThreadID)
+	}
+	fmt.Fprintln(os.Stderr, "  No F95Zone cookies found — using cookie-free endpoints.")
+
+	RunUpdateCheck(database, client, []db.Game{g}, force, public)
+}
+
 // Sync performs a full library sync: associate games with F95Zone threads
 // and check for version updates.
 func Sync(args []string) {
@@ -227,10 +259,6 @@ func Sync(args []string) {
 
 	// Single-game sync: moxie sync <game-id>
 	if fs.NArg() >= 1 {
-		if cookie == "" {
-			fmt.Fprintf(os.Stderr, "Cookie required for single-game sync. Log into f95zone.to in Firefox.\n")
-			os.Exit(1)
-		}
 		game := ResolveGame(database, fs.Arg(0))
 		if game == nil {
 			fmt.Fprintf(os.Stderr, "Cancelled.\n")
