@@ -868,9 +868,13 @@
         newVersion: data.newVersion || '',
       })
       // Refresh once per pipeline, not once per game: during a batch (or a
-      // retry pass) batchState stays set and the summary handlers below do a
-      // single refresh; only a standalone single-game update refreshes here.
-      if (!batchState) {
+      // retry pass) batchState.running is true and the summary handlers below
+      // do a single refresh; only a standalone single-game update refreshes
+      // here. Guard on running — not on batchState existing — because a
+      // finished batch leaves batchState non-null (with running:false) for the
+      // session, which used to make every later single-game update skip its
+      // refresh and stay listed as needing an update.
+      if (!batchState?.running) {
         refreshGames()
         lastUpdate++
       }
