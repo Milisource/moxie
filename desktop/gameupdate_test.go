@@ -4,6 +4,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mili/moxie/internal/db"
 )
 
 // Each game has at most one update/install run: while one holds a game,
@@ -128,5 +131,57 @@ func TestScanDirectoryGuardRejectsConcurrent(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already running") {
 		t.Errorf("error = %q, want mention of single-flight guard", err)
+	}
+}
+
+// A completed update/install must survive the watcher's non-force rescan. The
+// install directory keeps its old version in its name (e.g. ".../Condemned
+// Bunker v0.16"), and the merge's file writes trip the watcher, which
+// re-detects that stale version. recordAppliedVersion stamps the applied
+// version source 'f95' so UpdateGameScanFields leaves it alone; without it the
+// row silently reverts to the folder-name version and keeps prompting.
+func TestRecordAppliedVersionSurvivesRescan(t *testing.T) {
+	a := newTestApp(t)
+	id := addGame(t, a, "Condemned Bunker", "/games/condemned-bunker")
+
+	g, err := a.db.GetGame(id)
+	if err != nil || g == nil {
+		t.Fatalf("GetGame: %v", err)
+	}
+	g.LatestVersion = "0.18"
+	g.Version = "0.16"
+	g.VersionSource = "scanner"
+
+	recordAppliedVersion(g)
+	if g.Version != "0.18" || g.VersionSource != "f95" {
+		t.Fatalf("recordAppliedVersion = version %q source %q, want 0.18/f95", g.Version, g.VersionSource)
+	}
+	if err := a.db.UpdateGame(g); err != nil {
+		t.Fatalf("UpdateGame: %v", err)
+	}
+
+	// The watcher's non-force scan re-detects the stale folder-name version.
+	now := time.Now().UTC()
+	if err := a.db.UpdateGameScanFields(id, "0.16", "HTML", "", 0, now, now, false); err != nil {
+		t.Fatalf("UpdateGameScanFields: %v", err)
+	}
+
+	got, err := a.db.GetGame(id)
+	if err != nil || got == nil {
+		t.Fatalf("GetGame after scan: %v", err)
+	}
+	if got.Version != "0.18" {
+		t.Errorf("version = %q after rescan, want 0.18 (applied version must not revert to the folder name)", got.Version)
+	}
+}
+
+// An empty latest version must not clear a known installed version: the
+// updatable() gate guarantees a non-empty latest, but recordAppliedVersion is
+// also reachable from install paths, so keep the guard.
+func TestRecordAppliedVersionIgnoresEmptyLatest(t *testing.T) {
+	g := &db.Game{Version: "0.16", VersionSource: "scanner", LatestVersion: ""}
+	recordAppliedVersion(g)
+	if g.Version != "0.16" || g.VersionSource != "scanner" {
+		t.Errorf("recordAppliedVersion with empty latest = version %q source %q, want 0.16/scanner unchanged", g.Version, g.VersionSource)
 	}
 }

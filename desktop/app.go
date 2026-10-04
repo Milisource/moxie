@@ -5049,6 +5049,22 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 	return err
 }
 
+// recordAppliedVersion stamps game as running the F95Zone latest version after
+// an update or install. The install directory usually keeps its old version in
+// its name (e.g. ".../Condemned Bunker v0.16"), and the merge/install file
+// writes trip the directory watcher: its non-force auto-scan re-detects that
+// stale version from the folder name and would overwrite the version we just
+// applied — UpdateGameScanFields only preserves versions whose source is 'user'
+// or 'f95'. Marking the applied version F95Zone-authoritative keeps the scan
+// from reverting it.
+func recordAppliedVersion(game *db.Game) {
+	if game.LatestVersion == "" {
+		return
+	}
+	game.Version = game.LatestVersion
+	game.VersionSource = "f95"
+}
+
 // applyGameUpdateArchive runs the post-download phases of the update
 // pipeline — extract, merge, update the DB record, emit completion — for a
 // game whose new-version archive is already available at archivePath. The
@@ -5143,7 +5159,7 @@ func (a *App) applyGameUpdateArchive(ctx context.Context, game *db.Game, archive
 		"phase":  "updating-db",
 	})
 
-	game.Version = game.LatestVersion
+	recordAppliedVersion(game)
 	game.SizeBytes = updateDirSize(ctx, game.Path)
 	game.LastScannedAt = time.Now()
 
@@ -5800,7 +5816,7 @@ func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent strin
 	game.LastScannedAt = time.Now().UTC()
 	game.DirMTime = dirModTime(targetDir)
 	if game.LatestVersion != "" {
-		game.Version = game.LatestVersion
+		recordAppliedVersion(game)
 	}
 	if err := a.db.UpdateGame(game); err != nil {
 		return emitErr("update-db", fmt.Errorf("update game in db: %w", err))
