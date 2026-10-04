@@ -220,12 +220,16 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 	// mutates the library — a declined save must not delete anything.
 	removed := RemoveMissingUnder(database, absDir)
 	saved, updated, errs := UpsertDetected(database, games, cfg.Force)
+	pruned := PruneSuperseded(database, absDir, games)
 	for _, e := range errs {
 		fmt.Fprintf(os.Stderr, "  Error: %s\n", e)
 	}
 	fmt.Fprintf(os.Stderr, "\nSaved %d games, updated %d.\n", saved, updated)
 	if removed > 0 {
 		fmt.Fprintf(os.Stderr, "Removed %d game directories missing from disk.\n", removed)
+	}
+	if pruned > 0 {
+		fmt.Fprintf(os.Stderr, "Pruned %d superseded rows (stale wrappers/containers/downloads).\n", pruned)
 	}
 
 	// Post-scan action hooks: auto-sync or auto-scrape.

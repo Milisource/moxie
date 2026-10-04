@@ -856,12 +856,13 @@ func (db *Database) GamesByEngine(engine string) ([]Game, error) {
 // AllGamePaths returns all game paths and their directory mtimes.
 // Used by --new-only scan to skip already-known directories.
 type GamePathEntry struct {
+	ID       int64
 	Path     string
 	DirMTime time.Time
 }
 
 func (db *Database) AllGamePaths() ([]GamePathEntry, error) {
-	rows, err := db.conn.Query(`SELECT path, dir_mtime FROM games ORDER BY path`)
+	rows, err := db.conn.Query(`SELECT id, path, dir_mtime FROM games ORDER BY path`)
 	if err != nil {
 		return nil, err
 	}
@@ -871,7 +872,7 @@ func (db *Database) AllGamePaths() ([]GamePathEntry, error) {
 	for rows.Next() {
 		var e GamePathEntry
 		var dirMTimeStr sql.NullString
-		if err := rows.Scan(&e.Path, &dirMTimeStr); err != nil {
+		if err := rows.Scan(&e.ID, &e.Path, &dirMTimeStr); err != nil {
 			return nil, err
 		}
 		// Skip virtual paths (browser-added games not downloaded yet).

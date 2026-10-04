@@ -28,6 +28,21 @@ import (
 // soft-deleted game found again on disk comes back to life — otherwise the
 // UNIQUE index on path keeps blocking re-insertion.
 func UpsertDetected(database *db.Database, detected []scanner.DetectedGame, force bool) (inserted, updated int, errs []string) {
+	detectedPaths := make(map[string]bool, len(detected))
+	for _, g := range detected {
+		detectedPaths[g.Path] = true
+	}
+	// Snapshot rows before this scan: used to merge an existing inner-directory
+	// row into a newly-registered release wrapper instead of duplicating it.
+	priorEntries, perr := database.AllGamePaths()
+	if perr != nil {
+		priorEntries = nil
+	}
+	prior := make(map[string]db.GamePathEntry, len(priorEntries))
+	for _, e := range priorEntries {
+		prior[e.Path] = e
+	}
+
 	for _, g := range detected {
 		existing, err := database.GetGameByPath(g.Path)
 		if err != nil {
@@ -47,9 +62,9 @@ func UpsertDetected(database *db.Database, detected []scanner.DetectedGame, forc
 				}
 			}
 			// Narrow, atomic update: only the scanner-owned fields are
-			// written, and the "unset" checks (or force overwrite) live inside
-			// the UPDATE, so a user edit landing between our read and write
-			// can never be clobbered with the stale record we loaded.
+			// written, and the source checks live inside the UPDATE, so a user
+			// edit landing between our read and write can never be clobbered
+			// with the stale record we loaded.
 			if err := database.UpdateGameScanFields(
 				existing.ID, g.Version, string(g.Engine), g.ExePath,
 				g.SizeBytes, now, dirModTime(g.Path), force,
@@ -59,6 +74,23 @@ func UpsertDetected(database *db.Database, detected []scanner.DetectedGame, forc
 			}
 			updated++
 			continue
+		}
+
+		// A collapsed release wrapper supersedes a row that pointed at an
+		// inner directory (e.g. "Brothel King" now supersedes
+		// "Brothel King/Brothel King"). Relocate that row instead of
+		// inserting a duplicate, preserving user curation. Only rows that are
+		// not themselves detected games are merged, so container children and
+		// sibling games are untouched. Remaining stale rows are pruned by
+		// PruneSuperseded after this pass.
+		if inner := shallowestUndetectedDescendant(prior, detectedPaths, g.Path); inner != nil {
+			if ig, gerr := database.GetGameByPath(inner.Path); gerr == nil && ig != nil && ig.DeletedAt.IsZero() {
+				if rerr := relocateGameRow(database, ig, ig.Path, g.Path); rerr == nil {
+					_ = database.UpdateGameScanFields(ig.ID, g.Version, string(g.Engine), g.ExePath, g.SizeBytes, now, dirModTime(g.Path), false)
+					updated++
+					continue
+				}
+			}
 		}
 
 		title := scraper.SanitizeTitle(g.Title)
@@ -89,6 +121,84 @@ func UpsertDetected(database *db.Database, detected []scanner.DetectedGame, forc
 		inserted++
 	}
 	return inserted, updated, errs
+}
+
+// shallowestUndetectedDescendant returns the nearest prior row whose path is a
+// strict descendant of wrapper and that the current scan did not detect. Used
+// to merge a superseded inner game row into its collapsed wrapper.
+func shallowestUndetectedDescendant(prior map[string]db.GamePathEntry, detected map[string]bool, wrapper string) *db.GamePathEntry {
+	var best *db.GamePathEntry
+	for p, e := range prior {
+		if p == wrapper || detected[p] || !isPathUnder(wrapper, p) {
+			continue
+		}
+		if best == nil || len(p) < len(best.Path) {
+			ec := e
+			best = &ec
+		}
+	}
+	return best
+}
+
+// PruneSuperseded soft-deletes active rows under root that the latest scan
+// proved are no longer games: a row nested inside a detected game (a stale
+// inner directory after wrapper collapse), a stale ancestor container, or
+// anything under a downloads/ directory. Rows outside root are never touched.
+// Called after UpsertDetected; returns the number pruned.
+func PruneSuperseded(database *db.Database, root string, detected []scanner.DetectedGame) int {
+	detectedPaths := make(map[string]bool, len(detected))
+	for _, g := range detected {
+		detectedPaths[g.Path] = true
+	}
+	entries, err := database.AllGamePaths()
+	if err != nil {
+		return 0
+	}
+	pruned := 0
+	for _, e := range entries {
+		if !isPathUnder(root, e.Path) || detectedPaths[e.Path] {
+			continue
+		}
+		if !isSupersededPath(e.Path, detectedPaths) {
+			continue
+		}
+		g, gerr := database.GetGameByPath(e.Path)
+		if gerr != nil || g == nil || !g.DeletedAt.IsZero() {
+			continue
+		}
+		if database.DeleteGame(e.ID) == nil {
+			pruned++
+		}
+	}
+	return pruned
+}
+
+// isSupersededPath reports whether path is no longer a standalone game: it
+// lives under a downloads/ directory, or is an ancestor/descendant of a
+// detected game path.
+func isSupersededPath(path string, detected map[string]bool) bool {
+	if hasDownloadsComponent(path) {
+		return true
+	}
+	for d := range detected {
+		if d == path {
+			continue
+		}
+		if isPathUnder(d, path) || isPathUnder(path, d) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDownloadsComponent reports whether any path segment is "downloads".
+func hasDownloadsComponent(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if part == "downloads" {
+			return true
+		}
+	}
+	return false
 }
 
 // vanishedGame is a game row whose directory is definitively gone from disk,
