@@ -90,6 +90,8 @@ func main() {
 		switch args[0] {
 		case "scan":
 			commands.Scan(args[1:])
+		case "detect":
+			commands.Detect(args[1:])
 		case "tui":
 			cmdTUI()
 		case "add":
@@ -180,6 +182,7 @@ USAGE
 
 CORE
   scan <dir> [flags]          Scan directory for new games (incremental by default)
+  detect [--json] <path|id>   Explain engine detection for a path or game
   list [flags]                List all games in library
   tui                         Launch interactive terminal UI
   info <id|name>              Show detailed game info

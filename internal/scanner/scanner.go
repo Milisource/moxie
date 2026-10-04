@@ -23,12 +23,14 @@ type ScanProgressFunc func(dirsExamined, gamesFound int, phase string)
 
 // DetectedGame is the result of scanning a game directory.
 type DetectedGame struct {
-	Title     string        `json:"title"`    // directory name as title fallback
-	Path      string        `json:"path"`     // absolute directory path
-	ExePath   string        `json:"exe_path"` // path to main executable
-	Engine    engine.Engine `json:"engine"`
-	Version   string        `json:"version"` // version extracted from directory name
-	SizeBytes int64         `json:"size_bytes"`
+	Title      string        `json:"title"`    // directory name as title fallback
+	Path       string        `json:"path"`     // absolute directory path
+	ExePath    string        `json:"exe_path"` // path to main executable
+	Engine     engine.Engine `json:"engine"`
+	Version    string        `json:"version"` // version extracted from directory name
+	SizeBytes  int64         `json:"size_bytes"`
+	MatchedBy  string        `json:"matched_by,omitempty"` // which detection rule matched
+	Confidence float64       `json:"confidence,omitempty"` // 0.0 - 1.0
 }
 
 // Scan recursively scans a directory and returns detected games.
@@ -195,11 +197,13 @@ func ScanFiltered(ctx context.Context, root string, skipPaths map[string]bool, p
 				}
 			}
 			g := DetectedGame{
-				Title:     filepath.Base(d),
-				Path:      d,
-				Engine:    result.Engine,
-				Version:   ver,
-				SizeBytes: size,
+				Title:      filepath.Base(d),
+				Path:       d,
+				Engine:     result.Engine,
+				Version:    ver,
+				SizeBytes:  size,
+				MatchedBy:  result.MatchedBy,
+				Confidence: result.Confidence,
 			}
 			if exe := findGameExe(d); exe != "" {
 				g.ExePath = exe
@@ -248,11 +252,13 @@ func analyzeDir(dir, root string) DetectedGame {
 	}
 
 	g := DetectedGame{
-		Title:     name,
-		Path:      dir,
-		Engine:    result.Engine,
-		Version:   ver,
-		SizeBytes: dirSize(dir),
+		Title:      name,
+		Path:       dir,
+		Engine:     result.Engine,
+		Version:    ver,
+		SizeBytes:  dirSize(dir),
+		MatchedBy:  result.MatchedBy,
+		Confidence: result.Confidence,
 	}
 	if exe := findGameExe(dir); exe != "" {
 		g.ExePath = exe
