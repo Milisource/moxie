@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/mili/moxie/internal/engine"
 )
 
 // ResolveExecutable finds the best executable to launch for a game.
@@ -109,7 +111,9 @@ func ResolveExecutable(gameDir, exePath string) string {
 	if len(exes) > 0 {
 		return SelectBestExe(exes)
 	}
-	return ""
+	// Browser-played HTML games have no native executable — their entry point
+	// is an HTML page opened in the browser.
+	return engine.FindHTMLEntry(gameDir)
 }
 
 // SelectBestExe picks the most likely main executable from a list.
@@ -162,9 +166,11 @@ func SelectBestExe(paths []string) string {
 	return best.path
 }
 
-// ListExecutables returns all playable executables in a directory (non-recursive).
-// Skips known non-game files (uninstallers, crash handlers, setup programs).
-// Used by the TUI to show available executables when editing exe_path.
+// ListExecutables returns all playable entry points in a directory
+// (non-recursive): native executables, launcher scripts, AppImages, and HTML
+// entry pages for browser-played games. Skips known non-game files
+// (uninstallers, crash handlers, setup programs). Used by the TUI to show
+// available executables when editing exe_path.
 func ListExecutables(dir string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -189,6 +195,8 @@ func ListExecutables(dir string) []string {
 
 		switch {
 		case ext == ".exe" || ext == ".sh" || ext == ".x86_64" || ext == ".x86":
+			exes = append(exes, filepath.Join(dir, name))
+		case ext == ".html" || ext == ".htm":
 			exes = append(exes, filepath.Join(dir, name))
 		case strings.HasSuffix(name, ".AppImage"):
 			exes = append(exes, filepath.Join(dir, name))

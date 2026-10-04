@@ -542,6 +542,9 @@ func TestScanHTMLGame(t *testing.T) {
 	if games[0].Engine != engine.HTML {
 		t.Errorf("expected HTML, got %s", games[0].Engine)
 	}
+	if want := filepath.Join(gdir, "index.html"); games[0].ExePath != want {
+		t.Errorf("ExePath = %q, want the HTML entry page %q", games[0].ExePath, want)
+	}
 }
 
 // TestScanPlainHTMLNotImported verifies a directory with a plain .html file

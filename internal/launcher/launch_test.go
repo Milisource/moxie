@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -86,5 +87,36 @@ func TestBuildCommandNativeBinary(t *testing.T) {
 	}
 	if cmd.Path != exe {
 		t.Errorf("cmd.Path = %q, want %q", cmd.Path, exe)
+	}
+}
+
+// TestBuildCommandHTMLLaunchesBrowser guards the reported regression: an HTML
+// game must be handed to a browser opener, never exec'd directly (which fails
+// with "permission denied").
+func TestBuildCommandHTMLLaunchesBrowser(t *testing.T) {
+	dir := t.TempDir()
+	html := filepath.Join(dir, "Applicant_0.42.html")
+	if err := os.WriteFile(html, []byte("<html><canvas></canvas></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd, err := buildCommand(html, dir, "")
+	if err != nil {
+		// A Linux system without xdg-open/gio must still refuse to exec the
+		// HTML file and report a clear error rather than EACCES.
+		if runtime.GOOS == "linux" && strings.Contains(err.Error(), "browser opener") {
+			return
+		}
+		t.Fatalf("buildCommand failed: %v", err)
+	}
+
+	if cmd.Dir != dir {
+		t.Errorf("cmd.Dir = %q, want %q", cmd.Dir, dir)
+	}
+	if cmd.Path == html {
+		t.Errorf("HTML file must not be exec'd directly (cmd.Path = %q)", cmd.Path)
+	}
+	if !slices.Contains(cmd.Args, html) {
+		t.Errorf("cmd.Args = %v, want the HTML path passed to the opener", cmd.Args)
 	}
 }

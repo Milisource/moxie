@@ -28,7 +28,8 @@ func Launch(exe, gameDir, winePrefix string) error {
 
 // buildCommand constructs the appropriate *exec.Cmd for the given executable,
 // setting the working directory to gameDir. It detects the file type and
-// selects the appropriate launcher (wine for .exe on non-Windows, etc.).
+// selects the appropriate launcher (wine for .exe on non-Windows, a browser
+// for .html, sh for .sh, etc.).
 func buildCommand(exe, gameDir, winePrefix string) (*exec.Cmd, error) {
 	ext := strings.ToLower(filepath.Ext(exe))
 
@@ -56,6 +57,15 @@ func buildCommand(exe, gameDir, winePrefix string) (*exec.Cmd, error) {
 	case ext == ".sh":
 		return setDir(exec.Command("sh", exe)), nil
 
+	case ext == ".html" || ext == ".htm":
+		// HTML games have no executable — they are played by opening the page
+		// in a browser. Exec'ing the file directly fails with EACCES.
+		browser, err := browserCommand(exe)
+		if err != nil {
+			return nil, err
+		}
+		return setDir(browser), nil
+
 	case ext == ".exe":
 		if runtime.GOOS == "windows" {
 			return setDir(exec.Command(exe)), nil
@@ -75,6 +85,26 @@ func buildCommand(exe, gameDir, winePrefix string) (*exec.Cmd, error) {
 	default:
 		// Native binary (.x86_64, .x86, no extension).
 		return setDir(exec.Command(exe)), nil
+	}
+}
+
+// browserCommand builds a command that opens target (a local file path or URL)
+// in the user's default browser. It is used for HTML games, whose entry point
+// is a web page rather than a process.
+func browserCommand(target string) (*exec.Cmd, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", target), nil
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", target), nil
+	default:
+		if p, err := exec.LookPath("xdg-open"); err == nil {
+			return exec.Command(p, target), nil
+		}
+		if p, err := exec.LookPath("gio"); err == nil {
+			return exec.Command(p, "open", target), nil
+		}
+		return nil, fmt.Errorf("no browser opener found — install xdg-utils (xdg-open) to play HTML games")
 	}
 }
 

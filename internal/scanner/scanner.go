@@ -1,10 +1,8 @@
 package scanner
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -575,38 +573,6 @@ func hasGameMarkersFromEntries(entries []os.DirEntry) bool {
 	return hasExe || hasMarkers
 }
 
-// htmlSniffHead / htmlSniffTail bound the content-sniff read. Game entry
-// HTML pages (Twine exports, canvas apps) put their signature either near the
-// top (Twine <tw-storydata>, framework script tags) or at the end (Twine 1
-// story data), and can be tens of MB, so a bounded head+tail read is used
-// rather than reading the whole file.
-const (
-	htmlSniffHead = 256 << 10
-	htmlSniffTail = 128 << 10
-)
-
-// htmlGameMarkers are lowercase substrings that mark an HTML file as a
-// playable game rather than a static page, a docs site, or a viewer. Matched
-// case-insensitively against a bounded head+tail read.
-var htmlGameMarkers = [][]byte{
-	[]byte("tw-storydata"), // Twine (all story formats)
-	[]byte("sugarcube"),    // Twine SugarCube
-	[]byte("harlowe"),      // Twine Harlowe
-	[]byte("snowman"),      // Twine Snowman
-	[]byte("<canvas"),      // canvas-driven games
-	[]byte("pixi"),         // PixiJS
-	[]byte("phaser"),       // Phaser
-	[]byte("createjs"),     // CreateJS (Flash ports)
-	[]byte("easeljs"),      // CreateJS
-	[]byte("babylon"),      // Babylon.js
-	[]byte("rpg_core.js"),  // RPG Maker MV/MZ web build
-	[]byte("rpgmaker"),     // RPG Maker web
-	[]byte("unityloader"),  // Unity WebGL
-	[]byte("godot"),        // Godot web export
-	[]byte("gamefiles"),    // hand-rolled JS games (e.g. Hentai University)
-	[]byte("js/engine/"),   // hand-rolled JS game engines (e.g. A Lot of Ways)
-}
-
 // isGameRoot reports whether a directory is a game root, combining the
 // fast file/dir markers with the HTML content sniff. The scanner and
 // engine.Detect must agree on what counts as a game; this is the scanner side.
@@ -719,47 +685,7 @@ func hasHTMLGameSignature(dir string, entries []os.DirEntry) bool {
 		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".html") {
 			continue
 		}
-		if htmlFileHasGameMarker(filepath.Join(dir, e.Name())) {
-			return true
-		}
-	}
-	return false
-}
-
-// htmlFileHasGameMarker reads a bounded head and tail of path and reports
-// whether any htmlGameMarkers appears.
-func htmlFileHasGameMarker(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-
-	buf := make([]byte, htmlSniffHead)
-	n, _ := io.ReadFull(f, buf)
-	if containsHTMLMarker(bytes.ToLower(buf[:n])) {
-		return true
-	}
-
-	fi, err := f.Stat()
-	if err != nil || fi.Size() <= int64(htmlSniffHead) {
-		return false
-	}
-	off := fi.Size() - int64(htmlSniffTail)
-	if off < 0 {
-		off = 0
-	}
-	tail := make([]byte, htmlSniffTail)
-	if _, err := f.ReadAt(tail, off); err != nil {
-		return false
-	}
-	return containsHTMLMarker(bytes.ToLower(tail))
-}
-
-// containsHTMLMarker reports whether data (lowercased) contains any marker.
-func containsHTMLMarker(data []byte) bool {
-	for _, m := range htmlGameMarkers {
-		if bytes.Contains(data, m) {
+		if engine.IsHTMLGameFile(filepath.Join(dir, e.Name())) {
 			return true
 		}
 	}
@@ -821,7 +747,9 @@ func isEngineName(name string) bool {
 	return false
 }
 
-// findGameExe finds the main executable in a game directory.
+// findGameExe finds the main executable in a game directory. When no native
+// executable exists it falls back to the game's HTML entry page (if any), so
+// browser-played HTML games are recorded with a launchable entry point.
 func findGameExe(dir string) string {
 	var best string
 	var bestSize int64
@@ -847,6 +775,9 @@ func findGameExe(dir string) string {
 			bestSize = info.Size()
 			best = filepath.Join(dir, name)
 		}
+	}
+	if best == "" {
+		return engine.FindHTMLEntry(dir)
 	}
 	return best
 }

@@ -140,6 +140,7 @@ The TUI's `p` key calls into `internal/launcher/` — the same shared package us
 - Linux: prefers AppImage → native binaries (`.x86_64`, `.sh`) → `.exe` via Wine
 - CrossOver path detection on macOS
 - Scoring-based executable selection (skips runtime engines, launchers, crash handlers)
+- HTML games: resolves the `.html` entry page and opens it in the system browser instead of exec'ing it
 
 ### Spinner
 

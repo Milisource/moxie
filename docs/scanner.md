@@ -92,7 +92,7 @@ The CLI calls this to display live progress on stderr using `\r` (carriage retur
 
 ### Executable Discovery
 
-`findGameExe(dir)` scans for the largest executable (`.exe`, `.sh`, `.x86_64`, `.x86`) after filtering out crash handlers, uninstallers, and setup utilities. AppImage files are not matched by the extension check; games that ship them are usually detected via engine markers instead.
+`findGameExe(dir)` scans for the largest native executable (`.exe`, `.sh`, `.x86_64`, `.x86`) after filtering out crash handlers, uninstallers, and setup utilities. When no native executable exists it falls back to the game's HTML entry page (`engine.FindHTMLEntry`) so browser-played HTML games are recorded with a launchable `exe_path`. Entry-page selection prefers a root `index.html`, then the largest file carrying a game signature, then the largest `.html`/`.htm`. AppImage files are not matched by the extension check; games that ship them are usually detected via engine markers instead.
 
 ## Why Pattern Matching Over Binary Parsing
 
