@@ -36,9 +36,12 @@ var downloadTriggerXPaths = []string{
 	`//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'download')]`,
 	// Download-submit inputs (file hosts that use <input type="submit">).
 	`//input[contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'download')]`,
-	// Icon-only download controls (pixeldrain) — match by href/id.
+	// Icon-only download controls (pixeldrain) — match by href/id. The id
+	// match requires a NON-EMPTY href: vikingfile's #download-link is
+	// hidden and href-less until its Turnstile callback reveals it, and
+	// clicking it early just burns the click budget and times out.
 	`//a[contains(translate(@href, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '/download')]`,
-	`//*[contains(translate(normalize-space(@id), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'download')]`,
+	`//*[contains(translate(normalize-space(@id), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'download') and string-length(@href) > 0]`,
 }
 
 // recaptchaFrameXPath locates the reCAPTCHA widget iframe. Headless

@@ -284,7 +284,6 @@ func TestSortLinksByPlatform_AllBonusesBeatNoBonus_TUI(t *testing.T) {
 		host   string
 		expect string
 	}{
-		{"vikingfile loses (-200)", "vikingfile", "no bonus link"},
 		{"buzzheavier wins (+25)", "buzzheavier", "bonus link"},
 		{"pixeldrain wins (+25)", "pixeldrain", "bonus link"},
 		{"mega loses (-200)", "mega", "no bonus link"},

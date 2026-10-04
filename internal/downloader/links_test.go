@@ -33,10 +33,10 @@ func TestScoreLinkHost(t *testing.T) {
 		{"uploadhaven", 0},
 		{"1cloudfile", 0},
 		{"bunkrr", 0},
+		{"vikingfile", 0}, // Turnstile browser solver (F95-ob9m); live end-to-end unproven
 		{"unknown", 0},
 		{"", 0},
 		// Tier 5 — hard walls.
-		{"vikingfile", -200},
 		{"krakenfiles", -200},
 		{"mega", -200},
 	}
@@ -60,8 +60,8 @@ func TestScoreLinkHost_TierOrdering(t *testing.T) {
 		{"tier1-plain-http", []string{"pixeldrain", "catbox", "mediafire"}, 25},
 		{"tier2-intermittent", []string{"buzzheavier", "workupload", "googledrive"}, 10},
 		{"tier3-fragile", []string{"gofile"}, 5},
-		{"tier4-browser-gated", []string{"datanodes", "mixdrop", "hexload", "uploadhaven", "1cloudfile", "bunkrr", "unknown"}, 0},
-		{"tier5-hard-walls", []string{"vikingfile", "krakenfiles", "mega"}, -200},
+		{"tier4-browser-gated", []string{"datanodes", "mixdrop", "hexload", "uploadhaven", "1cloudfile", "bunkrr", "vikingfile", "unknown"}, 0},
+		{"tier5-hard-walls", []string{"krakenfiles", "mega"}, -200},
 	}
 	for i, tier := range tiers {
 		for _, h := range tier.hosts {
@@ -91,7 +91,7 @@ func TestScoreLinkHost_CaseInsensitive(t *testing.T) {
 		{"Gofile", 5},
 		{"BUNKRR", 0},
 		{"1CloudFile", 0},
-		{"VIKINGFILE", -200},
+		{"VIKINGFILE", 0},
 		{"KrakenFiles", -200},
 		{"MEGA", -200},
 	}
