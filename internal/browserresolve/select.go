@@ -198,6 +198,19 @@ func InstallDownloaderFallback() (installed bool, reason string) {
 		defer cancel()
 		return ResolveMaskedURL(solveCtx, maskedURL)
 	})
+	// Turnstile-gated file pages (vikingfile.com) need the browser to clear
+	// the widget and read the client-side link; the Go path then downloads the
+	// revealed URL. Installed only when a click-capable Chrome-family binary
+	// exists and Firefox was not explicitly forced.
+	if mode != BrowserFirefox {
+		if _, err := detectBrowserBinary(); err == nil {
+			downloader.SetDefaultTurnstileSolver(func(ctx context.Context, pageURL string) (string, error) {
+				solveCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+				defer cancel()
+				return ResolveTurnstileURL(solveCtx, pageURL, WithBrowser(BrowserChrome))
+			})
+		}
+	}
 	log.Info("browserresolve: browser fallback installed (challenge-graded downloads + masked-URL solver)", "mode", mode)
 	return true, ""
 }
