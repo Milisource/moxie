@@ -1795,11 +1795,13 @@ func TestUnwrapMasked_Pacing(t *testing.T) {
 	r := NewHostResolver()
 	r.unwrapBackoff = nil
 	r.unwrapLimiter = rate.NewLimiter(rate.Every(wantInterval), 1)
+	start := time.Now()
 	for i := 0; i < 4; i++ {
 		if _, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x"); err != nil {
 			t.Fatalf("unwrap %d: %v", i, err)
 		}
 	}
+	elapsed := time.Since(start)
 	mu.Lock()
 	defer mu.Unlock()
 	if len(times) != 4 {
@@ -1808,14 +1810,20 @@ func TestUnwrapMasked_Pacing(t *testing.T) {
 	if gap := times[1].Sub(times[0]); gap <= 0 {
 		t.Errorf("first gap = %v, want positive (sanity)", gap)
 	}
+	// Per-gap floor: server-arrival gaps are noisy downward — a request that
+	// should land second can trail by a scheduling hiccup, which `-race` on a
+	// loaded runner widens (observed ~8ms below the interval). A missing sleep
+	// collapses every gap to ~0, so half the interval still fails loudly.
 	for i := 2; i < len(times); i++ {
-		// Tolerance: server-arrival gaps are measured around the pacing
-		// sleep, and timer/HTTP scheduling on a loaded machine can shave
-		// sub-millisecond off the observed gap. A missing sleep still fails
-		// loudly (gaps near 0), so the floor assertion holds with slack.
-		if gap := times[i].Sub(times[i-1]); gap < wantInterval-5*time.Millisecond {
-			t.Errorf("unwrap gap %d = %v, want >= %v (pacing not enforced)", i, gap, wantInterval)
+		if gap := times[i].Sub(times[i-1]); gap < wantInterval/2 {
+			t.Errorf("unwrap gap %d = %v, want >= %v (pacing not enforced)", i, gap, wantInterval/2)
 		}
+	}
+	// End-to-end span: the three pacing sleeps must account for most of the
+	// wall time. Unlike a single arrival gap, the span can only grow under
+	// load, so per-request jitter cannot shave it.
+	if want := 3*wantInterval - 20*time.Millisecond; elapsed < want {
+		t.Errorf("4 paced unwraps spanned %v, want >= %v", elapsed, want)
 	}
 }
 
