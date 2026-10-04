@@ -59,6 +59,46 @@ func TestUpsertDetected_MergesCollapsedWrapper(t *testing.T) {
 	}
 }
 
+// An excluded path must not be resurrected (soft-deleted row) or inserted
+// (no row) by a rescan — this is what keeps resolved duplicates gone.
+func TestUpsertDetected_SkipsExcludedPaths(t *testing.T) {
+	d := setupTestDB(t)
+	defer d.Close()
+
+	// A soft-deleted row whose path was excluded as a duplicate.
+	if _, err := d.InsertGame(&db.Game{Title: "Dup", Path: "/root/Dup", Engine: "RenPy", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	dup, _ := d.GetGameByPath("/root/Dup")
+	if err := d.SoftDeleteAndExclude(dup.ID, "duplicate"); err != nil {
+		t.Fatal(err)
+	}
+	// An excluded path with no game row at all.
+	if err := d.ExcludePath("/root/Dup2", "duplicate"); err != nil {
+		t.Fatal(err)
+	}
+
+	detected := []scanner.DetectedGame{
+		{Title: "Dup", Path: "/root/Dup", Engine: engine.RenPy},
+		{Title: "Dup2", Path: "/root/Dup2", Engine: engine.RenPy},
+	}
+	inserted, updated, errs := UpsertDetected(d, detected, true)
+	if len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	if inserted != 0 || updated != 0 {
+		t.Fatalf("inserted=%d updated=%d, want 0/0 for excluded paths", inserted, updated)
+	}
+
+	// The existing row must stay trashed, and no new row may appear.
+	if g, _ := d.GetGameByPath("/root/Dup"); g == nil || g.DeletedAt.IsZero() {
+		t.Errorf("excluded row /root/Dup = %+v, want still soft-deleted", g)
+	}
+	if g, _ := d.GetGameByPath("/root/Dup2"); g != nil {
+		t.Errorf("excluded path /root/Dup2 was inserted: %+v", g)
+	}
+}
+
 // PruneSuperseded removes stale container/download rows under the root while
 // preserving detected games and rows outside the root.
 func TestPruneSuperseded_RemovesStaleRows(t *testing.T) {

@@ -206,6 +206,10 @@ export function PurgeDeleted() {
   return window['go']['main']['App']['PurgeDeleted']();
 }
 
+export function RemoveDuplicate(arg1) {
+  return window['go']['main']['App']['RemoveDuplicate'](arg1);
+}
+
 export function RemoveGame(arg1, arg2) {
   return window['go']['main']['App']['RemoveGame'](arg1, arg2);
 }

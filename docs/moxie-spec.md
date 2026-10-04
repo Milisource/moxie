@@ -247,7 +247,7 @@ A local game library manager for adult games. Scans directories, detects engines
   - [x] Download management view with expandable game cards, open-in-browser
   - [x] App self-update checker with download and apply
   - [x] Manual add game dialog with engine detection
-  - [x] Duplicate game detection and resolution
+  - [x] Duplicate game detection and resolution — Keep/Remove records the removed copy's path as a scan exclusion so the directory still on disk cannot resurrect it on rescan; restoring the copy from Trash clears the exclusion
   - [x] Game rename, status change, notes, exe path editing
   - [x] Trash view with restore/purge
   - [x] Wails production build: `make desktop` → `dist/moxie-desktop` (4.6s)
@@ -290,7 +290,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - **Testability** — 130+ `os.Exit(1)` calls remain in CLI wrappers; `RunPlay`, `RunScan`, `RunSync` extracted as testable logic functions; other commands still need extraction
 - **False positives** — tool/editor directories and generic folder names may be misdetected as games
 - **No archive scanning** — `.zip`/`.rar`/`.7z` at scan roots are not inspected (but can be extracted after download)
-- **No content-based dedup** — same game in multiple paths creates duplicate records
+- **No content-based dedup** — duplicate detection is title-based (normalized names): the same game stored under differently-named paths is not paired. Resolved duplicates are excluded from rescans, but detection itself remains name matching.
 - **Games added via F95Zone browser are virtual** — no local filesystem path until downloaded
 - **Non-UTF-8 filenames** — Latin1/Shift-JIS display incorrectly in the TUI
 - **Commands package** — 130+ `os.Exit(1)` calls in CLI wrappers make the full I/O layer untestable; `RunPlay`, `RunScan`, `RunSync` extracted with remaining handlers following the same pattern

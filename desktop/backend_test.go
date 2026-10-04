@@ -123,6 +123,46 @@ func TestUpsertDetected_ResurrectsSoftDeleted(t *testing.T) {
 	}
 }
 
+// Resolving a duplicate via the Duplicates view must keep it gone: the path
+// is excluded, so a later rescan cannot resurrect it (contrast with the plain
+// DeleteGame + rescan path above, which intentionally resurrects). Restoring
+// the game from Trash clears the exclusion and makes it scannable again.
+func TestRemoveDuplicateExcludesFromRescan(t *testing.T) {
+	a := newTestApp(t)
+	dir := t.TempDir()
+	g := detected("Dupe", filepath.Join(dir, "Dupe"))
+	a.upsertDetected([]scanner.DetectedGame{g}, false)
+
+	existing, err := a.db.GetGameByPath(g.Path)
+	if err != nil || existing == nil {
+		t.Fatalf("GetGameByPath: %v", err)
+	}
+	if err := a.RemoveDuplicate(existing.ID); err != nil {
+		t.Fatalf("RemoveDuplicate: %v", err)
+	}
+
+	// Rescan the same (still-present) directory.
+	inserted, updated, errs := a.upsertDetected([]scanner.DetectedGame{g}, false)
+	if inserted != 0 || updated != 0 || len(errs) != 0 {
+		t.Fatalf("upsert = inserted %d updated %d errs %v, want 0/0/none", inserted, updated, errs)
+	}
+	if games, err := a.db.ListActiveGames("", ""); err != nil || len(games) != 0 {
+		t.Fatalf("ListActiveGames after rescan = %d games (%v), want 0 (duplicate stays removed)", len(games), err)
+	}
+
+	// Restoring from Trash clears the exclusion, so a rescan brings it back.
+	if err := a.RestoreGame(existing.ID); err != nil {
+		t.Fatalf("RestoreGame: %v", err)
+	}
+	inserted, updated, errs = a.upsertDetected([]scanner.DetectedGame{g}, false)
+	if inserted != 0 || updated != 1 || len(errs) != 0 {
+		t.Fatalf("post-restore upsert = inserted %d updated %d errs %v, want 0/1/none", inserted, updated, errs)
+	}
+	if games, err := a.db.ListActiveGames("", ""); err != nil || len(games) != 1 {
+		t.Fatalf("ListActiveGames after restore = %d games (%v), want 1", len(games), err)
+	}
+}
+
 func TestSelectDownloadLink_ScoresAndFilters(t *testing.T) {
 	mk := func(name, url, host, platform string, dead bool) DesktopDownloadLink {
 		return DesktopDownloadLink{Name: name, URL: url, Host: host, Platform: platform, IsDead: dead}

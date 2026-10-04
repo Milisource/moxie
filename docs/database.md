@@ -149,6 +149,16 @@ resolved_urls (
     created_at    INTEGER NOT NULL,
     hits          INTEGER DEFAULT 0
 )
+
+-- Scan exclusions (v13): absolute paths the user resolved away as duplicate
+-- copies. The scan upsert skips these paths, so the directory still on disk
+-- cannot resurrect the row or re-insert a fresh one. Restoring the game from
+-- Trash deletes its exclusion row. reason is informational ("duplicate").
+excluded_paths (
+    path       TEXT PRIMARY KEY,
+    reason     TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+)
 ```
 
 Indexes:
@@ -157,6 +167,14 @@ Indexes:
 - `idx_download_links_game_id`, `idx_download_links_platform`, `idx_download_links_is_dead`,
 - `idx_play_history_game`, `idx_play_history_played`
 - `idx_resolved_urls_created_at` (pruning)
+
+`excluded_paths` needs no secondary index — lookups are by primary key (`path`).
+
+### Scan Exclusions
+
+Resolving a duplicate in the desktop Duplicates view soft-deletes the copy **and** records its absolute path in `excluded_paths` (via `App.RemoveDuplicate` → `db.SoftDeleteAndExclude`, one transaction). `commands.UpsertDetected` loads the excluded set once per scan and skips any detected game whose path is excluded, so the directory still present on disk cannot resurrect the soft-deleted row (the normal rescan path deliberately resurrects soft-deleted games) or insert a fresh row. The scan is unchanged for every other path.
+
+`RestoreGame` clears the exclusion for the restored game's path in the same transaction, so a user who changes their mind can bring the copy back and have it scanned again. Regular library deletes (Game list / Game detail → Trash) do **not** create exclusions and keep the existing resurrection behavior. Exclusions are path-keyed and survive `PurgeDeleted` (emptying the trash), so a purged duplicate still stays gone.
 
 ### FTS5 Full-Text Search
 
@@ -189,7 +207,7 @@ This means `latest_version` is the "last known F95Zone version," distinct from `
 Migrations use version-gated steps via `PRAGMA user_version`:
 
 ```go
-const currentSchemaVersion = 12
+const currentSchemaVersion = 13
 
 // Query current version
 var userVersion int
@@ -220,6 +238,7 @@ Each `migrateVersionStep` handles a specific version:
 - **v10**: Masked-URL unwrap cache (`resolved_urls` table + `idx_resolved_urls_created_at`; see schema above)
 - **v11**: Data repair — clears digitless `latest_version` values (F95 status labels like "Translation Request" stored by older syncs), keeping `Final`, and resets `version_checked_at` so the next sync refetches
 - **v12**: Engine/version provenance — `engine_source` and `version_source TEXT NOT NULL DEFAULT ''` on games. Records who last set each field: `''`/`scanner` (scanner-owned, correctable by a rescan), `f95` (authoritative F95Zone association), or `user` (manual edit). A normal (non-force) scan overwrites engine/version unless the source is `user`/`f95`, so historical mis-detections self-correct while manual edits and associations survive. `--force` overwrites regardless (explicit full-rescan contract).
+- **v13**: Scan exclusions — `excluded_paths` table. Duplicate resolutions record the removed copy's path so `UpsertDetected` skips it; see "Scan Exclusions" above.
 
 The v8 table rebuild copies rows by the old table's own column names (`PRAGMA table_info`) rather than `SELECT *`, so columns added to `gamesTableColumns` after v8 (e.g. the v12 source columns) don't break the rebuild on an old database.
 

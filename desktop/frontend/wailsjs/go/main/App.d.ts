@@ -107,6 +107,8 @@ export function ProvideUpdateFile(arg1:number):Promise<void>;
 
 export function PurgeDeleted():Promise<number>;
 
+export function RemoveDuplicate(arg1:number):Promise<void>;
+
 export function RemoveGame(arg1:number,arg2:boolean):Promise<void>;
 
 export function RemoveGameFromCollection(arg1:number,arg2:number):Promise<void>;

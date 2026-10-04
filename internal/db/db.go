@@ -111,7 +111,11 @@ func (db *Database) Close() error {
 //     NULL DEFAULT '' on games. Records who last set each field (''/scanner,
 //     f95, or user) so a normal rescan can self-correct scanner-owned
 //     mis-detections without clobbering manual edits or F95Zone associations.
-const currentSchemaVersion = 12
+//  13. Scan exclusions: excluded_paths table. Paths the user resolved away
+//     as duplicates are skipped by the scan upsert so the directory on disk
+//     cannot resurrect the row or insert a fresh one. Restoring the game
+//     from Trash clears its exclusion.
+const currentSchemaVersion = 13
 
 // gamesTableColumns is the games table column definition, shared between the
 // fresh-DB CREATE TABLE and the v8 rebuild (the engine CHECK constraint
@@ -286,6 +290,12 @@ func migrate(conn *sql.DB) error {
 			hits          INTEGER DEFAULT 0
 		);
 		CREATE INDEX IF NOT EXISTS idx_resolved_urls_created_at ON resolved_urls(created_at);
+
+		CREATE TABLE IF NOT EXISTS excluded_paths (
+			path       TEXT PRIMARY KEY,
+			reason     TEXT NOT NULL DEFAULT '',
+			created_at TEXT DEFAULT (datetime('now'))
+		);
 	`
 
 	// ── First-run databases (userVersion == 0) ─────────────────────
@@ -664,6 +674,18 @@ func migrateVersionStep(conn *sql.DB, version int) error {
 			if _, err := tx.Exec("ALTER TABLE games ADD COLUMN version_source TEXT NOT NULL DEFAULT ''"); err != nil {
 				return fmt.Errorf("add version_source: %w", err)
 			}
+		}
+	case 13:
+		// Scan exclusions: paths resolved away as duplicates are skipped by
+		// the scan upsert so the directory on disk cannot resurrect the row.
+		if _, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS excluded_paths (
+				path       TEXT PRIMARY KEY,
+				reason     TEXT NOT NULL DEFAULT '',
+				created_at TEXT DEFAULT (datetime('now'))
+			)
+		`); err != nil {
+			return fmt.Errorf("create excluded_paths: %w", err)
 		}
 	default:
 		return fmt.Errorf("unknown migration version %d", version)

@@ -3049,6 +3049,18 @@ func (a *App) RemoveGame(id int64, hard bool) error {
 	return a.db.DeleteGame(id)
 }
 
+// RemoveDuplicate resolves a duplicate by soft-deleting the game and
+// recording its path as excluded from future scans. The directory usually
+// stays on disk, so without the exclusion the next scan would resurrect the
+// row. Restoring the game from Trash clears the exclusion.
+func (a *App) RemoveDuplicate(id int64) error {
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	slog.Info("removing duplicate game", "id", id)
+	return a.db.SoftDeleteAndExclude(id, "duplicate")
+}
+
 // RestoreGame restores a soft-deleted game.
 func (a *App) RestoreGame(id int64) error {
 	if a.db == nil {

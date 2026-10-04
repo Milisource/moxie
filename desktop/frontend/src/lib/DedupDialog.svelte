@@ -1,6 +1,6 @@
 <script>
   import {onMount} from 'svelte'
-  import {FindDuplicateGames, RemoveGame} from '../../wailsjs/go/main/App'
+  import {FindDuplicateGames, RemoveDuplicate} from '../../wailsjs/go/main/App'
   import {engineColor} from './engineColors.js'
   import {statusLabel} from './statuses.js'
   import {formatBytes} from './format.js'
@@ -33,7 +33,7 @@
     if (!ok) return
     resolving = {...resolving, [id]: true}
     try {
-      await RemoveGame(id, false)
+      await RemoveDuplicate(id)
       // Remove from local state
       groups[groupIdx].games = groups[groupIdx].games.filter(g => g.id !== id)
       groups[groupIdx].count--
@@ -66,7 +66,7 @@
 
     try {
       for (const g of others) {
-        await RemoveGame(g.id, false)
+        await RemoveDuplicate(g.id)
       }
       groups[groupIdx].games = groups[groupIdx].games.filter(g => g.id === id)
       groups[groupIdx].count = 1

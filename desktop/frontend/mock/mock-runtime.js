@@ -203,6 +203,7 @@ const App = {
   }),
   RenameGame:          () => delay().then(() => {}),
   RemoveGame:          () => delay().then(() => {}),
+  RemoveDuplicate:     () => delay().then(() => {}),
   RestoreGame:         () => delay().then(() => {}),
   PurgeDeleted:        () => delay().then(() => {}),
   ListDeletedGames:    () => delay().then(() => DELETED_GAMES),

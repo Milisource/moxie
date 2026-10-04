@@ -27,7 +27,19 @@ import (
 // columns (title, status, notes, f95_url, ...) are never touched. A
 // soft-deleted game found again on disk comes back to life — otherwise the
 // UNIQUE index on path keeps blocking re-insertion.
+//
+// Paths the user resolved away as duplicates (see db.SoftDeleteAndExclude)
+// are skipped entirely: their directories are still on disk, but they must
+// neither resurrect nor be re-inserted.
 func UpsertDetected(database *db.Database, detected []scanner.DetectedGame, force bool) (inserted, updated int, errs []string) {
+	excluded, xerr := database.ExcludedPaths()
+	if xerr != nil {
+		// The DB is likely unusable; the per-game reads below will surface the
+		// same failure. Proceed with no exclusions rather than abort the scan.
+		slog.Warn("could not load scan exclusions", "error", xerr)
+		excluded = nil
+	}
+
 	detectedPaths := make(map[string]bool, len(detected))
 	for _, g := range detected {
 		detectedPaths[g.Path] = true
@@ -44,6 +56,11 @@ func UpsertDetected(database *db.Database, detected []scanner.DetectedGame, forc
 	}
 
 	for _, g := range detected {
+		if excluded[g.Path] {
+			// User resolved this path away as a duplicate; the directory is
+			// still present, but it must not come back.
+			continue
+		}
 		existing, err := database.GetGameByPath(g.Path)
 		if err != nil {
 			errs = append(errs, g.Title+": "+err.Error())
