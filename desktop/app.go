@@ -3008,12 +3008,18 @@ func (a *App) AddGame(path string, title string, eng string, version string) (in
 		return 0, fmt.Errorf("game already exists at this path: %q (ID %d)", existing.Title, existing.ID)
 	}
 
+	versionSource := ""
+	if version != "" {
+		versionSource = "user"
+	}
 	game := &db.Game{
-		Title:   title,
-		Engine:  eng,
-		Path:    absPath,
-		Version: version,
-		Status:  "unknown",
+		Title:         title,
+		Engine:        eng,
+		Path:          absPath,
+		Version:       version,
+		Status:        "unknown",
+		EngineSource:  "user",
+		VersionSource: versionSource,
 	}
 
 	id, err := a.db.InsertGame(game)
@@ -3238,9 +3244,11 @@ func (a *App) EditGame(id int64, fields EditGameFields) error {
 	}
 	if fields.Engine != nil {
 		game.Engine = strings.TrimSpace(*fields.Engine)
+		game.EngineSource = "user"
 	}
 	if fields.Version != nil {
 		game.Version = strings.TrimSpace(*fields.Version)
+		game.VersionSource = "user"
 	}
 	if fields.ExePath != nil {
 		game.ExePath = strings.TrimSpace(*fields.ExePath)

@@ -67,6 +67,8 @@ func Import(args []string) {
 			existing.Title = eg.Game.Title
 			existing.Engine = eg.Game.Engine
 			existing.Version = eg.Game.Version
+			existing.EngineSource = eg.Game.EngineSource
+			existing.VersionSource = eg.Game.VersionSource
 			if eg.Game.ExePath != "" {
 				existing.ExePath = eg.Game.ExePath
 			}

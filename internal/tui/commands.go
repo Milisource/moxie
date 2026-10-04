@@ -53,8 +53,16 @@ func (m model) scanDirectory(dir string) tea.Cmd {
 			existing, err := m.db.GetGameByPath(g.Path)
 			if err == nil && existing != nil {
 				existing.Title = g.Title
-				existing.Engine = string(g.Engine)
-				existing.Version = orDefault(existing.Version, g.Version)
+				// Only correct engine/version the scanner owns; leave manual
+				// edits and F95Zone associations alone.
+				if existing.EngineSource != "user" && existing.EngineSource != "f95" {
+					existing.Engine = string(g.Engine)
+					existing.EngineSource = "scanner"
+				}
+				if existing.VersionSource != "user" && existing.VersionSource != "f95" && g.Version != "" {
+					existing.Version = g.Version
+					existing.VersionSource = "scanner"
+				}
 				existing.SizeBytes = g.SizeBytes
 				if g.ExePath != "" {
 					existing.ExePath = g.ExePath
@@ -63,14 +71,20 @@ func (m model) scanDirectory(dir string) tea.Cmd {
 					updated++
 				}
 			} else if g.Path != "" {
+				versionSource := ""
+				if g.Version != "" {
+					versionSource = "scanner"
+				}
 				game := &db.Game{
-					Title:     strings.TrimSpace(g.Title),
-					Engine:    string(g.Engine),
-					Path:      g.Path,
-					ExePath:   g.ExePath,
-					Version:   g.Version,
-					SizeBytes: g.SizeBytes,
-					Status:    "unknown",
+					Title:         strings.TrimSpace(g.Title),
+					Engine:        string(g.Engine),
+					Path:          g.Path,
+					ExePath:       g.ExePath,
+					Version:       g.Version,
+					SizeBytes:     g.SizeBytes,
+					Status:        "unknown",
+					EngineSource:  "scanner",
+					VersionSource: versionSource,
 				}
 				if _, err := m.db.InsertGame(game); err == nil {
 					saved++

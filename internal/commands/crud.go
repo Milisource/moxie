@@ -462,13 +462,19 @@ func Add(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
+	versionSource := ""
+	if *version != "" {
+		versionSource = "user"
+	}
 	game := &db.Game{
-		Title:   *title,
-		Engine:  *engine,
-		Path:    absPath,
-		Version: *version,
-		Tags:    tagList,
-		Status:  "unknown",
+		Title:         *title,
+		Engine:        *engine,
+		Path:          absPath,
+		Version:       *version,
+		Tags:          tagList,
+		Status:        "unknown",
+		EngineSource:  "user",
+		VersionSource: versionSource,
 	}
 
 	id, err := database.InsertGame(game)

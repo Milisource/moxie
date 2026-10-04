@@ -38,6 +38,7 @@ var gameColumnNames = []string{
 	"last_scanned_at", "dir_mtime",
 	"series_id", "series_order",
 	"deleted_at",
+	"engine_source", "version_source",
 	"created_at", "updated_at",
 }
 
@@ -77,6 +78,7 @@ func scanGame(s scanner) (*Game, error) {
 		&lastScannedAtStr, &dirMTimeStr,
 		&seriesID, &seriesOrder,
 		&deletedAtStr,
+		&g.EngineSource, &g.VersionSource,
 		&createdAtStr, &updatedAtStr,
 	)
 	if err != nil {
@@ -180,15 +182,17 @@ func (db *Database) InsertGame(g *Game) (int64, error) {
 		INSERT INTO games (title, engine, path, exe_path, version, size_bytes,
 		                   f95_url, f95_thread_id, tags, status, latest_version, version_checked_at, notes,
 		                   store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime,
+		                   engine_source, version_source,
 		                   series_id, series_order, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-		        ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+		        ?, ?, ?, ?, ?, ?)`,
 		g.Title, g.Engine, g.Path,
 		nullableString(g.ExePath), nullableString(g.Version), g.SizeBytes,
 		nullableString(g.F95URL), nullableInt64(g.F95ThreadID), tagsStr,
 		g.Status, nullableString(g.LatestVersion), nullableTime(g.VersionCheckedAt), g.Notes,
 		storeLinksStr, nullableInt64(g.SteamAppID), nullableString(g.WinePrefix),
 		nullableTime(g.LastScannedAt), nullableTime(g.DirMTime),
+		g.EngineSource, g.VersionSource,
 		nullableInt64Ptr(g.SeriesID), g.SeriesOrder,
 		now, now,
 	)
@@ -508,6 +512,7 @@ func (db *Database) UpdateGame(g *Game) error {
 	store_links=?, steam_app_id=?, wine_prefix=?,
 		    latest_version=?, version_checked_at=?,
 		    last_scanned_at=?, dir_mtime=?,
+		    engine_source=?, version_source=?,
 		    series_id=?, series_order=?, updated_at=?
 		WHERE id=?`,
 		g.Title, g.Engine, g.Path,
@@ -517,6 +522,7 @@ func (db *Database) UpdateGame(g *Game) error {
 		storeLinksStr, nullableInt64(g.SteamAppID), nullableString(g.WinePrefix),
 		nullableString(g.LatestVersion), nullableTime(g.VersionCheckedAt),
 		nullableTime(g.LastScannedAt), nullableTime(g.DirMTime),
+		g.EngineSource, g.VersionSource,
 		nullableInt64Ptr(g.SeriesID), g.SeriesOrder,
 		now, g.ID,
 	)
@@ -536,39 +542,67 @@ func (db *Database) UpdateGame(g *Game) error {
 // checks run inside the UPDATE statement itself, so a manual edit landing
 // between the scanner's read and write can never be clobbered with stale
 // data — SQLite executes the statement against the row's current state.
+// UpdateGameScanFields atomically applies scanner-detected values to an
+// existing game without touching columns the user may be editing right now
+// (title, status, notes, f95_url, ...). size, scan time, and directory mtime
+// are always refreshed.
+//
+// Source handling: engine/version are overwritten unless they are user- or
+// F95Zone-owned (engine_source/version_source in ('user','f95')). This lets a
+// normal (non-force) scan self-correct scanner-owned mis-detections while
+// leaving manual edits and authoritative F95Zone associations alone. A
+// detection is only written when it carries a value: an empty version never
+// erases a known one, and an empty/Unknown engine never replaces a real one.
+// force (an explicit full rescan) overwrites engine/version regardless of
+// source, matching the historical "full rescan wins" contract.
+//
+// Unlike UpdateGame (read-modify-write of the whole row), all of this runs
+// inside one UPDATE statement against the row's current state, so a manual
+// edit landing between the scanner's read and write can never be clobbered
+// with stale data.
 func (db *Database) UpdateGameScanFields(id int64, version, engine, exePath string, sizeBytes int64, lastScannedAt, dirMTime time.Time, force bool) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	// Force overwrites the scanner-owned columns outright; otherwise they are
-	// only written when unset. Either way the placeholder count stays the
-	// same, so the argument list below is shared.
-	verSet := "CASE WHEN version IS NULL OR version = '' THEN ? ELSE version END"
-	engSet := "CASE WHEN engine IS NULL OR engine IN ('', 'Unknown') THEN ? ELSE engine END"
-	exeSet := "CASE WHEN exe_path IS NULL OR exe_path = '' THEN ? ELSE exe_path END"
+	vOwn := "version_source NOT IN ('user', 'f95')"
+	eOwn := "engine_source NOT IN ('user', 'f95')"
+	var verSet, verSrcSet, engSet, engSrcSet, exeSet string
+	var args []any
+
 	if force {
-		// A forced rescan never erases a known version with "nothing
-		// detected": most game folders carry no version at all, so
-		// overwriting with NULL wiped versions the user had set or an
-		// install had recorded (nullableString maps "" to NULL). A stale
-		// exe_path, by contrast, is cleared — the file is gone.
-		verSet = "COALESCE(?, version)"
+		// Full rescan: detection wins, but an empty version must not erase a
+		// known one (most game folders carry no version at all).
+		verSet = "CASE WHEN ? IS NOT NULL THEN ? ELSE version END"
+		verSrcSet = "CASE WHEN ? IS NOT NULL THEN 'scanner' ELSE version_source END"
 		engSet = "?"
+		engSrcSet = "'scanner'"
 		exeSet = "?"
+		args = append(args, nullableString(version), nullableString(version), nullableString(version), engine, nullableString(exePath))
+	} else {
+		verSet = "CASE WHEN " + vOwn + " AND ? IS NOT NULL THEN ? ELSE version END"
+		verSrcSet = "CASE WHEN " + vOwn + " AND ? IS NOT NULL THEN 'scanner' ELSE version_source END"
+		engSet = "CASE WHEN " + eOwn + " AND ? NOT IN ('', 'Unknown') THEN ? ELSE engine END"
+		engSrcSet = "CASE WHEN " + eOwn + " AND ? NOT IN ('', 'Unknown') THEN 'scanner' ELSE engine_source END"
+		exeSet = "CASE WHEN exe_path IS NULL OR exe_path = '' THEN ? ELSE exe_path END"
+		args = append(args,
+			nullableString(version), nullableString(version), nullableString(version),
+			engine, engine, engine,
+			nullableString(exePath))
 	}
+
+	args = append(args, sizeBytes, nullableTime(lastScannedAt), nullableTime(dirMTime), now, id)
+
 	_, err := db.conn.Exec(`
 		UPDATE games SET
 			version = `+verSet+`,
+			version_source = `+verSrcSet+`,
 			engine = `+engSet+`,
+			engine_source = `+engSrcSet+`,
 			exe_path = `+exeSet+`,
 			size_bytes = ?,
 			last_scanned_at = ?,
 			dir_mtime = ?,
 			updated_at = ?
-		WHERE id = ?`,
-		nullableString(version), engine, nullableString(exePath),
-		sizeBytes,
-		nullableTime(lastScannedAt), nullableTime(dirMTime),
-		now, id)
+		WHERE id = ?`, args...)
 	return err
 }
 

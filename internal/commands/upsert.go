@@ -65,6 +65,10 @@ func UpsertDetected(database *db.Database, detected []scanner.DetectedGame, forc
 		if title == "" {
 			title = g.Title
 		}
+		versionSource := ""
+		if g.Version != "" {
+			versionSource = "scanner"
+		}
 		newGame := &db.Game{
 			Title:         title,
 			Engine:        string(g.Engine),
@@ -73,6 +77,8 @@ func UpsertDetected(database *db.Database, detected []scanner.DetectedGame, forc
 			Version:       g.Version,
 			SizeBytes:     g.SizeBytes,
 			Status:        "unknown",
+			EngineSource:  "scanner",
+			VersionSource: versionSource,
 			LastScannedAt: now,
 			DirMTime:      dirModTime(g.Path),
 		}

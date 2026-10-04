@@ -711,6 +711,7 @@ func ApplyCacheThreadData(game *db.Game, ct *CacheThread, threadID int64, prefix
 	if ct.Engine != "" {
 		if game.Engine == "" || game.Engine == "Unknown" || game.Engine == "Others" {
 			game.Engine = ct.Engine
+			game.EngineSource = "f95"
 		}
 	}
 }

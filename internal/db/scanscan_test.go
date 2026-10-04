@@ -55,10 +55,11 @@ func TestUpdateGameScanFields_FillsOnlyUnsetFields(t *testing.T) {
 func TestUpdateGameScanFields_PreservesCuratedValues(t *testing.T) {
 	d := setupTestDB(t)
 	id, err := d.InsertGame(&Game{
-		Title:  "Curated Game",
-		Path:   "/games/curated",
-		Engine: "RenPy",
-		Status: "active",
+		Title:        "Curated Game",
+		Path:         "/games/curated",
+		Engine:       "RenPy",
+		EngineSource: "user",
+		Status:       "active",
 	})
 	if err != nil {
 		t.Fatalf("InsertGame: %v", err)
@@ -193,6 +194,112 @@ func TestUpdateGameScanFields_ForceClearsStale(t *testing.T) {
 	}
 	if g.ExePath != "" {
 		t.Errorf("exePath = %q, want cleared by force rescan", g.ExePath)
+	}
+}
+
+// A non-force scan self-corrects a scanner-owned mis-detection — the "sticky
+// field" fix. This is what makes a normal rescan fix Barely Working (stored
+// Others, actually Godot) without --force.
+func TestUpdateGameScanFields_CorrectsScannerOwnedEngine(t *testing.T) {
+	d := setupTestDB(t)
+	id, err := d.InsertGame(&Game{
+		Title:        "Sticky",
+		Path:         "/games/sticky",
+		Engine:       "Others",
+		EngineSource: "scanner",
+		Status:       "active",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	if err := d.UpdateGameScanFields(id, "", "Godot", "", 0, now, now, false); err != nil {
+		t.Fatalf("UpdateGameScanFields: %v", err)
+	}
+
+	g, err := d.GetGame(id)
+	if err != nil || g == nil {
+		t.Fatalf("GetGame: %v", err)
+	}
+	if g.Engine != "Godot" {
+		t.Errorf("engine = %q, want Godot (scanner-owned value corrected)", g.Engine)
+	}
+	if g.EngineSource != "scanner" {
+		t.Errorf("engine_source = %q, want scanner", g.EngineSource)
+	}
+}
+
+// An F95Zone association is authoritative: a normal scan must not overturn it.
+func TestUpdateGameScanFields_PreservesF95Engine(t *testing.T) {
+	d := setupTestDB(t)
+	id, err := d.InsertGame(&Game{
+		Title:        "Associated",
+		Path:         "/games/assoc",
+		Engine:       "RenPy",
+		EngineSource: "f95",
+		Status:       "active",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	if err := d.UpdateGameScanFields(id, "", "Unity", "", 0, now, now, false); err != nil {
+		t.Fatalf("UpdateGameScanFields: %v", err)
+	}
+	g, _ := d.GetGame(id)
+	if g.Engine != "RenPy" {
+		t.Errorf("engine = %q, want F95Zone RenPy preserved", g.Engine)
+	}
+}
+
+// A user-set version survives a normal rescan.
+func TestUpdateGameScanFields_PreservesUserVersion(t *testing.T) {
+	d := setupTestDB(t)
+	id, err := d.InsertGame(&Game{
+		Title:         "UserVersion",
+		Path:          "/games/userversion",
+		Engine:        "RenPy",
+		Version:       "9.9",
+		VersionSource: "user",
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	if err := d.UpdateGameScanFields(id, "1.0", "RenPy", "", 0, now, now, false); err != nil {
+		t.Fatalf("UpdateGameScanFields: %v", err)
+	}
+	g, _ := d.GetGame(id)
+	if g.Version != "9.9" {
+		t.Errorf("version = %q, want user 9.9 preserved", g.Version)
+	}
+}
+
+// force is an explicit full rescan and still overwrites a user-owned engine.
+func TestUpdateGameScanFields_ForceOverwritesUserEngine(t *testing.T) {
+	d := setupTestDB(t)
+	id, err := d.InsertGame(&Game{
+		Title:        "ForcedUser",
+		Path:         "/games/forceduser",
+		Engine:       "RenPy",
+		EngineSource: "user",
+		Status:       "active",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	if err := d.UpdateGameScanFields(id, "", "Unity", "", 0, now, now, true); err != nil {
+		t.Fatalf("UpdateGameScanFields(force): %v", err)
+	}
+	g, _ := d.GetGame(id)
+	if g.Engine != "Unity" {
+		t.Errorf("engine = %q, want forced Unity", g.Engine)
 	}
 }
 

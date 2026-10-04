@@ -34,6 +34,7 @@ func ApplyThreadData(game *db.Game, data *ThreadData, url string) {
 		if f95Eng := engine.ExtractEngineFromTitle(data.Title); f95Eng != "" {
 			if game.Engine == "" || game.Engine == "Unknown" || game.Engine == "Others" {
 				game.Engine = f95Eng
+				game.EngineSource = "f95"
 			}
 		}
 		game.Title = StripThreadPrefix(data.Title)

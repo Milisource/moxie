@@ -107,7 +107,11 @@ func (db *Database) Close() error {
 //     resolves of the same link skip the rate-limited unwrap endpoint.
 //     created_at is unix seconds; entries older than ResolvedURLTTL
 //     (7 days) are auto-pruned — unwraps can go stale.
-const currentSchemaVersion = 11
+//  12. Engine/version provenance: engine_source and version_source TEXT NOT
+//     NULL DEFAULT '' on games. Records who last set each field (''/scanner,
+//     f95, or user) so a normal rescan can self-correct scanner-owned
+//     mis-detections without clobbering manual edits or F95Zone associations.
+const currentSchemaVersion = 12
 
 // gamesTableColumns is the games table column definition, shared between the
 // fresh-DB CREATE TABLE and the v8 rebuild (the engine CHECK constraint
@@ -135,6 +139,8 @@ const gamesTableColumns = `(
 		series_id    INTEGER REFERENCES game_series(id),
 		series_order INTEGER DEFAULT 0,
 		deleted_at  TEXT,
+		engine_source  TEXT NOT NULL DEFAULT '',
+		version_source TEXT NOT NULL DEFAULT '',
 		created_at  TEXT DEFAULT (datetime('now')),
 		updated_at  TEXT DEFAULT (datetime('now'))
 	)`
@@ -431,7 +437,17 @@ func migrateGodotEngine(db *sql.DB) error {
 		rollback()
 		return fmt.Errorf("create games_new: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO games_new SELECT * FROM games"); err != nil {
+	// Copy the old rows by their own column names. gamesTableColumns grows over
+	// time (game_new is created from it), while an old games table has only the
+	// columns that existed then — a bare `SELECT *` would break on the column
+	// count. Naming the old columns lets new ones take their defaults.
+	oldCols, err := tableColumnsTx(ctx, tx, "games")
+	if err != nil {
+		rollback()
+		return fmt.Errorf("read games columns: %w", err)
+	}
+	colList := strings.Join(oldCols, ", ")
+	if _, err := tx.ExecContext(ctx, "INSERT INTO games_new ("+colList+") SELECT "+colList+" FROM games"); err != nil {
 		rollback()
 		return fmt.Errorf("copy games: %w", err)
 	}
@@ -630,6 +646,25 @@ func migrateVersionStep(conn *sql.DB, version int) error {
 		`); err != nil {
 			return fmt.Errorf("clear digitless latest_version: %w", err)
 		}
+	case 12:
+		// Engine/version provenance columns. Existing rows default to ''
+		// (treated as scanner-owned), so the first rescan can self-correct
+		// historical mis-detections; going forward, manual edits set 'user'
+		// and F95Zone associations set 'f95', both of which a normal scan
+		// leaves alone.
+		if !columnExists(tx, "games", "id") {
+			break // bare/partial schemas (tests) have no games table
+		}
+		if !columnExists(tx, "games", "engine_source") {
+			if _, err := tx.Exec("ALTER TABLE games ADD COLUMN engine_source TEXT NOT NULL DEFAULT ''"); err != nil {
+				return fmt.Errorf("add engine_source: %w", err)
+			}
+		}
+		if !columnExists(tx, "games", "version_source") {
+			if _, err := tx.Exec("ALTER TABLE games ADD COLUMN version_source TEXT NOT NULL DEFAULT ''"); err != nil {
+				return fmt.Errorf("add version_source: %w", err)
+			}
+		}
 	default:
 		return fmt.Errorf("unknown migration version %d", version)
 	}
@@ -731,6 +766,30 @@ func columnExists(tx *sql.Tx, table, column string) bool {
 		}
 	}
 	return false
+}
+
+// tableColumnsTx returns the column names of table in declaration order, via
+// PRAGMA table_info. Used to copy a table by its own columns (see
+// migrateGodotEngine): the source table may be older than the destination.
+func tableColumnsTx(ctx context.Context, tx *sql.Tx, table string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cols []string
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dfltValue *string
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return nil, err
+		}
+		cols = append(cols, name)
+	}
+	return cols, rows.Err()
 }
 
 // ---------------------------------------------------------------------------

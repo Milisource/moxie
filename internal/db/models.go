@@ -55,8 +55,14 @@ type Game struct {
 	SeriesID    *int64            `json:"series_id,omitempty"` // nullable FK to game_series
 	SeriesOrder int               `json:"series_order,omitempty"`
 	DeletedAt   time.Time         `json:"deleted_at,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	// EngineSource / VersionSource record who last set the engine/version:
+	// "" or "scanner" (scanner-owned, correctable by a rescan), "f95"
+	// (authoritative F95Zone association), or "user" (manual edit, never
+	// overwritten by a scan).
+	EngineSource  string `json:"engine_source,omitempty"`
+	VersionSource string `json:"version_source,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // PlayHistory records when a game was played.
