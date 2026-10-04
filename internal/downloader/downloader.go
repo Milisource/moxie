@@ -317,7 +317,28 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 
 	// Content-Type validation: reject HTML pages that indicate redirect/login pages.
 	// Missing Content-Type is allowed (some hosts omit it).
+	//
+	// A 200 text/html from a known browser-gated file host (mixdrop,
+	// uploadnow, dropmefiles, googledrive, ...) is a landing/JS-driven
+	// download page, not a dead link: the Go client cannot run the page's
+	// script, but the user's real browser can drive the free-download flow.
+	// Route those into the same fallback as a Cloudflare challenge, using
+	// the ORIGINAL URL so the browser walks the host's full flow. Unknown
+	// hosts keep the fast hard reject so a dead/interstitial page never
+	// costs a multi-minute browser run, and terminal error statuses (404,
+	// ...) are never handed to the browser.
 	if ct := resp.Header.Get("Content-Type"); ct != "" && strings.HasPrefix(ct, "text/html") {
+		if browserFallback != nil && resp.StatusCode == http.StatusOK &&
+			(isBrowserGatedHost(host) || isBrowserGatedURL(urlStr)) {
+			resp.Body.Close()
+			path, fbErr := browserFallback(ctx, originalURL, destDir)
+			if fbErr == nil {
+				log.Info("browser fallback download complete (browser-gated HTML landing)", "url", redactedURL(originalURL), "file", path)
+				return nil
+			}
+			log.Warn("browser fallback failed after browser-gated HTML landing", "url", redactedURL(originalURL), "error", fbErr)
+			return fmt.Errorf("download rejected: server returned HTML instead of file (Content-Type: %s) (browser fallback also failed: %v)", ct, fbErr)
+		}
 		log.Warn("download rejected: Content-Type is text/html", "url", redactedURL(urlStr), "content_type", ct)
 		return fmt.Errorf("download rejected: server returned HTML instead of file (Content-Type: %s)", ct)
 	}
