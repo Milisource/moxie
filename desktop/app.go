@@ -1151,6 +1151,11 @@ func (a *App) downloadGameFileOpts(ctx context.Context, evPrefix string, gameID 
 			)
 		})
 	if lastErr != nil {
+		// A terminal, link-specific failure (404/410) means this exact
+		// mirror no longer serves the file: persist it as dead so it stops
+		// ranking into future batches. Host-wide/transient errors are left
+		// untouched (see deadLinkReason).
+		a.markDownloadLinkDeadIfTerminal(link, lastErr)
 		emitErr("download", fmt.Sprintf("Download failed after %d attempts: %v", attempts, lastErr))
 		os.RemoveAll(tempDir)
 		return "", fmt.Errorf("download after %d attempts: %w", attempts, lastErr)
