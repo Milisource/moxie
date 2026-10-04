@@ -14,6 +14,7 @@
   import {safeExternalUrl} from './sanitizeUrl.js'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
   import {confirmAction} from './confirmDialog.svelte.js'
+  import {openEditGame} from './editGameDialog.svelte.js'
 
   // The game-update and game-install pipelines (and their event subscriptions)
   // live in App.svelte so they survive tab switches. This view derives its
@@ -324,6 +325,17 @@
   function handleRenameStart() {
     renameTitle = detail.title
     showRenameInput = true
+  }
+
+  // Opens the shared Edit Game dialog (all fields at once). Refresh the detail
+  // and the library on save so both reflect the change.
+  async function handleEdit() {
+    if (!gameId) return
+    const saved = await openEditGame(gameId)
+    if (saved) {
+      await loadDetail()
+      onUpdate()
+    }
   }
 
   async function handleRenameSave() {
@@ -672,6 +684,7 @@
           {#if detail.f95Url}
             <button class="btn" onclick={handleSync}>Sync from F95Zone</button>
           {/if}
+          <button class="btn" onclick={handleEdit}>Edit</button>
           <button class="btn" onclick={handleRenameStart}>Rename</button>
           <button class="btn btn-danger" onclick={handleRemove}>Remove Game</button>
         </div>

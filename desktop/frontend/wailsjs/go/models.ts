@@ -398,10 +398,18 @@ export namespace main {
 		}
 	}
 	export class EditGameFields {
+	    title?: string;
 	    engine?: string;
 	    version?: string;
 	    exePath?: string;
+	    winePrefix?: string;
 	    notes?: string;
+	    status?: string;
+	    tags: string[];
+	    f95Url?: string;
+	    storeLinks: Record<string, string>;
+	    developer?: string;
+	    overview?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new EditGameFields(source);
@@ -409,10 +417,18 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
 	        this.engine = source["engine"];
 	        this.version = source["version"];
 	        this.exePath = source["exePath"];
+	        this.winePrefix = source["winePrefix"];
 	        this.notes = source["notes"];
+	        this.status = source["status"];
+	        this.tags = source["tags"];
+	        this.f95Url = source["f95Url"];
+	        this.storeLinks = source["storeLinks"];
+	        this.developer = source["developer"];
+	        this.overview = source["overview"];
 	    }
 	}
 	export class F95DownloadLink {

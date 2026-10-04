@@ -684,6 +684,79 @@ func TestScrapedMeta(t *testing.T) {
 	})
 }
 
+// SetScrapedMetaFields is a manual edit, so it must not disturb the cover or
+// the last_scraped timestamp that a real scrape owns.
+func TestSetScrapedMetaFieldsPreservesCoverAndTimestamp(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	id, err := db.InsertGame(&Game{Title: "Manual Edit", Engine: "Unity", Path: "/manual-edit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.UpsertScrapedMeta(&ScrapedMeta{
+		GameID:    id,
+		Developer: "OldDev",
+		Overview:  "Old overview",
+		CoverURL:  "https://example.com/cover.jpg",
+	}); err != nil {
+		t.Fatalf("UpsertScrapedMeta: %v", err)
+	}
+
+	// UpsertScrapedMeta stamps LastScraped itself; capture what it stored so
+	// the assertion is about "unchanged by the manual edit", not a fixed time.
+	before, err := db.GetScrapedMeta(id)
+	if err != nil || before == nil {
+		t.Fatalf("GetScrapedMeta (before): %v (meta=%v)", err, before)
+	}
+
+	if err := db.SetScrapedMetaFields(id, "NewDev", "New overview"); err != nil {
+		t.Fatalf("SetScrapedMetaFields: %v", err)
+	}
+
+	got, err := db.GetScrapedMeta(id)
+	if err != nil || got == nil {
+		t.Fatalf("GetScrapedMeta: %v (meta=%v)", err, got)
+	}
+	if got.Developer != "NewDev" || got.Overview != "New overview" {
+		t.Errorf("developer/overview = %q/%q, want NewDev/New overview", got.Developer, got.Overview)
+	}
+	if got.CoverURL != "https://example.com/cover.jpg" {
+		t.Errorf("CoverURL = %q, want preserved", got.CoverURL)
+	}
+	if !got.LastScraped.Equal(before.LastScraped) {
+		t.Errorf("LastScraped = %v, want preserved %v", got.LastScraped, before.LastScraped)
+	}
+}
+
+// Editing developer/overview for a game with no scraped_meta row yet creates
+// one instead of failing.
+func TestSetScrapedMetaFieldsInsertsWhenMissing(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	id, err := db.InsertGame(&Game{Title: "No Meta", Engine: "Unity", Path: "/no-meta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.SetScrapedMetaFields(id, "Dev", "Overview"); err != nil {
+		t.Fatalf("SetScrapedMetaFields: %v", err)
+	}
+
+	got, err := db.GetScrapedMeta(id)
+	if err != nil || got == nil {
+		t.Fatalf("GetScrapedMeta: %v (meta=%v)", err, got)
+	}
+	if got.Developer != "Dev" || got.Overview != "Overview" {
+		t.Errorf("developer/overview = %q/%q, want Dev/Overview", got.Developer, got.Overview)
+	}
+	if got.CoverURL != "" {
+		t.Errorf("CoverURL = %q, want empty on insert", got.CoverURL)
+	}
+}
+
 func TestScrapedMetaCascadeDelete(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping cascade delete test in short mode")

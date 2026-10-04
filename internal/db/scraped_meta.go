@@ -59,6 +59,39 @@ func (db *Database) UpsertScrapedMeta(m *ScrapedMeta) error {
 	return err
 }
 
+// SetScrapedMetaFields sets only the developer and overview columns for a
+// game. Unlike UpsertScrapedMeta it leaves cover_url and last_scraped alone:
+// a manual edit is not a scrape, so it must not clobber the cover resolved
+// from F95Zone nor claim the metadata was just refreshed (LastScraped is
+// shown in the CLI/TUI detail view).
+//
+// A row is created when none exists yet, with a NULL cover and the table's
+// default last_scraped.
+func (db *Database) SetScrapedMetaFields(gameID int64, developer, overview string) error {
+	// Check for an existing row first rather than relying on UPDATE's
+	// RowsAffected: a no-op UPDATE may report 0, which would send us down the
+	// insert path and clobber the cover.
+	existing, err := db.GetScrapedMeta(gameID)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		// No row yet (e.g. a scanned game that was never scraped): create one
+		// through the normal upsert path, with no cover.
+		return db.UpsertScrapedMeta(&ScrapedMeta{
+			GameID:    gameID,
+			Developer: developer,
+			Overview:  overview,
+		})
+	}
+
+	// Update in place — leaves cover_url and last_scraped untouched.
+	_, err = db.conn.Exec(`
+		UPDATE scraped_meta SET developer = ?, overview = ? WHERE game_id = ?`,
+		nullableString(developer), nullableString(overview), gameID)
+	return err
+}
+
 // GetScrapedMeta retrieves scraped metadata for a game. It returns nil, nil
 // when no matching row exists.
 func (db *Database) GetScrapedMeta(gameID int64) (*ScrapedMeta, error) {

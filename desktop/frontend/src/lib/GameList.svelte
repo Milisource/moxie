@@ -9,6 +9,7 @@
   import {createLibraryNav} from './useLibraryNav.svelte.js'
   import {confirmAction} from './confirmDialog.svelte.js'
   import {promptAction} from './promptDialog.svelte.js'
+  import {openEditGame} from './editGameDialog.svelte.js'
   import {
     QUICK_VIEWS, SORT_OPTIONS,
     quickViewMatches, sortCompare, toggleSort, sortIcon, onSortSelect,
@@ -401,11 +402,21 @@
     }
   }
 
+  // Opens the shared Edit Game dialog. Title edits inside it are
+  // metadata-only; the "Rename Folder…" item below still moves the directory.
+  async function handleEdit() {
+    if (!contextGame) return
+    const g = contextGame
+    ctxMenuOpen = false
+    const saved = await openEditGame(g.id)
+    if (saved) await onUpdate()
+  }
+
   async function handleRename() {
     if (!contextGame) return
     const g = contextGame
     ctxMenuOpen = false
-    const newTitle = await promptAction({title: 'Rename game', label: 'Enter new title:', defaultValue: g.title})
+    const newTitle = await promptAction({title: 'Rename game folder', label: 'Enter new title:', defaultValue: g.title})
     if (!newTitle || newTitle === g.title) return
     try {
       await RenameGame(g.id, newTitle)
@@ -696,6 +707,7 @@
     <DropdownMenu.Root bind:open={ctxMenuOpen}>
       <DropdownMenu.Portal>
         <DropdownMenu.Content class="context-menu" customAnchor={ctxAnchorEl} side="bottom" align="start">
+          <DropdownMenu.Item class="ctx-item" onSelect={handleEdit}>Edit Game…</DropdownMenu.Item>
           <DropdownMenu.Sub>
             <DropdownMenu.SubTrigger class="ctx-item">
               <span>Set Status</span>
@@ -712,7 +724,7 @@
               </DropdownMenu.SubContent>
             </DropdownMenu.Portal>
           </DropdownMenu.Sub>
-          <DropdownMenu.Item class="ctx-item" onSelect={handleRename}>Rename</DropdownMenu.Item>
+          <DropdownMenu.Item class="ctx-item" onSelect={handleRename}>Rename Folder…</DropdownMenu.Item>
           <DropdownMenu.Separator class="ctx-divider" />
           <DropdownMenu.Item class="ctx-item ctx-danger" onSelect={handleRemove}>Remove</DropdownMenu.Item>
         </DropdownMenu.Content>
@@ -1044,13 +1056,21 @@
 
   /* ── Context Menu ─────────────────────────── */
   /* Hidden 0x0 anchor repositioned before opening (see openContextMenuAt in
-     the script) — DropdownMenu.Content's customAnchor points at this. */
+     the script) — DropdownMenu.Content's customAnchor points at this. It is a
+     real element in this template, so it keeps normal scoping. */
   .context-menu-anchor {
     position: fixed;
     width: 0;
     height: 0;
   }
-  .context-menu {
+  /* The menu itself is rendered by bits-ui (DropdownMenu.Content/Item/…) and
+     portaled to <body>. Svelte 5 does not put this component's scope hash on
+     elements a child component renders from a `class` prop, so scoped
+     selectors never match the portaled markup — the menu mounted with no
+     styles at all (transparent background, no border/padding, min-width
+     ignored) and was effectively invisible over the dark theme. These rules
+     MUST stay :global or the menu goes invisible again. */
+  :global(.context-menu) {
     z-index: 1001;
     min-width: 180px;
     background: var(--bg-secondary);
@@ -1062,7 +1082,7 @@
     flex-direction: column;
     gap: 1px;
   }
-  .ctx-item {
+  :global(.ctx-item) {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1077,28 +1097,28 @@
     text-align: left;
     white-space: nowrap;
   }
-  .ctx-item:hover,
-  .ctx-item:global([data-highlighted]) { background: var(--bg-hover); }
-  .ctx-item.ctx-danger { color: var(--danger); }
-  .ctx-item.ctx-danger:hover,
-  .ctx-item.ctx-danger:global([data-highlighted]) { background: color-mix(in srgb, var(--danger) 12%, transparent); }
-  .ctx-item:global([data-disabled]) { opacity: 0.4; cursor: not-allowed; }
-  .ctx-arrow { margin-left: auto; font-size: var(--text-2xs); opacity: 0.5; }
-  .ctx-divider {
+  :global(.ctx-item:hover),
+  :global(.ctx-item[data-highlighted]) { background: var(--bg-hover); }
+  :global(.ctx-item.ctx-danger) { color: var(--danger); }
+  :global(.ctx-item.ctx-danger:hover),
+  :global(.ctx-item.ctx-danger[data-highlighted]) { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+  :global(.ctx-item[data-disabled]) { opacity: 0.4; cursor: not-allowed; }
+  :global(.ctx-arrow) { margin-left: auto; font-size: var(--text-2xs); opacity: 0.5; }
+  :global(.ctx-divider) {
     height: 1px;
     background: var(--border);
     margin: 3px 4px;
   }
-  .ctx-dot {
+  :global(.ctx-dot) {
     display: inline-block;
     width: 8px;
     height: 8px;
     border-radius: 50%;
     flex-shrink: 0;
   }
-  .ctx-dot-active { background: var(--success); }
-  .ctx-dot-completed { background: var(--accent); }
-  .ctx-dot-abandoned { background: var(--text-muted); }
-  .ctx-dot-on_hold { background: var(--warning); }
-  .ctx-dot-unknown { background: var(--text-muted); opacity: 0.5; }
+  :global(.ctx-dot-active) { background: var(--success); }
+  :global(.ctx-dot-completed) { background: var(--accent); }
+  :global(.ctx-dot-abandoned) { background: var(--text-muted); }
+  :global(.ctx-dot-on_hold) { background: var(--warning); }
+  :global(.ctx-dot-unknown) { background: var(--text-muted); opacity: 0.5; }
 </style>

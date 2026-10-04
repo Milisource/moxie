@@ -19,6 +19,7 @@
   import StatusBar from './lib/StatusBar.svelte'
   import ConfirmDialog from './lib/ConfirmDialog.svelte'
   import PromptDialog from './lib/PromptDialog.svelte'
+  import EditGameDialog from './lib/EditGameDialog.svelte'
   import {library, appMeta, setLastSyncAt} from './lib/viewState.svelte.js'
   import {createPipeline} from './lib/pipeline.svelte.js'
   import {confirmAction} from './lib/confirmDialog.svelte.js'
@@ -1106,6 +1107,7 @@
 
 <ConfirmDialog />
 <PromptDialog />
+<EditGameDialog />
 
 <style>
   .shell {

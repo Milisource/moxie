@@ -12,6 +12,8 @@
 
 - **Dev install channel (F95-1p5r).** A dev build now installs separately from stable: `scripts/install-dev.sh` / `scripts/install-dev.ps1` build the `dev` branch as `moxie-dev`, with its own data directory (`~/.config/moxie-dev`, `%APPDATA%\moxie-dev`) selected by a build-time channel. The stable `moxie` install and its database are never touched. `moxie-dev update` does not self-update from stable releases.
 
+- **Edit Game dialog (F95-b3bx).** Edit every game field from one form, opened by **Edit Game…** in the library's right-click menu or **Edit** in the detail view: title, developer, overview, engine, version, executable, wine prefix, status, tags, notes, F95Zone URL and store links. A title edit changes only the title — use **Rename Folder…** to move the directory on disk. Developer/overview edits keep the existing cover and the recorded scrape date.
+
 ### Changed
 
 - **CI covers the dev branch (F95-4ucz).** CI now runs on pushes and pull requests to `dev`, and a new `dev.yml` workflow publishes rolling `moxie-dev-*` prerelease artifacts tagged `dev` for future use by the dev installer.
@@ -33,6 +35,8 @@
 - Missing covers render as typographic cards (title initials). The grid marks updates with an accent cover edge and shows `old → new` in the caption.
 
 ### Fixed
+
+- **The game right-click menu was invisible (F95-b3bx).** It opened at the cursor but with no styling — transparent background, no border or padding — which read as "nothing happened" on the dark theme. bits-ui renders the menu into `<body>`, and Svelte 5 does not apply a component's scoped CSS to elements a child component renders from a `class` prop, so the component-scoped menu rules never matched. They are now global.
 
 - **Install scripts pointed at the wrong repository (F95-0u3u).** `install.sh`, `install.ps1` and `release.sh` used `mili/moxie`, which returns 404; they now use `Milisource/moxie`, so the documented install command works again.
 

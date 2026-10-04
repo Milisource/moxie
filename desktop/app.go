@@ -3188,21 +3188,34 @@ func (a *App) ListDeletedGames() ([]DesktopGameSummary, error) {
 // Edit game fields
 // ---------------------------------------------------------------------------
 
-// EditGameFields holds the editable fields for a game. All fields are
-// nullable: nil means "leave unchanged", while a pointer to an empty string
-// explicitly clears the field. This lets the detail view clear a wrong
-// executable path or a stale note without wiping unrelated fields.
+// EditGameFields holds the editable fields for a game. String fields are
+// nullable pointers: nil means "leave unchanged", while a pointer to "" clears
+// the field. Slices/maps follow the nil-vs-non-nil form of that contract: nil
+// leaves the value alone, while an empty-but-non-nil value clears it. Callers
+// send only the fields they are editing.
 type EditGameFields struct {
-	Engine  *string `json:"engine"`
-	Version *string `json:"version"`
-	ExePath *string `json:"exePath"`
-	Notes   *string `json:"notes"`
+	Title      *string           `json:"title"`
+	Engine     *string           `json:"engine"`
+	Version    *string           `json:"version"`
+	ExePath    *string           `json:"exePath"`
+	WinePrefix *string           `json:"winePrefix"`
+	Notes      *string           `json:"notes"`
+	Status     *string           `json:"status"`
+	Tags       []string          `json:"tags"`
+	F95URL     *string           `json:"f95Url"`
+	StoreLinks map[string]string `json:"storeLinks"`
+	// Developer and Overview live in the scraped_meta table, not games.
+	Developer *string `json:"developer"`
+	Overview  *string `json:"overview"`
 }
 
 // EditGame updates multiple editable fields on a game in one call.
 //
-// A nil field means "leave unchanged"; a pointer to "" clears the field.
-// Callers send only the fields they are editing.
+// Title is a metadata-only edit: it changes the display title but never
+// renames the on-disk directory. RenameGame owns directory renames.
+//
+// A nil field means "leave unchanged"; a pointer to "" (or a non-nil empty
+// slice/map) clears the field.
 func (a *App) EditGame(id int64, fields EditGameFields) error {
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
@@ -3216,20 +3229,67 @@ func (a *App) EditGame(id int64, fields EditGameFields) error {
 		return fmt.Errorf("game with id %d not found", id)
 	}
 
+	if fields.Title != nil {
+		title := strings.TrimSpace(*fields.Title)
+		if title == "" {
+			return fmt.Errorf("title must not be empty")
+		}
+		game.Title = title
+	}
 	if fields.Engine != nil {
-		game.Engine = *fields.Engine
+		game.Engine = strings.TrimSpace(*fields.Engine)
 	}
 	if fields.Version != nil {
-		game.Version = *fields.Version
+		game.Version = strings.TrimSpace(*fields.Version)
 	}
 	if fields.ExePath != nil {
-		game.ExePath = *fields.ExePath
+		game.ExePath = strings.TrimSpace(*fields.ExePath)
+	}
+	if fields.WinePrefix != nil {
+		game.WinePrefix = strings.TrimSpace(*fields.WinePrefix)
 	}
 	if fields.Notes != nil {
 		game.Notes = *fields.Notes
 	}
+	if fields.Status != nil {
+		if !isValidStatus(*fields.Status) {
+			return fmt.Errorf("invalid status %q. Valid: %s", *fields.Status, strings.Join(validStatuses, ", "))
+		}
+		game.Status = *fields.Status
+	}
+	if fields.Tags != nil {
+		game.Tags = fields.Tags
+	}
+	if fields.F95URL != nil {
+		game.F95URL = strings.TrimSpace(*fields.F95URL)
+	}
+	if fields.StoreLinks != nil {
+		game.StoreLinks = fields.StoreLinks
+	}
 
-	return a.db.UpdateGame(game)
+	if err := a.db.UpdateGame(game); err != nil {
+		return err
+	}
+
+	// Developer/Overview live in scraped_meta. Only touch that row when one of
+	// them is being edited, and preserve its cover and last-scraped timestamp.
+	if fields.Developer != nil || fields.Overview != nil {
+		dev, overview := "", ""
+		if meta, mErr := a.db.GetScrapedMeta(id); mErr == nil && meta != nil {
+			dev, overview = meta.Developer, meta.Overview
+		}
+		if fields.Developer != nil {
+			dev = strings.TrimSpace(*fields.Developer)
+		}
+		if fields.Overview != nil {
+			overview = *fields.Overview
+		}
+		if err := a.db.SetScrapedMetaFields(id, dev, overview); err != nil {
+			return fmt.Errorf("updating scraped metadata: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // ---------------------------------------------------------------------------

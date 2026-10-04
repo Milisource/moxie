@@ -128,8 +128,8 @@ desktop/
       App.svelte               Root layout with view routing
       lib/
         Sidebar.svelte         Navigation sidebar (Library, Media, Management)
-        GameList.svelte        Sortable game table with search/engine/status filters, cover thumbnails, context menu
-        GameDetail.svelte      Cover art, metadata, overview, inline editing, sync, download links
+        GameList.svelte        Sortable game table with search/engine/status filters, cover thumbnails, context menu (Edit Game…, Set Status, Rename Folder…, Remove)
+        GameDetail.svelte      Cover art, metadata, overview, inline editing, Edit Game dialog, sync, download links
         GameUpdatesView.svelte Game version updates list with per-game and batch update
         F95Browser.svelte      F95Zone game browser with search, preview panel, add-to-library
         DownloadsView.svelte   Download management with expandable game cards, open-in-browser
@@ -137,6 +137,7 @@ desktop/
         SyncDialog.svelte      F95Zone sync with per-game progress, association, update check
         UpdateDialog.svelte    App self-update checker with download and apply
         AddGameDialog.svelte   Manual add game with directory picker, engine detection, fields
+        EditGameDialog.svelte  Shared app-root dialog editing every game field in one call (title, developer, overview, engine, version, executable, wine prefix, status, tags, notes, F95 URL, store links); title edits are metadata-only
         DedupDialog.svelte     Duplicate game detection and resolution
         StatusBar.svelte       Game count + status messages
         viewState.svelte.js    Tab-surviving view state (filters, sort, scroll, browser session)

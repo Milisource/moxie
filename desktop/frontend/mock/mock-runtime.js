@@ -124,17 +124,26 @@ const STRESS_GAMES = STRESS > GAMES.length
 function gameOf(id) {
   return STRESS_GAMES.find((g) => g.id === Number(id)) ?? GAMES.find((g) => g.id === Number(id))
 }
+// Fields the Edit Game dialog can change that don't live on the summary row
+// (developer/overview/tags/notes/store links/wine prefix/F95 URL). Kept per
+// game so an edit is visible on the next GetGameDetail, like the real DB.
+const META_OVERRIDES = new Map()
+function overridesFor(id) {
+  if (!META_OVERRIDES.has(Number(id))) META_OVERRIDES.set(Number(id), {})
+  return META_OVERRIDES.get(Number(id))
+}
 function detailOf(id) {
   const summary = gameOf(id)
   if (!summary) return null
+  const ov = overridesFor(id)
   return {
     ...summary,
-    developer: summary.developer,
-    overview: summary.overview,
+    developer: ov.developer ?? summary.developer,
+    overview: ov.overview ?? summary.overview,
     coverUrl: `${window.go.main.AppCoverBase()}/cover/${id}/full`,
-    f95Url: `https://f95zone.to/threads/example-${id}.${100000 + id}`,
-    tags: GAME_TAGSETS[id] || ['Visual Novel'],
-    notes: '', storeLinks: {}, steamAppId: 0, winePrefix: '',
+    f95Url: ov.f95Url ?? `https://f95zone.to/threads/example-${id}.${100000 + id}`,
+    tags: ov.tags ?? (GAME_TAGSETS[id] || ['Visual Novel']),
+    notes: ov.notes ?? '', storeLinks: ov.storeLinks ?? {}, steamAppId: 0, winePrefix: ov.winePrefix ?? '',
     downloadLinks: DOWNLOAD_LINKS.slice(0, 2).map((l) => ({...l, id: l.id + id})),
     playHistory: PLAY_HISTORY,
   }
@@ -174,7 +183,24 @@ const App = {
   SearchGames:         (q) => delay(80).then(() => searchGames(q)),
   AddGame:             () => delay().then(() => ({id: 999})),
   AddGameFromF95Zone:  () => delay().then(() => ({id: 999})),
-  EditGame:            () => delay().then(() => {}),
+  EditGame:            (id, fields = {}) => delay().then(() => {
+    const g = gameOf(id)
+    if (!g) throw new Error('game with id ' + id + ' not found')
+    const ov = overridesFor(id)
+    // Mirror desktop/app.go's nil/empty contract: only present keys change.
+    if (fields.title != null) g.title = fields.title
+    if (fields.engine != null) g.engine = fields.engine
+    if (fields.version != null) g.version = fields.version
+    if (fields.status != null) g.status = fields.status
+    if (fields.exePath != null) g.exePath = fields.exePath
+    if (fields.developer != null) ov.developer = fields.developer
+    if (fields.overview != null) ov.overview = fields.overview
+    if (fields.tags != null) ov.tags = fields.tags
+    if (fields.notes != null) ov.notes = fields.notes
+    if (fields.storeLinks != null) ov.storeLinks = fields.storeLinks
+    if (fields.winePrefix != null) ov.winePrefix = fields.winePrefix
+    if (fields.f95Url != null) ov.f95Url = fields.f95Url
+  }),
   RenameGame:          () => delay().then(() => {}),
   RemoveGame:          () => delay().then(() => {}),
   RestoreGame:         () => delay().then(() => {}),
