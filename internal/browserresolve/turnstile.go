@@ -19,6 +19,11 @@ import (
 //	On success cloudflareCallback XHR-POSTs cf-turnstile-response=<token>
 //	to the same URL, parses the JSON {"link": "..."} response, and sets
 //	#download-link.href (the anchor starts hidden and href-less).
+//
+// NOTE (2026-10-04): live verification showed this host is NOT passable with
+// the rod/CDP engine — the widget renders in a closed shadow root and
+// Cloudflare answers "Verification failed". This solver is therefore dormant
+// (vikingfile is scored as a hard wall); see F95-ob9m for the full findings.
 
 // ResolveTurnstileURL drives a Cloudflare Turnstile-gated file page in the
 // user's browser and returns the download URL the page reveals from its

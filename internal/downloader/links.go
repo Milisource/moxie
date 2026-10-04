@@ -25,8 +25,8 @@ func IsOnlineOnly(name, url string) bool {
 //	      googledrive keeps +10 (working resolver, unchanged)
 //	  +5  fragile (gofile — premium-gated API, free path is a web scrape)
 //	   0   browser-gated or unproven (datanodes, mixdrop, hexload, uploadhaven,
-//	       bunkrr, 1cloudfile, vikingfile, ...)
-//	-200  hard walls (krakenfiles; mega until megatools lands)
+//	       bunkrr, 1cloudfile, ...)
+//	-200  hard walls (vikingfile, krakenfiles; mega until megatools lands)
 //
 // A host that is currently serving server-side-capped downloads (detected by
 // the pre-download probe, e.g. pixeldrain past its free quota) is penalised by
@@ -45,12 +45,10 @@ func hostTierScore(host string) int {
 	case "gofile":
 		return 5
 	case "vikingfile":
-		// Resolvable as of F95-ob9m: the Cloudflare Turnstile widget is
-		// cleared in a real browser and the revealed #download-link href is
-		// fetched by the Go path with cookies + Referer. Live end-to-end is
-		// not yet confirmed, so it stays on the browser-gated tier rather
-		// than the +10 solvable tier (buzzheavier/workupload).
-		return 0
+		// Cloudflare Turnstile rejects the rod/CDP browser ("Verification
+		// failed", live-verified 2026-10-04; see F95-ob9m), so the Turnstile
+		// solver is dormant and the host stays a hard wall.
+		return -200
 	case "mega", "krakenfiles":
 		return -200
 	default:
