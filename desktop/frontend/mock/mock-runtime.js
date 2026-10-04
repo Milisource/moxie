@@ -7,6 +7,7 @@
 import {
   GAMES, GAME_DETAILS, GAME_TAGSETS, COLLECTIONS, COLLECTION_GAMES,
   DOWNLOAD_LINKS, DELETED_GAMES, DUPLICATES, SEARCH_RESULTS, THREAD_PREVIEW,
+  BROWSE_RESULTS,
   SCAN_PATHS, PLAY_HISTORY, INSTALL_TARGETS, COOKIE_STATUS, APP_VERSION,
   GAME_COUNT, UPDATABLE_COUNT, UPDATABLE_GAMES,
 } from './mock-data.js'
@@ -332,6 +333,17 @@ const App = {
   // ── F95Zone browser
   SearchF95Zone:       (q) => delay(120).then(() => SEARCH_RESULTS),
   GetThreadPreview:    () => delay(60).then(() => THREAD_PREVIEW),
+  // Discover feed: two pages of 8, sorted identically for the mock.
+  BrowseF95Zone:       (page, sort) => delay(140).then(() => {
+    const perPage = 8
+    const start = (page - 1) * perPage
+    return {
+      results: BROWSE_RESULTS.slice(start, start + perPage),
+      page,
+      totalPages: Math.ceil(BROWSE_RESULTS.length / perPage),
+      totalCount: BROWSE_RESULTS.length,
+    }
+  }),
 }
 
 // Covers are served from /mock/covers/<id>/thumb|full (vite plugin) —

@@ -171,6 +171,8 @@ Each tile shows key stats at a glance:
 
 ## Recommendations for F95Browser.svelte
 
+> **Moxie status (2026-10-04, F95-frnz):** the Browse tab no longer opens to a dead-end placeholder. With no search it renders a **Discover** feed backed by the cookie-free `latest_data.php?cmd=list` endpoint — the same index F95Zone's `/sam/latest_alpha` browser reads — with **Latest / Popular / Top Rated** sort tabs, a results count, infinite scroll plus a **Load more** fallback, and a manual/periodic refresh. Clicking a card reuses the existing preview pane (`GetThreadPreview` → **Add to Library**). Pagination and results-count items below are therefore addressed for the Discover surface; the feed's `prefixes`/`tags` are opaque IDs (see `latestapi.go` warnings), so engine/category badges and tag filtering remain open.
+
 ### Short-term (P2)
 
 1. **Larger cover thumbnails** — *Partially addressed (2026-08-09):* result cards are 16:9 grid tiles (~220px wide) showing full-res `attachments.f95zone.to` covers from the F95Checker catalog — no more avatars, no more 400px previews. Still not F95Zone's 3:4 portrait tile format; a tile-layout toggle (normal/large/list) remains open work.
@@ -198,12 +200,12 @@ Each tile shows key stats at a glance:
 
 | Aspect | F95Zone `/sam/latest_alpha` | Moxie `F95Browser.svelte` |
 |--------|---------------------------|--------------------------|
-| **Data source** | Custom backend API (XenForo DB) | `SearchF95Zone()` → XenForo POST search + F95Checker catalog covers (`SearchCovers`) |
-| **Results** | Full browse of ALL games (26K+) | Search query only (≤5 results) |
-| **Covers** | Server-rendered in grid | Full-res `attachments.f95zone.to` originals attached at search time (catalog keyed by thread ID); preview pane via `GetThreadPreview()` |
-| **Filters** | Server-side (full query language) | Client-side only (minimal) |
-| **Pagination** | 878 pages, 30/page | Single page, max 5 results |
-| **Add to library** | Not available (site only) | One-click "Add to Library" button |
+| **Data source** | Custom backend API (XenForo DB) | Search: `SearchF95Zone()` → XenForo POST search + F95Checker catalog covers (`SearchCovers`). Discover (no search): `BrowseF95Zone()` → cookie-free `latest_data.php?cmd=list` (F95-frnz) |
+| **Results** | Full browse of ALL games (26K+) | Discover: paged browse of the latest-updates index (~27.5K games, 917 pages at 30/page). Search: query only (≤5 results) |
+| **Covers** | Server-rendered in grid | Full-res `attachments.f95zone.to` originals (catalog/feed keyed by thread ID; `preview.f95zone.to` rewritten); preview pane via `GetThreadPreview()` |
+| **Filters** | Server-side (full query language) | Client-side only (minimal); Discover sort tabs (Latest/Popular/Top Rated) |
+| **Pagination** | 878 pages, 30/page | Discover: 30/page with infinite scroll + Load more. Search: single page, max 5 results |
+| **Add to library** | Not available (site only) | One-click "Add to Library" button (requires a session) |
 
 ---
 

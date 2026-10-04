@@ -22,6 +22,10 @@ export function ApplyUpdate() {
   return window['go']['main']['App']['ApplyUpdate']();
 }
 
+export function BrowseF95Zone(arg1, arg2) {
+  return window['go']['main']['App']['BrowseF95Zone'](arg1, arg2);
+}
+
 export function CancelGameUpdate() {
   return window['go']['main']['App']['CancelGameUpdate']();
 }

@@ -32,3 +32,20 @@ export function formatPercent(p) {
   const n = Math.min(Math.max(Number(p) || 0, 0), 100)
   return n.toFixed(2)
 }
+
+/**
+ * Formats a large count compactly for stat lines: 950, 1.2K, 3.4M, 1.1B.
+ * Values under 1000 are returned as-is.
+ */
+export function formatCount(n) {
+  const v = Number(n) || 0
+  if (v < 1000) return String(v)
+  const units = ['', 'K', 'M', 'B']
+  let i = 0
+  let x = v
+  while (x >= 1000 && i < units.length - 1) {
+    x /= 1000
+    i++
+  }
+  return `${x.toFixed(x < 10 ? 1 : 0)}${units[i]}`
+}

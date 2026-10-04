@@ -15,6 +15,8 @@ export function AddScanPath(arg1:string):Promise<void>;
 
 export function ApplyUpdate():Promise<void>;
 
+export function BrowseF95Zone(arg1:number,arg2:string):Promise<main.F95BrowsePage>;
+
 export function CancelGameUpdate():Promise<boolean>;
 
 export function CancelGameUpdateFor(arg1:number):Promise<boolean>;

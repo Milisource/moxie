@@ -154,6 +154,25 @@ export const browser = $state({
   // request (spinner must keep spinning) or an orphaned flag (safe to clear).
   searchInFlight: false,
   previewInFlight: false,
+
+  // ── Discover feed (default Browse view, no search) ──────────
+  // Page data from F95Zone's latest-updates index (cookie-free), shown when
+  // `searched` is false. Lives here so the feed, its scroll position, and its
+  // sort survive tab switches. `seq` is the shared request id (same pattern as
+  // searchSeq/previewSeq): a stale page response from a destroyed instance or
+  // a superseded sort must not land in a fresh view.
+  discover: {
+    items: [],
+    sort: 'date',       // 'date' | 'likes' | 'rating'
+    page: 0,            // pages loaded so far
+    totalPages: 0,
+    totalCount: 0,
+    loading: false,     // first page / reset in flight
+    loadingMore: false, // append in flight
+    error: '',
+    loadedAt: 0,        // ms epoch of the last successful load
+    seq: 0,
+  },
 })
 
 // ── Downloads view ─────────────────────────────────────────────

@@ -5,9 +5,11 @@
     SearchF95Zone,
     GetThreadPreview,
     AddGameFromF95Zone,
+    BrowseF95Zone,
   } from '../../wailsjs/go/main/App'
   import {engineColor, engineStyle} from './engineColors.js'
   import {safeExternalUrl} from './sanitizeUrl.js'
+  import {formatCount} from './format.js'
   import {browser} from './viewState.svelte.js'
 
   // ── State ──────────────────────────────────────────────────
@@ -71,8 +73,90 @@
     if (!browser.previewInFlight && !browser.preview) browser.previewing = false
     // Search is explicit-only (Search button / Enter) — never auto-triggered
     // on mount, so a persisted query from a previous visit stays as-is until
-    // the user asks for a new search.
+    // the user asks for a new search. With no persisted search, the Discover
+    // feed fills the surface.
+    if (!browser.searched && discoverStale()) loadDiscover(true)
     await checkCookieStatus()
+  })
+
+  // ── Discover feed (default surface, no search) ─────────────
+  // F95Zone's latest-updates index, cookie-free. The sort tabs pick the
+  // ranking; infinite scroll (plus a visible Load more fallback) walks pages.
+  const DISCOVER_SORTS = [
+    {key: 'date', label: 'Latest'},
+    {key: 'likes', label: 'Popular'},
+    {key: 'rating', label: 'Top Rated'},
+  ]
+  const DISCOVER_STALE_MS = 10 * 60 * 1000   // refresh the feed on return after this long
+
+  let sentinelEl = $state(null)
+
+  function discoverStale() {
+    const d = browser.discover
+    return !d.loadedAt || Date.now() - d.loadedAt > DISCOVER_STALE_MS
+  }
+
+  async function loadDiscover(reset) {
+    const d = browser.discover
+    if (d.loading || d.loadingMore) return
+    // Append loads require an existing page and pages left to fetch; the
+    // first page is always an explicit reset.
+    if (!reset && (d.items.length === 0 || (d.totalPages > 0 && d.page >= d.totalPages))) return
+
+    const page = reset ? 1 : d.page + 1
+    const seq = ++d.seq
+    if (reset) d.loading = true
+    else d.loadingMore = true
+    d.error = ''
+
+    try {
+      const res = await BrowseF95Zone(page, d.sort)
+      if (seq !== d.seq) return        // stale — a newer load/sort owns the feed
+      d.items = reset ? res.results : [...d.items, ...res.results]
+      d.page = res.page
+      d.totalPages = res.totalPages
+      d.totalCount = res.totalCount
+      d.loadedAt = Date.now()
+    } catch (e) {
+      if (seq !== d.seq) return
+      // A concurrent search/sync holds the single network slot; that's not a
+      // feed failure — keep whatever is already loaded.
+      if (!/another network request/i.test(String(e))) d.error = String(e)
+    } finally {
+      if (seq === d.seq) {
+        d.loading = false
+        d.loadingMore = false
+      }
+    }
+  }
+
+  function setDiscoverSort(sort) {
+    const d = browser.discover
+    if (d.sort === sort) return
+    d.sort = sort
+    // Invalidate any in-flight response for the old sort and reset to page 1.
+    d.seq++
+    d.items = []
+    d.page = 0
+    d.totalPages = 0
+    d.totalCount = 0
+    d.loading = false
+    d.loadingMore = false
+    d.error = ''
+    loadDiscover(true)
+  }
+
+  // Infinite scroll: fetch the next page when the sentinel nears the
+  // viewport. Re-created when the sentinel mounts/unmounts (search mode hides
+  // it); loadDiscover guards against duplicate or past-the-end fetches.
+  $effect(() => {
+    const el = sentinelEl
+    if (!el) return
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting) && !browser.searched) loadDiscover(false)
+    }, {rootMargin: '400px'})
+    io.observe(el)
+    return () => io.disconnect()
   })
 
   // ── Derived ─────────────────────────────────────────────────
@@ -288,65 +372,172 @@
   <div class="browser-content" class:has-preview={browser.previewing}>
     <!-- ── Results Section ──────────────────────────────── -->
     <div class="results-section">
-      {#if browser.error}
-        <div class="error-section">
-          <p class="error-title">Search failed:</p>
-          <p class="error-line">{browser.error}</p>
-        </div>
-      {:else if browser.loading}
-        <div class="loading-state">
-          <div class="spinner-lg"></div>
-          <p>Searching F95Zone…</p>
-        </div>
-      {:else if browser.searched && browser.results.length === 0}
-        <div class="empty-state">
-          <p class="empty-icon">⌕</p>
-          <p class="empty-title">No results found</p>
-          <p class="empty-detail">Try a different search term.</p>
-        </div>
-      {:else if !browser.searched}
-        <div class="empty-state">
-          <p class="empty-icon">⊙</p>
-          <p class="empty-title">Search F95Zone</p>
-          <p class="empty-detail">Enter at least 2 characters to start searching.</p>
-        </div>
-      {:else}
-        <div class="results-grid">
-          {#each browser.results as result (result.url)}
-            <button
-              class="result-card"
-              class:selected={browser.selected?.url === result.url}
-              onclick={() => handlePreview(result)}
-            >
-              <div class="result-thumb">
-                {#if result.thumbnailUrl}
-                  <img src={result.thumbnailUrl} alt={result.title} loading="lazy" decoding="async" />
-                {:else}
-                  <div class="result-thumb-placeholder">
-                    <span class="placeholder-icon">▭</span>
-                  </div>
-                {/if}
-              </div>
-              <div class="result-info">
-                <span class="result-title" title={result.title}>
-                  {result.title}
-                </span>
-                <div class="result-meta">
-                  {#if result.prefix}
-                    <span
-                      class="engine-badge"
-                      style={engineStyle(result.prefix)}
-                    >
-                      {result.prefix}
-                    </span>
-                  {/if}
-                  {#if result.matchScore > 0}
-                    <span class="result-match">{result.matchScore}%</span>
+      {#if browser.searched}
+        {#if browser.error}
+          <div class="error-section">
+            <p class="error-title">Search failed:</p>
+            <p class="error-line">{browser.error}</p>
+          </div>
+        {:else if browser.loading}
+          <div class="loading-state">
+            <div class="spinner-lg"></div>
+            <p>Searching F95Zone…</p>
+          </div>
+        {:else if browser.results.length === 0}
+          <div class="empty-state">
+            <p class="empty-icon">⌕</p>
+            <p class="empty-title">No results found</p>
+            <p class="empty-detail">Try a different search term.</p>
+          </div>
+        {:else}
+          <div class="results-grid">
+            {#each browser.results as result (result.url)}
+              <button
+                class="result-card"
+                class:selected={browser.selected?.url === result.url}
+                onclick={() => handlePreview(result)}
+              >
+                <div class="result-thumb">
+                  {#if result.thumbnailUrl}
+                    <img src={result.thumbnailUrl} alt={result.title} loading="lazy" decoding="async" />
+                  {:else}
+                    <div class="result-thumb-placeholder">
+                      <span class="placeholder-icon">▭</span>
+                    </div>
                   {/if}
                 </div>
+                <div class="result-info">
+                  <span class="result-title" title={result.title}>
+                    {result.title}
+                  </span>
+                  <div class="result-meta">
+                    {#if result.prefix}
+                      <span
+                        class="engine-badge"
+                        style={engineStyle(result.prefix)}
+                      >
+                        {result.prefix}
+                      </span>
+                    {/if}
+                    {#if result.matchScore > 0}
+                      <span class="result-match">{result.matchScore}%</span>
+                    {/if}
+                  </div>
+                </div>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      {:else}
+        <!-- ── Discover feed (default surface, no search) ──── -->
+        <div class="discover">
+          <div class="discover-bar">
+            <div class="discover-tabs">
+              {#each DISCOVER_SORTS as s}
+                <button
+                  class="discover-tab"
+                  class:active={browser.discover.sort === s.key}
+                  onclick={() => setDiscoverSort(s.key)}
+                >{s.label}</button>
+              {/each}
+            </div>
+            <div class="discover-actions">
+              {#if browser.discover.totalCount > 0}
+                <span class="discover-count">{browser.discover.totalCount.toLocaleString()} games</span>
+              {/if}
+              <button
+                class="discover-refresh"
+                onclick={() => loadDiscover(true)}
+                disabled={browser.discover.loading || browser.discover.loadingMore}
+                title="Refresh"
+                aria-label="Refresh feed"
+              >⟳</button>
+            </div>
+          </div>
+
+          {#if cookieStatus !== 'available'}
+            <p class="discover-note">Log into F95Zone in your browser to preview and add games.</p>
+          {/if}
+
+          {#if browser.discover.loading && browser.discover.items.length === 0}
+            <div class="loading-state">
+              <div class="spinner-lg"></div>
+              <p>Loading F95Zone…</p>
+            </div>
+          {:else if browser.discover.error && browser.discover.items.length === 0}
+            <div class="error-section">
+              <p class="error-title">Couldn't load the feed:</p>
+              <p class="error-line">{browser.discover.error}</p>
+            </div>
+          {:else if browser.discover.items.length === 0}
+            <div class="empty-state">
+              <p class="empty-icon">⊙</p>
+              <p class="empty-title">Nothing to show</p>
+              <p class="empty-detail">Try refreshing the feed.</p>
+            </div>
+          {:else}
+            <div class="results-grid">
+              {#each browser.discover.items as result (result.threadId)}
+                <button
+                  class="result-card"
+                  class:selected={browser.selected?.url === result.url}
+                  disabled={cookieStatus !== 'available'}
+                  title={cookieStatus === 'available' ? result.title : 'Log into F95Zone to preview'}
+                  onclick={() => handlePreview(result)}
+                >
+                  <div class="result-thumb">
+                    {#if result.coverUrl}
+                      <img src={result.coverUrl} alt={result.title} loading="lazy" decoding="async" />
+                    {:else}
+                      <div class="result-thumb-placeholder">
+                        <span class="placeholder-icon">▭</span>
+                      </div>
+                    {/if}
+                  </div>
+                  <div class="result-info">
+                    <span class="result-title" title={result.title}>{result.title}</span>
+                    <div class="result-meta">
+                      {#if result.version}
+                        <span class="discover-version">{result.version}</span>
+                      {/if}
+                      {#if result.rating > 0}
+                        <span class="discover-rating">{result.rating.toFixed(2)}/5</span>
+                      {/if}
+                      {#if result.views > 0}
+                        <span class="discover-stat">{formatCount(result.views)} views</span>
+                      {/if}
+                    </div>
+                    <div class="result-meta">
+                      {#if result.creator}
+                        <span class="discover-creator" title={result.creator}>{result.creator}</span>
+                      {/if}
+                      {#if result.date}
+                        <span class="discover-stat">{result.date}</span>
+                      {/if}
+                    </div>
+                  </div>
+                </button>
+              {/each}
+            </div>
+
+            {#if browser.discover.error}
+              <div class="error-section">
+                <p class="error-line">{browser.discover.error}</p>
               </div>
-            </button>
-          {/each}
+            {/if}
+
+            {#if browser.discover.loadingMore}
+              <div class="discover-more"><span class="spinner"></span> Loading more…</div>
+            {:else if browser.discover.totalPages > 0 && browser.discover.page < browser.discover.totalPages}
+              <button class="btn discover-load-more" onclick={() => loadDiscover(false)}>
+                Load more
+              </button>
+            {:else}
+              <p class="discover-end">End of results</p>
+            {/if}
+          {/if}
+
+          <div class="discover-sentinel" bind:this={sentinelEl}></div>
         </div>
       {/if}
     </div>
@@ -796,6 +987,132 @@
     color: var(--text-muted);
     font-family: var(--font-mono);
   }
+
+  /* ── Discover feed ─────────────────── */
+  .discover {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .discover-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding-bottom: 4px;
+    background: var(--bg-primary);
+  }
+  .discover-tabs {
+    display: flex;
+    gap: 4px;
+  }
+  .discover-tab {
+    padding: 5px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .discover-tab:hover { color: var(--text-primary); border-color: var(--accent); }
+  .discover-tab.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+  }
+  .discover-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .discover-count {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+  .discover-refresh {
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: var(--text-md);
+    line-height: 1;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .discover-refresh:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+  .discover-refresh:disabled { opacity: 0.5; cursor: not-allowed; }
+  .discover-note {
+    margin: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--warning);
+    border-radius: var(--radius-1);
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    color: var(--warning);
+    font-size: var(--text-sm);
+  }
+  .discover-version {
+    font-size: var(--text-2xs);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .discover-rating {
+    font-size: var(--text-2xs);
+    color: var(--warning);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .discover-stat {
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+  .discover-creator {
+    font-size: var(--text-2xs);
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .result-info .result-meta + .result-meta { margin-top: 2px; }
+  /* Discover cards are disabled (not clickable) until F95Zone is connected;
+     keep them legible rather than dimming the whole tile. */
+  .result-card:disabled { cursor: default; opacity: 0.9; }
+  .result-card:disabled:hover { border-color: var(--border); background: var(--bg-secondary); }
+  .discover-more {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 16px 0;
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+  }
+  .discover-load-more {
+    display: block;
+    margin: 12px auto 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+  }
+  .discover-load-more:hover { border-color: var(--accent); background: var(--bg-hover); }
+  .discover-end {
+    margin: 12px 0 0;
+    text-align: center;
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+  }
+  .discover-sentinel { height: 1px; }
 
   /* ── Engine Badge ──────────────────── */
   .engine-badge {

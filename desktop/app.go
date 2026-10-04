@@ -2137,6 +2137,29 @@ type F95DownloadLink struct {
 	Platform string `json:"platform"`
 }
 
+// F95BrowseResult is one card in the Browse tab's Discover feed — a game
+// from F95Zone's latest-updates index, carrying the stats the feed returns.
+type F95BrowseResult struct {
+	Title    string  `json:"title"`
+	URL      string  `json:"url"`
+	ThreadID int64   `json:"threadId"`
+	Version  string  `json:"version"`
+	Creator  string  `json:"creator"`
+	CoverURL string  `json:"coverUrl"`
+	Rating   float64 `json:"rating"`
+	Views    int64   `json:"views"`
+	Likes    int64   `json:"likes"`
+	Date     string  `json:"date"`
+}
+
+// F95BrowsePage is one page of the Discover feed plus pagination metadata.
+type F95BrowsePage struct {
+	Results    []F95BrowseResult `json:"results"`
+	Page       int               `json:"page"`
+	TotalPages int               `json:"totalPages"`
+	TotalCount int               `json:"totalCount"`
+}
+
 // ---------------------------------------------------------------------------
 // F95Zone Browser methods
 // ---------------------------------------------------------------------------
@@ -2256,6 +2279,54 @@ func computeSearchScore(title, prefix, queryLower string, position int) int {
 	}
 
 	return score
+}
+
+// BrowseF95Zone returns a page of F95Zone's latest-updates feed for the
+// Browse tab's Discover view (no search term). The underlying endpoint is
+// cookie-free, so the feed works without a session; when cookies ARE
+// available they're passed along to lift F95Zone's anonymous per-hour limit.
+// sort must be one of "date" (the default when invalid), "likes", "views",
+// or "rating"; page is 1-based.
+func (a *App) BrowseF95Zone(page int, sort string) (*F95BrowsePage, error) {
+	// Blocking network binding — serialized like the other F95Zone calls.
+	if !a.netBusy.CompareAndSwap(false, true) {
+		return nil, fmt.Errorf("another network request is already in progress")
+	}
+	defer a.netBusy.Store(false)
+
+	cookie, _ := browser.GetF95Cookies()
+	lp, err := scraper.NewPublicAPIWithCookie(cookie).ListLatest(context.Background(), page, sort)
+	if err != nil {
+		return nil, fmt.Errorf("F95Zone browse failed: %w", err)
+	}
+	return buildBrowsePage(lp), nil
+}
+
+// buildBrowsePage maps a scraper LatestPage to the desktop binding shape,
+// rewriting cover art from F95Checker's downscaled preview CDN to the
+// full-resolution attachments host.
+func buildBrowsePage(lp *scraper.LatestPage) *F95BrowsePage {
+	out := &F95BrowsePage{
+		Results:    make([]F95BrowseResult, 0, len(lp.Results)),
+		Page:       lp.Page,
+		TotalPages: lp.TotalPages,
+		TotalCount: lp.TotalCount,
+	}
+	for _, r := range lp.Results {
+		out.Results = append(out.Results, F95BrowseResult{
+			Title:    r.Title,
+			URL:      r.URL,
+			ThreadID: r.ThreadID,
+			Version:  r.Version,
+			Creator:  r.Creator,
+			CoverURL: scraper.FullResCoverURL(r.CoverURL),
+			Rating:   r.Rating,
+			Views:    r.Views,
+			Likes:    r.Likes,
+			Date:     r.Date,
+		})
+	}
+	return out
 }
 
 // GetThreadPreview scrapes an F95Zone thread and returns preview data.

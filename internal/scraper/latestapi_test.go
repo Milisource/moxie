@@ -787,6 +787,106 @@ func TestNewPublicAPIWithCookie(t *testing.T) {
 	}
 }
 
+// TestListLatest: the Discover feed request carries no search term, names the
+// requested page/sort, and maps the stats + pagination the endpoint returns.
+func TestListLatest(t *testing.T) {
+	t.Parallel()
+
+	var gotQuery string
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		fmt.Fprint(w, `{"status":"ok","msg":{"data":[
+			{"thread_id":93340,"title":"Eternum","creator":"Caribdis","version":"v0.9.5 Public","views":28661376,"likes":6670,"prefixes":[13,7],"rating":4.82,"cover":"https://preview.f95zone.to/a.jpg","date":"9 months","ts":1766768400},
+			{"thread_id":317461,"title":"Escape From Blackwood Manor","creator":"Someone","version":"v0.1.1","views":1508,"likes":2,"rating":0,"cover":"https://preview.f95zone.to/b.jpg","date":"51 mins","ts":1791148980}
+		],"pagination":{"page":2,"total":917},"count":27503}}`)
+	}))
+
+	page, err := api.ListLatest(context.Background(), 2, "rating")
+	if err != nil {
+		t.Fatalf("ListLatest failed: %v", err)
+	}
+	if len(page.Results) != 2 {
+		t.Fatalf("got %d results, want 2", len(page.Results))
+	}
+	if page.Page != 2 || page.TotalPages != 917 || page.TotalCount != 27503 {
+		t.Errorf("pagination = page %d / %d pages / %d results, want 2 / 917 / 27503",
+			page.Page, page.TotalPages, page.TotalCount)
+	}
+
+	r := page.Results[0]
+	if r.Title != "Eternum" || r.ThreadID != 93340 || r.Creator != "Caribdis" {
+		t.Errorf("unexpected first result: %+v", r)
+	}
+	if r.Views != 28661376 || r.Likes != 6670 || r.Rating != 4.82 || r.Date != "9 months" || r.Ts != 1766768400 {
+		t.Errorf("stats not mapped: %+v", r)
+	}
+	if r.URL != "https://f95zone.to/threads/93340/" {
+		t.Errorf("URL = %q, want thread URL", r.URL)
+	}
+
+	// The Discover request must NOT carry a search term.
+	if got := queryParam(gotQuery, "search"); got != "" {
+		t.Errorf("search param = %q, want empty for the Discover feed", got)
+	}
+	if got := queryParam(gotQuery, "cmd"); got != "list" {
+		t.Errorf("cmd param = %q, want list", got)
+	}
+	if got := queryParam(gotQuery, "cat"); got != "games" {
+		t.Errorf("cat param = %q, want games", got)
+	}
+	if got := queryParam(gotQuery, "sort"); got != "rating" {
+		t.Errorf("sort param = %q, want rating", got)
+	}
+	if got := queryParam(gotQuery, "page"); got != "2" {
+		t.Errorf("page param = %q, want 2", got)
+	}
+	if want := fmt.Sprintf("%d", browseRows); queryParam(gotQuery, "rows") != want {
+		t.Errorf("rows param = %q, want %q", queryParam(gotQuery, "rows"), want)
+	}
+}
+
+// TestListLatest_SortAndPageClamp: unknown sorts and non-positive pages are
+// coerced to safe defaults, and a response without a pagination block still
+// reports the page that was requested.
+func TestListLatest_SortAndPageClamp(t *testing.T) {
+	t.Parallel()
+
+	var gotQuery string
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		fmt.Fprint(w, `{"status":"ok","msg":{"data":[]}}`)
+	}))
+
+	if _, err := api.ListLatest(context.Background(), 0, "DROP TABLE"); err != nil {
+		t.Fatalf("ListLatest failed: %v", err)
+	}
+	if got := queryParam(gotQuery, "sort"); got != "date" {
+		t.Errorf("sort param = %q, want date fallback", got)
+	}
+	if got := queryParam(gotQuery, "page"); got != "1" {
+		t.Errorf("page param = %q, want 1 fallback", got)
+	}
+
+	page, err := api.ListLatest(context.Background(), 3, "date")
+	if err != nil {
+		t.Fatalf("ListLatest failed: %v", err)
+	}
+	if page.Page != 3 {
+		t.Errorf("page = %d, want requested page 3 when pagination is absent", page.Page)
+	}
+}
+
+func TestListLatest_ApiError(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"error","msg":"You have been temporarily blocked"}`)
+	}))
+	if _, err := api.ListLatest(context.Background(), 1, "date"); err == nil {
+		t.Fatal("expected error for error status, got nil")
+	}
+}
+
 func TestCacheFastCheck_Chunking(t *testing.T) {
 	t.Parallel()
 

@@ -439,6 +439,73 @@ export namespace main {
 	        this.overview = source["overview"];
 	    }
 	}
+	export class F95BrowseResult {
+	    title: string;
+	    url: string;
+	    threadId: number;
+	    version: string;
+	    creator: string;
+	    coverUrl: string;
+	    rating: number;
+	    views: number;
+	    likes: number;
+	    date: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new F95BrowseResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.url = source["url"];
+	        this.threadId = source["threadId"];
+	        this.version = source["version"];
+	        this.creator = source["creator"];
+	        this.coverUrl = source["coverUrl"];
+	        this.rating = source["rating"];
+	        this.views = source["views"];
+	        this.likes = source["likes"];
+	        this.date = source["date"];
+	    }
+	}
+	export class F95BrowsePage {
+	    results: F95BrowseResult[];
+	    page: number;
+	    totalPages: number;
+	    totalCount: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new F95BrowsePage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.results = this.convertValues(source["results"], F95BrowseResult);
+	        this.page = source["page"];
+	        this.totalPages = source["totalPages"];
+	        this.totalCount = source["totalCount"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class F95DownloadLink {
 	    url: string;
 	    name: string;

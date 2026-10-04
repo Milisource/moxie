@@ -135,7 +135,8 @@ func NewPublicAPI() *PublicAPI {
 	return NewPublicAPIWithCookie("")
 }
 
-// LatestSearchResult is one hit from the latest_data.php title search.
+// LatestSearchResult is one hit from the latest_data.php list endpoint
+// (either a title search or the Discover feed).
 type LatestSearchResult struct {
 	Title    string
 	URL      string
@@ -144,6 +145,40 @@ type LatestSearchResult struct {
 	Prefixes []int
 	CoverURL string
 	Creator  string
+	// Stats carried by the list endpoint. Zero when absent (older responses
+	// or rows without the field).
+	Views  int64
+	Likes  int64
+	Rating float64
+	Date   string // relative human string, e.g. "2 months"
+	Ts     int64  // unix update timestamp
+}
+
+// latestItem is one row of latest_data.php's msg.data array.
+type latestItem struct {
+	ThreadID int64           `json:"thread_id"`
+	Title    string          `json:"title"`
+	Creator  string          `json:"creator"`
+	Version  json.RawMessage `json:"version"`
+	Views    int64           `json:"views"`
+	Likes    int64           `json:"likes"`
+	Prefixes []int           `json:"prefixes"`
+	Rating   float64         `json:"rating"`
+	Cover    string          `json:"cover"`
+	Date     string          `json:"date"`
+	Ts       int64           `json:"ts"`
+}
+
+// latestDataResponse is the wire format of latest_data.php?cmd=list.
+type latestDataResponse struct {
+	Msg struct {
+		Data       []latestItem `json:"data"`
+		Pagination struct {
+			Page  int `json:"page"`
+			Total int `json:"total"` // total pages
+		} `json:"pagination"`
+		Count int `json:"count"` // total results
+	} `json:"msg"`
 }
 
 // SearchCovers searches the F95Checker game catalog for query and returns
@@ -165,16 +200,16 @@ func (p *PublicAPI) SearchCovers(ctx context.Context, query string) (map[int64]s
 	covers := make(map[int64]string, len(results))
 	for _, r := range results {
 		if r.ThreadID > 0 && r.CoverURL != "" {
-			covers[r.ThreadID] = fullResCoverURL(r.CoverURL)
+			covers[r.ThreadID] = FullResCoverURL(r.CoverURL)
 		}
 	}
 	return covers, nil
 }
 
-// fullResCoverURL rewrites preview.f95zone.to (F95Checker's downscaled
+// FullResCoverURL rewrites preview.f95zone.to (F95Checker's downscaled
 // 400px CDN) to attachments.f95zone.to, which serves the same path at the
 // original resolution. Other hosts are returned unchanged.
-func fullResCoverURL(u string) string {
+func FullResCoverURL(u string) string {
 	if strings.HasPrefix(u, "https://preview.f95zone.to/") {
 		return "https://attachments.f95zone.to/" + strings.TrimPrefix(u, "https://preview.f95zone.to/")
 	}
@@ -417,46 +452,62 @@ func (p *PublicAPI) SearchTitle(ctx context.Context, query string) ([]LatestSear
 	}
 
 	params := url.Values{}
-	params.Set("cmd", "list")
-	params.Set("cat", "games")
 	params.Set("page", "1")
 	params.Set("search", q)
 	params.Set("sort", "likes")
 	params.Set("rows", strconv.Itoa(searchRows))
+
+	resp, err := p.latestData(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	return latestResults(resp.Msg.Data), nil
+}
+
+// latestData issues a latest_data.php list request with the given params and
+// parses the JSON envelope. cmd/cat/_ are set here (every caller wants games;
+// the cache-buster defeats intermediate caching).
+func (p *PublicAPI) latestData(ctx context.Context, params url.Values) (*latestDataResponse, error) {
+	params.Set("cmd", "list")
+	params.Set("cat", "games")
 	params.Set("_", strconv.FormatInt(time.Now().Unix(), 10))
 
 	u := p.Host + p.SearchPath + "?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, fmt.Errorf("scraper: search: %w", err)
+		return nil, fmt.Errorf("scraper: latest list: %w", err)
 	}
 	body, err := p.Client.do(req, searchMinDelay)
 	if err != nil {
 		return nil, err
 	}
 
-	var resp struct {
-		Status string `json:"status"`
-		Msg    struct {
-			Data []struct {
-				ThreadID int64           `json:"thread_id"`
-				Title    string          `json:"title"`
-				Creator  string          `json:"creator"`
-				Version  json.RawMessage `json:"version"`
-				Prefixes []int           `json:"prefixes"`
-				Cover    string          `json:"cover"`
-			} `json:"data"`
-		} `json:"msg"`
+	// Parse the envelope leniently: error responses carry msg as a plain
+	// string ("You have been temporarily blocked...") while success carries
+	// the object we want, so status is checked before the payload.
+	var env struct {
+		Status string          `json:"status"`
+		Msg    json.RawMessage `json:"msg"`
 	}
-	if err := json.Unmarshal([]byte(body), &resp); err != nil {
-		return nil, fmt.Errorf("scraper: search: invalid response: %w", err)
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		return nil, fmt.Errorf("scraper: latest list: invalid response: %w", err)
 	}
-	if resp.Status != "ok" {
-		return nil, fmt.Errorf("scraper: search: api error: %v", resp.Msg.Data)
+	if env.Status != "ok" {
+		return nil, fmt.Errorf("scraper: latest list: api error: %s", bulkErrorMsg(env.Msg))
 	}
 
-	results := make([]LatestSearchResult, 0, len(resp.Msg.Data))
-	for _, d := range resp.Msg.Data {
+	var resp latestDataResponse
+	if err := json.Unmarshal(env.Msg, &resp.Msg); err != nil {
+		return nil, fmt.Errorf("scraper: latest list: invalid response: %w", err)
+	}
+	return &resp, nil
+}
+
+// latestResults maps the wire rows to LatestSearchResult, dropping rows with
+// no usable thread ID.
+func latestResults(items []latestItem) []LatestSearchResult {
+	results := make([]LatestSearchResult, 0, len(items))
+	for _, d := range items {
 		if d.ThreadID <= 0 {
 			continue
 		}
@@ -468,9 +519,75 @@ func (p *PublicAPI) SearchTitle(ctx context.Context, query string) ([]LatestSear
 			Prefixes: d.Prefixes,
 			CoverURL: d.Cover,
 			Creator:  d.Creator,
+			Views:    d.Views,
+			Likes:    d.Likes,
+			Rating:   d.Rating,
+			Date:     d.Date,
+			Ts:       d.Ts,
 		})
 	}
-	return results, nil
+	return results
+}
+
+// ---------------------------------------------------------------------------
+// Discover feed: /sam/latest_alpha/latest_data.php?cmd=list (no search)
+// ---------------------------------------------------------------------------
+
+// browseSorts are the sort keys latest_data.php accepts for the Discover
+// feed. Anything else falls back to "date".
+var browseSorts = map[string]bool{
+	"date":   true,
+	"likes":  true,
+	"views":  true,
+	"rating": true,
+}
+
+// browseRows is the Discover page size. The endpoint clamps rows to a smooth
+// window (below ~20 it still returns 20); 30 matches F95Zone's own default.
+const browseRows = 30
+
+// LatestPage is one page of the Discover feed: the results plus the
+// pagination metadata latest_data.php reports.
+type LatestPage struct {
+	Results    []LatestSearchResult
+	Page       int
+	TotalPages int
+	TotalCount int
+}
+
+// ListLatest fetches a page of F95Zone's latest-updates index without a
+// search term — the feed behind the desktop Browse tab's Discover view.
+// Unlike SearchTitle it needs no query and no session. page is 1-based; sort
+// must be one of browseSorts and defaults to "date" otherwise.
+func (p *PublicAPI) ListLatest(ctx context.Context, page int, sort string) (*LatestPage, error) {
+	if page < 1 {
+		page = 1
+	}
+	if !browseSorts[sort] {
+		sort = "date"
+	}
+
+	params := url.Values{}
+	params.Set("page", strconv.Itoa(page))
+	params.Set("sort", sort)
+	params.Set("rows", strconv.Itoa(browseRows))
+
+	resp, err := p.latestData(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	// The endpoint reports the requested page; fall back to our own value if
+	// an older response omits the pagination block.
+	respPage := resp.Msg.Pagination.Page
+	if respPage < 1 {
+		respPage = page
+	}
+	return &LatestPage{
+		Results:    latestResults(resp.Msg.Data),
+		Page:       respPage,
+		TotalPages: resp.Msg.Pagination.Total,
+		TotalCount: resp.Msg.Count,
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
