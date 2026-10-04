@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -417,6 +418,31 @@ func TestScanSingleNonexistentDir(t *testing.T) {
 	g := ScanSingle("/nonexistent/path/12345")
 	if g.Engine == "" {
 		t.Error("expected non-empty engine even for nonexistent dir")
+	}
+}
+
+// TestScanSingleCollapsesWrapper verifies ScanSingle (used by `moxie detect`)
+// mirrors the scan's release-wrapper collapse: a wrapper around one
+// name-matching game reports the inner game's engine while keeping the
+// wrapper's path and title.
+func TestScanSingleCollapsesWrapper(t *testing.T) {
+	root := t.TempDir()
+	inner := filepath.Join(root, "Monster Girl Quest", "Monster girl quest Part1,2,3 English")
+	os.MkdirAll(inner, 0755)
+	os.WriteFile(filepath.Join(inner, "nscript.dat"), []byte("x"), 0644)
+
+	g := ScanSingle(filepath.Join(root, "Monster Girl Quest"))
+	if g.Path != filepath.Join(root, "Monster Girl Quest") {
+		t.Errorf("path = %s, want the wrapper path", g.Path)
+	}
+	if g.Title != "Monster Girl Quest" {
+		t.Errorf("title = %q, want wrapper title", g.Title)
+	}
+	if g.Engine != engine.Others {
+		t.Errorf("engine = %s, want Others", g.Engine)
+	}
+	if !strings.Contains(g.MatchedBy, "NScripter") {
+		t.Errorf("matched_by = %q, want it to mention NScripter", g.MatchedBy)
 	}
 }
 

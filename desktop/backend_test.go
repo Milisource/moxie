@@ -47,19 +47,22 @@ func TestUpsertDetected_UpdatePreservesCuratedFields(t *testing.T) {
 	g := detected("Curated Game", filepath.Join(dir, "Curated Game"))
 	a.upsertDetected([]scanner.DetectedGame{g}, false)
 
-	// User curates version + exe path; a rescan detects different ones.
 	existing, err := a.db.GetGameByPath(g.Path)
 	if err != nil || existing == nil {
 		t.Fatalf("GetGameByPath: %v", err)
 	}
+	// User curates version + exe path; a rescan detects different ones. Under
+	// the source model, curation means engine_source/version_source = "user".
 	if err := a.db.UpdateGame(&db.Game{
-		ID:      existing.ID,
-		Title:   existing.Title,
-		Path:    existing.Path,
-		Engine:  existing.Engine,
-		Version: "9.9",
-		ExePath: "/custom/curated.exe",
-		Status:  "active",
+		ID:            existing.ID,
+		Title:         existing.Title,
+		Path:          existing.Path,
+		Engine:        existing.Engine,
+		Version:       "9.9",
+		ExePath:       "/custom/curated.exe",
+		Status:        "active",
+		EngineSource:  "user",
+		VersionSource: "user",
 	}); err != nil {
 		t.Fatalf("UpdateGame: %v", err)
 	}

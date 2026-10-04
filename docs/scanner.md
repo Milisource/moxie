@@ -26,7 +26,7 @@ The scanner walks a directory tree, identifies which subdirectories are games, d
 
 6. **Check for category directories** — if the directory name matches a known engine (`Unity`, `Ren'Py`, `RPGM`, `HTML`, etc.) **and** it contains subdirectories that look like games, it's treated as a category folder (not a game itself). The walk continues into its children.
 
-7. **Release-wrapper collapse** — a non-game directory holding exactly one game (possibly through nested wrappers) whose name matches that game (prefix, ignoring case/punctuation/version) is registered as the wrapper itself; engine detection, exe discovery, and version resolution then descend into the inner game directory. This yields clean paths (`Brothel King/`, not `Brothel King/Brothel King/`) and recovers the wrapper's version (`Fox Girls…v1.03.01`). Engine-named category folders and the scan root never collapse.
+7. **Release-wrapper collapse** — a non-game directory holding exactly one game (possibly through nested wrappers) whose name matches that game (prefix, ignoring case/punctuation/version) is registered as the wrapper itself; engine detection, exe discovery, and version resolution then descend into the inner game directory. This yields clean paths (`Brothel King/`, not `Brothel King/Brothel King/`) and recovers the wrapper's version (`Fox Girls…v1.03.01`). Engine-named category folders and the scan root never collapse. `ScanSingle` — used by `moxie detect` and `moxie add` — applies the same collapse, so a single-directory detection agrees with what a scan would have registered.
 
 ### Engine Detection
 

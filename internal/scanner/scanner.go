@@ -240,17 +240,36 @@ func ScanSingle(dir string) DetectedGame {
 }
 
 // analyzeDir runs engine detection and computes size for a directory.
+//
+// It mirrors the scanner's release-wrapper collapse so `moxie detect` reports
+// what a scan would have registered: when dir is not itself a game root but
+// wraps exactly one name-matching game (e.g. "Monster Girl Quest" around
+// "Monster girl quest Part1,2,3 English"), engine detection, exe discovery,
+// and version resolution descend into the inner game while the reported path
+// and title stay the wrapper's. Without this, detect would report "no matching
+// profile" for a wrapper the scanner classified correctly.
 func analyzeDir(dir, root string) DetectedGame {
-	result := engine.Detect(dir)
+	detectDir := dir
+	if entries, err := os.ReadDir(dir); err == nil {
+		base := filepath.Base(dir)
+		if !isGameRoot(dir, entries) && !isEngineName(strings.ToLower(base)) {
+			if inner := soleGameDir(dir, entries, 4); inner != "" &&
+				wrapperMatchesName(base, filepath.Base(inner)) {
+				detectDir = inner
+			}
+		}
+	}
+
+	result := engine.Detect(detectDir)
 	name := filepath.Base(dir)
-	exe := findGameExe(dir)
+	exe := findGameExe(detectDir)
 
 	return DetectedGame{
 		Title:      name,
 		Path:       dir,
 		ExePath:    exe,
 		Engine:     result.Engine,
-		Version:    resolveVersion(dir, dir, exe),
+		Version:    resolveVersion(dir, detectDir, exe),
 		SizeBytes:  dirSize(dir),
 		MatchedBy:  result.MatchedBy,
 		Confidence: result.Confidence,
