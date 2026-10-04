@@ -68,6 +68,54 @@ func TestGameUpdateGuardRejectsConcurrentRuns(t *testing.T) {
 	})
 }
 
+// Parallel update workers sync their games concurrently, so the pipeline's
+// internal sync must not take the global netBusy guard — routing it through
+// netBusy is what made every game but the first fail with "another network
+// request is already in progress". The exported binding keeps the guard for
+// stacked UI clicks.
+func TestSyncSingleGameNetBusyBoundary(t *testing.T) {
+	a := newTestApp(t)
+	id := addGame(t, a, "Test Game", "/games/test-game")
+
+	// Simulate another blocking network binding already in flight.
+	a.netBusy.Store(true)
+	defer a.netBusy.Store(false)
+
+	t.Run("internal sync bypasses netBusy", func(t *testing.T) {
+		// A nonexistent id short-circuits at the DB lookup, before any network
+		// IO, so the only way to see the netBusy error here is a guard leak.
+		err := a.syncSingleGame(999999)
+		if err == nil {
+			t.Fatal("expected an error for a nonexistent game id")
+		}
+		if strings.Contains(err.Error(), "another network request is already in progress") {
+			t.Fatalf("internal sync was blocked by netBusy: %v", err)
+		}
+	})
+
+	t.Run("interactive binding rejects while netBusy", func(t *testing.T) {
+		err := a.SyncSingleGame(id)
+		if err == nil || !strings.Contains(err.Error(), "another network request is already in progress") {
+			t.Fatalf("SyncSingleGame = %v, want netBusy rejection", err)
+		}
+	})
+}
+
+// A game with an in-flight update/install must not accept an interactive sync:
+// both rewrite the same game row, so the binding rejects rather than racing.
+func TestSyncSingleGameRejectsWhileUpdating(t *testing.T) {
+	a := newTestApp(t)
+	id := addGame(t, a, "Test Game", "/games/test-game")
+
+	a.updateGate().claimGame(id)
+	defer a.updateGate().release(id)
+
+	err := a.SyncSingleGame(id)
+	if err == nil || !strings.Contains(err.Error(), "already in progress") {
+		t.Fatalf("SyncSingleGame = %v, want rejection while the game is updating", err)
+	}
+}
+
 // Manual scans and watcher rescans are single-flight: a second ScanDirectory
 // while one is running must be rejected before any goroutine is spawned.
 func TestScanDirectoryGuardRejectsConcurrent(t *testing.T) {

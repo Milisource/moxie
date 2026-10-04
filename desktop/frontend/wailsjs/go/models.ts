@@ -220,6 +220,8 @@ export namespace main {
 	    coverH?: number;
 	    coverTone?: string;
 	    coverSource?: string;
+	    wideW?: number;
+	    wideH?: number;
 	    createdAt?: string;
 	    lastPlayed?: string;
 	    updateState: string;
@@ -257,6 +259,8 @@ export namespace main {
 	        this.coverH = source["coverH"];
 	        this.coverTone = source["coverTone"];
 	        this.coverSource = source["coverSource"];
+	        this.wideW = source["wideW"];
+	        this.wideH = source["wideH"];
 	        this.createdAt = source["createdAt"];
 	        this.lastPlayed = source["lastPlayed"];
 	        this.updateState = source["updateState"];
@@ -308,6 +312,8 @@ export namespace main {
 	    coverH?: number;
 	    coverTone?: string;
 	    coverSource?: string;
+	    wideW?: number;
+	    wideH?: number;
 	    createdAt?: string;
 	    lastPlayed?: string;
 	    updateState: string;
@@ -333,6 +339,8 @@ export namespace main {
 	        this.coverH = source["coverH"];
 	        this.coverTone = source["coverTone"];
 	        this.coverSource = source["coverSource"];
+	        this.wideW = source["wideW"];
+	        this.wideH = source["wideH"];
 	        this.createdAt = source["createdAt"];
 	        this.lastPlayed = source["lastPlayed"];
 	        this.updateState = source["updateState"];

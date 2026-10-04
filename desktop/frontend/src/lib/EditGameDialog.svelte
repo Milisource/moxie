@@ -4,7 +4,11 @@
   // EditGame call; the backend treats Title as a metadata-only change (it
   // never renames the directory — that stays on RenameGame).
   import {Dialog} from 'bits-ui'
-  import {GetGameDetail, EditGame} from '../../wailsjs/go/main/App'
+  import {
+    GetGameDetail, EditGame, GetCoverBaseURL,
+    FindCoverCandidates, SetGameCover, SetGameCoverFromFile,
+    PickCoverImage, PreviewCoverFile,
+  } from '../../wailsjs/go/main/App'
   import {engineColor, engineOptions} from './engineColors.js'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
   import {editGameState, settleEditGame} from './editGameDialog.svelte.js'
@@ -13,6 +17,28 @@
   let saving = $state(false)
   let error = $state('')
   let form = $state(null)
+
+  // ── Cover art ──────────────────────────────────────────────
+  // Cover edits are staged and applied on Save, like the text fields: the
+  // dialog shows a live preview (the cached cover, the typed URL or the local
+  // file) without touching the cache until Save succeeds.
+  let coverBase = $state('')
+  let cover = $state(null)        // persisted cover: {hasCover, coverUrl, coverW, coverH, coverSource}
+  let coverUrlInput = $state('')
+  let pending = $state(null)      // {kind:'url', url, source, preview} | {kind:'file', file, preview}
+  let coverBusy = $state(false)
+  let coverError = $state('')
+  let coverStatus = $state('')
+  let picker = $state({open: false, loading: false, error: '', items: []})
+
+  let coverPreview = $derived.by(() => {
+    if (pending?.preview) return pending.preview
+    if (cover?.hasCover && coverBase) {
+      const rev = cover.coverW ? `${cover.coverW}x${cover.coverH}${cover.coverSource ? '-' + cover.coverSource : ''}` : ''
+      return `${coverBase}/cover/${editGameState.gameId}/thumb${rev ? '?v=' + rev : ''}`
+    }
+    return cover?.coverUrl || ''
+  })
 
   let engineChoices = $derived.by(() => {
     const base = engineOptions()
@@ -34,8 +60,23 @@
     loading = true
     error = ''
     form = null
+    pending = null
+    coverError = ''
+    coverStatus = ''
+    picker = {open: false, loading: false, error: '', items: []}
     try {
+      if (!coverBase) {
+        try { coverBase = await GetCoverBaseURL() } catch { /* remote fallback still works */ }
+      }
       const d = await GetGameDetail(id)
+      cover = {
+        hasCover: !!d.hasCover,
+        coverUrl: d.coverUrl || '',
+        coverW: d.coverW || 0,
+        coverH: d.coverH || 0,
+        coverSource: d.coverSource || '',
+      }
+      coverUrlInput = d.coverUrl || ''
       form = {
         title: d.title || '',
         developer: d.developer || '',
@@ -55,6 +96,75 @@
     } finally {
       loading = false
     }
+  }
+
+  // ── Cover handlers ─────────────────────────────────────────
+  function stageCoverUrl() {
+    const url = coverUrlInput.trim()
+    if (!url) {
+      coverError = 'Enter an image URL first.'
+      return
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      coverError = 'Cover URL must start with http:// or https://'
+      return
+    }
+    pending = {kind: 'url', url, source: 'manual', preview: url}
+    coverError = ''
+    coverStatus = 'Cover URL will be applied when you save.'
+  }
+
+  async function chooseCoverFile() {
+    coverError = ''
+    coverBusy = true
+    try {
+      const path = await PickCoverImage()
+      if (!path) return
+      let preview = ''
+      try {
+        preview = await PreviewCoverFile(path)
+      } catch (e) {
+        // Preview is best-effort: still stage the file, the backend validates
+        // it for real on save.
+        coverError = fmtErr(e)
+      }
+      pending = {kind: 'file', file: path, preview}
+      coverStatus = 'Local image will be applied when you save.'
+    } catch (e) {
+      coverError = fmtErr(e)
+    } finally {
+      coverBusy = false
+    }
+  }
+
+  async function toggleSearch() {
+    if (picker.open) {
+      picker = {...picker, open: false}
+      return
+    }
+    picker = {open: true, loading: true, error: '', items: []}
+    coverError = ''
+    try {
+      const items = await FindCoverCandidates(Number(editGameState.gameId))
+      picker = {open: true, loading: false, error: '', items: items || []}
+    } catch (e) {
+      picker = {open: true, loading: false, error: fmtErr(e), items: []}
+    }
+  }
+
+  function chooseCandidate(c) {
+    pending = {kind: 'url', url: c.url, source: c.source, preview: c.thumb || c.url}
+    coverUrlInput = c.url
+    picker = {...picker, open: false}
+    coverError = ''
+    coverStatus = `Cover from ${c.source} will be applied when you save.`
+  }
+
+  function clearPendingCover() {
+    pending = null
+    coverError = ''
+    coverStatus = ''
+    coverUrlInput = cover?.coverUrl || ''
   }
 
   function parseTags(s) {
@@ -89,6 +199,13 @@
     saving = true
     error = ''
     try {
+      // Apply a staged cover change first: it is the network/IO-heavy step, so
+      // a bad URL or unreadable file surfaces before any field is written.
+      if (pending?.kind === 'url') {
+        await SetGameCover(editGameState.gameId, pending.url, pending.source || 'manual')
+      } else if (pending?.kind === 'file') {
+        await SetGameCoverFromFile(editGameState.gameId, pending.file)
+      }
       await EditGame(editGameState.gameId, {
         title,
         developer: form.developer.trim(),
@@ -132,6 +249,74 @@
               <!-- svelte-ignore a11y_autofocus -->
               <input class="field-input" type="text" bind:value={form.title} autofocus />
             </label>
+
+            <div class="field span-2 cover-edit">
+              <span class="field-label">Cover art</span>
+              <div class="cover-edit-body">
+                <div class="cover-preview">
+                  {#if coverPreview}
+                    <img src={coverPreview} alt="Cover preview" />
+                  {:else}
+                    <span class="cover-preview-empty">No cover</span>
+                  {/if}
+                </div>
+                <div class="cover-edit-controls">
+                  <div class="cover-url-row">
+                    <input
+                      class="field-input mono"
+                      type="text"
+                      aria-label="Cover image URL"
+                      placeholder="https://…/cover.jpg"
+                      bind:value={coverUrlInput}
+                      onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); stageCoverUrl() } }}
+                    />
+                    <button type="button" class="cover-btn" onclick={stageCoverUrl} disabled={coverBusy}>Use URL</button>
+                  </div>
+                  <div class="cover-btn-row">
+                    <button type="button" class="cover-btn" onclick={chooseCoverFile} disabled={coverBusy}>
+                      {coverBusy ? 'Choosing…' : 'Choose file…'}
+                    </button>
+                    <button type="button" class="cover-btn" onclick={toggleSearch} disabled={coverBusy || picker.loading}>
+                      {picker.loading ? 'Searching…' : (picker.open ? 'Hide search' : 'Search online…')}
+                    </button>
+                    {#if pending}
+                      <button type="button" class="cover-btn" onclick={clearPendingCover} disabled={coverBusy}>Undo change</button>
+                    {/if}
+                  </div>
+                  {#if coverStatus}<p class="cover-hint">{coverStatus}</p>{/if}
+                  {#if coverError}<p class="cover-hint cover-hint-err">{coverError}</p>{/if}
+                  {#if picker.open}
+                    <div class="cover-picker">
+                      <div class="cover-picker-head">
+                        <span>Cover candidates</span>
+                        <button type="button" class="cover-btn" onclick={() => picker = {...picker, open: false}}>Close</button>
+                      </div>
+                      {#if picker.loading}
+                        <p class="cover-hint">Searching…</p>
+                      {:else if picker.error}
+                        <p class="cover-hint cover-hint-err">{picker.error}</p>
+                      {:else if picker.items.length === 0}
+                        <p class="cover-hint">No exact title match on the enabled sources (Settings → Cover art).</p>
+                      {/if}
+                      <div class="cover-picker-grid">
+                        {#each picker.items as c (c.url)}
+                          <button
+                            type="button"
+                            class="cand"
+                            class:cand-active={pending?.kind === 'url' && pending.url === c.url}
+                            onclick={() => chooseCandidate(c)}
+                            title={c.note || c.source}
+                          >
+                            <img src={c.thumb || c.url} alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" />
+                            <span class="cand-meta">{c.source} · {c.w}×{c.h}</span>
+                          </button>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            </div>
 
             <label class="field">
               <span class="field-label">Developer</span>
@@ -324,6 +509,89 @@
     cursor: pointer;
   }
   .add-store:hover { color: var(--text-primary); border-color: var(--rule-strong); }
+
+  /* ── Cover art editor ─────────────────────────── */
+  .cover-edit-body {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .cover-preview {
+    flex: 0 0 96px;
+    width: 96px;
+    aspect-ratio: 3 / 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-tertiary);
+    overflow: hidden;
+  }
+  .cover-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .cover-preview-empty { color: var(--text-muted); font-size: var(--text-xs); }
+  .cover-edit-controls { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .cover-url-row { display: flex; gap: 6px; }
+  .cover-url-row .field-input { flex: 1; min-width: 0; }
+  .cover-btn-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .cover-btn {
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .cover-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+  .cover-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .cover-hint { margin: 0; font-size: var(--text-xs); color: var(--text-muted); }
+  .cover-hint-err { color: var(--danger); }
+  .cover-picker {
+    margin-top: 4px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-secondary);
+  }
+  .cover-picker-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+  }
+  .cover-picker-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .cand {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-tertiary);
+    cursor: pointer;
+    text-align: left;
+    overflow: hidden;
+  }
+  .cand:hover { border-color: var(--rule-strong); }
+  .cand-active { border-color: var(--accent); }
+  .cand img { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; display: block; }
+  .cand-meta {
+    padding: 2px 4px;
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
   .edit-error {
     margin: 0 0 12px;

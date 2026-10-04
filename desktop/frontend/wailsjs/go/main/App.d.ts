@@ -99,9 +99,13 @@ export function OpenDownloadURL(arg1:number):Promise<void>;
 
 export function OpenUpdateDownloadPage(arg1:number):Promise<string>;
 
+export function PickCoverImage():Promise<string>;
+
 export function PickDirectory():Promise<string>;
 
 export function PlayGame(arg1:number):Promise<string>;
+
+export function PreviewCoverFile(arg1:string):Promise<string>;
 
 export function ProvideUpdateFile(arg1:number):Promise<void>;
 
@@ -134,6 +138,8 @@ export function SetCoverLocked(arg1:number,arg2:boolean):Promise<void>;
 export function SetCoverSources(arg1:boolean,arg2:boolean):Promise<void>;
 
 export function SetGameCover(arg1:number,arg2:string,arg3:string):Promise<void>;
+
+export function SetGameCoverFromFile(arg1:number,arg2:string):Promise<void>;
 
 export function SetGameStatus(arg1:number,arg2:string):Promise<void>;
 

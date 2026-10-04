@@ -111,7 +111,9 @@ type App struct {
 	// netBusy serialises the blocking network bindings (SearchF95Zone,
 	// GetThreadPreview, AddGameFromF95Zone, SyncSingleGame, CheckForUpdate).
 	// Each runs synchronously on the Wails call goroutine; stacked concurrent
-	// calls would pile up goroutines hammering F95Zone/GitHub at once.
+	// calls would pile up goroutines hammering F95Zone/GitHub at once. The
+	// update pipeline's internal sync (syncSingleGame) deliberately bypasses
+	// it — parallel updates are bounded by the update slot limit.
 	netBusy atomic.Bool
 
 	// sfSearch coalesces repeated SearchF95Zone calls for the same query:
@@ -363,6 +365,10 @@ type DesktopGameSummary struct {
 	CoverH      int    `json:"coverH,omitempty"`
 	CoverTone   string `json:"coverTone,omitempty"`
 	CoverSource string `json:"coverSource,omitempty"`
+	// WideW/WideH describe the rendered wide-view rendition (.wide), used only
+	// to version its URL so a replaced banner busts the webview cache.
+	WideW int `json:"wideW,omitempty"`
+	WideH int `json:"wideH,omitempty"`
 	// CreatedAt/LastPlayed are RFC3339, empty when unknown/never played. The
 	// desktop library's recency-first sort and "Recently played" quick view
 	// (89b6359) read these — until this change they only worked against the
@@ -1450,6 +1456,7 @@ func gameToSummaryCovers(g *db.Game, covers map[int64]bool, lastPlayed map[int64
 		if s.HasCover {
 			if m, ok := coverMetaFromDir()[g.ID]; ok {
 				s.CoverW, s.CoverH, s.CoverTone, s.CoverSource = m.W, m.H, m.Tone, m.Source
+				s.WideW, s.WideH = m.WideW, m.WideH
 			}
 		}
 	} else {
@@ -1459,6 +1466,7 @@ func gameToSummaryCovers(g *db.Game, covers map[int64]bool, lastPlayed map[int64
 			s.HasCover = true
 			if m, ok := readCoverMeta(coverPath); ok {
 				s.CoverW, s.CoverH, s.CoverTone, s.CoverSource = m.W, m.H, m.Tone, m.Source
+				s.WideW, s.WideH = m.WideW, m.WideH
 			}
 		}
 	}
@@ -2790,9 +2798,14 @@ func (a *App) cacheCoverCtx(ctx context.Context, gameID int64, coverURL string) 
 	// served forever. The sidecar URL marker is written alongside each cover.
 	if _, err := os.Stat(coverPath); err == nil {
 		if coverPinned(coverPath) {
-			return coverPath
-		}
-		if b, rerr := os.ReadFile(coverPath + ".url"); rerr == nil {
+			// The primary is locked/upgraded: never replace it with the F95
+			// banner. But the wide view still wants that banner, so retain it
+			// separately unless we already have it for this URL.
+			if coverBannerCurrent(coverPath, coverURL) {
+				return coverPath
+			}
+			// fall through to fetch the banner
+		} else if b, rerr := os.ReadFile(coverPath + ".url"); rerr == nil {
 			if strings.TrimSpace(string(b)) == coverURL {
 				return coverPath
 			}
@@ -2875,6 +2888,17 @@ func (a *App) fetchAndCacheCover(ctx context.Context, gameID int64, coverURL, co
 		return ""
 	}
 
+	// A pinned primary (locked or upgraded to portrait art) must not be
+	// replaced, but its F95 banner is still the best wide-view art: retain it
+	// separately. Re-checked here because this runs inside the singleflight.
+	if coverPinned(coverPath) {
+		if retainCoverBannerData(coverPath, data, "f95", coverURL) {
+			invalidateCoverSetCache()
+			slog.Info("cover banner cached", "game_id", gameID, "bytes", len(data), "elapsed", time.Since(start))
+		}
+		return coverPath
+	}
+
 	if err := os.WriteFile(coverPath, data, 0644); err != nil {
 		slog.Error("failed to write cover file", "game_id", gameID, "path", coverPath, "error", err)
 		return ""
@@ -2887,7 +2911,7 @@ func (a *App) fetchAndCacheCover(ctx context.Context, gameID int64, coverURL, co
 	})
 	invalidateCoverSetCache()
 
-	thumb := writeCoverThumb(coverPath)
+	thumb := writeCoverRenditions(coverPath)
 	slog.Info("cover cached", "game_id", gameID, "bytes", len(data), "thumb", thumb.String(), "elapsed", time.Since(start))
 	return coverPath
 }
@@ -4578,16 +4602,35 @@ func (a *App) GetCookieStatus() string {
 // which carries version/status/developer/description/cover but no download
 // links. See docs/scraper.md, "Cookies vs. cookie-free".
 func (a *App) SyncSingleGame(id int64) error {
-	if a.db == nil {
-		return fmt.Errorf("database not initialized")
+	// An update run rewrites the same game row and directory, so a sync for
+	// that game would race it. Reject rather than stack requests. (Different
+	// games' updates are unaffected — that is the point of the unguarded
+	// internal path.)
+	if a.updateGate().claimed(id) {
+		return fmt.Errorf("an update is already in progress for this game")
 	}
-	// Blocking network binding — serialized like the other F95Zone calls.
-	// Also held by the update pipeline's internal per-game sync, so a
-	// concurrent interactive sync rejects rather than stacking requests.
+	// Blocking network binding — serialized like the other F95Zone calls so
+	// stacked UI clicks can't pile up requests. The update pipeline calls
+	// syncSingleGame directly instead: its per-game syncs run in parallel,
+	// bounded by the update slot limit, and routing them through netBusy would
+	// fail every game but the first with "another network request is already
+	// in progress".
 	if !a.netBusy.CompareAndSwap(false, true) {
 		return fmt.Errorf("another network request is already in progress")
 	}
 	defer a.netBusy.Store(false)
+	return a.syncSingleGame(id)
+}
+
+// syncSingleGame is the unguarded implementation behind SyncSingleGame and the
+// update pipeline's per-game sync step. Callers that run in parallel (the batch
+// update and single-game update workers) must use this directly rather than
+// SyncSingleGame, whose netBusy guard exists only to serialise blocking Wails
+// bindings.
+func (a *App) syncSingleGame(id int64) error {
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
 
 	game, err := a.db.GetGame(id)
 	if err != nil {
@@ -4887,7 +4930,9 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 		"phase":  "syncing",
 	})
 
-	if err := a.SyncSingleGame(gameID); err != nil {
+	// The internal sync runs unguarded (syncSingleGame, not SyncSingleGame):
+	// parallel update workers must not contend on netBusy.
+	if err := a.syncSingleGame(gameID); err != nil {
 		slog.Error("game update: sync failed", "gameID", gameID, "error", err)
 		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
 			"gameID":  gameID,

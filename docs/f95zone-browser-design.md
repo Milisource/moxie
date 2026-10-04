@@ -158,6 +158,8 @@ Users can switch between three layouts:
 - **Large grid**: ~3 columns, bigger covers
 - **List view**: Traditional table rows with smaller thumbnails
 
+> **Moxie status (2026-10-04, F95-c4vv):** the desktop library now mirrors this with three layouts — the portrait-cover **Grid**, the **Wide** tile grid above (landscape 16:9 art with overlaid engine/status tags and version, a two-line title and a last-played · size line), and the dense **List**. `GameWideCard.svelte` renders the wide tiles. See `docs/desktop-ui-research.md` §8.
+
 ### 6. Stat Badges
 
 Each tile shows key stats at a glance:

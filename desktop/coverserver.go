@@ -166,8 +166,11 @@ func backfillCoverThumbs(ctxs ...context.Context) int {
 		// only runs once per app version (gated by the marker above), and a
 		// coverThumbFormat bump (thumbnail geometry/filter change) needs to
 		// regenerate thumbnails that already exist on disk, not just fill in
-		// covers that never got one. writeCoverThumb overwrites in place.
-		switch writeCoverThumb(full) {
+		// covers that never got one. writeCoverRenditions overwrites in place.
+		// migrateCoverBanner first so a pre-existing portrait upgrade's old
+		// banner (still in .prev) seeds the wide rendition.
+		migrateCoverBanner(full)
+		switch writeCoverRenditions(full) {
 		case thumbWritten:
 			count++
 		case thumbDecodeFailed:
@@ -193,9 +196,11 @@ func backfillCoverThumbs(ctxs ...context.Context) int {
 
 // handleCover serves /cover/<gameID> (full image),
 // /cover/<gameID>/thumb (grid thumbnail, falling back to the full image when
-// no thumbnail exists) and /cover/<gameID>/large (detail-view variant, long
-// edge ≤ coverLargeMaxDim, generated on first request). Only numeric game IDs are accepted,
-// so the path can never escape the cover directory by construction.
+// no thumbnail exists), /cover/<gameID>/wide (wide-view rendition, built from
+// the retained landscape banner or a crop of the primary, generated on first
+// request) and /cover/<gameID>/large (detail-view variant, long edge ≤
+// coverLargeMaxDim, generated on first request). Only numeric game IDs are
+// accepted, so the path can never escape the cover directory by construction.
 func (cs *coverServer) handleCover(w http.ResponseWriter, r *http.Request) {
 	// DNS-rebinding defense: the browser's Host header names the host it
 	// actually connected to. A rebinding attack resolves an attacker domain
@@ -208,13 +213,16 @@ func (cs *coverServer) handleCover(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/cover/")
 	rest = strings.TrimSuffix(rest, "/")
 
-	thumb, large := false, false
+	thumb, large, wide := false, false, false
 	if strings.HasSuffix(rest, "/thumb") {
 		thumb = true
 		rest = strings.TrimSuffix(rest, "/thumb")
 	} else if strings.HasSuffix(rest, "/large") {
 		large = true
 		rest = strings.TrimSuffix(rest, "/large")
+	} else if strings.HasSuffix(rest, "/wide") {
+		wide = true
+		rest = strings.TrimSuffix(rest, "/wide")
 	}
 
 	id, err := strconv.ParseInt(rest, 10, 64)
@@ -241,6 +249,18 @@ func (cs *coverServer) handleCover(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		path = ensureCoverLarge(path)
+	} else if wide {
+		if _, err := os.Stat(path + ".wide"); err != nil {
+			// Replaced covers and newly-retained banners drop their wide
+			// rendition; rebuild it on first request rather than serving the
+			// full image to the wide card.
+			if _, err := resolveUnderCoverDir(path); err == nil && writeCoverWide(path) == thumbWritten {
+				invalidateCoverSetCache()
+			}
+		}
+		if _, err := os.Stat(path + ".wide"); err == nil {
+			path += ".wide"
+		}
 	}
 
 	// Resolve symlinks and refuse anything that escapes the cover directory:

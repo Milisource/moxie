@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"image"
 	"log/slog"
 	"os"
 	"strings"
@@ -62,6 +64,7 @@ func (a *App) SetSteamGridDBKey(key string) error {
 type CoverUpgradeResult struct {
 	Checked  int      `json:"checked"`
 	Replaced int      `json:"replaced"`
+	Banners  int      `json:"banners"` // landscape banners retained for the wide view
 	Failed   int      `json:"failed"`
 	Errors   []string `json:"errors,omitempty"` // first few source errors
 }
@@ -111,7 +114,7 @@ func (a *App) upgradeCoversRun(ctx context.Context, opts coverart.Options) (Cove
 		p := coverPathFor(g.ID)
 		m, _ := readCoverMeta(p)
 		w, h := coverart.CurrentSize(p)
-		if coverart.NeedsUpgrade(w, h, m.Locked) {
+		if coverart.NeedsUpgrade(w, h, m.Locked) || coverNeedsBanner(p) {
 			todo = append(todo, g)
 		}
 	}
@@ -125,26 +128,43 @@ func (a *App) upgradeCoversRun(ctx context.Context, opts coverart.Options) (Cove
 		res.Checked++
 		p := coverPathFor(g.ID)
 		w, h := coverart.CurrentSize(p)
-		found := finder.Find(ctx, coverart.Game{Title: g.Title, SteamAppID: g.SteamAppID})
-		for _, e := range found.Errors {
-			if len(res.Errors) < 5 {
-				res.Errors = append(res.Errors, g.Title+": "+e)
+		m, _ := readCoverMeta(p)
+		gameKey := coverart.Game{Title: g.Title, SteamAppID: g.SteamAppID}
+
+		// Portrait primary cover.
+		if coverart.NeedsUpgrade(w, h, m.Locked) {
+			found := finder.Find(ctx, gameKey)
+			for _, e := range found.Errors {
+				if len(res.Errors) < 5 {
+					res.Errors = append(res.Errors, g.Title+": "+e)
+				}
+			}
+			if pick, ok := coverart.Better(found.Candidates, w, h); ok {
+				if err := a.storeCoverCandidate(ctx, g.ID, pick, false); err != nil {
+					slog.Warn("cover upgrade: store failed", "game_id", g.ID, "url", pick.URL, "error", err)
+					res.Failed++
+				} else {
+					if found.SteamAppID != 0 {
+						_ = a.db.SetGameSteamAppIDIfEmpty(g.ID, found.SteamAppID)
+					}
+					slog.Info("cover upgraded", "game_id", g.ID, "title", g.Title, "from", fmt.Sprintf("%dx%d", w, h), "to", fmt.Sprintf("%dx%d", pick.W, pick.H), "source", pick.Source)
+					res.Replaced++
+				}
 			}
 		}
-		pick, ok := coverart.Better(found.Candidates, w, h)
-		if !ok {
-			continue
+
+		// Landscape banner for the wide view. Skipped when replacing the
+		// primary already retained its landscape art as the banner.
+		if coverNeedsBanner(p) {
+			if ban, ok := finder.FindBanner(ctx, gameKey); ok {
+				if err := a.storeCoverBanner(ctx, g.ID, ban); err != nil {
+					slog.Warn("banner fetch: store failed", "game_id", g.ID, "url", ban.URL, "error", err)
+				} else {
+					slog.Info("banner fetched", "game_id", g.ID, "title", g.Title, "size", fmt.Sprintf("%dx%d", ban.W, ban.H), "source", ban.Source)
+					res.Banners++
+				}
+			}
 		}
-		if err := a.storeCoverCandidate(ctx, g.ID, pick, false); err != nil {
-			slog.Warn("cover upgrade: store failed", "game_id", g.ID, "url", pick.URL, "error", err)
-			res.Failed++
-			continue
-		}
-		if found.SteamAppID != 0 {
-			_ = a.db.SetGameSteamAppIDIfEmpty(g.ID, found.SteamAppID)
-		}
-		slog.Info("cover upgraded", "game_id", g.ID, "title", g.Title, "from", fmt.Sprintf("%dx%d", w, h), "to", fmt.Sprintf("%dx%d", pick.W, pick.H), "source", pick.Source)
-		res.Replaced++
 	}
 	if res.Replaced > 0 {
 		releaseDecoderMemory()
@@ -160,14 +180,47 @@ func (a *App) storeCoverCandidate(ctx context.Context, gameID int64, c coverart.
 	if err != nil {
 		return err
 	}
+	return a.storeCoverData(gameID, data, cfg, c, lock)
+}
+
+// storeCoverData writes already-decoded image data as gameID's cover,
+// rebuilding the renditions and invalidating the cover-set cache. lock pins the
+// cover against syncs and upgrades. A landscape cover being replaced is kept as
+// the wide-view banner; a landscape incoming cover becomes its own banner.
+func (a *App) storeCoverData(gameID int64, data []byte, cfg image.Config, c coverart.Candidate, lock bool) error {
 	if err := os.MkdirAll(config.CoverDir(), 0o700); err != nil {
 		return err
 	}
 	p := coverPathFor(gameID)
+	captureCoverBanner(p)
 	if err := coverart.Store(p, data, cfg, c, lock); err != nil {
 		return err
 	}
-	writeCoverThumb(p)
+	if isLandscape(cfg.Width, cfg.Height) {
+		coverart.RemoveBanner(p)
+	}
+	writeCoverRenditions(p)
+	invalidateCoverSetCache()
+	return nil
+}
+
+// storeCoverBanner downloads a landscape candidate and retains it as gameID's
+// wide-view banner, rebuilding the wide rendition. It leaves the primary cover
+// untouched.
+func (a *App) storeCoverBanner(ctx context.Context, gameID int64, c coverart.Candidate) error {
+	data, _, err := coverart.Fetch(ctx, c.URL)
+	if err != nil {
+		return err
+	}
+	p := coverPathFor(gameID)
+	ok, err := coverart.StoreBanner(p, data, c.Source, c.URL)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("image is not landscape")
+	}
+	writeCoverWide(p)
 	invalidateCoverSetCache()
 	return nil
 }
@@ -196,13 +249,84 @@ func (a *App) FindCoverCandidates(gameID int64) ([]coverart.Candidate, error) {
 	return res.Candidates, nil
 }
 
-// SetGameCover installs a picked candidate as the cover and locks it so
-// syncs and upgrades leave it alone.
+// SetGameCover installs a picked or user-supplied image URL as the cover and
+// locks it so syncs and upgrades leave it alone.
 func (a *App) SetGameCover(gameID int64, url, source string) error {
-	if !strings.HasPrefix(url, "https://") {
-		return fmt.Errorf("cover URL must be https")
+	url = strings.TrimSpace(url)
+	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
+		return fmt.Errorf("cover URL must be an http(s) URL")
+	}
+	if source == "" {
+		source = "manual"
 	}
 	return a.storeCoverCandidate(a.ctx, gameID, coverart.Candidate{URL: url, Source: source}, true)
+}
+
+// SetGameCoverFromFile installs a local image file as the cover and locks it so
+// syncs and upgrades leave it alone. The file must be a format the app can
+// display.
+func (a *App) SetGameCoverFromFile(gameID int64, path string) error {
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if g, err := a.db.GetGame(gameID); err != nil || g == nil {
+		return fmt.Errorf("game %d not found", gameID)
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("no cover file chosen")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading cover file: %w", err)
+	}
+	img, err := decodeCoverImage(data)
+	if err != nil {
+		return fmt.Errorf("not a decodable image (png, jpg, webp, gif, avif)")
+	}
+	b := img.Bounds()
+	cfg := image.Config{Width: b.Dx(), Height: b.Dy()}
+	return a.storeCoverData(gameID, data, cfg, coverart.Candidate{Source: "manual"}, true)
+}
+
+// PickCoverImage opens a native file picker filtered to image files and
+// returns the chosen path, or "" when the user cancels.
+func (a *App) PickCoverImage() string {
+	if a.ctx == nil {
+		return ""
+	}
+	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Choose Cover Image",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Images", Pattern: "*.png;*.jpg;*.jpeg;*.webp;*.gif;*.avif"},
+			{DisplayName: "All Files", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		slog.Error("cover image picker failed", "error", err)
+		return ""
+	}
+	return path
+}
+
+// maxCoverPreviewBytes caps the image PreviewCoverFile inlines as a data URL.
+const maxCoverPreviewBytes = 8 << 20
+
+// PreviewCoverFile reads a local image and returns it as a data URL so the
+// Edit Game dialog can show the chosen file before the cover is installed. The
+// file must be a format the app can display and at most maxCoverPreviewBytes.
+func (a *App) PreviewCoverFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading image: %w", err)
+	}
+	if len(data) > maxCoverPreviewBytes {
+		return "", fmt.Errorf("image is too large to preview (%d MiB max)", maxCoverPreviewBytes>>20)
+	}
+	if !knownImageFormat(data) {
+		return "", fmt.Errorf("not a supported image (png, jpg, webp, gif, avif)")
+	}
+	return "data:image/" + imageMimeFromPrefix(data) + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
 // SetCoverLocked pins (or unpins) the current cover against automatic
@@ -235,7 +359,11 @@ func (a *App) RevertCover(gameID int64) error {
 	if m, ok := readCoverMeta(p); ok && m.URL != "" {
 		_ = os.WriteFile(p+".url", []byte(m.URL), 0o644)
 	}
-	writeCoverThumb(p)
+	// The restored cover may itself be landscape: then it is its own banner.
+	if w, h := coverart.CurrentSize(p); isLandscape(w, h) {
+		coverart.RemoveBanner(p)
+	}
+	writeCoverRenditions(p)
 	invalidateCoverSetCache()
 	return nil
 }

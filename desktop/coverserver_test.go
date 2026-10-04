@@ -314,6 +314,63 @@ func TestWriteCoverThumbDownscales(t *testing.T) {
 	}
 }
 
+func TestCoverServerBuildsWideRendition(t *testing.T) {
+	coverDir := testCoverDir(t)
+	if err := os.MkdirAll(coverDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Portrait primary + a retained landscape banner.
+	coverPath := filepath.Join(coverDir, "7")
+	if err := os.WriteFile(coverPath, makePNG(t, 600, 900), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(coverPath+".banner", makePNG(t, 1600, 900), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cs := startCoverServer()
+	if cs == nil {
+		t.Fatal("startCoverServer returned nil")
+	}
+	t.Cleanup(cs.Close)
+
+	resp, err := http.Get(cs.BaseURL() + "/cover/7/wide")
+	if err != nil {
+		t.Fatalf("GET /cover/7/wide: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/jpeg" {
+		t.Errorf("Content-Type = %q, want image/jpeg", ct)
+	}
+	img, err := jpeg.Decode(resp.Body)
+	if err != nil {
+		t.Fatalf("wide rendition is not a decodable JPEG: %v", err)
+	}
+	if b := img.Bounds(); b.Dx() != 960 || b.Dy() != 540 {
+		t.Errorf("wide = %dx%d, want 960x540 (from the 1600x900 banner)", b.Dx(), b.Dy())
+	}
+
+	// A cover with no banner falls back to a 16:9 centre crop of the primary.
+	if err := os.WriteFile(filepath.Join(coverDir, "8"), makePNG(t, 600, 900), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resp2, err := http.Get(cs.BaseURL() + "/cover/8/wide")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	img2, err := jpeg.Decode(resp2.Body)
+	if err != nil {
+		t.Fatalf("fallback wide is not a decodable JPEG: %v", err)
+	}
+	if b := img2.Bounds(); b.Dx() != 600 || b.Dy() != 337 {
+		t.Errorf("fallback wide = %dx%d, want 600x337", b.Dx(), b.Dy())
+	}
+}
+
 func TestWriteCoverThumbCropsSmallImagesWithoutUpscaling(t *testing.T) {
 	coverDir := testCoverDir(t)
 	if err := os.MkdirAll(coverDir, 0o755); err != nil {

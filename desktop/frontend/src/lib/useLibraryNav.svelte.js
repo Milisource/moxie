@@ -21,9 +21,10 @@ import {tick} from 'svelte'
 /**
  * @param {object} opts
  * @param {() => any[]} opts.getDisplayed - current filtered+sorted game list
- * @param {() => 'grid'|'list'} opts.getViewMode
+ * @param {() => 'grid'|'wide'|'list'} opts.getViewMode
  * @param {() => number} opts.getGridColumns
- * @param {() => HTMLElement|null} opts.getContainer - grid or table scroll container, per current view mode
+ * @param {() => number} opts.getWideColumns
+ * @param {() => HTMLElement|null} opts.getContainer - active scroll container (grid, wide, or table)
  * @param {(index: number) => void} opts.scrollToIndex - scroll the active virtualizer to a flat display index
  * @param {(rect: DOMRect, game: object) => void} opts.onOpenContextMenu - keyboard equivalent of right-click
  */
@@ -31,6 +32,7 @@ export function createLibraryNav({
   getDisplayed,
   getViewMode,
   getGridColumns,
+  getWideColumns,
   getContainer,
   scrollToIndex,
   onOpenContextMenu,
@@ -83,13 +85,16 @@ export function createLibraryNav({
       openContextMenuFromKeyboard(e)
       return
     }
-    const cols = getViewMode() === 'grid' ? getGridColumns() : 1
+    // Grid and wide are both column-major card grids; the table is one column.
+    const mode = getViewMode()
+    const isCardGrid = mode === 'grid' || mode === 'wide'
+    const cols = mode === 'grid' ? getGridColumns() : mode === 'wide' ? getWideColumns() : 1
     switch (e.key) {
       case 'ArrowRight':
-        if (getViewMode() !== 'grid') return
+        if (!isCardGrid) return
         e.preventDefault(); moveFocus(1); break
       case 'ArrowLeft':
-        if (getViewMode() !== 'grid') return
+        if (!isCardGrid) return
         e.preventDefault(); moveFocus(-1); break
       case 'ArrowDown': e.preventDefault(); moveFocus(cols); break
       case 'ArrowUp':   e.preventDefault(); moveFocus(-cols); break

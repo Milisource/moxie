@@ -926,10 +926,25 @@ func (db *Database) DeleteGamePermanent(id int64) error {
 	return err
 }
 
-// RestoreGame clears the deleted_at timestamp on a soft-deleted game.
+// RestoreGame clears the deleted_at timestamp on a soft-deleted game and
+// removes any scan exclusion for its path, so a game the user resolved away
+// as a duplicate can be brought back and scanned again.
 func (db *Database) RestoreGame(id int64) error {
-	_, err := db.conn.Exec("UPDATE games SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ?", id)
-	return err
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(
+		`UPDATE games SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM excluded_paths WHERE path = (SELECT path FROM games WHERE id = ?)`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ListDeletedGames returns all soft-deleted games.

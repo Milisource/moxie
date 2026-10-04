@@ -2,6 +2,13 @@
 
 ### Added
 
+- **Wide library view (F95-c4vv).** The library now switches between three layouts — **Grid**, **Wide** and **List** — from the toolbar toggle. **Wide** mirrors F95Zone's `/sam/latest_alpha` browser: a column grid of landscape 16:9 tiles with the engine and status tags overlaid top-left, the version top-right (`0.4.0 → 0.4.1` in accent when an update is due), an accent update edge, hover Play, and a last-played · size line under a two-line title. It shares the cover grid's roving-tabindex keyboard navigation, comfortable/compact density and persisted Size slider, and the chosen layout survives a restart.
+
+- **Two cover versions per game (F95-c4vv).** The library now keeps a portrait cover (grid) and a landscape banner (wide), so neither view has to crop the other's art:
+  - The wide card uses a dedicated `/cover/<id>/wide` rendition (≤ 960px, landscape banners kept whole, portrait art centre-cropped to 16:9) instead of stretching the portrait thumbnail.
+  - The F95 thread banner is retained as `<id>.banner` even when the cover was upgraded to portrait; replacing a cover keeps the outgoing landscape art; **Upgrade to Portrait Art** also fetches landscape art from Steam (header/hero) and SteamGridDB (heroes) for games without one; and the one-time thumbnail backfill migrates already-upgraded games' one-step-undo cover.
+  - See `docs/cover-art.md`.
+
 - **Portrait cover art (F95-x2ml).** Covers → **Upgrade to Portrait Art** swaps landscape, missing or under-600px covers for real box art:
   - Sources are Steam library capsules (600×900, no key needed), SteamGridDB grids (with an API key) and VNDB covers (opt-in).
   - A cover is only replaced on an exact title match, and only when the new art is portrait and at least as sharp.
@@ -39,6 +46,8 @@
 - Missing covers render as typographic cards (title initials). The grid marks updates with an accent cover edge and shows `old → new` in the caption.
 
 ### Fixed
+
+- **Parallel game updates no longer fail every game but the first with "another network request is already in progress".** Each update's refresh step went through `SyncSingleGame`, which takes the app-wide `netBusy` lock meant to serialise *blocking* Wails bindings. In a batch the first game's sync held that lock for its whole request, so every other worker's sync was rejected immediately and its update aborted at the `syncing` phase. The pipeline now calls the unguarded `syncSingleGame` directly — parallel work is already bounded by the update slot limit — while the interactive **Sync from F95Zone** button keeps the lock and additionally rejects a sync for a game that has an update/install in flight (`updateRuns.claimed`).
 
 - **Editing a game's F95Zone URL now sticks, and single-game sync shows feedback (F95-03ex).** `EditGame` set `F95URL` but left the stale `F95ThreadID`, which `ResolveScrapeURL` prefers; the next sync therefore re-scraped the old thread and `ApplyThreadData` rewrote `F95URL` back from it, so a corrected URL silently reverted and the detail view's **Sync from F95Zone** button looked like it did nothing. `EditGame` now resyncs `F95ThreadID` from the edited URL, and the button shows a busy state plus an inline result ("Synced from F95Zone — latest version vX") or the error.
 

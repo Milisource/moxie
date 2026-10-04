@@ -27,7 +27,16 @@ func IsOnlineOnly(name, url string) bool {
 //	   0   browser-gated or unproven (datanodes, mixdrop, hexload, uploadhaven,
 //	       bunkrr, 1cloudfile, ...)
 //	-200  hard walls (vikingfile, krakenfiles; mega until megatools lands)
+//
+// A host that is currently serving server-side-capped downloads (detected by
+// the pre-download probe, e.g. pixeldrain past its free quota) is penalised by
+// throttlePenalty so any working alternative outranks it.
 func ScoreLinkHost(host string) int {
+	return hostTierScore(host) - throttlePenaltyFor(host)
+}
+
+// hostTierScore is the static host-reliability tier table (see ScoreLinkHost).
+func hostTierScore(host string) int {
 	switch strings.ToLower(host) {
 	case "pixeldrain", "catbox", "mediafire":
 		return 25
@@ -40,6 +49,16 @@ func ScoreLinkHost(host string) int {
 	default:
 		return 0
 	}
+}
+
+// throttlePenaltyFor sinks a host currently serving capped downloads (e.g.
+// pixeldrain past its free 24h quota) below every working alternative, so
+// ranking tries another host instead of a 1 MiB/s grind. See hosthealth.go.
+func throttlePenaltyFor(host string) int {
+	if HostThrottled(host) {
+		return throttlePenalty
+	}
+	return 0
 }
 
 // ScoreDownloadLink returns a composite score for a download link combining

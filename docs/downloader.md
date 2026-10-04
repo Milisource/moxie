@@ -76,10 +76,43 @@ Download links are scored by combining platform priority with host reliability:
 
 | Score | Hosts | Meaning |
 |-------|-------|---------|
-| **+25** | Pixeldrain, Buzzheavier, Gofile, Catbox | Verified — these resolvers reliably produce downloadable URLs |
-| **+10** | DataNodes, Google Drive, MixDrop | May work — resolvers exist but hosts may have anti-bot protection or interstitials |
+| **+25** | Pixeldrain, Catbox, MediaFire | Verified — these resolvers reliably produce downloadable URLs |
+| **+10** | Buzzheavier, Google Drive, WorkUpload | Intermittent challenges or solvable puzzles |
+| **+5** | Gofile | Fragile — premium-gated API, free path is a web scrape |
 | **0** | All other recognized hosts | Unknown — passed through for standard HTTP download; no specialized resolver |
-| **-200** | Mega, VikingFile, WorkUpload, KrakenFiles, Bunkrr | Borked — known to be blocked, encrypted, or requiring CAPTCHA; tried last in fallback order |
+| **-200** | Mega, VikingFile, KrakenFiles | Hard walls — encrypted, captcha-gated, or browser-only; tried last |
+
+A host that is currently serving server-side-capped downloads is penalised
+further — see [Throttled hosts](#throttled-hosts-hosthealthgo).
+
+### Throttled hosts (`hosthealth.go`)
+
+Some hosts do not fail when you exceed their free quota — they silently cap the
+transfer rate. **Pixeldrain** is the notable case: past its 24h free transfer
+quota (5 GB regular / 6 GB filesystem) it serves files at exactly
+**1 MiB/s**, so a 1 GB release takes ~17 minutes. Grinding through that is
+worse than trying the next host, so moxie detects it before any bytes move.
+
+`DownloadWithContext` runs `resolver.checkHostThrottle` after a successful
+resolve. For pixeldrain it queries `GET /api/file/<id>/info` and reads
+`download_speed_limit` (bytes/sec; `0` = unlimited). A positive value — or one
+of the API limit errors `transfer_limit_exceeded`, `download_limit_exceeded`,
+`ip_download_limited_captcha_required`, `max_concurrent_downloads`,
+`file_rate_limited_captcha_required` — is treated as a cap:
+
+- the host is marked throttled (`MarkHostThrottled`, 30-minute TTL), and
+- the attempt returns `ErrHostThrottled` (a `*ThrottledError`), so the caller's
+  existing link-fallback loop moves on to the next-best host.
+
+`ScoreLinkHost` subtracts `throttlePenalty` (1000) for a throttled host, so
+every entry point — CLI `download`, TUI, desktop `rankDownloadLinksFor`, and
+multi-part ordering — deprioritises it for the rest of the batch (this also
+avoids wasting a rate-limited F95Zone masked unwrap on a host that will be
+skipped). The probe is best-effort: a network/parse failure is treated as
+"unknown" and the download proceeds.
+
+To force the slow download anyway — e.g. the rare game whose **only** source is
+pixeldrain — set **`MOXIE_ALLOW_THROTTLED=1`**.
 
 ### Host Feasibility
 

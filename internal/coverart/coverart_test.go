@@ -1,11 +1,15 @@
 package coverart
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/jpeg"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -131,5 +135,84 @@ func TestSGDBAutocompleteRequiresExactTitle(t *testing.T) {
 	res := f.Find(context.Background(), Game{Title: "Fort of Chains"})
 	if len(res.Candidates) != 0 {
 		t.Errorf("candidates = %v, want none", res.Candidates)
+	}
+}
+
+func TestBestLandscape(t *testing.T) {
+	hero16 := Candidate{URL: "16", W: 1920, H: 1080, Source: "steamgriddb"}
+	ultrawide := Candidate{URL: "3", W: 3840, H: 1240, Source: "steamgriddb"}
+	small := Candidate{URL: "small", W: 560, H: 315, Source: "f95"}
+	big := Candidate{URL: "big", W: 1920, H: 1080, Source: "f95"}
+	portrait := Candidate{URL: "p", W: 600, H: 900, Source: "steam"}
+	cases := []struct {
+		name string
+		cs   []Candidate
+		want string
+	}{
+		{"empty", nil, ""},
+		{"portrait ignored", []Candidate{portrait}, ""},
+		{"16:9 beats a larger ultrawide", []Candidate{ultrawide, hero16}, "16"},
+		{"higher resolution 16:9 wins", []Candidate{small, big}, "big"},
+	}
+	for _, c := range cases {
+		got, ok := BestLandscape(c.cs)
+		if (c.want == "") == ok || (ok && got.URL != c.want) {
+			t.Errorf("%s: got %q ok=%v, want %q", c.name, got.URL, ok, c.want)
+		}
+	}
+}
+
+func testJPEGBytes(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestStoreBanner(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "7")
+	if ok, err := StoreBanner(p, testJPEGBytes(t, 1920, 1080), "f95", "u"); err != nil || !ok {
+		t.Fatalf("landscape store: ok=%v err=%v", ok, err)
+	}
+	if !HasBanner(p) {
+		t.Fatal("HasBanner = false after storing a landscape banner")
+	}
+	if m, _ := ReadMeta(p); m.BannerW != 1920 || m.BannerH != 1080 || m.BannerURL != "u" || m.BannerSource != "f95" {
+		t.Errorf("meta = %+v", m)
+	}
+	// A portrait image must not clobber a retained banner.
+	if ok, err := StoreBanner(p, testJPEGBytes(t, 600, 900), "steam", "u2"); err != nil || ok {
+		t.Errorf("portrait store: ok=%v err=%v, want false", ok, err)
+	}
+	if m, _ := ReadMeta(p); m.BannerW != 1920 || m.BannerURL != "u" {
+		t.Errorf("banner clobbered by portrait: %+v", m)
+	}
+
+	RemoveBanner(p)
+	if HasBanner(p) {
+		t.Error("HasBanner = true after RemoveBanner")
+	}
+	if m, _ := ReadMeta(p); m.BannerW != 0 || m.BannerURL != "" || m.BannerSource != "" {
+		t.Errorf("banner fields not cleared: %+v", m)
+	}
+}
+
+func TestStoreCarriesBanner(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "7")
+	if _, err := StoreBanner(p, testJPEGBytes(t, 1920, 1080), "f95", "u"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Store(p, testJPEGBytes(t, 600, 900), image.Config{Width: 600, Height: 900}, Candidate{URL: "x", Source: "steam"}, true); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := ReadMeta(p)
+	if !ok || m.BannerW != 1920 || m.BannerURL != "u" {
+		t.Errorf("banner fields lost across Store: %+v (ok=%v)", m, ok)
+	}
+	if !HasBanner(p) {
+		t.Error("banner file lost across Store")
 	}
 }

@@ -25,6 +25,9 @@ func TestUpdateRunsClaims(t *testing.T) {
 	if r.claimGame(1) {
 		t.Fatal("duplicate claim for game 1 accepted")
 	}
+	if !r.claimed(1) || r.claimed(9) {
+		t.Fatal("claimed reported the wrong game set")
+	}
 	if r.claimExclusive() {
 		t.Fatal("exclusive claimed while games run")
 	}

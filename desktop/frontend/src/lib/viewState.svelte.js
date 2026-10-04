@@ -72,9 +72,10 @@ export const library = $state({
   //   quickView — primary play-state tabs
   //     'all' | 'installed' | 'ready' | 'recent'
   //   viewMode — grid is the default (Heroic/Playnite-style); list stays as
-  //     an explicit toggle for the data-table crowd. Persisted (P1 item 7)
-  //     so the user's last choice survives an app restart.
-  //     'grid' | 'list'
+  //     an explicit toggle for the data-table crowd; wide is the F95Zone
+  //     Latest Alpha-style landscape card grid (16:9 art + stats line).
+  //     Persisted (P1 item 7) so the user's last choice survives an app restart.
+  //     'grid' | 'wide' | 'list'
   //   density — row/card sizing (P1 item 7). Persisted alongside viewMode.
   //     'comfortable' | 'compact'
   //   sortColumn — arrangement. Defaults to 'recent' (recency first, §7 P0-2);
@@ -82,7 +83,7 @@ export const library = $state({
   //     classic column sorts kept for the list view's header.
   //     'recent' | 'added' | 'title' | 'engine' | 'version' | 'size' | 'status'
   quickView: 'all',
-  viewMode: readStored(VIEW_MODE_KEY, 'grid', ['grid', 'list']),
+  viewMode: readStored(VIEW_MODE_KEY, 'grid', ['grid', 'wide', 'list']),
   density: readStored(DENSITY_KEY, 'comfortable', ['comfortable', 'compact']),
   // cardScale — user grid card size multiplier (slider), on top of the
   // width-based base size. Persisted; clamped on read.
@@ -91,6 +92,7 @@ export const library = $state({
   sortDesc: false,
   scrollTop: 0,
   gridScrollTop: 0,
+  wideScrollTop: 0,
 
   // Games whose cover <img> failed to load + a retry epoch: a remounted list
   // re-renders cached 404s from the webview without re-requesting them, so

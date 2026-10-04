@@ -15,6 +15,7 @@
     quickViewMatches, sortCompare, toggleSort, sortIcon, onSortSelect,
   } from './useLibrarySort.svelte.js'
   import GameGridCard from './GameGridCard.svelte'
+  import GameWideCard from './GameWideCard.svelte'
   import GameTableRow from './GameTableRow.svelte'
 
   let {
@@ -127,6 +128,7 @@
     await tick()
     if (tableBodyEl) tableBodyEl.scrollTop = library.scrollTop
     if (gridEl) gridEl.scrollTop = library.gridScrollTop
+    if (wideEl) wideEl.scrollTop = library.wideScrollTop
   })
 
   onDestroy(() => {
@@ -134,6 +136,7 @@
     for (const t of playTimers) clearTimeout(t)
     playTimers.clear()
     gridVirtualizer.unsubscribe()
+    wideVirtualizer.unsubscribe()
     tableVirtualizer.unsubscribe()
   })
 
@@ -145,6 +148,7 @@
   let isSearching = $state(false)
   let tableBodyEl = $state.raw()           // list scroll container, bound in markup
   let gridEl = $state.raw()                // grid scroll container, bound in markup
+  let wideEl = $state.raw()                // wide-card scroll container, bound in markup
   let searchInputEl = $state.raw()         // search field, bound in markup
 
   // Exposed to App.svelte via bind:this so a global "/" / Ctrl+F shortcut
@@ -283,6 +287,76 @@
     })
   })
 
+  // ── Wide-card grid (F95Zone Latest Alpha style) ───────────────
+  // Same windowing model as the cover grid — a fluid column count feeding a
+  // uniform row height — but the card is a landscape 16:9 tile with a caption
+  // below, so the width floor is wider and the row height is media + caption.
+  const WIDE_GAP = 16
+  // ~280px card at a 1440px window, capped at 360px on very wide screens; the
+  // toolbar Size slider scales it and compact shrinks it.
+  function baseWideCardMin(avail) {
+    const fluid = Math.min(360, Math.max(280, 280 + (avail - 1190) * 0.06))
+    return fluid * library.cardScale * (library.density === 'compact' ? 0.8 : 1)
+  }
+  // Caption block under the media. GameWideCard.svelte sets these exact heights
+  // in CSS (title margin + 2 title lines + stats margin + stats row); change
+  // one, change both, or rows overlap / gap.
+  let wideTextHeight = $derived(library.density === 'compact' ? 4 + 30 + 3 + 14 : 6 + 34 + 4 + 16)
+  let wideColumns = $state(1)
+  let wideRowHeight = $state(240)
+
+  function updateWideLayout() {
+    if (!wideEl) return
+    const raw = wideEl.clientWidth - gridPad(wideEl.clientWidth)
+    const cardMin = baseWideCardMin(raw)
+    const avail = Math.max(raw, cardMin)
+    const cols = Math.max(1, Math.floor((avail + WIDE_GAP) / (cardMin + WIDE_GAP)))
+    const cardWidth = (avail - WIDE_GAP * (cols - 1)) / cols
+    const mediaHeight = cardWidth * 9 / 16
+    wideColumns = cols
+    wideRowHeight = mediaHeight + wideTextHeight + WIDE_GAP
+  }
+
+  $effect(() => {
+    if (!wideEl) return
+    // Re-run when the size inputs change, not only on resize.
+    void library.cardScale, library.density, wideTextHeight
+    updateWideLayout()
+    const ro = new ResizeObserver(() => updateWideLayout())
+    ro.observe(wideEl)
+    return () => ro.disconnect()
+  })
+
+  // Chunk the flat `displayed` list into fixed-size rows so the virtualizer
+  // only has to window rows, not think about wrapping.
+  let wideRows = $derived.by(() => {
+    const rows = []
+    for (let i = 0; i < displayed.length; i += wideColumns) {
+      rows.push(displayed.slice(i, i + wideColumns))
+    }
+    return rows
+  })
+
+  const wideVirtualizer = createVirtualList({
+    count: 0,
+    getScrollElement: () => wideEl,
+    estimateSize: () => wideRowHeight,
+    overscan: 3,
+  })
+
+  $effect(() => {
+    const el = wideEl
+    const rows = wideRows
+    const rowHeight = wideRowHeight
+    wideVirtualizer.setOptions({
+      count: rows.length,
+      getScrollElement: () => el,
+      estimateSize: () => rowHeight,
+      overscan: 3,
+      getItemKey: (i) => rows[i]?.map(g => g.id).join(',') ?? i,
+    })
+  })
+
   // Table rows are uniform height, so windowing is simpler — one measurement
   // for the whole list. Comfortable matches the row's rendered height: 40px
   // cover thumb + 4px top/bottom padding + 1px border. Compact drops the
@@ -377,10 +451,13 @@
     getDisplayed: () => displayed,
     getViewMode: () => library.viewMode,
     getGridColumns: () => gridColumns,
-    getContainer: () => (library.viewMode === 'grid' ? gridEl : tableBodyEl),
+    getWideColumns: () => wideColumns,
+    getContainer: () => (library.viewMode === 'grid' ? gridEl : library.viewMode === 'wide' ? wideEl : tableBodyEl),
     scrollToIndex: (nextIdx) => {
       if (library.viewMode === 'grid') {
         gridVirtualizer.scrollToIndex(Math.floor(nextIdx / gridColumns), {align: 'auto'})
+      } else if (library.viewMode === 'wide') {
+        wideVirtualizer.scrollToIndex(Math.floor(nextIdx / wideColumns), {align: 'auto'})
       } else {
         tableVirtualizer.scrollToIndex(nextIdx, {align: 'auto'})
       }
@@ -519,6 +596,13 @@
           ><span class="vbtn-icon">▦</span>Grid</button>
           <button
             class="vbtn"
+            class:active={library.viewMode === 'wide'}
+            aria-pressed={library.viewMode === 'wide'}
+            title="Wide card view — F95Zone-style landscape tiles"
+            onclick={() => setViewMode('wide')}
+          ><span class="vbtn-icon">▭</span>Wide</button>
+          <button
+            class="vbtn"
             class:active={library.viewMode === 'list'}
             aria-pressed={library.viewMode === 'list'}
             title="List view"
@@ -543,7 +627,7 @@
           ><span class="vbtn-icon">≡</span>Compact</button>
         </div>
 
-        {#if library.viewMode === 'grid'}
+        {#if library.viewMode === 'grid' || library.viewMode === 'wide'}
           <label class="size-slider" title="Cover size">
             <span class="label">Size</span>
             <input
@@ -629,6 +713,39 @@
             >
               {#each gridRows[vRow.index] ?? [] as game (game.id)}
                 <GameGridCard
+                  {game}
+                  {playControl}
+                  isRoving={nav.rovingId === game.id}
+                  {coverBase}
+                  {coverSrc}
+                  {markFailed}
+                  onOpenDetail={() => onOpenDetail(game.id)}
+                  onFocus={() => nav.setFocused(game.id)}
+                  onContextMenu={(e) => onRowContextMenu(e, game)}
+                  onPlay={(e) => handlePlay(e, game)}
+                />
+              {/each}
+            </div>
+          {/each}
+        </div>
+      </div>
+    {:else if library.viewMode === 'wide'}
+      <!-- ── Wide cards (F95Zone Latest Alpha style, P2 item) ── -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="grid-scroll"
+        bind:this={wideEl}
+        onscroll={(e) => library.wideScrollTop = e.currentTarget.scrollTop}
+        onkeydown={nav.onNavKeydown}
+      >
+        <div class="grid-spacer" style="height: {wideVirtualizer.totalSize}px">
+          {#each wideVirtualizer.virtualRows as vRow (vRow.key)}
+            <div
+              class="grid-row"
+              style="grid-template-columns: repeat({wideColumns}, 1fr); height: {wideRowHeight - WIDE_GAP}px; transform: translateY({vRow.start + WIDE_GAP}px)"
+            >
+              {#each wideRows[vRow.index] ?? [] as game (game.id)}
+                <GameWideCard
                   {game}
                   {playControl}
                   isRoving={nav.rovingId === game.id}
@@ -764,6 +881,9 @@
     padding: 8px 12px 0;
     background: var(--bg-secondary);
     flex-shrink: 0;
+    /* Three layout buttons + density + size slider no longer fit beside the
+       quick-view tabs on narrow windows; wrap instead of clipping the slider. */
+    flex-wrap: wrap;
   }
 
   .quick-tabs {
@@ -797,6 +917,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-4);
+    flex-wrap: wrap;
   }
 
   .view-toggle {

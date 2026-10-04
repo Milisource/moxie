@@ -43,9 +43,16 @@ const (
 	coverLargeMaxDim = 1400
 	coverThumbQ      = 85
 
+	// Wide-view rendition (`.wide`). The wide card is landscape and tops out
+	// around 960 CSS px on a large window, so 960 is the cap. It is built from
+	// the retained landscape banner (coverart.BannerPath) when there is one,
+	// else from the primary cover.
+	coverWideMaxDim = 960
+	coverWideQ      = 85
+
 	// coverThumbFormat versions the thumbnail geometry. Part of the backfill
 	// marker name, so changing it regenerates every thumb once.
-	coverThumbFormat = "t2"
+	coverThumbFormat = "t3"
 )
 
 // coverMeta is the <id>.meta.json sidecar (format shared with the CLI).
@@ -65,6 +72,18 @@ func writeCoverMeta(coverPath string, m coverMeta) error { return coverart.Write
 func coverPinned(coverPath string) bool {
 	m, ok := readCoverMeta(coverPath)
 	return ok && (m.Locked || (m.Source != "" && m.Source != "f95"))
+}
+
+// coverNeedsBanner reports whether the game has a cover but no retained
+// landscape banner, so the wide view would fall back to a crop of a portrait
+// primary. Games with no cover are excluded — there is nothing to derive a
+// banner from, and their grid card is empty too.
+func coverNeedsBanner(coverPath string) bool {
+	w, h := coverart.CurrentSize(coverPath)
+	if w <= 0 || h <= 0 || isLandscape(w, h) {
+		return false
+	}
+	return !coverart.HasBanner(coverPath)
 }
 
 // updateCoverMeta read-modify-writes the sidecar.
@@ -127,6 +146,40 @@ func thumbGeometry(w, h int) (crop image.Rectangle, outW, outH int) {
 	return crop, max(1, outW), max(1, outH)
 }
 
+// isLandscape reports whether w×h is wide enough to serve as a banner.
+func isLandscape(w, h int) bool {
+	return h > 0 && float64(w)/float64(h) >= coverart.BannerAspect
+}
+
+// wideGeometry returns the source crop rectangle and output size for a w×h
+// cover rendered for the wide (landscape) card. Landscape banners keep their
+// whole frame and are scaled to coverWideMaxDim wide; portrait or square art
+// is centre-cropped to 16:9. Never upscales.
+func wideGeometry(w, h int) (crop image.Rectangle, outW, outH int) {
+	if w <= 0 || h <= 0 {
+		return image.Rectangle{}, 0, 0
+	}
+	if isLandscape(w, h) {
+		outW = min(w, coverWideMaxDim)
+		outH = max(1, int(math.Round(float64(h)*float64(outW)/float64(w))))
+		return image.Rect(0, 0, w, h), outW, outH
+	}
+	cw, ch := w, h
+	if w*9 > h*16 { // wider than 16:9
+		cw = h * 16 / 9
+	} else {
+		ch = w * 9 / 16
+	}
+	x0, y0 := (w-cw)/2, (h-ch)/2
+	crop = image.Rect(x0, y0, x0+cw, y0+ch)
+	outW, outH = cw, ch
+	if outW > coverWideMaxDim {
+		outW = coverWideMaxDim
+		outH = max(1, int(math.Round(float64(ch)*float64(outW)/float64(cw))))
+	}
+	return crop, max(1, outW), max(1, outH)
+}
+
 // writeCoverThumb decodes the cover at coverPath, writes the grid thumbnail
 // to coverPath+".thumb" and records size and tone in the meta sidecar
 // (keeping its source/lock fields). A stale .large is removed so the detail
@@ -168,6 +221,128 @@ func writeCoverThumb(coverPath string) thumbResult {
 		m.Tone = hexColor(tone)
 	})
 	return thumbWritten
+}
+
+// writeCoverWide renders the wide-view rendition to coverPath+".wide" from the
+// retained landscape banner when there is one, else from the primary cover.
+// Landscape sources keep their whole frame; portrait art is centre-cropped to
+// 16:9. Records the rendition size in the sidecar. On failure the cover server
+// falls back to the primary image.
+func writeCoverWide(coverPath string) thumbResult {
+	src := coverPath
+	if _, err := os.Stat(coverart.BannerPath(coverPath)); err == nil {
+		src = coverart.BannerPath(coverPath)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return thumbDecodeFailed
+	}
+	img, err := decodeCoverImage(data)
+	if err != nil {
+		slog.Warn("failed to decode cover for wide rendition", "path", src, "error", err)
+		return thumbDecodeFailed
+	}
+	b := img.Bounds()
+	tone := averageTone(img)
+	crop, w, h := wideGeometry(b.Dx(), b.Dy())
+	crop = crop.Add(b.Min)
+
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(dst, dst.Bounds(), &image.Uniform{tone}, image.Point{}, draw.Src)
+	draw.CatmullRom.Scale(dst, dst.Bounds(), img, crop, draw.Over, nil)
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: coverWideQ}); err != nil {
+		return thumbDecodeFailed
+	}
+	if err := os.WriteFile(coverPath+".wide", buf.Bytes(), 0o644); err != nil {
+		slog.Warn("failed to write wide cover rendition", "path", coverPath, "error", err)
+		return thumbDecodeFailed
+	}
+	updateCoverMeta(coverPath, func(m *coverMeta) { m.WideW, m.WideH = w, h })
+	return thumbWritten
+}
+
+// writeCoverRenditions rebuilds both the grid (.thumb) and wide (.wide)
+// renditions and returns the grid write result. The wide pass is best-effort.
+func writeCoverRenditions(coverPath string) thumbResult {
+	r := writeCoverThumb(coverPath)
+	writeCoverWide(coverPath)
+	return r
+}
+
+// captureCoverBanner preserves coverPath's current image as the landscape
+// banner before it is replaced, when it is landscape and no banner is already
+// retained. Returns true when a banner was stored.
+func captureCoverBanner(coverPath string) bool {
+	if coverart.HasBanner(coverPath) {
+		return false
+	}
+	data, err := os.ReadFile(coverPath)
+	if err != nil {
+		return false
+	}
+	m, _ := readCoverMeta(coverPath)
+	ok, err := coverart.StoreBanner(coverPath, data, m.Source, m.URL)
+	return err == nil && ok
+}
+
+// migrateCoverBanner retains the one-step-undo cover (.prev) as the landscape
+// banner when the current cover is portrait and no banner exists yet. Games
+// upgraded to portrait art before banners were kept still have their old
+// landscape banner sitting in .prev, so the wide view can use it without a
+// re-fetch. Returns true when a banner was retained.
+func migrateCoverBanner(coverPath string) bool {
+	if coverart.HasBanner(coverPath) {
+		return false
+	}
+	if w, h := coverart.CurrentSize(coverPath); w > 0 && h > 0 && isLandscape(w, h) {
+		return false
+	}
+	data, err := os.ReadFile(coverPath + ".prev")
+	if err != nil {
+		return false
+	}
+	source, url := "f95", ""
+	if m, ok := readCoverMeta(coverPath + ".prev"); ok {
+		source, url = m.Source, m.URL
+	}
+	ok, err := coverart.StoreBanner(coverPath, data, source, url)
+	if err != nil || !ok {
+		return false
+	}
+	writeCoverWide(coverPath)
+	return true
+}
+
+// coverBannerCurrent reports whether coverPath's sidecar already records a
+// banner fetched from url. The F95 sync path uses it to avoid re-downloading
+// an unchanged banner for a game whose primary cover is pinned.
+func coverBannerCurrent(coverPath, url string) bool {
+	if url == "" {
+		return false
+	}
+	m, _ := readCoverMeta(coverPath)
+	return m.BannerURL == url
+}
+
+// retainCoverBannerData stores data as coverPath's landscape banner and
+// rebuilds the wide rendition. Returns true when data was landscape and got
+// stored. A non-landscape image records the attempted URL (when no banner
+// exists yet) so the sync path does not refetch it every run.
+func retainCoverBannerData(coverPath string, data []byte, source, url string) bool {
+	ok, err := coverart.StoreBanner(coverPath, data, source, url)
+	if err != nil {
+		return false
+	}
+	if !ok {
+		if url != "" && !coverart.HasBanner(coverPath) {
+			updateCoverMeta(coverPath, func(m *coverMeta) { m.BannerURL = url })
+		}
+		return false
+	}
+	writeCoverWide(coverPath)
+	return true
 }
 
 // ensureCoverLarge returns the path of the detail-view variant: the

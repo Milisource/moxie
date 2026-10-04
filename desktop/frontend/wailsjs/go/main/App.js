@@ -190,12 +190,20 @@ export function OpenUpdateDownloadPage(arg1) {
   return window['go']['main']['App']['OpenUpdateDownloadPage'](arg1);
 }
 
+export function PickCoverImage() {
+  return window['go']['main']['App']['PickCoverImage']();
+}
+
 export function PickDirectory() {
   return window['go']['main']['App']['PickDirectory']();
 }
 
 export function PlayGame(arg1) {
   return window['go']['main']['App']['PlayGame'](arg1);
+}
+
+export function PreviewCoverFile(arg1) {
+  return window['go']['main']['App']['PreviewCoverFile'](arg1);
 }
 
 export function ProvideUpdateFile(arg1) {
@@ -260,6 +268,10 @@ export function SetCoverSources(arg1, arg2) {
 
 export function SetGameCover(arg1, arg2, arg3) {
   return window['go']['main']['App']['SetGameCover'](arg1, arg2, arg3);
+}
+
+export function SetGameCoverFromFile(arg1, arg2) {
+  return window['go']['main']['App']['SetGameCoverFromFile'](arg1, arg2);
 }
 
 export function SetGameStatus(arg1, arg2) {

@@ -32,9 +32,16 @@ export function makeCoverHelpers(getCoverBase) {
   return {coverSrc, markFailed}
 }
 
-/** Cache-busting token for a game's current cover (size + provenance). */
+/**
+ * Cache-busting token for a game's cover renditions: the grid cover's size and
+ * provenance, plus the wide rendition's size. Appended to every cover URL so a
+ * replaced cover or a newly-retained banner busts the webview cache.
+ */
 export function coverRev(game) {
-  return game?.coverW ? `${game.coverW}x${game.coverH}${game.coverSource ? '-' + game.coverSource : ''}` : ''
+  const parts = []
+  if (game?.coverW) parts.push(`${game.coverW}x${game.coverH}${game.coverSource ? '-' + game.coverSource : ''}`)
+  if (game?.wideW) parts.push(`w${game.wideW}x${game.wideH}`)
+  return parts.join('|')
 }
 
 /**

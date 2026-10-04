@@ -36,7 +36,7 @@ func CoversUpgrade(args []string) {
 	only := fs.Int64("game", 0, "Only this game ID")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: moxie covers upgrade [flags]\n\n")
-		fmt.Fprintf(os.Stderr, "Look up portrait cover art for games whose cover is missing, landscape or\nunder 600px, and replace it when the new art is portrait and at least as sharp.\nLocked covers are skipped. The replaced cover is kept as <id>.prev.\n\nSources: Steam (keyless), SteamGridDB (with steamgriddb-key), VNDB (opt-in).\n\nFlags:\n")
+		fmt.Fprintf(os.Stderr, "Look up portrait cover art for games whose cover is missing, landscape or\nunder 600px, and replace it when the new art is portrait and at least as sharp.\nLocked covers are skipped. The replaced cover is kept as <id>.prev and its\nlandscape art as the wide-view banner.\n\nSources: Steam (keyless), SteamGridDB (with steamgriddb-key), VNDB (opt-in).\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	fs.Parse(hoistFlags(args, nil))
@@ -127,6 +127,13 @@ func CoversUpgrade(args []string) {
 		if cfg.Height <= cfg.Width {
 			fmt.Fprintf(os.Stderr, "       skipped: image is %dx%d, not portrait\n", cfg.Width, cfg.Height)
 			continue
+		}
+		// Keep the outgoing landscape cover as the wide-view banner before it
+		// is replaced (the desktop app renders the .wide rendition on demand).
+		if !coverart.HasBanner(coverPath) {
+			if old, rerr := os.ReadFile(coverPath); rerr == nil {
+				_, _ = coverart.StoreBanner(coverPath, old, m.Source, m.URL)
+			}
 		}
 		if err := coverart.Store(coverPath, data, cfg, pick, false); err != nil {
 			fmt.Fprintf(os.Stderr, "       store failed: %v\n", err)

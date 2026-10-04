@@ -111,6 +111,16 @@ func (r *updateRuns) active() bool {
 	return r.exclusive || len(r.games) > 0
 }
 
+// claimed reports whether gameID currently has an update/install run. The
+// interactive sync binding uses it to reject a sync for a game that is already
+// being updated, rather than racing the pipeline's writes to the same row.
+func (r *updateRuns) claimed(id int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.games[id]
+	return ok
+}
+
 // count returns the number of claimed games.
 func (r *updateRuns) count() int {
 	r.mu.Lock()

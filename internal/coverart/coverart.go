@@ -10,6 +10,7 @@ package coverart
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -37,6 +38,9 @@ type Candidate struct {
 
 // Portrait reports whether the image is taller than wide.
 func (c Candidate) Portrait() bool { return c.H > c.W }
+
+// Landscape reports whether the image is wider than tall.
+func (c Candidate) Landscape() bool { return c.W > c.H }
 
 // ShortEdge is min(W, H).
 func (c Candidate) ShortEdge() int { return min(c.W, c.H) }
@@ -132,6 +136,33 @@ func (f *Finder) Find(ctx context.Context, g Game) Result {
 	return res
 }
 
+// FindBanner looks up the best landscape banner for the wide library view:
+// Steam's header/hero art and SteamGridDB's heroes. It is deliberately
+// separate from Find (which is portrait-only, for the primary cover) so the
+// extra requests only run when a banner is actually wanted.
+func (f *Finder) FindBanner(ctx context.Context, g Game) (Candidate, bool) {
+	var cs []Candidate
+	appID := g.SteamAppID
+	if f.opts.Steam {
+		if appID == 0 {
+			if id, err := f.steamSearch(ctx, g.Title); err == nil {
+				appID = id
+			}
+		}
+		if appID != 0 {
+			if lc, err := f.steamLandscape(ctx, appID); err == nil {
+				cs = append(cs, lc...)
+			}
+		}
+	}
+	if f.opts.SGDBKey != "" {
+		if hc, err := f.sgdbHeroes(ctx, g.Title, appID); err == nil {
+			cs = append(cs, hc...)
+		}
+	}
+	return BestLandscape(cs)
+}
+
 var sourceRank = map[string]int{"steam": 0, "steamgriddb": 1, "vndb": 2}
 
 // SortCandidates orders candidates best first (see Find).
@@ -170,6 +201,36 @@ func Better(cs []Candidate, curW, curH int) (Candidate, bool) {
 		}
 	}
 	return Candidate{}, false
+}
+
+// BestLandscape returns the best landscape (banner) candidate for the wide
+// view. Landscape candidates are ranked by how close their aspect is to 16:9
+// (so an ordinary banner beats an ultra-wide 3:1 hero that a 16:9 tile would
+// crop hard), then by pixel area, then by source preference. Candidates with
+// no URL or no dimensions are skipped.
+func BestLandscape(cs []Candidate) (Candidate, bool) {
+	const target = 16.0 / 9.0
+	penalty := func(c Candidate) float64 {
+		return math.Abs(math.Log((float64(c.W) / float64(c.H)) / target))
+	}
+	var best Candidate
+	found := false
+	for _, c := range cs {
+		if !c.Landscape() || c.URL == "" || c.W <= 0 || c.H <= 0 {
+			continue
+		}
+		if !found {
+			best, found = c, true
+			continue
+		}
+		cp, bp := penalty(c), penalty(best)
+		ca, ba := c.W*c.H, best.W*best.H
+		if cp < bp-1e-9 ||
+			(math.Abs(cp-bp) <= 1e-9 && (ca > ba || (ca == ba && sourceRank[c.Source] < sourceRank[best.Source]))) {
+			best = c
+		}
+	}
+	return best, found
 }
 
 // NormalizeTitle folds a title for exact matching: lower case, letters and
