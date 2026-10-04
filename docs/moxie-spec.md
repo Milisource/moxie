@@ -108,6 +108,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] `FindMatches` non-game thread filtering (was missing from associate.go)
 - [x] CHANGELOG.md and expanded AGENTS.md with project conventions
 - [x] `make install` and `make clean` targets
+- [x] From-source local installer — `scripts/install-local.sh` / `make install-local` builds and installs the CLI + desktop, handles `--bin-dir`/PATH and desktop registration, and verifies both installs
 - [x] Version extraction from directory names fixed — `\b` replaced with explicit non-alphanumeric boundaries to handle underscore-delimited versions (e.g. `FullEmberDoors_v0.1.7_Linux`, `Game_V1.0.0_HotFix`)
 - [x] Compact YYYYMMDD date pattern added — `Data20260403` detected as valid date version (with month/day validation to avoid false positives on arbitrary 8-digit numbers)
 - [x] File-based version extraction from `Game.ini` (RPG Maker), `package.json` (HTML/NW.js), and `game/options.rpy` (Ren'Py) — catches versions missed in directory names

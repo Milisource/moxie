@@ -12,6 +12,8 @@
 
 - **Dev install channel (F95-1p5r).** A dev build now installs separately from stable: `scripts/install-dev.sh` / `scripts/install-dev.ps1` build the `dev` branch as `moxie-dev`, with its own data directory (`~/.config/moxie-dev`, `%APPDATA%\moxie-dev`) selected by a build-time channel. The stable `moxie` install and its database are never touched. `moxie-dev update` does not self-update from stable releases.
 
+- **From-source local installer (F95-kr3i).** `scripts/install-local.sh` (also `make install-local`) builds the CLI and the Wails desktop from the current checkout, installs the CLI into a writable bin dir (`--bin-dir`, default `~/.local/bin`), registers the desktop launcher via `install-desktop.sh`, adds the bin dir to PATH, and verifies both installs. Flags: `--skip-cli`, `--skip-desktop`, `--bin-dir`, `--version`, `--no-modify-path`.
+
 - **Edit Game dialog (F95-b3bx).** Edit every game field from one form, opened by **Edit Game…** in the library's right-click menu or **Edit** in the detail view: title, developer, overview, engine, version, executable, wine prefix, status, tags, notes, F95Zone URL and store links. A title edit changes only the title — use **Rename Folder…** to move the directory on disk. Developer/overview edits keep the existing cover and the recorded scrape date.
 
 ### Changed

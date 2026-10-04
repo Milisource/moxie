@@ -151,11 +151,16 @@ releases (`moxie update`); rebuild/reinstall the dev channel instead.
 #### Build from source
 
 ```bash
-# Quick build for current platform
 git clone https://github.com/Milisource/moxie.git
 cd moxie
+
+# One command: build and install the CLI + desktop from this checkout
+./scripts/install-local.sh
+
+# Or step by step
 make build                    # produces dist/moxie
 sudo make install             # copies to /usr/local/bin/moxie
+./scripts/install-local.sh --skip-desktop   # CLI only
 
 # Or build manually
 CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$(git describe --tags --always)" -o moxie .
@@ -163,6 +168,12 @@ CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$(git describe --tags --a
 # Cross-compile all platforms
 ./scripts/build.sh all
 ```
+
+`scripts/install-local.sh` (also `make install-local`) installs the CLI into a bin
+dir on your `PATH` (default `~/.local/bin`, override with `--bin-dir`), registers
+the desktop app in your launcher, and verifies both. The desktop build needs the
+Wails CLI and, on Linux, webkit2gtk 4.1; pass `--skip-desktop` to skip it. Run
+`./scripts/install-local.sh --help` for all flags.
 
 #### Verify installation
 

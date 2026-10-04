@@ -147,10 +147,14 @@ desktop/
 
 **Build & Install:**
 ```bash
+./scripts/install-local.sh            # build + install CLI and desktop from this checkout
 make desktop                          # production build → dist/moxie-desktop
 make install-desktop                  # register in system app launcher
 cd desktop && wails dev -tags webkit2_41  # hot-reload development
 ```
+`install-local.sh` builds both binaries, installs the CLI into a bin dir on PATH
+(`--bin-dir`, default `~/.local/bin`), runs `install-desktop.sh` to register the
+launcher, and verifies the result; `--skip-desktop` installs the CLI only.
 `make desktop` stamps the git descriptor into the binary (`-X main.appVersion=$(VERSION)`), so the sidebar shows exactly which build is running. On KDE, `install-desktop.sh` forces a ksycoca rebuild so the launcher menu reflects new builds immediately instead of waiting on the background watcher.
 
 **Per-platform install behavior** (`scripts/install-desktop.sh`):

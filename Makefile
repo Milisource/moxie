@@ -2,7 +2,7 @@ APP_NAME := moxie
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build build-all build-linux build-macos build-windows install install-cli install-desktop clean
+.PHONY: build build-all build-linux build-macos build-windows install install-local install-cli install-desktop clean
 
 # Quick build for current OS
 build:
@@ -24,6 +24,13 @@ build-windows:
 
 # Install CLI + desktop (best-effort). Set MOXIE_SKIP_DESKTOP=1 for CLI only.
 install: install-cli install-desktop
+
+# Same idea as `install`, but the standalone from-source installer: builds both
+# from this checkout, installs the CLI into a writable bin dir, registers the
+# desktop launcher and adds the bin dir to PATH. Flags: --skip-desktop,
+# --skip-cli, --bin-dir, --no-modify-path. See scripts/install-local.sh.
+install-local:
+	./scripts/install-local.sh
 
 # Install CLI to the first writable bin dir on PATH: $$HOME/.local/bin, then
 # /usr/local/bin (with sudo fallback). Override with MOXIE_BIN_DIR.
