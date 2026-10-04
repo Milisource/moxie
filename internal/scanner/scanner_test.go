@@ -554,6 +554,89 @@ func TestScanSaveDataNotImported(t *testing.T) {
 	}
 }
 
+// TestScanCollapsesReleaseWrapper verifies a duplicate-name release folder
+// registers as the outer wrapper (clean title/path) while engine detection
+// still resolves into the child game.
+func TestScanCollapsesReleaseWrapper(t *testing.T) {
+	root := t.TempDir()
+	inner := filepath.Join(root, "Brothel King", "Brothel King")
+	os.MkdirAll(filepath.Join(inner, "renpy"), 0755)
+	os.MkdirAll(filepath.Join(inner, "game"), 0755)
+
+	games, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 1 {
+		t.Fatalf("expected 1 game, got %d: %v", len(games), games)
+	}
+	if games[0].Path != filepath.Join(root, "Brothel King") {
+		t.Errorf("expected wrapper path, got %s", games[0].Path)
+	}
+	if games[0].Title != "Brothel King" {
+		t.Errorf("expected wrapper title, got %q", games[0].Title)
+	}
+	if games[0].Engine != engine.RenPy {
+		t.Errorf("expected engine resolved from child (RenPy), got %s", games[0].Engine)
+	}
+}
+
+// TestScanCollapsesNestedWrapperVersion verifies multi-level wrappers collapse
+// to the outermost folder and the version comes from its name.
+func TestScanCollapsesNestedWrapperVersion(t *testing.T) {
+	root := t.TempDir()
+	inner := filepath.Join(root, "Fox Girls Never Play Dirty v1.03.01", "Fox Girls Never Play Dirty", "Fox Girls Never Play Dirty")
+	os.MkdirAll(filepath.Join(inner, "www"), 0755)
+	os.WriteFile(filepath.Join(inner, "Game.exe"), []byte("exe"), 0644)
+
+	games, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 1 {
+		t.Fatalf("expected 1 game, got %d: %v", len(games), games)
+	}
+	if games[0].Path != filepath.Join(root, "Fox Girls Never Play Dirty v1.03.01") {
+		t.Errorf("expected outermost wrapper path, got %s", games[0].Path)
+	}
+	if games[0].Version != "1.03.01" {
+		t.Errorf("expected version from wrapper name, got %q", games[0].Version)
+	}
+}
+
+// TestScanReleaseDateNotVersion verifies a release date in a wrapper folder
+// name is not reported as the version when a real version exists.
+func TestScanReleaseDateNotVersion(t *testing.T) {
+	root := t.TempDir()
+	inner := filepath.Join(root, "My_Girlfriend_2024-08-17", "Sana 0824 v0.9")
+	os.MkdirAll(filepath.Join(inner, "renpy"), 0755)
+	os.MkdirAll(filepath.Join(inner, "game"), 0755)
+
+	games, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games) != 1 {
+		t.Fatalf("expected 1 game, got %d: %v", len(games), games)
+	}
+	if games[0].Version != "0.9" {
+		t.Errorf("expected 0.9, got %q (release date must not win)", games[0].Version)
+	}
+}
+
+func TestIsDateVersion(t *testing.T) {
+	for _, v := range []string{"2024-08-17", "20240817"} {
+		if !isDateVersion(v) {
+			t.Errorf("expected %q to be a date", v)
+		}
+	}
+	for _, v := range []string{"1.0.3", "0.9", "1.03.01", ""} {
+		if isDateVersion(v) {
+			t.Errorf("expected %q not to be a date", v)
+		}
+	}
+}
+
 // TestScanCategoryDirectory verifies that Scan skips category folders
 // (named after engines) and correctly identifies game subdirectories within them.
 func TestScanCategoryDirectory(t *testing.T) {
@@ -829,7 +912,9 @@ func TestScanFilteredSkipsKnownPaths(t *testing.T) {
 // (e.g. "RPG Maker XP", a decrypter with SetupMenu.exe) sharing a directory
 // tree with a real game is not registered as a standalone game. Mirrors the
 // reported layout: Legend of Queen Opala/Legend of Queen Opala Origin
-// (game) + Legend of Queen Opala/RPG Maker XP (bundled tool).
+// (game) + Legend of Queen Opala/RPG Maker XP (bundled tool). The shared
+// release wrapper collapses to a single entry, and exe detection still
+// resolves into the game child.
 func TestScanToolDirNestedInGameTree(t *testing.T) {
 	root := t.TempDir()
 
@@ -851,8 +936,15 @@ func TestScanToolDirNestedInGameTree(t *testing.T) {
 	if len(games) != 1 {
 		t.Fatalf("expected 1 game, got %d: %v", len(games), games)
 	}
-	if games[0].Path != gameDir {
-		t.Errorf("expected only the game dir to be registered, got %s", games[0].Path)
+	wrapper := filepath.Join(root, "Legend of Queen Opala")
+	if games[0].Path != wrapper {
+		t.Errorf("expected the release wrapper to be registered, got %s", games[0].Path)
+	}
+	if games[0].ExePath != filepath.Join(gameDir, "Game.exe") {
+		t.Errorf("expected exe to resolve into the wrapper's game, got %s", games[0].ExePath)
+	}
+	if games[0].Title != "Legend of Queen Opala" {
+		t.Errorf("expected wrapper title, got %q", games[0].Title)
 	}
 }
 

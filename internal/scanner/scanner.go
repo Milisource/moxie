@@ -134,7 +134,24 @@ func ScanFiltered(ctx context.Context, root string, skipPaths map[string]bool, p
 		// Check if this directory looks like a game root using a single
 		// directory read (avoids redundant os.ReadDir in hasGameMarkers).
 		entries, readErr := os.ReadDir(path)
-		if readErr != nil || !isGameRoot(path, entries) {
+		if readErr != nil {
+			return nil
+		}
+		if !isGameRoot(path, entries) {
+			// Collapse release wrappers: an outer folder that holds exactly one
+			// game (possibly through nested wrappers) and shares its name with
+			// that game becomes the registered entry, so the path, title, and
+			// version come from the release folder instead of an inner
+			// duplicate (e.g. "Brothel King/" not "Brothel King/Brothel
+			// King/"). Engine-named category folders never collapse, and the
+			// scan root is the user's container, never a game.
+			if path != root && !isEngineName(strings.ToLower(name)) {
+				if inner := soleGameDir(path, entries, 4); inner != "" &&
+					wrapperMatchesName(name, filepath.Base(inner)) {
+					gameDirs[path] = &trackedGame{resolveTo: inner}
+					currentGameDir = path
+				}
+			}
 			return nil
 		}
 		// Skip tool/utility directories (decrypters, unpackers, RPG Maker
@@ -179,42 +196,28 @@ func ScanFiltered(ctx context.Context, root string, skipPaths map[string]bool, p
 			break
 		}
 		wg.Add(1)
-		go func(d string, size int64) {
+		go func(d string, tg *trackedGame) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			result := engine.Detect(d)
-			ver := ExtractVersion(filepath.Base(d))
-			if ver == "" {
-				ver = ExtractVersionFromDir(d)
+			// A collapsed release wrapper detects against the inner game dir
+			// while reporting the wrapper's path and title.
+			detectDir := d
+			if tg.resolveTo != "" {
+				detectDir = tg.resolveTo
 			}
-			if ver == "" {
-				// Nested games: version is often in the parent directory
-				// name (e.g. "Game v1.0/Game/" → "1.0" from parent).
-				if parent := filepath.Dir(d); parent != d {
-					ver = ExtractVersion(filepath.Base(parent))
-				}
-			}
+			result := engine.Detect(detectDir)
+			exe := findGameExe(detectDir)
 			g := DetectedGame{
 				Title:      filepath.Base(d),
 				Path:       d,
+				ExePath:    exe,
 				Engine:     result.Engine,
-				Version:    ver,
-				SizeBytes:  size,
+				Version:    resolveVersion(d, detectDir, exe),
+				SizeBytes:  tg.size,
 				MatchedBy:  result.MatchedBy,
 				Confidence: result.Confidence,
-			}
-			if exe := findGameExe(d); exe != "" {
-				g.ExePath = exe
-				// Some games only have the version in the executable
-				// filename (e.g. "[Full]EmberDoors_v0.1.7_Linux.x86_64").
-				if ver == "" {
-					if exeVer := ExtractVersion(filepath.Base(exe)); exeVer != "" {
-						ver = exeVer
-						g.Version = ver
-					}
-				}
 			}
 			mu.Lock()
 			games = append(games, g)
@@ -223,7 +226,7 @@ func ScanFiltered(ctx context.Context, root string, skipPaths map[string]bool, p
 				progress(dirsExamined, int(detectedCount), "detect")
 			}
 			mu.Unlock()
-		}(dir, tg.size)
+		}(dir, tg)
 	}
 	wg.Wait()
 
@@ -240,35 +243,18 @@ func ScanSingle(dir string) DetectedGame {
 func analyzeDir(dir, root string) DetectedGame {
 	result := engine.Detect(dir)
 	name := filepath.Base(dir)
+	exe := findGameExe(dir)
 
-	ver := ExtractVersion(name)
-	if ver == "" {
-		ver = ExtractVersionFromDir(dir)
-	}
-	if ver == "" {
-		if parent := filepath.Dir(dir); parent != dir {
-			ver = ExtractVersion(filepath.Base(parent))
-		}
-	}
-
-	g := DetectedGame{
+	return DetectedGame{
 		Title:      name,
 		Path:       dir,
+		ExePath:    exe,
 		Engine:     result.Engine,
-		Version:    ver,
+		Version:    resolveVersion(dir, dir, exe),
 		SizeBytes:  dirSize(dir),
 		MatchedBy:  result.MatchedBy,
 		Confidence: result.Confidence,
 	}
-	if exe := findGameExe(dir); exe != "" {
-		g.ExePath = exe
-		if ver == "" {
-			if exeVer := ExtractVersion(filepath.Base(exe)); exeVer != "" {
-				g.Version = exeVer
-			}
-		}
-	}
-	return g
 }
 
 // version patterns tried in order; first match wins.
@@ -345,6 +331,154 @@ func ExtractVersion(name string) string {
 	return ""
 }
 
+// soleGameDir returns the single game directory reachable from dir through
+// nested single-child wrapper folders, or "" when dir's subtree is not exactly
+// one game. Internal/asset/tool folders are ignored; maxDepth bounds descent.
+func soleGameDir(dir string, entries []os.DirEntry, maxDepth int) string {
+	if maxDepth <= 0 {
+		return ""
+	}
+	if isGameRoot(dir, entries) {
+		return dir
+	}
+	var childDir string
+	dirCount := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		lower := strings.ToLower(name)
+		if engineInternalDirs[lower] || shouldSkip(name) || isToolDirName(name) ||
+			strings.HasPrefix(lower, "jre") || strings.HasSuffix(lower, ".old") {
+			continue
+		}
+		dirCount++
+		if dirCount > 1 {
+			return ""
+		}
+		childDir = filepath.Join(dir, name)
+	}
+	if dirCount != 1 {
+		return ""
+	}
+	ce, err := os.ReadDir(childDir)
+	if err != nil {
+		return ""
+	}
+	return soleGameDir(childDir, ce, maxDepth-1)
+}
+
+// normalizeName lowercases a name and reduces punctuation to single spaces so
+// folder names can be compared without caring about separators.
+func normalizeName(s string) string {
+	var b strings.Builder
+	lastSpace := true
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastSpace = false
+		} else if !lastSpace {
+			b.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// wrapperMatchesName reports whether a wrapper and its sole game child share a
+// name (one is a prefix of the other, ignoring case, punctuation, and version
+// suffixes). This targets duplicate-name release folders (Brothel King/Brothel
+// King, Fox Girls v1.03.01/Fox Girls) without collapsing arbitrary grouping
+// folders that merely happen to hold one game.
+func wrapperMatchesName(wrapper, child string) bool {
+	w, c := normalizeName(wrapper), normalizeName(child)
+	if w == "" || c == "" {
+		return false
+	}
+	return strings.HasPrefix(w, c) || strings.HasPrefix(c, w)
+}
+
+// isDateVersion reports whether v is a bare calendar date (a release date, not
+// a game version). Such strings are common in download folder names
+// (…_2024-08-17) and must not be reported as the installed version when a real
+// version exists.
+func isDateVersion(v string) bool {
+	return dateVerRE.MatchString(v) || yyyymmddRE.MatchString(v)
+}
+
+// resolveVersion finds the best version string for a game directory, in
+// priority order: directory name, file contents under gameDir, up to three
+// parent directories (release wrappers), then the executable filename. A bare
+// date is only returned when no non-date version exists anywhere. gameDir
+// differs from dir when a release wrapper was collapsed: the version then
+// comes from the wrapper name first, but from the inner game's files next.
+func resolveVersion(dir, gameDir, exePath string) string {
+	var dateFallback string
+
+	// Name candidates: the registered dir (release wrapper) and, when a
+	// wrapper was collapsed, the inner game dir. Prefer the more specific
+	// version (more dot-separated components, then longer).
+	best := ""
+	bestScore := -1
+	tryName := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return
+		}
+		if isDateVersion(v) {
+			if dateFallback == "" {
+				dateFallback = v
+			}
+			return
+		}
+		if score := strings.Count(v, ".")*1000 + len(v); score > bestScore {
+			best, bestScore = v, score
+		}
+	}
+	tryName(ExtractVersion(filepath.Base(dir)))
+	if gameDir != dir {
+		tryName(ExtractVersion(filepath.Base(gameDir)))
+	}
+	if best != "" {
+		return best
+	}
+
+	consider := func(v string) (string, bool) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return "", false
+		}
+		if isDateVersion(v) {
+			if dateFallback == "" {
+				dateFallback = v
+			}
+			return "", false
+		}
+		return v, true
+	}
+	if v, ok := consider(ExtractVersionFromDir(gameDir)); ok {
+		return v
+	}
+	p := dir
+	for i := 0; i < 3; i++ {
+		parent := filepath.Dir(p)
+		if parent == p || parent == "" {
+			break
+		}
+		if v, ok := consider(ExtractVersion(filepath.Base(parent))); ok {
+			return v
+		}
+		p = parent
+	}
+	if exePath != "" {
+		if v, ok := consider(ExtractVersion(filepath.Base(exePath))); ok {
+			return v
+		}
+	}
+	return dateFallback
+}
+
 // looksLikeGameRoot checks if a directory contains game-like files.
 func looksLikeGameRoot(dir string) bool {
 	return hasGameMarkers(dir)
@@ -355,6 +489,9 @@ func looksLikeGameRoot(dir string) bool {
 // trackedGame is the per-game-dir state accumulated during the single walk.
 type trackedGame struct {
 	size int64
+	// resolveTo is the inner game directory when the registered path is a
+	// collapsed release wrapper; empty when the path is the game root itself.
+	resolveTo string
 }
 
 // isUnderAnyGameDir reports whether parent is a subdirectory of any
