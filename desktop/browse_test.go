@@ -7,8 +7,9 @@ import (
 )
 
 // TestBuildBrowsePage: the Discover feed's scraper rows are mapped to the
-// desktop binding shape, including the full-resolution cover rewrite and the
-// pagination metadata.
+// desktop binding shape, including the pagination metadata. Cover art stays on
+// the light preview CDN (the grid renders many cards; full-res originals are
+// ~17x the bytes and decode to many MB each).
 func TestBuildBrowsePage(t *testing.T) {
 	t.Parallel()
 
@@ -45,9 +46,9 @@ func TestBuildBrowsePage(t *testing.T) {
 		r.Views != 28661376 || r.Likes != 6670 || r.Date != "9 months" || r.Creator != "Caribdis" {
 		t.Errorf("unexpected mapped result: %+v", r)
 	}
-	// preview.f95zone.to is rewritten to the full-resolution attachments host.
-	if r.CoverURL != "https://attachments.f95zone.to/2024/01/cover.jpg" {
-		t.Errorf("CoverURL = %q, want the full-res attachments host", r.CoverURL)
+	// Feed covers stay on the 400px preview CDN, NOT the full-res originals.
+	if r.CoverURL != "https://preview.f95zone.to/2024/01/cover.jpg" {
+		t.Errorf("CoverURL = %q, want the light preview CDN URL", r.CoverURL)
 	}
 }
 

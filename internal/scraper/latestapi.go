@@ -200,16 +200,16 @@ func (p *PublicAPI) SearchCovers(ctx context.Context, query string) (map[int64]s
 	covers := make(map[int64]string, len(results))
 	for _, r := range results {
 		if r.ThreadID > 0 && r.CoverURL != "" {
-			covers[r.ThreadID] = FullResCoverURL(r.CoverURL)
+			covers[r.ThreadID] = fullResCoverURL(r.CoverURL)
 		}
 	}
 	return covers, nil
 }
 
-// FullResCoverURL rewrites preview.f95zone.to (F95Checker's downscaled
+// fullResCoverURL rewrites preview.f95zone.to (F95Checker's downscaled
 // 400px CDN) to attachments.f95zone.to, which serves the same path at the
 // original resolution. Other hosts are returned unchanged.
-func FullResCoverURL(u string) string {
+func fullResCoverURL(u string) string {
 	if strings.HasPrefix(u, "https://preview.f95zone.to/") {
 		return "https://attachments.f95zone.to/" + strings.TrimPrefix(u, "https://preview.f95zone.to/")
 	}

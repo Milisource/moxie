@@ -1,5 +1,5 @@
 <script>
-  import {onMount} from 'svelte'
+  import {onMount, onDestroy} from 'svelte'
   import {
     GetCookieStatus,
     SearchF95Zone,
@@ -10,6 +10,7 @@
   import {engineColor, engineStyle} from './engineColors.js'
   import {safeExternalUrl} from './sanitizeUrl.js'
   import {formatCount} from './format.js'
+  import {createVirtualList} from './virtualList.svelte.js'
   import {browser} from './viewState.svelte.js'
 
   // ── State ──────────────────────────────────────────────────
@@ -158,6 +159,74 @@
     io.observe(el)
     return () => io.disconnect()
   })
+
+  // ── Discover grid virtualization ────────────────────────────
+  // The feed is infinite-scroll, so without windowing every loaded cover card
+  // stays in the DOM and decoded in memory — a few pages in, the webview janks
+  // and RSS climbs by hundreds of MB. Mirrors GameList's grid: chunk the flat
+  // result list into fixed rows and render only the visible range (+overscan)
+  // over a spacer sized to the full content height.
+  const DISCOVER_GAP = 10
+  const DISCOVER_CARD_MIN = 220
+  // Caption block under the cover. Must equal .discover-card .result-info's
+  // fixed height in CSS (change one, change both) so every row is uniform.
+  const DISCOVER_TEXT_H = 68
+
+  let discoverEl = $state(null)
+  let discoverColumns = $state(1)
+  let discoverRowHeight = $state(300)
+
+  function updateDiscoverLayout() {
+    if (!discoverEl) return
+    const avail = Math.max(discoverEl.clientWidth, DISCOVER_CARD_MIN)
+    const cols = Math.max(1, Math.floor((avail + DISCOVER_GAP) / (DISCOVER_CARD_MIN + DISCOVER_GAP)))
+    const cardWidth = (avail - DISCOVER_GAP * (cols - 1)) / cols
+    discoverColumns = cols
+    discoverRowHeight = cardWidth * 9 / 16 + DISCOVER_TEXT_H + DISCOVER_GAP
+  }
+
+  $effect(() => {
+    if (!discoverEl) return
+    updateDiscoverLayout()
+    const ro = new ResizeObserver(() => updateDiscoverLayout())
+    ro.observe(discoverEl)
+    return () => ro.disconnect()
+  })
+
+  // Chunk the flat list into rows so the virtualizer only has to window rows.
+  let discoverRows = $derived.by(() => {
+    const rows = []
+    const items = browser.discover.items
+    for (let i = 0; i < items.length; i += discoverColumns) {
+      rows.push(items.slice(i, i + discoverColumns))
+    }
+    return rows
+  })
+
+  // See virtualList.svelte.js for why this isn't a plain reactive $store read.
+  const discoverVirtualizer = createVirtualList({
+    count: 0,
+    getScrollElement: () => discoverEl,
+    estimateSize: () => discoverRowHeight,
+    overscan: 3,
+  })
+
+  $effect(() => {
+    const el = discoverEl
+    const rows = discoverRows
+    const rowHeight = discoverRowHeight
+    discoverVirtualizer.setOptions({
+      count: rows.length,
+      getScrollElement: () => el,
+      estimateSize: () => rowHeight,
+      overscan: 3,
+      getItemKey: (i) => rows[i]?.map((r) => r.threadId).join(',') ?? i,
+    })
+  })
+
+  // The subscriber in createVirtualList is process-global per instance; it
+  // must be torn down when this view unmounts on a tab switch.
+  onDestroy(() => discoverVirtualizer.unsubscribe())
 
   // ── Derived ─────────────────────────────────────────────────
   let canSearch = $derived(browser.query.trim().length >= 2 && cookieStatus === 'available' && !browser.loading)
@@ -476,68 +545,79 @@
               <p class="empty-detail">Try refreshing the feed.</p>
             </div>
           {:else}
-            <div class="results-grid">
-              {#each browser.discover.items as result (result.threadId)}
-                <button
-                  class="result-card"
-                  class:selected={browser.selected?.url === result.url}
-                  disabled={cookieStatus !== 'available'}
-                  title={cookieStatus === 'available' ? result.title : 'Log into F95Zone to preview'}
-                  onclick={() => handlePreview(result)}
-                >
-                  <div class="result-thumb">
-                    {#if result.coverUrl}
-                      <img src={result.coverUrl} alt={result.title} loading="lazy" decoding="async" />
-                    {:else}
-                      <div class="result-thumb-placeholder">
-                        <span class="placeholder-icon">▭</span>
-                      </div>
-                    {/if}
+            <!-- Windowed feed: only the visible rows (+ overscan) are in the
+                 DOM, so infinite scroll can't grow the webview without bound. -->
+            <div class="discover-scroll" bind:this={discoverEl}>
+              <div class="discover-spacer" style="height: {discoverVirtualizer.totalSize}px">
+                {#each discoverVirtualizer.virtualRows as vRow (vRow.key)}
+                  <div
+                    class="discover-row"
+                    style="grid-template-columns: repeat({discoverColumns}, 1fr); height: {discoverRowHeight - DISCOVER_GAP}px; transform: translateY({vRow.start + DISCOVER_GAP}px)"
+                  >
+                    {#each discoverRows[vRow.index] ?? [] as result (result.threadId)}
+                      <button
+                        class="result-card discover-card"
+                        class:selected={browser.selected?.url === result.url}
+                        disabled={cookieStatus !== 'available'}
+                        title={cookieStatus === 'available' ? result.title : 'Log into F95Zone to preview'}
+                        onclick={() => handlePreview(result)}
+                      >
+                        <div class="result-thumb">
+                          {#if result.coverUrl}
+                            <img src={result.coverUrl} alt={result.title} loading="lazy" decoding="async" />
+                          {:else}
+                            <div class="result-thumb-placeholder">
+                              <span class="placeholder-icon">▭</span>
+                            </div>
+                          {/if}
+                        </div>
+                        <div class="result-info">
+                          <span class="result-title" title={result.title}>{result.title}</span>
+                          <div class="result-meta">
+                            {#if result.version}
+                              <span class="discover-version">{result.version}</span>
+                            {/if}
+                            {#if result.rating > 0}
+                              <span class="discover-rating">{result.rating.toFixed(2)}/5</span>
+                            {/if}
+                            {#if result.views > 0}
+                              <span class="discover-stat">{formatCount(result.views)} views</span>
+                            {/if}
+                          </div>
+                          <div class="result-meta">
+                            {#if result.creator}
+                              <span class="discover-creator" title={result.creator}>{result.creator}</span>
+                            {/if}
+                            {#if result.date}
+                              <span class="discover-stat">{result.date}</span>
+                            {/if}
+                          </div>
+                        </div>
+                      </button>
+                    {/each}
                   </div>
-                  <div class="result-info">
-                    <span class="result-title" title={result.title}>{result.title}</span>
-                    <div class="result-meta">
-                      {#if result.version}
-                        <span class="discover-version">{result.version}</span>
-                      {/if}
-                      {#if result.rating > 0}
-                        <span class="discover-rating">{result.rating.toFixed(2)}/5</span>
-                      {/if}
-                      {#if result.views > 0}
-                        <span class="discover-stat">{formatCount(result.views)} views</span>
-                      {/if}
-                    </div>
-                    <div class="result-meta">
-                      {#if result.creator}
-                        <span class="discover-creator" title={result.creator}>{result.creator}</span>
-                      {/if}
-                      {#if result.date}
-                        <span class="discover-stat">{result.date}</span>
-                      {/if}
-                    </div>
-                  </div>
-                </button>
-              {/each}
-            </div>
-
-            {#if browser.discover.error}
-              <div class="error-section">
-                <p class="error-line">{browser.discover.error}</p>
+                {/each}
               </div>
-            {/if}
 
-            {#if browser.discover.loadingMore}
-              <div class="discover-more"><span class="spinner"></span> Loading more…</div>
-            {:else if browser.discover.totalPages > 0 && browser.discover.page < browser.discover.totalPages}
-              <button class="btn discover-load-more" onclick={() => loadDiscover(false)}>
-                Load more
-              </button>
-            {:else}
-              <p class="discover-end">End of results</p>
-            {/if}
+              {#if browser.discover.error}
+                <div class="error-section">
+                  <p class="error-line">{browser.discover.error}</p>
+                </div>
+              {/if}
+
+              {#if browser.discover.loadingMore}
+                <div class="discover-more"><span class="spinner"></span> Loading more…</div>
+              {:else if browser.discover.totalPages > 0 && browser.discover.page < browser.discover.totalPages}
+                <button class="btn discover-load-more" onclick={() => loadDiscover(false)}>
+                  Load more
+                </button>
+              {:else}
+                <p class="discover-end">End of results</p>
+              {/if}
+
+              <div class="discover-sentinel" bind:this={sentinelEl}></div>
+            </div>
           {/if}
-
-          <div class="discover-sentinel" bind:this={sentinelEl}></div>
         </div>
       {/if}
     </div>
@@ -993,17 +1073,35 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+    flex: 1;
+    min-height: 0;
+    height: 100%;
   }
   .discover-bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    position: sticky;
+    flex-shrink: 0;
+  }
+  .discover-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    position: relative;
+  }
+  .discover-spacer {
+    position: relative;
+    width: 100%;
+  }
+  .discover-row {
+    position: absolute;
     top: 0;
-    z-index: 1;
-    padding-bottom: 4px;
-    background: var(--bg-primary);
+    left: 0;
+    right: 0;
+    display: grid;
+    /* Must equal DISCOVER_GAP in the script. */
+    gap: 0 10px;
   }
   .discover-tabs {
     display: flex;
@@ -1085,6 +1183,12 @@
     white-space: nowrap;
   }
   .result-info .result-meta + .result-meta { margin-top: 2px; }
+  /* Fixed caption height so the windowed rows are uniform. Must equal
+     DISCOVER_TEXT_H in the script. */
+  .discover-card .result-info {
+    height: 68px;
+    overflow: hidden;
+  }
   /* Discover cards are disabled (not clickable) until F95Zone is connected;
      keep them legible rather than dimming the whole tile. */
   .result-card:disabled { cursor: default; opacity: 0.9; }

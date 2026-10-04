@@ -2302,9 +2302,11 @@ func (a *App) BrowseF95Zone(page int, sort string) (*F95BrowsePage, error) {
 	return buildBrowsePage(lp), nil
 }
 
-// buildBrowsePage maps a scraper LatestPage to the desktop binding shape,
-// rewriting cover art from F95Checker's downscaled preview CDN to the
-// full-resolution attachments host.
+// buildBrowsePage maps a scraper LatestPage to the desktop binding shape.
+// Cover art is left on F95Checker's 400px preview CDN: the Discover grid
+// renders dozens of scrollable cards at once, where the full-resolution
+// attachments originals are ~17x the bytes and decode to many megabytes each.
+// (The preview pane can afford the full-res original because it shows one.)
 func buildBrowsePage(lp *scraper.LatestPage) *F95BrowsePage {
 	out := &F95BrowsePage{
 		Results:    make([]F95BrowseResult, 0, len(lp.Results)),
@@ -2319,7 +2321,7 @@ func buildBrowsePage(lp *scraper.LatestPage) *F95BrowsePage {
 			ThreadID: r.ThreadID,
 			Version:  r.Version,
 			Creator:  r.Creator,
-			CoverURL: scraper.FullResCoverURL(r.CoverURL),
+			CoverURL: r.CoverURL,
 			Rating:   r.Rating,
 			Views:    r.Views,
 			Likes:    r.Likes,
