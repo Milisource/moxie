@@ -113,7 +113,88 @@ func ResolveExecutable(gameDir, exePath string) string {
 	}
 	// Browser-played HTML games have no native executable — their entry point
 	// is an HTML page opened in the browser.
-	return engine.FindHTMLEntry(gameDir)
+	if entry := engine.FindHTMLEntry(gameDir); entry != "" {
+		return entry
+	}
+
+	// Nothing launchable at the root. Some archives nest the playable build a
+	// level or two down (release wrappers the scanner did not collapse, source
+	// repos). Descend a bounded distance so those installs still get an entry
+	// point instead of an empty exe_path.
+	return resolveNested(gameDir)
+}
+
+// nestedSearchDepth bounds the fallback descent in resolveNested.
+const nestedSearchDepth = 2
+
+// nestedSkipDirs are directory names that never hold a game's launchable entry
+// point — engine runtimes, asset trees and tooling. They are skipped during the
+// nested search so a bundled JRE or Unity data folder cannot masquerade as the
+// game.
+var nestedSkipDirs = map[string]bool{
+	"game": true, "renpy": true, "www": true, "jre": true,
+	"runtime": true, "lib": true, "libs": true, "node_modules": true,
+	"__macosx": true, ".git": true,
+}
+
+// resolveNested looks for the best launchable entry point within
+// nestedSearchDepth levels below gameDir, preferring a native executable over
+// an HTML entry page. Returns "" when nothing is found.
+func resolveNested(gameDir string) string {
+	if exe := findNestedExe(gameDir, 1); exe != "" {
+		return exe
+	}
+	return engine.FindHTMLEntryShallow(gameDir)
+}
+
+// findNestedExe returns the best native executable within nestedSearchDepth
+// levels below dir, or "". Known runtimes/installers are skipped and the same
+// platform filtering as the top-level search applies (.sh/.x86_64/AppImage are
+// Linux-only).
+func findNestedExe(dir string, depth int) string {
+	if depth > nestedSearchDepth {
+		return ""
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+
+	var exes []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		lower := strings.ToLower(name)
+		ext := strings.ToLower(filepath.Ext(name))
+		if strings.Contains(lower, "unitycrashhandler") ||
+			strings.Contains(lower, "unins") ||
+			strings.Contains(lower, "setup") {
+			continue
+		}
+		linuxOnly := ext == ".sh" || ext == ".x86_64" || ext == ".x86" ||
+			strings.HasSuffix(name, ".AppImage")
+		switch {
+		case ext == ".exe":
+			exes = append(exes, filepath.Join(dir, name))
+		case linuxOnly && runtime.GOOS == "linux":
+			exes = append(exes, filepath.Join(dir, name))
+		}
+	}
+	if len(exes) > 0 {
+		return SelectBestExe(exes)
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() || nestedSkipDirs[strings.ToLower(e.Name())] {
+			continue
+		}
+		if exe := findNestedExe(filepath.Join(dir, e.Name()), depth+1); exe != "" {
+			return exe
+		}
+	}
+	return ""
 }
 
 // SelectBestExe picks the most likely main executable from a list.

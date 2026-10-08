@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -84,5 +85,38 @@ func TestDownloadWithHost_SizeMatch(t *testing.T) {
 	fi, err := os.Stat(files[0])
 	if err != nil || fi.Size() != payload {
 		t.Fatalf("final file size = %v, want %d (err %v)", fi.Size(), payload, err)
+	}
+}
+
+// TestDownloadWithHost_ContentLengthTruncationDetected: when the scraped size
+// is unknown (expectedTotal 0) but the server declares a Content-Length larger
+// than the body it delivers, the short transfer must still be rejected. The
+// custom transport returns a response whose ContentLength lies about the body,
+// which Go's net/http would otherwise report as a clean short read.
+func TestDownloadWithHost_ContentLengthTruncationDetected(t *testing.T) {
+	old := testTransportOverride
+	testTransportOverride = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			Status:        "200 OK",
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": []string{"application/octet-stream"}},
+			ContentLength: 9999,
+			Body:          io.NopCloser(strings.NewReader("short body")),
+			Request:       req,
+		}, nil
+	})
+	defer func() { testTransportOverride = old }()
+
+	destDir := t.TempDir()
+	err := DownloadWithContext(context.Background(), "https://example.com/file.zip", "", destDir, 0, nil, "")
+	if err == nil {
+		t.Fatal("expected a truncation error from Content-Length")
+	}
+	if !strings.Contains(err.Error(), "download truncated") {
+		t.Fatalf("expected truncated error, got: %v", err)
+	}
+	entries, _ := os.ReadDir(destDir)
+	if len(entries) != 0 {
+		t.Fatalf("destDir not clean after truncation, found: %v", entries)
 	}
 }

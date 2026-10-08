@@ -148,3 +148,74 @@ func FindHTMLEntry(dir string) string {
 	}
 	return best
 }
+
+// FindHTMLEntryShallow is FindHTMLEntry extended a bounded distance below dir
+// (up to maxIndexDepth levels, skipping non-content directories such as js/css
+// and VCS metadata). It recovers games whose entry page sits one or two folders
+// down — source-repo layouts, or a release the scanner did not collapse — while
+// still returning a root-level entry unchanged. Returns "" when no HTML file is
+// found at the root or within the bounded depth.
+func FindHTMLEntryShallow(dir string) string {
+	if entry := FindHTMLEntry(dir); entry != "" {
+		return entry
+	}
+	return findHTMLEntryDepth(dir, 1)
+}
+
+// entrySkipDirs are directory names the shallow HTML entry search never
+// descends into: engine runtimes, save/config trees and dependencies. Combined
+// with nonContentDirs (assets, VCS metadata) they keep a game's data folder
+// from being mistaken for its entry page.
+var entrySkipDirs = map[string]bool{
+	"game": true, "renpy": true, "www": true, "jre": true,
+	"runtime": true, "lib": true, "libs": true, "node_modules": true,
+}
+
+// findHTMLEntryDepth walks dir to maxIndexDepth levels, preferring an
+// index.html at each level, then the largest HTML file. Descends only when the
+// current level has no HTML.
+func findHTMLEntryDepth(dir string, depth int) string {
+	if depth > maxIndexDepth {
+		return ""
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+
+	// A root entry wins outright.
+	for _, e := range entries {
+		if !e.IsDir() && strings.EqualFold(e.Name(), "index.html") {
+			return filepath.Join(dir, e.Name())
+		}
+	}
+
+	var best string
+	var bestSize int64 = -1
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if ext != ".html" && ext != ".htm" {
+			continue
+		}
+		if fi, err := e.Info(); err == nil && fi.Size() > bestSize {
+			bestSize = fi.Size()
+			best = filepath.Join(dir, e.Name())
+		}
+	}
+	if best != "" {
+		return best
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() || nonContentDirs[e.Name()] || entrySkipDirs[strings.ToLower(e.Name())] {
+			continue
+		}
+		if entry := findHTMLEntryDepth(filepath.Join(dir, e.Name()), depth+1); entry != "" {
+			return entry
+		}
+	}
+	return ""
+}

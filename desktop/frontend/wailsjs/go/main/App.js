@@ -150,6 +150,10 @@ export function GetInstallTargets() {
   return window['go']['main']['App']['GetInstallTargets']();
 }
 
+export function GetOrganizeInstalls() {
+  return window['go']['main']['App']['GetOrganizeInstalls']();
+}
+
 export function GetScanPaths() {
   return window['go']['main']['App']['GetScanPaths']();
 }
@@ -288,6 +292,10 @@ export function SetGameWinePrefix(arg1, arg2) {
 
 export function SetSteamGridDBKey(arg1) {
   return window['go']['main']['App']['SetSteamGridDBKey'](arg1);
+}
+
+export function SetOrganizeInstalls(arg1) {
+  return window['go']['main']['App']['SetOrganizeInstalls'](arg1);
 }
 
 export function SetUpdateConcurrency(arg1) {

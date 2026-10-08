@@ -89,3 +89,54 @@ func TestFindHTMLEntry(t *testing.T) {
 		}
 	})
 }
+
+// TestFindHTMLEntryShallow guards the bounded nested search: a root entry is
+// returned unchanged, an entry one level down is found, engine-internal
+// directories (game/) are skipped, and the descent stays bounded.
+func TestFindHTMLEntryShallow(t *testing.T) {
+	t.Run("root entry unchanged", func(t *testing.T) {
+		dir := t.TempDir()
+		root := filepath.Join(dir, "index.html")
+		os.WriteFile(root, []byte("<html></html>"), 0644)
+		if got := FindHTMLEntryShallow(dir); got != root {
+			t.Errorf("FindHTMLEntryShallow = %q, want %q", got, root)
+		}
+	})
+
+	t.Run("nested index.html", func(t *testing.T) {
+		dir := t.TempDir()
+		sub := filepath.Join(dir, "src")
+		if err := os.MkdirAll(sub, 0755); err != nil {
+			t.Fatal(err)
+		}
+		entry := filepath.Join(sub, "index.html")
+		os.WriteFile(entry, []byte("<html><tw-storydata></tw-storydata></html>"), 0644)
+		if got := FindHTMLEntryShallow(dir); got != entry {
+			t.Errorf("FindHTMLEntryShallow = %q, want %q", got, entry)
+		}
+	})
+
+	t.Run("skips engine-internal dirs", func(t *testing.T) {
+		dir := t.TempDir()
+		game := filepath.Join(dir, "game")
+		if err := os.MkdirAll(game, 0755); err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(game, "index.html"), []byte("<html></html>"), 0644)
+		if got := FindHTMLEntryShallow(dir); got != "" {
+			t.Errorf("FindHTMLEntryShallow = %q, want empty (game/ is internal)", got)
+		}
+	})
+
+	t.Run("depth bounded", func(t *testing.T) {
+		dir := t.TempDir()
+		deep := filepath.Join(dir, "a", "b", "c")
+		if err := os.MkdirAll(deep, 0755); err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(deep, "index.html"), []byte("<html></html>"), 0644)
+		if got := FindHTMLEntryShallow(dir); got != "" {
+			t.Errorf("FindHTMLEntryShallow = %q, want empty (depth-bounded)", got)
+		}
+	})
+}

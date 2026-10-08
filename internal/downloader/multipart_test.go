@@ -96,6 +96,76 @@ func TestGroupMultiPartLinks_SingleMemberIgnored(t *testing.T) {
 	}
 }
 
+func TestParsePartLabel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		prefix string
+		index  int
+		ok     bool
+	}{
+		{"Part 1", "", 1, true},
+		{"Part 2", "", 2, true},
+		{"Part 1 Win", "win", 1, true},
+		{"Part 2 Win", "win", 2, true},
+		{"DOWNLOAD Part 2 · Win", "download win", 2, true},
+		{"Part 10", "", 10, true},
+		{"DOWNLOAD · Win", "", 0, false},
+		{"Extras", "", 0, false},
+		{"Prototype", "", 0, false},
+	}
+	for _, tt := range tests {
+		prefix, idx, ok := parsePartLabel(tt.name)
+		if ok != tt.ok || (ok && (prefix != tt.prefix || idx != tt.index)) {
+			t.Errorf("parsePartLabel(%q) = (%q, %d, %v), want (%q, %d, %v)",
+				tt.name, prefix, idx, ok, tt.prefix, tt.index, tt.ok)
+		}
+	}
+}
+
+// TestGroupMultiPartLinks_LabelStyle guards the F95Zone split-row shape:
+// links labelled only "Part 1"/"Part 2" (no filename) must still group, with
+// every host for a part kept as fallback candidates.
+func TestGroupMultiPartLinks_LabelStyle(t *testing.T) {
+	t.Parallel()
+	links := []db.DownloadLink{
+		{Name: "Part 1", Host: "datanodes", URL: "https://datanodes.to/x/ToBeSIgma_v0.90.zip.part1.rar"},
+		{Name: "Part 1", Host: "mega", URL: "https://f95zone.to/masked/mega.nz/abc"},
+		{Name: "Part 2", Host: "datanodes", URL: "https://datanodes.to/y/ToBeSIgma_v0.90.zip.part2.rar"},
+		{Name: "Part 2", Host: "mega", URL: "https://f95zone.to/masked/mega.nz/def"},
+		{Name: "Part 3", Host: "datanodes", URL: "https://datanodes.to/z/ToBeSIgma_v0.90.zip.part3.rar"},
+	}
+	groups := GroupMultiPartLinks(links)
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(groups))
+	}
+	g := groups[0]
+	if g.MaxIndex() != 3 {
+		t.Fatalf("MaxIndex = %d, want 3", g.MaxIndex())
+	}
+	if len(g.Parts[1]) != 2 || len(g.Parts[2]) != 2 || len(g.Parts[3]) != 1 {
+		t.Fatalf("part candidate counts = %d/%d/%d, want 2/2/1",
+			len(g.Parts[1]), len(g.Parts[2]), len(g.Parts[3]))
+	}
+}
+
+// TestGroupMultiPartLinks_URLBasename guards split detection from the resolved
+// URL when the label is generic ("Download"): the basename carries the part.
+func TestGroupMultiPartLinks_URLBasename(t *testing.T) {
+	t.Parallel()
+	links := []db.DownloadLink{
+		{Name: "Download", Host: "direct", URL: "https://cdn.example.com/Game.part1.rar"},
+		{Name: "Download", Host: "direct", URL: "https://cdn.example.com/Game.part2.rar"},
+	}
+	groups := GroupMultiPartLinks(links)
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(groups))
+	}
+	if groups[0].Prefix != "Game" || groups[0].MaxIndex() != 2 {
+		t.Fatalf("group = (%q, max %d), want (Game, 2)", groups[0].Prefix, groups[0].MaxIndex())
+	}
+}
+
 func TestConcatSplitParts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

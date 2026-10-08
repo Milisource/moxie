@@ -366,6 +366,16 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 		writeMode |= os.O_TRUNC
 	}
 
+	// The exact final byte count the server promised. Prefer the scraped size,
+	// but fall back to Content-Length so a short transfer is still caught when
+	// the scraped size is unknown (every F95Zone link stores size 0). A 206
+	// resume body carries only the remaining bytes, so add the existing
+	// partial back.
+	expectedFinal := expectedTotal
+	if expectedFinal <= 0 && resp.ContentLength > 0 {
+		expectedFinal = existingSize + resp.ContentLength
+	}
+
 	// Enforce size limits based on Content-Length.
 	reportedLength := resp.ContentLength
 	if reportedLength > 0 {
@@ -463,13 +473,13 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 		return err
 	}
 
-	// Truncation detection: when the expected size is known (scraped from
-	// the thread), the bytes written must match exactly. A mismatch means
-	// the server cut the transfer short, returned an interstitial page, or
-	// a host that ignores Range re-served the file from zero. The .part
+	// Truncation detection: the bytes written must match the size the server
+	// promised — the scraped size when known, else Content-Length. A mismatch
+	// means the server cut the transfer short, returned an interstitial page,
+	// or a host that ignores Range re-served the file from zero. The .part
 	// file is removed so a later retry starts clean instead of trusting a
 	// partial as a resume base.
-	if expectedTotal > 0 && wc.total != expectedTotal {
+	if expectedFinal > 0 && wc.total != expectedFinal {
 		f.Close()
 		os.Remove(partPath)
 		return fmt.Errorf("download truncated: wrote %d bytes, expected %d", wc.total, expectedTotal)

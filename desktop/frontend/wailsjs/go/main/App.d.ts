@@ -79,6 +79,8 @@ export function GetGamesWithDownloadLinks():Promise<Array<main.DesktopGameSummar
 
 export function GetInstallTargets():Promise<Array<main.InstallTarget>>;
 
+export function GetOrganizeInstalls():Promise<boolean>;
+
 export function GetScanPaths():Promise<Array<string>>;
 
 export function GetStartupError():Promise<string>;
@@ -148,6 +150,8 @@ export function SetGameStatus(arg1:number,arg2:string):Promise<void>;
 export function SetGameWinePrefix(arg1:number,arg2:string):Promise<void>;
 
 export function SetSteamGridDBKey(arg1:string):Promise<void>;
+
+export function SetOrganizeInstalls(arg1:boolean):Promise<void>;
 
 export function SetUpdateConcurrency(arg1:number):Promise<void>;
 

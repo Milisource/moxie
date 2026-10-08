@@ -216,6 +216,14 @@ func TestIsEngineName(t *testing.T) {
 		{"others", true},
 		{"tools", true},
 		{"jre", true},
+		// Engine-install folder names produced by engine.InstallFolderName.
+		{"webgl", true},
+		{"wolf", true},
+		{"wolfrpg", true},
+		{"qsp", true},
+		{"rags", true},
+		{"tads", true},
+		{"adrift", true},
 
 		// Non-matches
 		{"game", false},

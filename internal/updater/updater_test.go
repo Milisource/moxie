@@ -209,6 +209,56 @@ func TestFindGameRoot_NoSubdirs(t *testing.T) {
 	}
 }
 
+// TestFindGameRoot_LauncherBesideSingleAssetDir guards that a game root with a
+// launcher and a single asset directory (RPGM MV's www/) is not collapsed
+// into the asset directory, which silently dropped the launcher.
+func TestFindGameRoot_LauncherBesideSingleAssetDir(t *testing.T) {
+	tmp := t.TempDir()
+	os.MkdirAll(filepath.Join(tmp, "www", "js"), 0755)
+	os.WriteFile(filepath.Join(tmp, "Game.exe"), []byte("exe"), 0644)
+	os.WriteFile(filepath.Join(tmp, "www", "index.html"), []byte("page"), 0644)
+
+	if got := findGameRoot(tmp); got != tmp {
+		t.Errorf("expected %s (launcher present), got %s", tmp, got)
+	}
+}
+
+// TestFindGameRoot_HTMLBesideSingleAssetDir guards the same collapse for an
+// HTML game whose root is its entry page plus one image directory.
+func TestFindGameRoot_HTMLBesideSingleAssetDir(t *testing.T) {
+	tmp := t.TempDir()
+	os.MkdirAll(filepath.Join(tmp, "images"), 0755)
+	os.WriteFile(filepath.Join(tmp, "Lustborn.html"), []byte("<html></html>"), 0644)
+	os.WriteFile(filepath.Join(tmp, "images", "a.png"), []byte("x"), 0644)
+
+	if got := findGameRoot(tmp); got != tmp {
+		t.Errorf("expected %s (html entry present), got %s", tmp, got)
+	}
+}
+
+// TestMerge_KeepsLauncherBesideSingleAssetDir is the end-to-end guard for the
+// double-collapse: merging an extraction whose root is the launcher plus one
+// asset directory must copy the launcher, not just the assets.
+func TestMerge_KeepsLauncherBesideSingleAssetDir(t *testing.T) {
+	extracted := t.TempDir()
+	os.MkdirAll(filepath.Join(extracted, "www", "js"), 0755)
+	os.WriteFile(filepath.Join(extracted, "Game.exe"), []byte("exe"), 0644)
+	os.WriteFile(filepath.Join(extracted, "www", "index.html"), []byte("page"), 0644)
+
+	gameDir := filepath.Join(t.TempDir(), "MyGame")
+	os.MkdirAll(gameDir, 0755)
+
+	if _, err := Merge(context.Background(), gameDir, "RPGM", extracted, false); err != nil {
+		t.Fatalf("merge failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(gameDir, "Game.exe")); os.IsNotExist(err) {
+		t.Error("Game.exe should be merged, not dropped")
+	}
+	if _, err := os.Stat(filepath.Join(gameDir, "www", "index.html")); os.IsNotExist(err) {
+		t.Error("www/index.html should be merged")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Merge (integration)
 // ---------------------------------------------------------------------------

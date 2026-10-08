@@ -68,6 +68,53 @@ func parsePartName(name string) (prefix string, index int, ok bool) {
 	return "", 0, false
 }
 
+// labelPartRe finds a "part <n>" token in a human label — "Part 1",
+// "Part 2 · Win", "DOWNLOAD Part 2 · Win" — the shape F95Zone uses when a
+// release is split across rows instead of carrying real filenames.
+var labelPartRe = regexp.MustCompile(`(?i)\bpart[\s._\-]*(\d{1,3})\b`)
+
+// parsePartLink extracts the part prefix and index for a link, trying every
+// form F95Zone produces: a real filename in the label ("Game.part1.rar"), a
+// human split label ("Part 1"), then the URL's own basename — which carries
+// the split name for direct hosts even when the label is generic. ok is false
+// when none of them look like a part of a set.
+func parsePartLink(link db.DownloadLink) (prefix string, index int, ok bool) {
+	if p, i, ok := parsePartName(link.Name); ok {
+		return p, i, true
+	}
+	if p, i, ok := parsePartLabel(link.Name); ok {
+		return p, i, true
+	}
+	if p, i, ok := parsePartName(partDestName(link)); ok {
+		return p, i, true
+	}
+	return "", 0, false
+}
+
+// parsePartLabel extracts a part index from a human label and derives a prefix
+// by removing the "part N" span and normalizing the remainder, so links that
+// differ only by their part number ("Part 1"/"Part 2", "Part 1 Win"/
+// "Part 2 Win") collapse to the same prefix.
+func parsePartLabel(name string) (string, int, bool) {
+	loc := labelPartRe.FindStringSubmatchIndex(name)
+	if loc == nil {
+		return "", 0, false
+	}
+	idx, err := strconv.Atoi(name[loc[2]:loc[3]])
+	if err != nil || idx == 0 {
+		return "", 0, false
+	}
+	return normalizePartLabel(name[:loc[0]] + " " + name[loc[1]:]), idx, true
+}
+
+// normalizePartLabel lowercases a label remainder and collapses separators so
+// rows that differ only in punctuation or whitespace group together.
+func normalizePartLabel(s string) string {
+	s = strings.ToLower(s)
+	s = strings.NewReplacer("·", " ", "•", " ", "|", " ", "/", " ").Replace(s)
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // PartGroup is one multi-part archive: the shared prefix and, per part
 // index, the candidate links ordered by host score (best first).
 type PartGroup struct {
@@ -120,7 +167,7 @@ func (g PartGroup) bestScore() int {
 func GroupMultiPartLinks(links []db.DownloadLink) []PartGroup {
 	byPrefix := map[string]map[int][]db.DownloadLink{}
 	for _, link := range links {
-		prefix, idx, ok := parsePartName(link.Name)
+		prefix, idx, ok := parsePartLink(link)
 		if !ok {
 			continue
 		}

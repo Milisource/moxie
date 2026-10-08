@@ -277,6 +277,13 @@ func copyFile(src, dst string) error {
 
 // findGameRoot checks if extractedDir contains exactly one subdirectory;
 // if so, returns that subdirectory (the actual game root inside the extraction).
+//
+// It never unwraps a directory that is itself a game root: some releases put
+// the launcher at the top level beside a single asset folder (RPGM MV's www/,
+// an HTML game's img/, a Ren'Py build's renpy/). Unwrapping there discards the
+// launcher and leaves only the assets, so the installed game has no executable.
+// This mirrors extractor.findGameRoot; the two must agree because Merge can be
+// handed either the raw extraction dir or the extractor's already-unwrapped one.
 func findGameRoot(dir string) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -288,10 +295,36 @@ func findGameRoot(dir string) string {
 			subdirs = append(subdirs, e.Name())
 		}
 	}
-	if len(subdirs) == 1 {
+	if len(subdirs) == 1 && !looksLikeGameRoot(entries) {
 		return filepath.Join(dir, subdirs[0])
 	}
 	return dir
+}
+
+// looksLikeGameRoot reports whether entries describe a game root — a directory
+// holding a launcher, HTML entry page, or engine marker file — rather than a
+// wrapper folder that only contains the real game one level down. It is the
+// guard that stops findGameRoot from collapsing a game root into its single
+// asset subdirectory and dropping the launcher.
+func looksLikeGameRoot(entries []os.DirEntry) bool {
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := strings.ToLower(e.Name())
+		switch name {
+		case "data.win", "package.json", "unityplayer.dll", "nw.dll",
+			"game.ini", "nscript.dat", "game.rgssad", "game.rgss3a",
+			"index.html":
+			return true
+		}
+		switch strings.ToLower(filepath.Ext(name)) {
+		case ".exe", ".sh", ".x86_64", ".x86", ".appimage",
+			".html", ".htm", ".pck", ".rpyc", ".rpa", ".jar", ".love":
+			return true
+		}
+	}
+	return false
 }
 
 // patterns returns the preserve glob patterns for a given engine.

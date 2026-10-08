@@ -4962,6 +4962,73 @@ func (a *App) rankedDownloadLinks(gameID int64, opts rankOpts) ([]db.DownloadLin
 	return out, nil
 }
 
+// downloadGameMultiPartOrSingle attempts a multi-part archive set first — a
+// thread that splits one release across several links ("Part 1"/"Part 2",
+// Game.part1.rar, Game.7z.001) — then falls back to the ranked single-link
+// loop. It returns the downloaded archive and, for a single link, the link
+// that produced it; the zero link means a multi-part set completed.
+func (a *App) downloadGameMultiPartOrSingle(ctx context.Context, evPrefix string, gameID int64, links []db.DownloadLink) (string, db.DownloadLink, error) {
+	if groups := downloader.GroupMultiPartLinks(links); len(groups) > 0 {
+		// A multi-part set needs the same F95 cookie as a single download;
+		// without it, fall through so the single-link path emits the terminal
+		// "log in to F95Zone" error instead of failing silently.
+		if cookie, err := browser.GetF95Cookies(); err == nil && cookie != "" {
+			for _, group := range groups {
+				archive, err := a.tryMultiPartGroup(ctx, evPrefix, gameID, group, cookie)
+				if err == nil {
+					slog.Info("multi-part download complete", "gameID", gameID,
+						"parts", len(group.Parts), "file", filepath.Base(archive))
+					return archive, db.DownloadLink{}, nil
+				}
+				slog.Warn("multi-part download failed; trying next group",
+					"gameID", gameID, "parts", len(group.Parts), "error", err)
+			}
+		}
+	}
+	return a.downloadWithLinkFallback(ctx, evPrefix, gameID, links)
+}
+
+// tryMultiPartGroup downloads every part of one group into a fresh work dir and
+// returns the assembled archive (the caller's temp-dir cleanup removes it). On
+// any failure the work dir is removed and the error returned so the caller can
+// try the next group or fall back to single links.
+func (a *App) tryMultiPartGroup(ctx context.Context, evPrefix string, gameID int64, group downloader.PartGroup, cookie string) (string, error) {
+	tempDir, err := gameWorkTempDir(fmt.Sprintf("moxie-multipart-%d-*", gameID))
+	if err != nil {
+		return "", fmt.Errorf("create temp dir: %w", err)
+	}
+
+	var lastProgress time.Time
+	progressCb := func(p downloader.Progress) {
+		now := time.Now()
+		if now.Sub(lastProgress) < 200*time.Millisecond && p.Percent < 100 {
+			return
+		}
+		lastProgress = now
+		runtime.EventsEmit(a.ctx, evPrefix+":download-progress", map[string]interface{}{
+			"gameID":           gameID,
+			"bytesDownloaded":  p.BytesDownloaded,
+			"totalBytes":       p.TotalBytes,
+			"speedBytesPerSec": p.SpeedBytesPerSec,
+			"percent":          math.Round(p.Percent*100) / 100,
+		})
+	}
+
+	archive, err := downloader.DownloadMultiPart(group, tempDir, progressCb, cookie)
+	if err != nil {
+		os.RemoveAll(tempDir)
+		return "", err
+	}
+	// A part download can "succeed" yet assemble into something that is not an
+	// archive (e.g. a mislabeled set). Reject it here so the caller falls back
+	// to single links instead of failing later at extraction.
+	if _, derr := extractor.DetectArchiveType(archive); derr != nil {
+		os.RemoveAll(tempDir)
+		return "", fmt.Errorf("multi-part archive is not usable: %w", derr)
+	}
+	return archive, nil
+}
+
 // downloadWithLinkFallback tries up to maxDownloadFallbackLinks ranked links
 // in order and returns the first archive downloaded, plus the link that
 // produced it. Only the final attempt emits <evPrefix>:error; earlier
@@ -5137,7 +5204,7 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 		"host":   links[0].Host,
 	})
 
-	archivePath, selectedLink, err := a.downloadWithLinkFallback(ctx, "game-update", gameID, links)
+	archivePath, selectedLink, err := a.downloadGameMultiPartOrSingle(ctx, "game-update", gameID, links)
 	if err != nil {
 		// downloadGameFile already emits its own error events. Automatic
 		// downloads are frequently blocked by Cloudflare-protected hosts
@@ -5373,6 +5440,35 @@ func (a *App) SetUpdateConcurrency(n int) error {
 	}
 	a.updateGate().setLimit(n)
 	return nil
+}
+
+// organizeInstallsKey is the config key for placing fresh installs in an
+// engine-named subfolder instead of directly under the scan path.
+const organizeInstallsKey = "organize-installs-by-engine"
+
+// GetOrganizeInstalls reports whether fresh installs are organized into an
+// engine-named subfolder (e.g. <scan path>/HTML/<Title>). Defaults to false.
+func (a *App) GetOrganizeInstalls() bool {
+	cfg, err := config.ReadConfig()
+	if err != nil {
+		return false
+	}
+	return cfg.Get(organizeInstallsKey) == "true"
+}
+
+// SetOrganizeInstalls stores the engine-folder install preference. Disabling it
+// removes the key so the config stays clean.
+func (a *App) SetOrganizeInstalls(enabled bool) error {
+	cfg, err := config.ReadConfig()
+	if err != nil {
+		cfg = &config.Config{}
+	}
+	if enabled {
+		cfg.Set(organizeInstallsKey, "true")
+	} else {
+		cfg.Set(organizeInstallsKey, "")
+	}
+	return config.WriteConfig(cfg)
 }
 
 // startGameRun claims gameID and runs fn in the background, emitting
@@ -5813,6 +5909,17 @@ func installableTitle(title string) string {
 	return sanitizeTitleForPath(title)
 }
 
+// installTargetDir returns the directory a fresh install of title lands in
+// under destParent. With "organize installs by engine" enabled the game goes
+// into an engine-named subfolder (<destParent>/<ENGINE>/<Title>); otherwise it
+// sits directly under destParent. engineName may be empty.
+func (a *App) installTargetDir(destParent, title, engineName string) string {
+	if a.GetOrganizeInstalls() {
+		return filepath.Join(destParent, engine.InstallFolderName(engineName), installableTitle(title))
+	}
+	return filepath.Join(destParent, installableTitle(title))
+}
+
 // runGameInstall downloads a game and installs it into destParent, then
 // rewrites the game record to point at the real directory. It is the path that
 // turns a browser-added /virtual/ entry into an installed game.
@@ -5860,14 +5967,19 @@ func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent strin
 		return emitErr("check", fmt.Errorf("install directory is not available: %s", destParent))
 	}
 
-	targetDir := filepath.Join(destParent, installableTitle(game.Title))
-	if _, serr := os.Stat(targetDir); serr == nil {
-		return emitErr("check", fmt.Errorf("target directory already exists: %s", targetDir))
+	// Fail fast on an obviously-taken destination using the engine we already
+	// know (the F95 thread prefix). The authoritative target is recomputed from
+	// the downloaded files after extraction, once the real engine is known.
+	preTarget := a.installTargetDir(destParent, game.Title, string(game.Engine))
+	if _, serr := os.Stat(preTarget); serr == nil {
+		return emitErr("check", fmt.Errorf("target directory already exists: %s", preTarget))
 	}
 
 	// Track temp dirs for cleanup; targetDir is removed only if we created it
-	// and then failed, so a partial install never lingers.
-	var downloadTempDir, extractDir string
+	// and then failed, so a partial install never lingers. targetDir is
+	// resolved after extraction (it depends on the detected engine), so the
+	// deferred cleanup reads the captured variable rather than a fixed path.
+	var downloadTempDir, extractDir, targetDir string
 	createdTarget := false
 	success := false
 	defer func() {
@@ -5877,7 +5989,7 @@ func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent strin
 		if extractDir != "" {
 			os.RemoveAll(extractDir)
 		}
-		if !success && createdTarget {
+		if !success && createdTarget && targetDir != "" {
 			os.RemoveAll(targetDir)
 		}
 	}()
@@ -5889,7 +6001,7 @@ func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent strin
 	}
 
 	phase("downloading")
-	archivePath, _, err := a.downloadWithLinkFallback(ctx, "game-install", gameID, links)
+	archivePath, _, err := a.downloadGameMultiPartOrSingle(ctx, "game-install", gameID, links)
 	if err != nil {
 		// downloadGameFile emits its own error events.
 		return fmt.Errorf("download game file: %w", err)
@@ -5913,6 +6025,28 @@ func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent strin
 		return emitErr("extract", fmt.Errorf("extract archive: %w", err))
 	}
 
+	// Resolve the engine from the downloaded files (ground truth) rather than
+	// trusting only the F95 thread prefix; fall back to the prefix if detection
+	// is inconclusive. The engine selects both the destination folder and the
+	// save/config preserve patterns used by the merge.
+	installedEngine := string(game.Engine)
+	if detected := engine.Detect(extractedRoot); detected.Engine != "" && detected.Engine != engine.Others {
+		installedEngine = string(detected.Engine)
+		// Persist the file-detected engine unless the user or an F95Zone
+		// association owns it (see db.Game.EngineSource); those are
+		// authoritative and never overwritten by detection.
+		if game.EngineSource != "user" && game.EngineSource != "f95" {
+			game.Engine = installedEngine
+			game.EngineSource = "scanner"
+		}
+	}
+	targetDir = a.installTargetDir(destParent, game.Title, installedEngine)
+	if targetDir != preTarget {
+		if _, serr := os.Stat(targetDir); serr == nil {
+			return emitErr("check", fmt.Errorf("target directory already exists: %s", targetDir))
+		}
+	}
+
 	phase("installing")
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return emitErr("install", fmt.Errorf("create target directory: %w", err))
@@ -5921,7 +6055,7 @@ func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent strin
 
 	// Reuse the updater's copy logic. backup=false because the target is a
 	// directory we just created — there is nothing to preserve.
-	if _, err := updater.Merge(ctx, targetDir, game.Engine, extractedRoot, false); err != nil {
+	if _, err := updater.Merge(ctx, targetDir, installedEngine, extractedRoot, false); err != nil {
 		return emitErr("install", fmt.Errorf("install files: %w", err))
 	}
 

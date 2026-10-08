@@ -741,7 +741,11 @@ func isEngineName(name string) bool {
 	switch name {
 	case "unity", "ren'py", "renpy", "rpgm", "rpgmaker",
 		"godot", "unreal", "electron", "html", "java",
-		"flash", "mugen", "other", "others", "tools", "jre":
+		"flash", "mugen", "other", "others", "tools", "jre",
+		// Engine-install folder names that have no category entry above
+		// (see engine.InstallFolderName): a library organized by moxie's
+		// install setting must be recognized as category folders too.
+		"webgl", "wolf", "wolfrpg", "qsp", "rags", "tads", "adrift":
 		return true
 	}
 	return false
@@ -777,7 +781,10 @@ func findGameExe(dir string) string {
 		}
 	}
 	if best == "" {
-		return engine.FindHTMLEntry(dir)
+		// No native executable: fall back to a browser-played game's entry
+		// page. Shallow so a source-repo layout (index.html one level down)
+		// still records an entry point, matching launcher.ResolveExecutable.
+		return engine.FindHTMLEntryShallow(dir)
 	}
 	return best
 }

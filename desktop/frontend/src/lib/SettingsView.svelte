@@ -7,6 +7,8 @@
     GetVersion,
     GetUpdateConcurrency,
     SetUpdateConcurrency,
+    GetOrganizeInstalls,
+    SetOrganizeInstalls,
     GetCoverArtSettings,
     SetCoverSources,
     SetSteamGridDBKey,
@@ -106,6 +108,25 @@
     }
   }
 
+  // Organize fresh installs by engine folder (config key
+  // organize-installs-by-engine): when on, a game installs to
+  // <scan path>/<ENGINE>/<Title> instead of directly under the scan path.
+  let organizeInstalls = $state(false)
+  let organizeError = $state('')
+  onMount(async () => {
+    try { organizeInstalls = await GetOrganizeInstalls() } catch (e) { /* keep default */ }
+  })
+  async function toggleOrganizeInstalls() {
+    organizeError = ''
+    const next = !organizeInstalls
+    try {
+      await SetOrganizeInstalls(next)
+      organizeInstalls = next
+    } catch (e) {
+      organizeError = `Could not save: ${e}`
+    }
+  }
+
   function statusLabel(s) {
     switch (s) {
       case 'ok': return 'OK'
@@ -132,6 +153,25 @@
       Directories watched for new and removed games. Changes take effect immediately.
     </p>
     <ScanPaths />
+  </section>
+
+  <!-- ── Install Location ───────────────────────────────── -->
+  <section class="settings-section">
+    <h3 class="section-title">Install Location</h3>
+    <p class="section-hint">
+      Where games downloaded from the F95Zone Browser are installed. Scan paths
+      are the available destinations; this controls the subfolder.
+    </p>
+    <label class="kv-row toggle-row">
+      <span class="kv-key">Organize installs by engine <span class="muted">— place each game in an engine subfolder</span></span>
+      <input type="checkbox" checked={organizeInstalls} onchange={toggleOrganizeInstalls} />
+    </label>
+    <p class="section-hint">
+      On: a game installs to <code>&lt;scan path&gt;/HTML/</code>,
+      <code>…/RPGM/</code>, <code>…/JRE/</code> and so on. Off: directly under
+      the scan path. Existing installs are not moved.
+    </p>
+    {#if organizeError}<p class="section-hint error-text">{organizeError}</p>{/if}
   </section>
 
   <!-- ── Dependencies ───────────────────────────────────── -->

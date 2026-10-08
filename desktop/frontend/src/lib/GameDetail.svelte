@@ -6,7 +6,7 @@
     GetGameDetail, PlayGame, RemoveGame, SetGameStatus, RenameGame,
     SetGameWinePrefix, SyncSingleGame, EditGame,
     GetCollections, GetGameCollections, AddGameToCollection, RemoveGameFromCollection,
-    GetInstallTargets, GetCoverBaseURL,
+    GetInstallTargets, GetOrganizeInstalls, GetCoverBaseURL,
     OpenDownloadURL, OpenUpdateDownloadPage,
     FindCoverCandidates, SetGameCover, SetCoverLocked, RevertCover,
   } from '../../wailsjs/go/main/App'
@@ -68,6 +68,7 @@
   // ── Install (browser-added games with no local copy) ──
   let installTargets = $state([])
   let installDest = $state('')
+  let organizeInstalls = $state(false)   // engine subfolder placement setting
   let installBusy = $derived(!!installState?.running)
   let installForThis = $derived(installState?.gameId === Number(gameId))
   let installing = $derived(installForThis && installBusy)
@@ -146,7 +147,12 @@
 
   async function loadInstallTargets() {
     try {
-      installTargets = (await GetInstallTargets()) || []
+      const [targets, organize] = await Promise.all([
+        GetInstallTargets(),
+        GetOrganizeInstalls(),
+      ])
+      installTargets = targets || []
+      organizeInstalls = !!organize
       const firstAvailable = installTargets.find(t => t.available)
       if (firstAvailable && !installDest) installDest = firstAvailable.path
     } catch (e) {
@@ -681,7 +687,7 @@
           {#if needsInstall}
             <div class="install-box">
               <p class="install-hint">
-                Added from F95Zone but not downloaded yet. Choose where to install it.
+                Added from F95Zone but not downloaded yet. Choose where to install it{organizeInstalls ? ' — Moxie will file it under an engine subfolder (e.g. HTML/)' : ''}.
               </p>
               {#if installTargets.length === 0}
                 <p class="install-warn">

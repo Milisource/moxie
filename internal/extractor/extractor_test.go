@@ -269,6 +269,33 @@ func TestExtractZip_NoUnwrapWhenMultipleRootDirs(t *testing.T) {
 	}
 }
 
+// TestExtractZip_NoUnwrapWhenRootHoldsLauncher guards the file-ignoring
+// unwrap bug: a non-wrapped release whose top level is the launcher plus a
+// single asset directory (RPGM MV's Game.exe + www/, an HTML game's entry
+// page + images/) must stay at the top level. Unwrapping into the asset
+// directory dropped the launcher, leaving assets with no executable.
+func TestExtractZip_NoUnwrapWhenRootHoldsLauncher(t *testing.T) {
+	t.Parallel()
+	zipPath := createTestZip(t, map[string]string{
+		"Game.exe":       "binary",
+		"www/index.html": "page",
+		"www/js/app.js":  "js",
+	})
+
+	dest := t.TempDir()
+	root, err := Extract(context.Background(), zipPath, dest, nil)
+	if err != nil {
+		t.Fatalf("extract failed: %v", err)
+	}
+
+	if root != dest {
+		t.Errorf("expected root %s (launcher present), got %s", dest, root)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Game.exe")); os.IsNotExist(err) {
+		t.Error("Game.exe should survive extraction at the root")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Zip-slip protection
 // ---------------------------------------------------------------------------
