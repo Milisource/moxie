@@ -450,6 +450,8 @@ export namespace main {
 	    views: number;
 	    likes: number;
 	    date: string;
+	    engine: string;
+	    isAICG: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new F95BrowseResult(source);
@@ -467,6 +469,8 @@ export namespace main {
 	        this.views = source["views"];
 	        this.likes = source["likes"];
 	        this.date = source["date"];
+	        this.engine = source["engine"];
+	        this.isAICG = source["isAICG"];
 	    }
 	}
 	export class F95BrowsePage {
@@ -530,6 +534,10 @@ export namespace main {
 	    prefix: string;
 	    thumbnailUrl: string;
 	    matchScore: number;
+	    isAICG: boolean;
+	    views: number;
+	    likes: number;
+	    rating: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new F95SearchResult(source);
@@ -542,6 +550,10 @@ export namespace main {
 	        this.prefix = source["prefix"];
 	        this.thumbnailUrl = source["thumbnailUrl"];
 	        this.matchScore = source["matchScore"];
+	        this.isAICG = source["isAICG"];
+	        this.views = source["views"];
+	        this.likes = source["likes"];
+	        this.rating = source["rating"];
 	    }
 	}
 	export class InstallTarget {

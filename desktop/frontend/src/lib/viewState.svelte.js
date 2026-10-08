@@ -61,6 +61,7 @@ export const CARD_SCALE_MIN = 0.7
 export const CARD_SCALE_MAX = 1.6
 const SMART_COLLECTIONS_KEY = 'moxie:smart-collections'
 const LAST_SYNC_KEY = 'moxie:last-sync'
+const BROWSE_FILTERS_KEY = 'moxie:browse-filters'
 
 // ── Library list ───────────────────────────────────────────────
 export const library = $state({
@@ -163,7 +164,7 @@ export const browser = $state({
   // a superseded sort must not land in a fresh view.
   discover: {
     items: [],
-    sort: 'date',       // 'date' | 'likes' | 'rating'
+    sort: 'date',       // 'date' | 'likes' | 'views' | 'rating'
     page: 0,            // pages loaded so far
     totalPages: 0,
     totalCount: 0,
@@ -173,7 +174,21 @@ export const browser = $state({
     loadedAt: 0,        // ms epoch of the last successful load
     seq: 0,
   },
+
+  // ── Browse filters (Discover feed + search) ─────────────────
+  // Engine include/exclude and the AI-CG toggle are applied client-side to
+  // whichever surface is shown. They survive tab switches (this object) and
+  // app restarts (persisted). `engines` is the selected canonical engine-name
+  // list; engineMode decides whether that list includes or excludes.
+  filters: readStoredJSON(BROWSE_FILTERS_KEY, {engines: [], engineMode: 'include', hideAICG: false}),
 })
+
+// Persists a Browse-filter patch (engine selection / mode / AI-CG toggle) so the
+// choices survive both tab switches and an app restart.
+export function setBrowseFilters(patch) {
+  browser.filters = {...browser.filters, ...patch}
+  writeStoredJSON(BROWSE_FILTERS_KEY, browser.filters)
+}
 
 // ── Downloads view ─────────────────────────────────────────────
 export const downloads = $state({

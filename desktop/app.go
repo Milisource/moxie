@@ -2126,9 +2126,17 @@ func copyFile(src, dst string) error {
 type F95SearchResult struct {
 	Title        string `json:"title"`
 	URL          string `json:"url"`
-	Prefix       string `json:"prefix"`       // e.g., "[Ren'Py]", "[Unity]"
+	Prefix       string `json:"prefix"`       // canonical engine name, e.g. "RenPy", "Unity" ("" when unknown)
 	ThumbnailURL string `json:"thumbnailUrl"` // empty until preview loads
 	MatchScore   int    `json:"matchScore"`
+
+	// Feed-derived classification, filled in when the F95Checker catalog knows
+	// the thread. Powers the Browse tab's engine / AI-CG filters on the search
+	// surface.
+	IsAICG bool    `json:"isAICG"`
+	Views  int64   `json:"views"`
+	Likes  int64   `json:"likes"`
+	Rating float64 `json:"rating"`
 }
 
 // ThreadPreview holds preview data for an F95Zone thread.
@@ -2166,6 +2174,11 @@ type F95BrowseResult struct {
 	Views    int64   `json:"views"`
 	Likes    int64   `json:"likes"`
 	Date     string  `json:"date"`
+	// Engine is the canonical engine derived from the feed's prefix IDs
+	// ("" when no engine prefix is present). IsAICG marks the F95Zone
+	// "ai cg" tag. Both power the Browse tab's filters.
+	Engine string `json:"engine"`
+	IsAICG bool   `json:"isAICG"`
 }
 
 // F95BrowsePage is one page of the Discover feed plus pagination metadata.
@@ -2242,28 +2255,40 @@ func (a *App) searchF95Zone(query string) ([]F95SearchResult, error) {
 		})
 	}
 
-	// Enrich thumbnails with real game cover art from the F95Checker
-	// catalog, matched by thread ID. Best effort: a failed cover search
-	// leaves placeholder thumbs, never an error. Results the catalog
-	// doesn't know get their avatar thumb dropped (an unrelated poster's
-	// profile picture is worse than the placeholder).
-	covers, _ := scraper.NewPublicAPIWithCookie(cookie).SearchCovers(context.Background(), query)
-	enrichSearchThumbnails(desktop, covers)
+	// Enrich with real game cover art plus the classification/stats the Browse
+	// filters need, matched by thread ID from the F95Checker catalog. Best
+	// effort: a failed catalog search leaves placeholder thumbs and unknown
+	// classification, never an error. Results the catalog doesn't know get
+	// their avatar thumb dropped (an unrelated poster's profile picture is
+	// worse than the placeholder).
+	catalog, _ := scraper.NewPublicAPIWithCookie(cookie).SearchCatalog(context.Background(), query)
+	enrichSearchResults(desktop, catalog)
 	return desktop, nil
 }
 
-// enrichSearchThumbnails replaces result thumbnails with catalog cover art
-// keyed by thread ID. Results without a cover get an empty thumbnail so the
-// UI shows its placeholder instead of the poster's avatar.
-func enrichSearchThumbnails(results []F95SearchResult, covers map[int64]string) {
+// enrichSearchResults merges catalog rows into search results by thread ID:
+// cover art (replacing the dropped poster avatar), plus engine/AI-CG/stats for
+// the Browse tab's filters. Results without a catalog row keep an empty
+// thumbnail and zero classification.
+func enrichSearchResults(results []F95SearchResult, catalog map[int64]scraper.LatestSearchResult) {
 	for i := range results {
-		if id := scraper.ThreadIDFromURL(results[i].URL); id != 0 {
-			if cover, ok := covers[id]; ok {
-				results[i].ThumbnailURL = cover
-				continue
-			}
+		id := scraper.ThreadIDFromURL(results[i].URL)
+		row, ok := catalog[id]
+		if id == 0 || !ok {
+			results[i].ThumbnailURL = ""
+			continue
 		}
-		results[i].ThumbnailURL = ""
+		results[i].ThumbnailURL = row.CoverURL
+		// The feed's prefix map is authoritative for the current taxonomy;
+		// fall back to the engine the title search extracted when the feed
+		// has no engine prefix for this thread.
+		if eng := scraper.EngineFromLatestPrefixes(row.Prefixes); eng != "" {
+			results[i].Prefix = eng
+		}
+		results[i].IsAICG = scraper.HasAICGTag(row.Tags)
+		results[i].Views = row.Views
+		results[i].Likes = row.Likes
+		results[i].Rating = row.Rating
 	}
 }
 
@@ -2342,6 +2367,8 @@ func buildBrowsePage(lp *scraper.LatestPage) *F95BrowsePage {
 			Views:    r.Views,
 			Likes:    r.Likes,
 			Date:     r.Date,
+			Engine:   scraper.EngineFromLatestPrefixes(r.Prefixes),
+			IsAICG:   scraper.HasAICGTag(r.Tags),
 		})
 	}
 	return out

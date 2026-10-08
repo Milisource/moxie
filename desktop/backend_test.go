@@ -10,6 +10,7 @@ import (
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/scanner"
+	"github.com/mili/moxie/internal/scraper"
 )
 
 func detected(title, path string) scanner.DetectedGame {
@@ -194,10 +195,10 @@ func TestSelectDownloadLink_ScoresAndFilters(t *testing.T) {
 	})
 }
 
-// TestEnrichSearchThumbnails: catalog cover art replaces whatever the
-// search returned (poster avatars); unmatched results get an empty
-// thumbnail so the UI shows its placeholder instead of an avatar.
-func TestEnrichSearchThumbnails(t *testing.T) {
+// TestEnrichSearchResults: catalog rows replace poster avatars with real cover
+// art and attach the engine/AI-CG/stats the Browse filters need; unmatched
+// results get an empty thumbnail and zero classification.
+func TestEnrichSearchResults(t *testing.T) {
 	results := []F95SearchResult{
 		{Title: "Meltys Quest", URL: "https://f95zone.to/threads/meltys-quest.6004/", ThumbnailURL: "https://f95zone.to/data/avatars/s/5/5000.jpg"},
 		{Title: "Mod", URL: "https://f95zone.to/threads/meltys-quest-nude-outfits-mod.217059/", ThumbnailURL: "https://f95zone.to/data/avatars/s/2/2000.jpg"},
@@ -205,7 +206,10 @@ func TestEnrichSearchThumbnails(t *testing.T) {
 		{Title: "NonThread", URL: "https://f95zone.to/", ThumbnailURL: "https://f95zone.to/data/avatars/s/1/1000.jpg"},
 	}
 
-	enrichSearchThumbnails(results, map[int64]string{6004: "https://preview.f95zone.to/6004.jpg"})
+	enrichSearchResults(results, map[int64]scraper.LatestSearchResult{
+		6004:   {CoverURL: "https://preview.f95zone.to/6004.jpg", Prefixes: []int{7}, Tags: []int{130, 2265}, Views: 28661376, Likes: 6670, Rating: 4.82},
+		217059: {}, // known thread, no cover/classification
+	})
 
 	want := []string{
 		"https://preview.f95zone.to/6004.jpg", // covered by catalog
@@ -217,6 +221,14 @@ func TestEnrichSearchThumbnails(t *testing.T) {
 		if results[i].ThumbnailURL != w {
 			t.Errorf("results[%d].ThumbnailURL = %q, want %q", i, results[i].ThumbnailURL, w)
 		}
+	}
+
+	if results[0].Prefix != "RenPy" || !results[0].IsAICG ||
+		results[0].Views != 28661376 || results[0].Likes != 6670 || results[0].Rating != 4.82 {
+		t.Errorf("results[0] classification = %+v, want RenPy / ai-cg / stats", results[0])
+	}
+	if results[1].IsAICG || results[1].Prefix != "" {
+		t.Errorf("results[1] = %+v, want zero classification", results[1])
 	}
 }
 

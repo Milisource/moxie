@@ -22,6 +22,8 @@ func TestBuildBrowsePage(t *testing.T) {
 				Version:  "v0.9.5",
 				Creator:  "Caribdis",
 				CoverURL: "https://preview.f95zone.to/2024/01/cover.jpg",
+				Prefixes: []int{13, 7},
+				Tags:     []int{130, 2265},
 				Rating:   4.82,
 				Views:    28661376,
 				Likes:    6670,
@@ -45,6 +47,10 @@ func TestBuildBrowsePage(t *testing.T) {
 	if r.Title != "Eternum" || r.ThreadID != 93340 || r.Rating != 4.82 ||
 		r.Views != 28661376 || r.Likes != 6670 || r.Date != "9 months" || r.Creator != "Caribdis" {
 		t.Errorf("unexpected mapped result: %+v", r)
+	}
+	// Feed classification: engine from the prefix IDs, AI-CG from the tag IDs.
+	if r.Engine != "RenPy" || !r.IsAICG {
+		t.Errorf("classification = engine %q / isAICG %v, want RenPy / true", r.Engine, r.IsAICG)
 	}
 	// Feed covers stay on the 400px preview CDN, NOT the full-res originals.
 	if r.CoverURL != "https://preview.f95zone.to/2024/01/cover.jpg" {

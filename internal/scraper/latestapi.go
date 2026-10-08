@@ -143,6 +143,10 @@ type LatestSearchResult struct {
 	ThreadID int64
 	Version  string
 	Prefixes []int
+	// Tags are F95Zone tag IDs carried by the list endpoint. The numbering is
+	// the site's own tag taxonomy (e.g. 2265 = "ai cg"), NOT F95Checker's Tag
+	// enum. See HasAICGTag.
+	Tags     []int
 	CoverURL string
 	Creator  string
 	// Stats carried by the list endpoint. Zero when absent (older responses
@@ -163,6 +167,7 @@ type latestItem struct {
 	Views    int64           `json:"views"`
 	Likes    int64           `json:"likes"`
 	Prefixes []int           `json:"prefixes"`
+	Tags     []int           `json:"tags"`
 	Rating   float64         `json:"rating"`
 	Cover    string          `json:"cover"`
 	Date     string          `json:"date"`
@@ -181,6 +186,26 @@ type latestDataResponse struct {
 	} `json:"msg"`
 }
 
+// SearchCatalog searches the F95Checker game catalog for query and returns the
+// full rows keyed by thread ID, cover URLs rewritten to full-res. SearchCovers
+// is the cover-only view of this; the desktop browse enrichment uses the whole
+// row (prefixes, tags, stats) to classify results.
+func (p *PublicAPI) SearchCatalog(ctx context.Context, query string) (map[int64]LatestSearchResult, error) {
+	results, err := p.SearchTitle(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int64]LatestSearchResult, len(results))
+	for _, r := range results {
+		if r.ThreadID <= 0 {
+			continue
+		}
+		r.CoverURL = fullResCoverURL(r.CoverURL)
+		out[r.ThreadID] = r
+	}
+	return out, nil
+}
+
 // SearchCovers searches the F95Checker game catalog for query and returns
 // a map from thread ID to cover art URL. The XenForo search result pages
 // only carry poster avatars (small, personal, wrong subject), so callers
@@ -193,14 +218,14 @@ type latestDataResponse struct {
 // attachments.f95zone.to at the original resolution, so the host is
 // swapped for full-size art at no extra request cost.
 func (p *PublicAPI) SearchCovers(ctx context.Context, query string) (map[int64]string, error) {
-	results, err := p.SearchTitle(ctx, query)
+	catalog, err := p.SearchCatalog(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	covers := make(map[int64]string, len(results))
-	for _, r := range results {
-		if r.ThreadID > 0 && r.CoverURL != "" {
-			covers[r.ThreadID] = fullResCoverURL(r.CoverURL)
+	covers := make(map[int64]string, len(catalog))
+	for id, r := range catalog {
+		if r.CoverURL != "" {
+			covers[id] = r.CoverURL
 		}
 	}
 	return covers, nil
@@ -318,6 +343,64 @@ func EngineNameFromPrefixes(prefixes []int) string {
 func HasNonGamePrefix(prefixes []int) bool {
 	for _, p := range prefixes {
 		if nonGamePrefixes[p] {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// latest_data.php prefix + tag classification
+// ---------------------------------------------------------------------------
+
+// latestEnginePrefixes maps F95Zone's thread prefix IDs as they appear in the
+// latest_data.php `prefixes` array to moxie's canonical engine names. This
+// numbering is the forum's own prefix taxonomy and is CORRECT for this field —
+// unlike enginePrefixNames (F95Checker's Type enum), which the field's docs
+// warn against using. Captured 2026-10-07 from the public forum filter list
+// (https://f95zone.to/forums/games.2/, prefix_id → label).
+var latestEnginePrefixes = map[int]string{
+	1:   "QSP",
+	2:   "RPGM",
+	3:   "Unity",
+	4:   "HTML",
+	5:   "RAGS",
+	6:   "Java",
+	7:   "RenPy",
+	8:   "Flash",
+	12:  "ADRIFT",
+	14:  "Others",
+	17:  "Tads",
+	30:  "WolfRPG",
+	31:  "UnrealEngine",
+	47:  "WebGL",
+	116: "Godot",
+}
+
+// EngineFromLatestPrefixes returns the canonical moxie engine name implied by
+// a latest_data.php `prefixes` array, or "" when no engine prefix is present.
+// The array mixes engine prefixes with category (13 = VN), status (18/20/22)
+// and misc (README/Collection/SiteRip) IDs, so only engine IDs are accepted.
+func EngineFromLatestPrefixes(prefixes []int) string {
+	for _, p := range prefixes {
+		if name, ok := latestEnginePrefixes[p]; ok {
+			return name
+		}
+	}
+	return ""
+}
+
+// AICGTagID is F95Zone's "ai cg" (AI-generated CG) tag ID as it appears in
+// latest_data.php's `tags` array. Verified 2026-10-07 by intersecting the tags
+// of the threads listed on the public /tags/ai-cg/ page — all shared exactly
+// this ID (and no other).
+const AICGTagID = 2265
+
+// HasAICGTag reports whether a latest_data.php `tags` array carries the
+// "ai cg" (AI-generated CG) tag.
+func HasAICGTag(tags []int) bool {
+	for _, t := range tags {
+		if t == AICGTagID {
 			return true
 		}
 	}
@@ -517,6 +600,7 @@ func latestResults(items []latestItem) []LatestSearchResult {
 			ThreadID: d.ThreadID,
 			Version:  rawJSONString(d.Version),
 			Prefixes: d.Prefixes,
+			Tags:     d.Tags,
 			CoverURL: d.Cover,
 			Creator:  d.Creator,
 			Views:    d.Views,

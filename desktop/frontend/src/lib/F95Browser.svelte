@@ -11,7 +11,7 @@
   import {safeExternalUrl} from './sanitizeUrl.js'
   import {formatCount} from './format.js'
   import {createVirtualList} from './virtualList.svelte.js'
-  import {browser} from './viewState.svelte.js'
+  import {browser, setBrowseFilters} from './viewState.svelte.js'
 
   // ── State ──────────────────────────────────────────────────
   // Query/results/preview state lives in viewState so the browser tab keeps
@@ -86,6 +86,7 @@
   const DISCOVER_SORTS = [
     {key: 'date', label: 'Latest'},
     {key: 'likes', label: 'Popular'},
+    {key: 'views', label: 'Most Viewed'},
     {key: 'rating', label: 'Top Rated'},
   ]
   const DISCOVER_STALE_MS = 10 * 60 * 1000   // refresh the feed on return after this long
@@ -131,10 +132,15 @@
     }
   }
 
-  function setDiscoverSort(sort) {
+  // The sort control drives both surfaces. On the Discover feed it's a server
+  // sort, so switching reloads from page 1 (invalidating any in-flight page).
+  // On search results it only re-orders the already-fetched set client-side, so
+  // no network request is made while a search holds the single network slot.
+  function setSort(sort) {
     const d = browser.discover
     if (d.sort === sort) return
     d.sort = sort
+    if (browser.searched) return
     // Invalidate any in-flight response for the old sort and reset to page 1.
     d.seq++
     d.items = []
@@ -193,10 +199,80 @@
     return () => ro.disconnect()
   })
 
+  // ── Filters (engine include/exclude + hide AI CG) ──────────
+  // Applied client-side to both surfaces. The Discover feed carries `engine`
+  // (derived from the feed's prefix IDs) and `isAICG`; search results are
+  // enriched with the same fields by the backend. Items whose engine is unknown
+  // (`engine === ''`) are dropped only when an engine filter is active — their
+  // membership can't be confirmed. AI-CG items are dropped only when the toggle
+  // is on.
+  const BROWSE_ENGINES = [
+    'RenPy', 'Unity', 'UnrealEngine', 'RPGM', 'HTML', 'Godot', 'WebGL',
+    'WolfRPG', 'Java', 'Flash', 'QSP', 'RAGS', 'ADRIFT', 'Tads', 'Others',
+  ]
+
+  function passesFilters(item) {
+    const f = browser.filters
+    if (f.hideAICG && item.isAICG) return false
+    if (f.engines.length > 0) {
+      const known = !!item.engine
+      const listed = f.engines.includes(item.engine)
+      if (f.engineMode === 'include' ? (!known || !listed) : (known && listed)) return false
+    }
+    return true
+  }
+
+  let filteredDiscoverItems = $derived.by(() => browser.discover.items.filter(passesFilters))
+
+  // Sort the (small) search result set client-side to match the active sort;
+  // 'date' keeps the search engine's relevance order (XenForo results carry no
+  // timestamp).
+  function sortSearchResults(list) {
+    const sort = browser.discover.sort
+    const by = sort === 'likes' ? (r) => r.likes || 0
+      : sort === 'views' ? (r) => r.views || 0
+        : sort === 'rating' ? (r) => r.rating || 0
+          : null
+    return by ? [...list].sort((a, b) => by(b) - by(a)) : list
+  }
+
+  let filteredResults = $derived.by(() => sortSearchResults(browser.results.filter(passesFilters)))
+
+  // Engine options: the canonical list plus any engine the loaded data uses
+  // that isn't canonical (future-proofing for new F95Zone engines).
+  let engineFilterOptions = $derived.by(() => {
+    const present = new Set(BROWSE_ENGINES)
+    for (const it of browser.discover.items) if (it.engine) present.add(it.engine)
+    for (const it of browser.results) if (it.engine) present.add(it.engine)
+    return [...present].sort((a, b) => a.localeCompare(b, undefined, {sensitivity: 'base'}))
+  })
+
+  let filtersActive = $derived(
+    browser.filters.hideAICG || browser.filters.engines.length > 0
+  )
+
+  // Engine dropdown open/close with click-outside dismissal.
+  let engineFilterEl = $state(null)
+  let engineFilterOpen = $state(false)
+  $effect(() => {
+    if (!engineFilterOpen) return
+    const onDown = (e) => {
+      if (engineFilterEl && !engineFilterEl.contains(e.target)) engineFilterOpen = false
+    }
+    document.addEventListener('pointerdown', onDown)
+    return () => document.removeEventListener('pointerdown', onDown)
+  })
+
+  function toggleEngine(eng) {
+    const sel = browser.filters.engines
+    const next = sel.includes(eng) ? sel.filter((e) => e !== eng) : [...sel, eng]
+    setBrowseFilters({engines: next})
+  }
+
   // Chunk the flat list into rows so the virtualizer only has to window rows.
   let discoverRows = $derived.by(() => {
     const rows = []
-    const items = browser.discover.items
+    const items = filteredDiscoverItems
     for (let i = 0; i < items.length; i += discoverColumns) {
       rows.push(items.slice(i, i + discoverColumns))
     }
@@ -437,6 +513,103 @@
     </button>
   </div>
 
+  <!-- ── Browse toolbar: sort + filters (both surfaces) ────── -->
+  {#if browser.searched || browser.discover.items.length > 0}
+    <div class="browse-toolbar">
+      <div class="discover-tabs">
+        {#each DISCOVER_SORTS as s}
+          <button
+            class="discover-tab"
+            class:active={browser.discover.sort === s.key}
+            onclick={() => setSort(s.key)}
+          >{s.label}</button>
+        {/each}
+      </div>
+
+      <div class="discover-actions">
+        <div class="filter-engine" bind:this={engineFilterEl}>
+          <button
+            class="filter-btn"
+            class:active={browser.filters.engines.length > 0}
+            onclick={() => engineFilterOpen = !engineFilterOpen}
+            aria-expanded={engineFilterOpen}
+          >
+            {browser.filters.engineMode === 'include' ? 'Engines' : 'Exclude engines'}
+            {#if browser.filters.engines.length}
+              <span class="filter-count">{browser.filters.engines.length}</span>
+            {/if}
+            <span class="filter-caret" class:open={engineFilterOpen}>▾</span>
+          </button>
+          {#if engineFilterOpen}
+            <div class="filter-panel">
+              <div class="filter-mode">
+                <button
+                  class="mode-btn"
+                  class:active={browser.filters.engineMode === 'include'}
+                  onclick={() => setBrowseFilters({engineMode: 'include'})}
+                >Include</button>
+                <button
+                  class="mode-btn"
+                  class:active={browser.filters.engineMode === 'exclude'}
+                  onclick={() => setBrowseFilters({engineMode: 'exclude'})}
+                >Exclude</button>
+              </div>
+              <div class="engine-list">
+                {#each engineFilterOptions as eng (eng)}
+                  <label class="engine-opt">
+                    <input
+                      type="checkbox"
+                      checked={browser.filters.engines.includes(eng)}
+                      onchange={() => toggleEngine(eng)}
+                    />
+                    <span class="engine-opt-name" style={engineStyle(eng)}>{eng}</span>
+                  </label>
+                {/each}
+              </div>
+              {#if browser.filters.engines.length > 0}
+                <button class="filter-clear" onclick={() => setBrowseFilters({engines: []})}>
+                  Clear engines
+                </button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+
+        <label class="filter-toggle">
+          <input
+            type="checkbox"
+            checked={browser.filters.hideAICG}
+            onchange={(e) => setBrowseFilters({hideAICG: e.target.checked})}
+          />
+          Hide AI CG
+        </label>
+
+        {#if !browser.searched && browser.discover.totalCount > 0}
+          <span class="discover-count">{browser.discover.totalCount.toLocaleString()} games</span>
+        {/if}
+        {#if !browser.searched}
+          <button
+            class="discover-refresh"
+            onclick={() => loadDiscover(true)}
+            disabled={browser.discover.loading || browser.discover.loadingMore}
+            title="Refresh"
+            aria-label="Refresh feed"
+          >⟳</button>
+        {/if}
+      </div>
+    </div>
+
+    {#if filtersActive}
+      <p class="filter-note">
+        {#if browser.searched}
+          Showing {filteredResults.length} of {browser.results.length}{#if browser.results.length > filteredResults.length} · {browser.results.length - filteredResults.length} hidden by filters{/if}
+        {:else}
+          {filteredDiscoverItems.length} of {browser.discover.items.length} loaded{#if browser.discover.items.length > filteredDiscoverItems.length} · {browser.discover.items.length - filteredDiscoverItems.length} hidden by filters{/if}
+        {/if}
+      </p>
+    {/if}
+  {/if}
+
   <!-- ── Content Area: Results + Preview ──────────────────── -->
   <div class="browser-content" class:has-preview={browser.previewing}>
     <!-- ── Results Section ──────────────────────────────── -->
@@ -458,9 +631,15 @@
             <p class="empty-title">No results found</p>
             <p class="empty-detail">Try a different search term.</p>
           </div>
+        {:else if filteredResults.length === 0}
+          <div class="empty-state">
+            <p class="empty-icon">⌕</p>
+            <p class="empty-title">No results match the filters</p>
+            <p class="empty-detail">Adjust the engine filter or turn off “Hide AI CG”.</p>
+          </div>
         {:else}
           <div class="results-grid">
-            {#each browser.results as result (result.url)}
+            {#each filteredResults as result (result.url)}
               <button
                 class="result-card"
                 class:selected={browser.selected?.url === result.url}
@@ -500,30 +679,6 @@
       {:else}
         <!-- ── Discover feed (default surface, no search) ──── -->
         <div class="discover">
-          <div class="discover-bar">
-            <div class="discover-tabs">
-              {#each DISCOVER_SORTS as s}
-                <button
-                  class="discover-tab"
-                  class:active={browser.discover.sort === s.key}
-                  onclick={() => setDiscoverSort(s.key)}
-                >{s.label}</button>
-              {/each}
-            </div>
-            <div class="discover-actions">
-              {#if browser.discover.totalCount > 0}
-                <span class="discover-count">{browser.discover.totalCount.toLocaleString()} games</span>
-              {/if}
-              <button
-                class="discover-refresh"
-                onclick={() => loadDiscover(true)}
-                disabled={browser.discover.loading || browser.discover.loadingMore}
-                title="Refresh"
-                aria-label="Refresh feed"
-              >⟳</button>
-            </div>
-          </div>
-
           {#if cookieStatus !== 'available'}
             <p class="discover-note">Log into F95Zone in your browser to preview and add games.</p>
           {/if}
@@ -543,6 +698,12 @@
               <p class="empty-icon">⊙</p>
               <p class="empty-title">Nothing to show</p>
               <p class="empty-detail">Try refreshing the feed.</p>
+            </div>
+          {:else if filteredDiscoverItems.length === 0}
+            <div class="empty-state">
+              <p class="empty-icon">⌕</p>
+              <p class="empty-title">No games match the filters</p>
+              <p class="empty-detail">Adjust the engine filter or turn off “Hide AI CG”.</p>
             </div>
           {:else}
             <!-- Windowed feed: only the visible rows (+ overscan) are in the
@@ -574,6 +735,9 @@
                         <div class="result-info">
                           <span class="result-title" title={result.title}>{result.title}</span>
                           <div class="result-meta">
+                            {#if result.engine}
+                              <span class="engine-badge" style={engineStyle(result.engine)}>{result.engine}</span>
+                            {/if}
                             {#if result.version}
                               <span class="discover-version">{result.version}</span>
                             {/if}
@@ -1077,12 +1241,131 @@
     min-height: 0;
     height: 100%;
   }
-  .discover-bar {
+  /* ── Browse toolbar: sort + filters (both surfaces) ─────── */
+  .browse-toolbar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
     flex-shrink: 0;
+  }
+  .filter-engine { position: relative; }
+  .filter-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .filter-btn:hover { color: var(--text-primary); border-color: var(--accent); }
+  .filter-btn.active { color: var(--accent); border-color: var(--accent); }
+  .filter-count {
+    min-width: 16px;
+    padding: 0 5px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+  }
+  .filter-caret { font-size: var(--text-2xs); transition: transform 0.12s; }
+  .filter-caret.open { transform: rotate(180deg); }
+  .filter-panel {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 20;
+    width: 230px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-secondary);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+  .filter-mode {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .mode-btn {
+    flex: 1;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .mode-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+  }
+  .engine-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+  .engine-opt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 4px;
+    border-radius: var(--radius-1);
+    cursor: pointer;
+    font-size: var(--text-sm);
+  }
+  .engine-opt:hover { background: var(--bg-hover); }
+  .engine-opt input { accent-color: var(--accent); }
+  .engine-opt-name {
+    padding: 1px 6px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-1);
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+  .filter-clear {
+    margin-top: 8px;
+    width: 100%;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+  .filter-clear:hover { color: var(--text-primary); border-color: var(--accent); }
+  .filter-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+  }
+  .filter-toggle input { accent-color: var(--accent); }
+  .filter-note {
+    margin: -4px 0 10px;
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
   }
   .discover-scroll {
     flex: 1;

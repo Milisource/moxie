@@ -150,26 +150,28 @@ export const DUPLICATES = [
 ]
 
 export const SEARCH_RESULTS = [
-  {title: 'Midnight Protocol [v2.0.5]', url: 'https://f95zone.to/threads/midnight-protocol.101500/', prefix: "[Unity]", thumbnailUrl: '', matchScore: 98},
-  {title: "Midnight Protocol [Ch. 5] [v2.0.0]", url: 'https://f95zone.to/threads/midnight-protocol.101499/', prefix: "[Unity]", thumbnailUrl: '', matchScore: 91},
-  {title: 'Paper Crowns [v1.0]', url: 'https://f95zone.to/threads/paper-crowns.99991/', prefix: "[RPGM]", thumbnailUrl: '', matchScore: 74},
+  {title: 'Midnight Protocol [v2.0.5]', url: 'https://f95zone.to/threads/midnight-protocol.101500/', prefix: 'Unity', engine: 'Unity', thumbnailUrl: '', matchScore: 98, isAICG: false, views: 1284000, likes: 3110, rating: 4.62},
+  {title: "Midnight Protocol [Ch. 5] [v2.0.0]", url: 'https://f95zone.to/threads/midnight-protocol.101499/', prefix: 'Unity', engine: 'Unity', thumbnailUrl: '', matchScore: 91, isAICG: false, views: 642000, likes: 1204, rating: 4.05},
+  {title: 'Paper Crowns [v1.0]', url: 'https://f95zone.to/threads/paper-crowns.99991/', prefix: 'RPGM', engine: 'RPGM', thumbnailUrl: '', matchScore: 74, isAICG: true, views: 884000, likes: 1980, rating: 4.31},
 ]
 
 // Discover feed fixtures — enough for two pages so infinite scroll / Load more
-// are exercised. Cover art is served by the mock cover plugin.
+// are exercised. Cover art is served by the mock cover plugin. `engine`/`isAICG`
+// mirror what the backend derives from the feed's prefix/tag IDs so the
+// Browse filters are exercised against the mock too.
 export const BROWSE_RESULTS = [
-  {threadId: 1, title: 'Midnight Protocol', url: 'https://f95zone.to/threads/101500/', version: 'v2.0.5', creator: 'Relay Nine Games', coverUrl: '/mock/covers/1/wide', rating: 4.62, views: 1284000, likes: 3110, date: '2 hrs'},
-  {threadId: 2, title: 'Paper Crowns', url: 'https://f95zone.to/threads/99991/', version: 'v1.0', creator: 'Inkjam', coverUrl: '/mock/covers/2/wide', rating: 4.31, views: 884000, likes: 1980, date: '5 hrs'},
-  {threadId: 3, title: 'Ember Falls', url: 'https://f95zone.to/threads/100001/', version: 'v0.9.7', creator: 'Cinder Studio', coverUrl: '/mock/covers/3/wide', rating: 4.05, views: 512000, likes: 1204, date: '9 hrs'},
-  {threadId: 4, title: 'Hollow Tide', url: 'https://f95zone.to/threads/100002/', version: 'Ch. 4', creator: 'Marrow', coverUrl: '/mock/covers/4/wide', rating: 3.88, views: 355000, likes: 842, date: '1 day'},
-  {threadId: 5, title: 'Nightingale Court', url: 'https://f95zone.to/threads/100003/', version: 'v1.2.1', creator: 'Lumen Works', coverUrl: '/mock/covers/5/wide', rating: 4.71, views: 2040000, likes: 4210, date: '1 day'},
-  {threadId: 6, title: 'Static Bloom', url: 'https://f95zone.to/threads/100004/', version: 'v0.14', creator: 'No Signal', coverUrl: '/mock/covers/6/wide', rating: 3.42, views: 98000, likes: 310, date: '2 days'},
-  {threadId: 7, title: 'The Longest Winter', url: 'https://f95zone.to/threads/100005/', version: 'v3.0.2', creator: 'Pale Fox', coverUrl: '/mock/covers/7/wide', rating: 4.5, views: 3320000, likes: 5602, date: '2 days'},
-  {threadId: 8, title: 'Copper Vale', url: 'https://f95zone.to/threads/100006/', version: 'Alpha 0.3', creator: 'Vale Team', coverUrl: '/mock/covers/8/wide', rating: 0, views: 24000, likes: 51, date: '3 days'},
-  {threadId: 9, title: 'Sable & Rose', url: 'https://f95zone.to/threads/100007/', version: 'v1.1', creator: 'Rosewood', coverUrl: '/mock/covers/9/wide', rating: 4.18, views: 640000, likes: 1440, date: '3 days'},
-  {threadId: 10, title: 'Quiet Machines', url: 'https://f95zone.to/threads/100008/', version: 'v0.44', creator: 'Softwired', coverUrl: '/mock/covers/10/wide', rating: 3.95, views: 411000, likes: 902, date: '4 days'},
-  {threadId: 11, title: 'Feral Hearts', url: 'https://f95zone.to/threads/100009/', version: 'v2.2.0', creator: 'Wilder', coverUrl: '/mock/covers/11/wide', rating: 4.44, views: 1180000, likes: 2870, date: '5 days'},
-  {threadId: 12, title: 'Gilded Cages', url: 'https://f95zone.to/threads/100010/', version: 'Final', creator: 'Birdhouse', coverUrl: '/mock/covers/12/wide', rating: 4.02, views: 2890000, likes: 3990, date: '1 week'},
+  {threadId: 1, title: 'Midnight Protocol', url: 'https://f95zone.to/threads/101500/', version: 'v2.0.5', creator: 'Relay Nine Games', coverUrl: '/mock/covers/1/wide', rating: 4.62, views: 1284000, likes: 3110, date: '2 hrs', engine: 'Unity', isAICG: false},
+  {threadId: 2, title: 'Paper Crowns', url: 'https://f95zone.to/threads/99991/', version: 'v1.0', creator: 'Inkjam', coverUrl: '/mock/covers/2/wide', rating: 4.31, views: 884000, likes: 1980, date: '5 hrs', engine: 'RPGM', isAICG: true},
+  {threadId: 3, title: 'Ember Falls', url: 'https://f95zone.to/threads/100001/', version: 'v0.9.7', creator: 'Cinder Studio', coverUrl: '/mock/covers/3/wide', rating: 4.05, views: 512000, likes: 1204, date: '9 hrs', engine: 'RenPy', isAICG: false},
+  {threadId: 4, title: 'Hollow Tide', url: 'https://f95zone.to/threads/100002/', version: 'Ch. 4', creator: 'Marrow', coverUrl: '/mock/covers/4/wide', rating: 3.88, views: 355000, likes: 842, date: '1 day', engine: 'RenPy', isAICG: false},
+  {threadId: 5, title: 'Nightingale Court', url: 'https://f95zone.to/threads/100003/', version: 'v1.2.1', creator: 'Lumen Works', coverUrl: '/mock/covers/5/wide', rating: 4.71, views: 2040000, likes: 4210, date: '1 day', engine: 'Unity', isAICG: false},
+  {threadId: 6, title: 'Static Bloom', url: 'https://f95zone.to/threads/100004/', version: 'v0.14', creator: 'No Signal', coverUrl: '/mock/covers/6/wide', rating: 3.42, views: 98000, likes: 310, date: '2 days', engine: 'HTML', isAICG: false},
+  {threadId: 7, title: 'The Longest Winter', url: 'https://f95zone.to/threads/100005/', version: 'v3.0.2', creator: 'Pale Fox', coverUrl: '/mock/covers/7/wide', rating: 4.5, views: 3320000, likes: 5602, date: '2 days', engine: 'RenPy', isAICG: false},
+  {threadId: 8, title: 'Copper Vale', url: 'https://f95zone.to/threads/100006/', version: 'Alpha 0.3', creator: 'Vale Team', coverUrl: '/mock/covers/8/wide', rating: 0, views: 24000, likes: 51, date: '3 days', engine: 'RPGM', isAICG: false},
+  {threadId: 9, title: 'Sable & Rose', url: 'https://f95zone.to/threads/100007/', version: 'v1.1', creator: 'Rosewood', coverUrl: '/mock/covers/9/wide', rating: 4.18, views: 640000, likes: 1440, date: '3 days', engine: 'Unity', isAICG: false},
+  {threadId: 10, title: 'Quiet Machines', url: 'https://f95zone.to/threads/100008/', version: 'v0.44', creator: 'Softwired', coverUrl: '/mock/covers/10/wide', rating: 3.95, views: 411000, likes: 902, date: '4 days', engine: 'Godot', isAICG: true},
+  {threadId: 11, title: 'Feral Hearts', url: 'https://f95zone.to/threads/100009/', version: 'v2.2.0', creator: 'Wilder', coverUrl: '/mock/covers/11/wide', rating: 4.44, views: 1180000, likes: 2870, date: '5 days', engine: 'RenPy', isAICG: false},
+  {threadId: 12, title: 'Gilded Cages', url: 'https://f95zone.to/threads/100010/', version: 'Final', creator: 'Birdhouse', coverUrl: '/mock/covers/12/wide', rating: 4.02, views: 2890000, likes: 3990, date: '1 week', engine: 'UnrealEngine', isAICG: false},
 ]
 
 export const THREAD_PREVIEW = {

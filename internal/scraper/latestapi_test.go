@@ -69,6 +69,57 @@ func TestEngineNameFromPrefixes(t *testing.T) {
 	}
 }
 
+// TestEngineFromLatestPrefixes: the feed's prefix IDs carry the forum's own
+// taxonomy (engine + category + status + misc), so engine extraction must use
+// the latestEnginePrefixes table and ignore the non-engine IDs.
+func TestEngineFromLatestPrefixes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		prefixes []int
+		want     string
+	}{
+		{[]int{7}, "RenPy"},
+		{[]int{13, 7}, "RenPy"},       // VN category + Ren'Py engine
+		{[]int{3, 18}, "Unity"},       // Unity + Completed
+		{[]int{13, 14, 18}, "Others"}, // VN + Others + Completed
+		{[]int{13, 116}, "Godot"},     // VN + Godot
+		{[]int{1}, "QSP"},
+		{[]int{31}, "UnrealEngine"},
+		{[]int{30}, "WolfRPG"},
+		{[]int{47}, "WebGL"},
+		{[]int{13}, ""},  // category only
+		{[]int{18}, ""},  // status only
+		{[]int{999}, ""}, // unknown
+		{nil, ""},        // none
+	}
+	for _, tt := range tests {
+		if got := EngineFromLatestPrefixes(tt.prefixes); got != tt.want {
+			t.Errorf("EngineFromLatestPrefixes(%v) = %q, want %q", tt.prefixes, got, tt.want)
+		}
+	}
+}
+
+// TestHasAICGTag: the "ai cg" tag is ID 2265 in the feed's tag array.
+func TestHasAICGTag(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		tags []int
+		want bool
+	}{
+		{[]int{130, 2265, 817}, true},
+		{[]int{2265}, true},
+		{[]int{130, 817}, false},
+		{nil, false},
+	}
+	for _, tt := range tests {
+		if got := HasAICGTag(tt.tags); got != tt.want {
+			t.Errorf("HasAICGTag(%v) = %v, want %v", tt.tags, got, tt.want)
+		}
+	}
+}
+
 // TestHasNonGamePrefix documents the prefix-table lookup itself. NOTE: this
 // numbering is not the F95Checker Type enum and must not be applied to
 // latest_data.php search prefixes — sync rejects non-games by title
@@ -300,6 +351,38 @@ func TestSearchCovers(t *testing.T) {
 	}
 	if got := covers[6004]; got != "https://attachments.f95zone.to/2017/10/41433_RJ207427_img_main.jpg" {
 		t.Errorf("covers[6004] = %q, want the full-res attachments URL", got)
+	}
+}
+
+// TestSearchCatalog: the full-row catalog view keeps each thread's prefixes,
+// tags and stats (the Browser filters need them) while still rewriting covers
+// to the full-res host.
+func TestSearchCatalog(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"ok","msg":{"data":[
+			{"thread_id":6004,"title":"Meltys Quest","prefixes":[7],"tags":[2265],"views":10,"likes":3,"rating":4.5,"cover":"https://preview.f95zone.to/x.jpg"},
+			{"thread_id":0,"title":"Bad Row"}
+		]}}`)
+	}))
+
+	catalog, err := api.SearchCatalog(context.Background(), "Meltys Quest")
+	if err != nil {
+		t.Fatalf("SearchCatalog failed: %v", err)
+	}
+	if len(catalog) != 1 {
+		t.Fatalf("got %d rows, want 1 (invalid-id row dropped)", len(catalog))
+	}
+	r, ok := catalog[6004]
+	if !ok {
+		t.Fatal("thread 6004 missing from catalog")
+	}
+	if r.CoverURL != "https://attachments.f95zone.to/x.jpg" {
+		t.Errorf("CoverURL = %q, want the full-res attachments URL", r.CoverURL)
+	}
+	if r.Views != 10 || r.Likes != 3 || r.Rating != 4.5 || len(r.Tags) != 1 || !HasAICGTag(r.Tags) {
+		t.Errorf("row not retained: %+v", r)
 	}
 }
 
@@ -796,7 +879,7 @@ func TestListLatest(t *testing.T) {
 	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
 		fmt.Fprint(w, `{"status":"ok","msg":{"data":[
-			{"thread_id":93340,"title":"Eternum","creator":"Caribdis","version":"v0.9.5 Public","views":28661376,"likes":6670,"prefixes":[13,7],"rating":4.82,"cover":"https://preview.f95zone.to/a.jpg","date":"9 months","ts":1766768400},
+			{"thread_id":93340,"title":"Eternum","creator":"Caribdis","version":"v0.9.5 Public","views":28661376,"likes":6670,"prefixes":[13,7],"tags":[130,2265],"rating":4.82,"cover":"https://preview.f95zone.to/a.jpg","date":"9 months","ts":1766768400},
 			{"thread_id":317461,"title":"Escape From Blackwood Manor","creator":"Someone","version":"v0.1.1","views":1508,"likes":2,"rating":0,"cover":"https://preview.f95zone.to/b.jpg","date":"51 mins","ts":1791148980}
 		],"pagination":{"page":2,"total":917},"count":27503}}`)
 	}))
@@ -819,6 +902,9 @@ func TestListLatest(t *testing.T) {
 	}
 	if r.Views != 28661376 || r.Likes != 6670 || r.Rating != 4.82 || r.Date != "9 months" || r.Ts != 1766768400 {
 		t.Errorf("stats not mapped: %+v", r)
+	}
+	if len(r.Tags) != 2 || r.Tags[0] != 130 || !HasAICGTag(r.Tags) {
+		t.Errorf("tags not mapped: %+v", r.Tags)
 	}
 	if r.URL != "https://f95zone.to/threads/93340/" {
 		t.Errorf("URL = %q, want thread URL", r.URL)
