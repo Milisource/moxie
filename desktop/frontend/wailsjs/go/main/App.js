@@ -290,12 +290,12 @@ export function SetGameWinePrefix(arg1, arg2) {
   return window['go']['main']['App']['SetGameWinePrefix'](arg1, arg2);
 }
 
-export function SetSteamGridDBKey(arg1) {
-  return window['go']['main']['App']['SetSteamGridDBKey'](arg1);
-}
-
 export function SetOrganizeInstalls(arg1) {
   return window['go']['main']['App']['SetOrganizeInstalls'](arg1);
+}
+
+export function SetSteamGridDBKey(arg1) {
+  return window['go']['main']['App']['SetSteamGridDBKey'](arg1);
 }
 
 export function SetUpdateConcurrency(arg1) {
