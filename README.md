@@ -1,42 +1,32 @@
 # moxie — Game Library Manager
 
-[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev)
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Go 1.26+](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-6b5ce7)](#install)
+[![License: WTFPL](https://img.shields.io/badge/license-WTFPL-blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/Milisource/moxie)](https://github.com/Milisource/moxie/releases)
 
-**Scan, catalog, enrich, and launch your local game library — from the terminal.**
+**Scan, catalog, enrich, and launch your local game library — from a desktop app or your terminal.**
 
-moxie is an engine-aware game library manager. It recursively scans directories, detects 14 game engines (Unity, Ren'Py, RPG Maker, Godot, and more), stores metadata in a local SQLite database, and optionally enriches entries with version info, tags, and cover art from community threads. Games can be added directly to Steam with artwork and Proton configuration — no GUI needed.
+moxie is an engine-aware game library manager. It recursively scans local folders, detects 15 [F95Zone-canonical](https://f95zone.to) engine types (Unity, Ren'Py, RPG Maker, Godot, and more), stores metadata in an embedded SQLite database, and optionally enriches every entry with version info, tags, and cover art from community threads. Games can be launched directly or added to Steam with artwork and Proton configuration — no manual folder wrangling.
 
----
+One Go module ships **two front-ends**: a cross-platform desktop app (Wails + Svelte) and a CLI with a built-in terminal UI.
 
-## Table of Contents
+**[Features](#features) · [Desktop app](#desktop-app) · [CLI & TUI](#cli--tui) · [Install](#install) · [Quick start](#quick-start) · [Command reference](#command-reference) · [Configuration](#configuration) · [Documentation](#documentation)**
 
-- [Project description](#project-description)
-- [Who this project is for](#who-this-project-is-for)
-- [Project dependencies](#project-dependencies)
-- [Instructions for using moxie](#instructions-for-using-moxie)
-  - [Install moxie](#install-moxie)
-  - [Configure moxie](#configure-moxie)
-  - [Quick start](#quick-start)
-  - [Command reference](#command-reference)
-  - [Troubleshoot moxie](#troubleshoot-moxie)
-- [Additional documentation](#additional-documentation)
-- [How to get help](#how-to-get-help)
-- [Terms of use](#terms-of-use)
+> **Status:** alpha (`0.4.0-alpha`). The library, scanner, F95Zone sync, cover art and Steam integration are stable; the download manager and desktop app are actively evolving. Bug reports and ideas are welcome — see [How to get help](#how-to-get-help).
 
 ---
 
-## Project description
+## How it works
 
-With moxie you can **scan** local game directories, **enrich** them with metadata from community threads, **track** version updates, and **launch** games directly — all from a terminal UI or CLI.
+With moxie you can **scan** local game directories, **enrich** them with metadata from community threads, **track** version updates, and **launch** games — all from the desktop app or a terminal UI / CLI.
 
 Unlike manually organizing game folders and checking announcement threads one by one, moxie automates the entire pipeline:
 
 ```
 ┌──────────┐     ┌──────────────┐     ┌───────────────┐     ┌──────────┐
-│  Scan    │────►│  Scrape      │────►│  Sync +       │────►│  TUI /   │
-│  ~/Games │     │  Web Thread  │     │  Check Updates│     │  CLI     │
+│  Scan    │────►│  Scrape      │────►│  Sync +       │────►│  Desktop │
+│  ~/Games │     │  Web Thread  │     │  Check Updates│     │  TUI/CLI │
 └──────────┘     └──────────────┘     └───────┬───────┘     └──────────┘
                                                │
                                                ▼
@@ -46,97 +36,113 @@ Unlike manually organizing game folders and checking announcement threads one by
                                         └──────────────┘     └──────────┘
 ```
 
-Key capabilities:
+---
 
-- **Engine-aware scanning** — Detects 15 canonical engines (Unity, Ren'Py, RPG Maker, Godot, Unreal, HTML, Flash, WolfRPG, etc.) plus a fallback for Others. Reports byte-exact sizes and finds executables.
-- **Incremental by default** — `moxie scan <dir>` skips directories whose modification time hasn't changed since the last scan. Use `--force` for a full re-detection.
-- **Metadata enrichment** — Cookie-based scraping pulls version, developer, tags, overview, cover art, and store links from community game threads. Auto-association scores search results and picks the best match.
-- **Steam integration** — Add non-Steam games with deterministic AppIDs, grid artwork (F95Zone cover or SteamGridDB), and Proton version configuration. Safe VDF read/write with automatic backups.
-- **Bubble Tea TUI** — Interactive terminal UI with list/detail views, engine/status filters, sortable columns, real-time search, and engine-colored rows.
-- **Version tracking** — Check all associated games for newer versions on F95Zone. Supports `--force` to bypass 24h cooldown.
-- **Download manager** — Download games directly from supported hosts (Pixeldrain, Buzzheavier, Gofile, Google Drive, DataNodes, MixDrop) with resume support, platform priority, and dead link fallback.
-- **Cross-platform** — Single static Go binary (~16 MB), no CGO, no runtime deps. Linux, macOS, and Windows.
+## Features
+
+| | |
+|---|---|
+| **Engine-aware scanning** | Detects 15 F95Zone-canonical engine types — Unity, Ren'Py, RPG Maker (RPGM), Godot, Unreal, HTML, Java/JRE, WebGL, Flash, QSP, RAGS, Tads, ADRIFT, WolfRPG — plus an `Others` fallback. Content-sniffing recovers HTML/Twine roots, and non-F95 community engines map to `Others` with a descriptive match reason. |
+| **Incremental by default** | `moxie scan <dir>` skips directories whose modification time hasn't changed. Use `--force` for a full re-detection. Reports byte-exact sizes and finds executables (including nested ones and HTML entry pages). |
+| **Metadata enrichment** | Scraping pulls version, developer, tags, overview, cover art, and store links from community threads. Auto-association scores search results by title and engine, and picks the best match. |
+| **Cover art** | Keeps a portrait cover *and* a landscape banner per game, and can upgrade landscape/missing/low-res covers to real box art from Steam (keyless), SteamGridDB (API key) and VNDB (opt-in) on an exact title match. |
+| **Download manager** | Download from supported hosts with resume, platform priority, multi-part handling, and dead-link fallback. Cloudflare/Turnstile-gated hosts fall back to a real browser. |
+| **Steam integration** | Add non-Steam games with deterministic AppIDs, grid artwork, and Proton configuration. Safe VDF read/write with automatic backups. |
+| **Two front-ends** | A native desktop app (Wails + Svelte 5) and a keyboard-driven Bubble Tea TUI — both over one SQLite library. |
+| **Cross-platform** | Single static, CGO-free Go binary for the CLI/TUI. Linux, macOS, and Windows (amd64 + arm64). |
 
 ---
 
-## Who this project is for
+## Desktop app
 
-This project is intended for **gamers and collectors** who:
+A native Wails v2 + Svelte 5 app with a violet "archive / catalog" visual system, bundled IBM Plex type, and keyboard-first navigation. Its sidebar covers the whole workflow:
 
-- Have a local directory of game installs and want them organized and searchable
-- Follow community game threads and want automatic version update tracking
-- Want to add non-Steam games to their Steam library with proper artwork and Proton support (Linux)
-- Prefer a terminal workflow over a GUI
-- Manage large collections (hundreds of games) across multiple directories
+- **Library** — Grid, Wide and List layouts with engine/status filters, search and sort.
+- **Browse** — a live F95Zone Discover feed and search, with a thread preview and **Add to Library**.
+- **Scan** — manage scan paths and trigger incremental or full rescans.
+- **Add Game** — add a game by path, or from the F95Zone browser.
+- **Updates** — games with a newer version, with Update All and parallel updates.
+- **Sync** — auto-associate and refresh metadata for the whole library.
+- **Downloads** — download history and install/update progress.
+- **Covers** — fetch missing covers and upgrade to portrait art.
+- **Collections**, **Duplicates**, **Trash** and **Settings** round out library management.
 
----
+The desktop app also supports in-app self-updates and watches your game folders for changes.
 
-## Project dependencies
-
-Before using moxie, ensure you have:
-
-- **A directory of games** — moxie scans local folders for game engine markers. It does not download games from the internet on its own.
-- **A Firefox browser (optional)** — for automatic F95Zone cookie detection during scraping. Chrome/Edge cookies are supported via explicit export.
-- **Steam (optional)** — for the `steam` commands. Steam must be closed before adding or removing games.
-- **Go 1.24+ (optional)** — only needed if building from source. No CGO required.
+> **Availability:** on Windows, the combined installer (below) ships the desktop app and the CLI together. On Linux and macOS, build the desktop app from source with `make desktop` (see [Install](#install)).
 
 ---
 
-## Instructions for using moxie
+## CLI & TUI
 
-### Install moxie
+The same engine is available from the terminal. Run `moxie` with no arguments for the full command reference, or launch the interactive TUI:
 
-#### macOS / Linux
+```bash
+moxie tui
+```
+
+### TUI keyboard shortcuts
+
+| Key | Context | Action |
+|-----|---------|--------|
+| `↑` / `k` | Library | Move selection up |
+| `↓` / `j` | Library | Move selection down |
+| `Enter` | Library | Open detail view |
+| `Esc` / `←` | Any | Return to the library list |
+| `/` | Library | Start search/filter |
+| `s` | Library | Cycle sort field |
+| `d` | Library | Delete game (with confirmation) |
+| `e` | Detail | Edit game title |
+| `p` | Detail | Launch game |
+| `Ctrl+u` | Detail | Set the game's thread URL |
+| `Ctrl+E` | Library | Cycle engine filter |
+| `Ctrl+S` | Library | Cycle status filter |
+| `c` | Library | Cycle collection filter |
+| `?` | Any | Toggle the help overlay |
+
+Press `?` in the TUI for quick-start CLI commands (scan, scrape, steam add, …).
+
+---
+
+## Install
+
+### Desktop app + CLI (Windows)
+
+Download **`Moxie-Setup.exe`** from the [latest release](https://github.com/Milisource/moxie/releases/latest) and run it. It installs the desktop app and the `moxie` CLI to `%LOCALAPPDATA%\Programs\Moxie` (per-user, no admin), adds the CLI to your PATH, and embeds the WebView2 bootstrapper (already present on a normal Windows 10/11 install). One download works on both x64 and ARM64.
+
+### CLI only
+
+**macOS / Linux:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.sh | bash
 ```
 
-The script downloads the latest pre-built binary for your platform to `~/.local/bin/` and adds it to your shell config. Restart your terminal or run `source ~/.bashrc` for PATH changes to take effect.
+The script downloads the latest pre-built binary for your platform to `~/.local/bin/` and adds it to your shell config. Restart your terminal or run `source ~/.bashrc`.
 
-**To pin a specific version:**
-```bash
-curl -fsSL https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.sh | bash -s -- --version v0.3.3-alpha
-```
-
-**Install from a local build:**
-```bash
-./scripts/install.sh --binary ./dist/moxie
-```
-
-**Available flags:** `--version <ver>`, `--binary <path>`, `--no-modify-path`, `--help`
-
-#### Windows
-
-**Desktop app + CLI (recommended):** download **`Moxie-Setup.exe`** from the
-[latest release](https://github.com/Milisource/moxie/releases/latest) and run it.
-It installs the desktop app and the `moxie` CLI to
-`%LOCALAPPDATA%\Programs\Moxie` (per-user, no admin), adds the CLI to your PATH,
-and embeds the WebView2 bootstrapper (already present on a normal Windows 10/11
-install). One download works on both x64 and ARM64.
-
-**CLI only**, from PowerShell (not Command Prompt):
+**Windows (PowerShell, not Command Prompt):**
 
 ```powershell
 irm https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.ps1 | iex
 ```
 
-**Both, via the script:**
+CLI-only mode downloads `moxie.exe` to `%LOCALAPPDATA%\moxie\bin\` and adds it to your user PATH; pass `-Desktop` to run the bundled installer instead.
 
-```powershell
-irm https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.ps1 -OutFile install.ps1
-.\install.ps1 -Desktop          # add -Silent for no UI
+**Pin a version / install a local build:**
+
+```bash
+# Pin a specific release
+curl -fsSL https://raw.githubusercontent.com/Milisource/moxie/main/scripts/install.sh | bash -s -- --version v0.4.0-alpha
+
+# From a local build
+./scripts/install.sh --binary ./dist/moxie
 ```
 
-CLI-only mode downloads `moxie.exe` to `%LOCALAPPDATA%\moxie\bin\` and adds it to
-your user PATH; `-Desktop` runs the bundled installer instead.
+**Available flags:** `--version <ver>`, `--binary <path>`, `--no-modify-path`, `--help`.
 
-**Available flags:** `-Version <ver>`, `-Binary <path>`, `-Desktop`, `-Silent`, `-NoModifyPath`, `-Help`
+### Dev channel (`moxie-dev`)
 
-#### Dev build (moxie-dev)
-
-There are two release channels. They install side by side and are kept entirely
-separate, so a dev build can never damage a stable install:
+There are two release channels. They install side by side and are kept entirely separate, so a dev build can never damage a stable install:
 
 | Channel | Binary | Data directory | Source |
 |---------|--------|----------------|--------|
@@ -159,16 +165,11 @@ Windows (PowerShell):
 .\scripts\install-dev.ps1 -Clone
 ```
 
-**Windows dev desktop app:** download **`Moxie-Dev-Setup.exe`** from the rolling
-[`dev` release](https://github.com/Milisource/moxie/releases/tag/dev). It installs
-`Moxie Dev` (desktop + `moxie-dev` CLI) side by side with a stable install, using
-`%APPDATA%\moxie-dev` so it never touches stable data.
+**Windows dev desktop app:** download **`Moxie-Dev-Setup.exe`** from the rolling [`dev` release](https://github.com/Milisource/moxie/releases/tag/dev). It installs **Moxie Dev** (desktop + `moxie-dev` CLI) side by side with a stable install, using `%APPDATA%\moxie-dev` so it never touches stable data.
 
-Because the dev build has its own database, a dev schema migration can never
-strand the stable install. `moxie-dev` also refuses to self-update from stable
-releases (`moxie update`); rebuild/reinstall the dev channel instead.
+Because the dev build has its own database, a dev schema migration can never strand the stable install. `moxie-dev` also refuses to self-update from stable releases.
 
-#### Build from source
+### Build from source
 
 ```bash
 git clone https://github.com/Milisource/moxie.git
@@ -179,76 +180,35 @@ cd moxie
 
 # Or step by step
 make build                    # produces dist/moxie
-sudo make install             # copies to /usr/local/bin/moxie
+sudo make install             # copies the CLI to /usr/local/bin/moxie
+make desktop                  # Wails desktop build → dist/moxie-desktop
 ./scripts/install-local.sh --skip-desktop   # CLI only
 
-# Or build manually
+# Or build the CLI manually
 CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$(git describe --tags --always)" -o moxie .
 
 # Cross-compile all platforms
 ./scripts/build.sh all
 ```
 
-`scripts/install-local.sh` (also `make install-local`) installs the CLI into a bin
-dir on your `PATH` (default `~/.local/bin`, override with `--bin-dir`), registers
-the desktop app in your launcher, and verifies both. The desktop build needs the
-Wails CLI and, on Linux, webkit2gtk 4.1; pass `--skip-desktop` to skip it. Run
-`./scripts/install-local.sh --help` for all flags.
+`scripts/install-local.sh` (also `make install-local`) installs the CLI into a bin dir on your `PATH` (default `~/.local/bin`, override with `--bin-dir`), registers the desktop launcher, and verifies both. The desktop build needs the [Wails CLI](https://wails.io) and, on Linux, `webkit2gtk 4.1`; pass `--skip-desktop` to skip it. Run `./scripts/install-local.sh --help` for all flags.
 
-**Windows combined installer:** `scripts/package-windows.ps1` builds the CLI
-(amd64 + arm64) and the desktop app, then produces a single `Moxie-Setup.exe` NSIS
-installer (desktop + CLI, CLI on PATH). It needs Go, Node, the Wails CLI and NSIS:
+**Windows combined installer:** `scripts/package-windows.ps1` builds the CLI (amd64 + arm64) and the desktop app, then produces a single `Moxie-Setup.exe` NSIS installer (desktop + CLI, CLI on PATH). It needs Go, Node, the Wails CLI and NSIS:
 
 ```powershell
 .\scripts\package-windows.ps1 -Version 0.4.0            # stable
 .\scripts\package-windows.ps1 -Version dev-abc1234 -Channel dev
 ```
 
-Both the stable release and the rolling `dev` prerelease publish this installer
-as `Moxie-Setup.exe` / `Moxie-Dev-Setup.exe`.
-
-#### Verify installation
+### Verify installation
 
 ```bash
 moxie --version
 ```
 
-### Configure moxie
+---
 
-#### Source site cookie (for scraping)
-
-moxie automatically detects site cookies from Firefox. If you use another browser:
-
-```bash
-# Export cookies manually:
-moxie sync --cookie "cookie_header_string"
-moxie sync --cookie-file /path/to/cookies.txt
-```
-
-#### SteamGridDB API key (for higher-quality artwork)
-
-```bash
-# Get a free key at https://www.steamgriddb.com/profile/preferences
-moxie config set steamgriddb-key YOUR_KEY
-moxie steam fix-artwork <id>
-```
-
-#### Portrait library covers
-
-F95Zone covers are mostly landscape banners. `covers upgrade` replaces them with portrait box art from Steam (no key needed), SteamGridDB (when a key is set) and VNDB (`--vndb`). It only replaces a cover on an exact title match, and only with art that is portrait and at least as sharp. The desktop app has the same action under Covers → Upgrade to Portrait Art. See `docs/cover-art.md`.
-
-```bash
-moxie covers upgrade --dry-run   # list proposed replacements
-moxie covers upgrade             # apply (the previous cover is kept for undo)
-```
-
-#### View all configuration
-
-```bash
-moxie config show
-```
-
-### Quick start
+## Quick start
 
 ```bash
 # 1. Scan your games folder (incremental — skips already-known games)
@@ -264,7 +224,7 @@ moxie tui
 moxie steam add 42
 ```
 
-#### Typical workflows
+### Typical workflows
 
 <details>
 <summary><strong>"I just downloaded a bunch of games and want them organized"</strong></summary>
@@ -311,35 +271,46 @@ moxie list --warnings                # quick scan for engine/exe issues
 ```
 </details>
 
-### Command reference
+---
+
+## Command reference
+
+Run `moxie <command> --help` for any command's flags. Global flags: `--help` / `-h`, and `--verbose` / `-v` for debug logging.
 
 <details>
 <summary><strong>Core commands</strong></summary>
 
 | Command | What it does |
 |---------|-------------|
-| `scan <dir>` | Scan directory for games (incremental by default; `--force` for full rescan). Detects engines, measures sizes, finds executables. |
-| `list` | List all games. Supports `--engine`, `--status`, `--json`, `--warnings` (engine/exe mismatch column). |
-| `tui` | Launch interactive terminal UI with filtering, sorting, and detail views. |
-| `info <id>` | Show detailed game info — path, size, dates, engine, scraped metadata. |
-| `play <id>` | Launch a game. Uses native binary on Linux, Wine fallback. |
+| `scan <dir>` | Scan a directory for games (incremental by default; `--force` for a full rescan). Detects engines, measures sizes, finds executables. |
+| `detect <path\|id>` | Explain how a path or game was classified (`--json` for machine output). |
+| `list` | List all games. Supports `--engine`, `--status`, `--deleted`, `--warnings` (engine/exe mismatch), `--json`. |
+| `tui` | Launch the interactive terminal UI with filtering, sorting, and detail views. |
+| `info <id\|name>` | Show detailed game info — path, size, dates, engine, scraped metadata. |
+| `play <id\|name>` | Launch a game. Uses the native binary on Linux, with a Wine fallback. |
+| `history [count]` | Show recently played games. |
 | `add <path>` | Manually add a game. Engine auto-detected if not specified. |
-| `remove <id>` | Remove from library (does not delete files on disk). |
+| `remove <id\|name>` | Remove from the library (soft delete — does not delete files on disk). |
+| `restore <id\|name>` | Restore a soft-deleted game. |
+| `purge` | Permanently delete all soft-deleted games. |
 | `rename` | Rename directories to clean, filesystem-safe titles. `--dry-run` to preview. |
-| `set-path <id> <path>` | Update the filesystem path for a game in the database. |
+| `set-path <id> <path>` | Update the filesystem path for a game. |
 | `set-exe <id> <exe>` | Manually set the executable path for a game. |
-| `refresh-versions [--dry-run]` | Re-detect installed versions from folder names and game files (Ren'Py options/.rpa, RPG Maker System.json, Game.ini, package.json); no network calls. |
-| `covers upgrade [--dry-run] [--vndb] [--no-steam] [--limit N] [--game ID]` | Replace landscape, missing or low-res covers with portrait art from Steam, SteamGridDB and VNDB. Requires an exact title match. |
+| `set-wine-prefix <id> <path>` | Set a default Wine prefix for a game. |
+| `set-status <status>` | Update game status (`active`/`completed`/`abandoned`/`on_hold`/`unknown`); supports `--engine` and `--all`. |
+| `refresh-versions` | Re-detect installed versions from folder names and game files (Ren'Py options/`.rpa`, RPG Maker `System.json`, `Game.ini`, `package.json`); no network calls. |
+| `covers upgrade` | Replace landscape, missing or low-res covers with portrait art. `--dry-run`, `--vndb`, `--no-steam`, `--limit N`, `--game ID`. |
 </details>
 
 <details>
-<summary><strong>Metadata enrichment commands</strong></summary>
+<summary><strong>F95Zone &amp; metadata commands</strong></summary>
 
 | Command | What it does |
 |---------|-------------|
-| `sync [id]` | Full library sync: auto-associate unassociated games, then check all for version updates. `--force` bypasses 24h cooldown. |
-| `scrape <id>` | Scrape an F95Zone thread for metadata. Firefox cookies auto-detected. |
-| `check-updates` | Check all associated games for newer versions on F95Zone. |
+| `sync [id]` | Full library sync: auto-associate unassociated games, then check all for version updates. `--force` bypasses the 24h cooldown. |
+| `scrape <id>` | Scrape one thread for metadata. Firefox cookies are auto-detected. |
+| `scrape-batch` | Scrape several games in one run. |
+| `check-updates` (alias `updates`) | Check all associated games for newer versions. |
 </details>
 
 <details>
@@ -358,14 +329,25 @@ moxie list --warnings                # quick scan for engine/exe issues
 
 | Command | What it does |
 |---------|-------------|
-| `steam add <id>` | Add a non-Steam game to Steam with deterministic AppID, artwork, and Proton. |
-| `steam remove <id>` | Remove from Steam's shortcuts.vdf. Idempotent. |
+| `steam add <id>` | Add a non-Steam game to Steam with a deterministic AppID, artwork, and Proton. |
+| `steam remove <id>` | Remove from Steam's `shortcuts.vdf`. Idempotent. |
 | `steam list` | List all non-Steam games added by moxie. |
 | `steam proton-list` | Scan for installed Proton versions. |
-| `steam proton-set <id>` | Set Proton version for a game. |
-| `steam fix-artwork <id>` | Re-download Steam artwork (uses SteamGridDB if key is set). |
+| `steam proton-set <id>` | Set the Proton version for a game. |
+| `steam fix-artwork <id>` | Re-download Steam artwork (uses SteamGridDB if a key is set). |
 
 **Safety guarantees:** Steam must be closed before writes; timestamped backups are created before every `shortcuts.vdf` modification; atomic temp-file + rename writes prevent corruption.
+</details>
+
+<details>
+<summary><strong>Library management commands</strong></summary>
+
+| Command | What it does |
+|---------|-------------|
+| `collections <create\|list\|show\|add\|remove\|delete>` | Manage game collections. |
+| `export [--output file]` | Export the library as JSON. |
+| `import <file>` | Import games from a JSON export. |
+| `cleanup` | Detect wrong thread associations (engine/exe mismatch). `--dry-run` to preview, `--assume-yes` / `-y` to auto-disassociate. |
 </details>
 
 <details>
@@ -373,64 +355,91 @@ moxie list --warnings                # quick scan for engine/exe issues
 
 | Command | What it does |
 |---------|-------------|
-| `cleanup` | Detect wrong F95Zone associations (engine/exe mismatch). `--dry-run` to preview. |
-| `config set/get/show` | Manage settings (SteamGridDB key, etc.). Persisted to JSON. |
+| `config <set\|get\|show>` | Manage settings (SteamGridDB key, cover sources, …). Persisted to JSON. |
 | `update` | Check for and install moxie updates. |
 </details>
 
-### Troubleshoot moxie
+---
 
-| Issue | Solution |
-|-------|----------|
-| **"No cover artwork URL found"** | The game's F95Zone thread lacks a downloadable cover. Run `moxie sync <id>` to refresh metadata, or configure a SteamGridDB API key. |
-| **Games don't appear in Steam after `steam add`** | Steam must be fully closed before adding games, and restarted afterward. |
-| **"Cookie required" when scraping** | Log into the source site in Firefox, or use `--cookie "header"` with a cookie string from browser DevTools. |
-| **Scan finds no games** | Ensure the directory contains game engine files (.exe, .sh, .x86_64, etc.) or engine markers (renpy/, www/, _Data folders, .pck files, etc.). |
-| **How do I reset my library?** | Delete `~/.config/moxie/games.db`. It will be recreated on the next scan. |
-| **How do I set a specific Proton version?** | `moxie steam proton-list` to see available versions, then `moxie steam proton-set <id> --version GE-Proton9-7`. |
-| **Download link always fails** | Most file hosts use anti-bot protection. Try `moxie install <id> <path>` with a manually downloaded archive. |
+## Configuration
+
+### Source-site cookie (for scraping)
+
+moxie automatically detects site cookies from Firefox. If you use another browser:
+
+```bash
+moxie sync --cookie "cookie_header_string"
+moxie sync --cookie-file /path/to/cookies.txt
+```
+
+### SteamGridDB API key (for higher-quality artwork)
+
+```bash
+# Get a free key at https://www.steamgriddb.com/profile/preferences
+moxie config set steamgriddb-key YOUR_KEY
+moxie steam fix-artwork <id>
+```
+
+### Portrait library covers
+
+F95Zone covers are mostly landscape banners. `covers upgrade` replaces them with portrait box art from Steam (no key needed), SteamGridDB (when a key is set) and VNDB (`--vndb`). It only replaces a cover on an exact title match, and only with art that is portrait and at least as sharp. The desktop app has the same action under **Covers → Upgrade to Portrait Art**. See [`docs/cover-art.md`](docs/cover-art.md).
+
+```bash
+moxie covers upgrade --dry-run   # list proposed replacements
+moxie covers upgrade             # apply (the previous cover is kept for undo)
+```
+
+### View all configuration
+
+```bash
+moxie config show
+```
 
 ---
 
-## Additional documentation
+## Troubleshoot moxie
+
+| Issue | Solution |
+|-------|----------|
+| **"No cover artwork URL found"** | The game's thread lacks a downloadable cover. Run `moxie sync <id>` to refresh metadata, or configure a SteamGridDB API key. |
+| **Games don't appear in Steam after `steam add`** | Steam must be fully closed before adding games, and restarted afterward. |
+| **"Cookie required" when scraping** | Log into the source site in Firefox, or use `--cookie "header"` with a cookie string from browser DevTools. |
+| **Scan finds no games** | Ensure the directory contains game engine files (`.exe`, `.sh`, `.x86_64`, …) or engine markers (`renpy/`, `www/`, `_Data` folders, `.pck` files, …). |
+| **How do I reset my library?** | Delete `~/.config/moxie/games.db`. It will be recreated on the next scan. |
+| **How do I set a specific Proton version?** | `moxie steam proton-list` to see versions, then `moxie steam proton-set <id> --version GE-Proton9-7`. |
+| **Download link always fails** | Most file hosts use anti-bot protection. Try `moxie install <id> <path>` with a manually downloaded archive. |
+| **`moxie sync` fails with a block error** | Your session cookie expired. Log in again in Firefox, or pass a fresh cookie file with `--cookie-file`. See [`docs/FAQ.md`](docs/FAQ.md). |
+
+More edge cases live in [`docs/FAQ.md`](docs/FAQ.md).
+
+---
+
+## Documentation
 
 | Document | What it covers |
 |----------|---------------|
-| [docs/architecture.md](docs/architecture.md) | System design, package diagram, technology choices, future roadmap |
-| [docs/moxie-spec.md](docs/moxie-spec.md) | Full MVP specification, implementation status, known limitations |
-| [docs/scanner.md](docs/scanner.md) | Directory walk algorithm, engine detection profiles, exclusion list |
-| [docs/scraper.md](docs/scraper.md) | HTTP client, rate limiting, HTML parsing, auto-association |
-| [docs/database.md](docs/database.md) | SQLite schema, version tracking, migration strategy |
-| [docs/tui.md](docs/tui.md) | Bubble Tea model/update/view, keyboard shortcuts, filter system |
-| [docs/browser.md](docs/browser.md) | Cross-browser cookie extraction with kooky |
-| [docs/steam-package-design.md](docs/steam-package-design.md) | Steam VDF shortcuts, artwork pipeline, Proton config |
-
-### TUI keyboard shortcuts
-
-| Key | Context | Action |
-|-----|---------|--------|
-| `↑` / `k` | Library | Move selection up |
-| `↓` / `j` | Library | Move selection down |
-| `Enter` | Library | Open detail view |
-| `Esc` / `←` | Any | Return to library list |
-| `/` | Library | Start search/filter |
-| `s` | Library | Cycle sort field |
-| `d` | Library | Delete game (with confirmation) |
-| `e` | Detail | Edit game title |
-| `p` | Detail | Launch game |
-| `Ctrl+u` | Detail | Set F95Zone URL |
-| `?` | Any | Toggle help overlay |
-
-Press `?` in the TUI for CLI quick-start commands (scan, scrape, steam add, etc.).
+| [`docs/architecture.md`](docs/architecture.md) | System design, package diagram, technology choices, future roadmap |
+| [`docs/moxie-spec.md`](docs/moxie-spec.md) | Full MVP specification, implementation status, known limitations |
+| [`docs/scanner.md`](docs/scanner.md) | Directory walk algorithm, engine detection profiles, exclusion list |
+| [`docs/scraper.md`](docs/scraper.md) | HTTP client, rate limiting, HTML parsing, auto-association |
+| [`docs/downloader.md`](docs/downloader.md) | Host resolvers, resume, platform priority, dead-link validation |
+| [`docs/database.md`](docs/database.md) | SQLite schema, version tracking, migration strategy |
+| [`docs/tui.md`](docs/tui.md) | Bubble Tea model/update/view, keyboard shortcuts, filter system |
+| [`docs/browser.md`](docs/browser.md) | Cross-browser cookie extraction with kooky |
+| [`docs/cover-art.md`](docs/cover-art.md) | Cover cache, thumbnails, portrait sources (Steam, SteamGridDB, VNDB) |
+| [`docs/steam-package-design.md`](docs/steam-package-design.md) | Steam VDF shortcuts, artwork pipeline, Proton config |
+| [`docs/FAQ.md`](docs/FAQ.md) | Edge cases and troubleshooting |
 
 ### Data location
 
-All persistent data lives under `~/.config/moxie/` (Linux), `%APPDATA%/moxie/` (Windows), or `~/Library/Application Support/moxie/` (macOS):
+All persistent data lives under `~/.config/moxie/` (Linux), `%APPDATA%\moxie\` (Windows), or `~/Library/Application Support/moxie/` (macOS):
 
 | Path | Contents |
 |------|----------|
 | `games.db` | SQLite database with WAL mode, foreign keys, and CHECK constraints |
-| `config.json` | Configuration store (SteamGridDB key, preferences) |
+| `config.json` | Configuration store (SteamGridDB key, cover sources, preferences) |
+| `covers/` | Cached cover art and metadata sidecars |
+| `work/` | Download and extraction scratch space |
 | `logs/` | Per-day structured log files |
 
 You can safely delete `games.db` to reset your library — it will be recreated on the next scan.
@@ -439,18 +448,18 @@ You can safely delete `games.db` to reset your library — it will be recreated 
 
 ## How to get help
 
-- **Bug reports & feature requests** — Open an [issue on GitHub](https://github.com/Milisource/moxie/issues)
-- **Documentation** — See the [docs/](docs/) directory for detailed component documentation
-- **Quick reference** — Run `moxie` without arguments for the full command reference
+- **Bug reports & feature requests** — open an [issue on GitHub](https://github.com/Milisource/moxie/issues)
+- **Documentation** — see the [`docs/`](docs/) directory for detailed component documentation
+- **Quick reference** — run `moxie` without arguments for the full command reference
 
-This is a hobby project. Response times may vary.
-
----
-
-## Terms of use
-
-Hobby project. All rights reserved by default. See the [LICENSE](LICENSE) file for details. Open an issue on GitHub if you want to contribute.
+This is a hobby project, so response times may vary. Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
-> Structure inspired by [The Good Docs Project](https://www.thegooddocsproject.dev/) README template.
+## License
+
+Released under the [WTFPL v2](LICENSE) — do what the fuck you want to.
+
+---
+
+> README structure inspired by [PhotoCraft](https://github.com/storytold/photocraft) and [OpenWork](https://github.com/different-ai/openwork), and The Good Docs Project's [README template](https://www.thegooddocsproject.dev/).
