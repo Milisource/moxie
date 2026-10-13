@@ -6,8 +6,9 @@
 // supported engines are resolved by paths.go.
 //
 // Typical lifecycle: import or snapshot creates a set; apply copies a set's
-// contents into the game's live save location; restore re-applies the
-// player's own (mine-*) set.
+// contents into the game's live save location (mirroring it exactly in replace
+// mode); restore re-applies the player's own (mine-*) set; scan hunts for save
+// locations when auto-detection cannot find them.
 package saves
 
 import (

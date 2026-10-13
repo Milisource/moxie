@@ -3,6 +3,7 @@ package commands
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -20,9 +21,10 @@ import (
 //	moxie saves list [id]
 //	moxie saves snapshot <id> [--name N] [--label L]
 //	moxie saves add <id> <archive|dir> [--label L] [--name N] [--root R]
-//	moxie saves apply <id> <set>
+//	moxie saves apply <id> <set> [--replace]
 //	moxie saves restore <id>
 //	moxie saves path <id> [--set PATH|--auto]
+//	moxie saves scan <id>
 //	moxie saves remove <id> <set>
 //	moxie saves fetch <id> [--list] [--pick N] [--password P]
 func Saves(args []string) {
@@ -44,6 +46,8 @@ func Saves(args []string) {
 		savesRestore(args[1:])
 	case "path":
 		savesPath(args[1:])
+	case "scan":
+		savesScan(args[1:])
 	case "remove":
 		savesRemove(args[1:])
 	case "fetch":
@@ -223,13 +227,16 @@ func savesAdd(args []string) {
 	}
 }
 
-// savesApply applies a named set to the game's live save location.
+// savesApply applies a named set to the game's live save location. With
+// --replace the live location is mirrored (its files removed first) instead of
+// being merged into.
 func savesApply(args []string) {
 	fs := flag.NewFlagSet("saves-apply", flag.ExitOnError)
+	replace := fs.Bool("replace", false, "Mirror the set: remove live save files the set does not contain")
 	positionals := parseSavesArgs(fs, args)
 
 	if len(positionals) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: moxie saves apply <id|name> <set>\n")
+		fmt.Fprintf(os.Stderr, "Usage: moxie saves apply <id|name> <set> [--replace]\n")
 		os.Exit(1)
 	}
 
@@ -238,12 +245,12 @@ func savesApply(args []string) {
 	game := ResolveGame(database, positionals[0])
 	engine := openSavesEngine(database)
 
-	res, err := engine.Apply(game, positionals[1])
+	res, err := engine.ApplyWith(game, positionals[1], saves.ApplyOptions{Replace: *replace})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error applying save set: %v\n", err)
 		os.Exit(1)
 	}
-	printApplyResult("Applied", res)
+	printApplyResult("Applied", game, res)
 }
 
 // savesRestore re-applies the newest snapshot ("my saves") for a game.
@@ -266,16 +273,44 @@ func savesRestore(args []string) {
 		fmt.Fprintf(os.Stderr, "Error restoring saves: %v\n", err)
 		os.Exit(1)
 	}
-	printApplyResult("Restored", res)
+	printApplyResult("Restored", game, res)
 }
 
-// printApplyResult reports a completed apply/restore.
-func printApplyResult(verb string, res *saves.ApplyResult) {
+// printApplyResult reports a completed apply/restore, warning when the set was
+// captured for a different game version than the game is currently at.
+func printApplyResult(verb string, game *db.Game, res *saves.ApplyResult) {
 	if res.AutoSnapshot != "" {
 		fmt.Printf("Auto-snapshotted your current saves as %s\n", res.AutoSnapshot)
 	}
+	if res.Replaced {
+		fmt.Printf("Replaced live saves (%d files removed)\n", res.FilesRemoved)
+	}
 	fmt.Printf("%s %s to %s (%d files copied)\n", verb, res.Set.Name, res.Target.Path, res.FilesCopied)
 	fmt.Printf("  active set: %s\n", res.Set.Name)
+	if warning := savesVersionWarning(res.Set.GameVersion, game); warning != "" {
+		fmt.Println(warning)
+	}
+}
+
+// savesVersionMismatch reports whether the version a set was captured for
+// differs from the game's current version, comparing light-normalized forms.
+// An empty version on either side means "unknown" and never counts as a mismatch.
+func savesVersionMismatch(setVersion, gameVersion string) bool {
+	if setVersion == "" || gameVersion == "" {
+		return false
+	}
+	return NormalizeVersion(setVersion) != NormalizeVersion(gameVersion)
+}
+
+// savesVersionWarning returns the one-line warning shown when a set's captured
+// version differs from the game's current version, or "" when it matches or
+// either version is unknown.
+func savesVersionWarning(setVersion string, game *db.Game) string {
+	if game == nil || !savesVersionMismatch(setVersion, game.Version) {
+		return ""
+	}
+	return fmt.Sprintf("warning: this set was captured for %s; the game is at %s — saves may not load.",
+		setVersion, game.Version)
 }
 
 // savesPath shows (and optionally pins or clears) the live save location.
@@ -337,6 +372,65 @@ func savesPath(args []string) {
 	}
 }
 
+// savesScan lists the save-like files found under the game's candidate save
+// locations, newest first, to help pin the right one with `saves path --set`.
+// It is a pure filesystem read: nothing is written and nothing is pinned.
+func savesScan(args []string) {
+	fs := flag.NewFlagSet("saves-scan", flag.ExitOnError)
+	positionals := parseSavesArgs(fs, args)
+
+	if len(positionals) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: moxie saves scan <id|name>\n")
+		os.Exit(1)
+	}
+
+	database := OpenDB()
+	defer database.Close()
+	game := ResolveGame(database, positionals[0])
+	engine := openSavesEngine(database)
+
+	resolved, _, err := engine.ResolveLocation(game)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error resolving save location: %v\n", err)
+		os.Exit(1)
+	}
+	if resolved.Path != "" {
+		fmt.Printf("Current: %s\n", resolved.Path)
+	}
+
+	candidates, err := engine.ScanLiveSaves(game)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error scanning live saves: %v\n", err)
+		os.Exit(1)
+	}
+	printScanCandidates(os.Stdout, game, candidates)
+}
+
+// printScanCandidates writes the live-save scan table for game to w, newest
+// candidate first, followed by the pin hint. The empty case prints a message
+// naming the game instead of the table.
+func printScanCandidates(w io.Writer, game *db.Game, candidates []saves.ScanCandidate) {
+	if len(candidates) == 0 {
+		fmt.Fprintf(w, "No save-like files found for %s.\n", game.Title)
+		return
+	}
+	fmt.Fprintf(w, "%-55s %-6s %-24s %s\n", "DIR", "FILES", "NEWEST", "MODIFIED")
+	fmt.Fprintln(w, strings.Repeat("-", 95))
+	for _, c := range candidates {
+		newest := c.NewestFile
+		if newest == "" {
+			newest = "-"
+		}
+		modified := "-"
+		if !c.NewestMod.IsZero() {
+			modified = c.NewestMod.Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(w, "%-55s %-6d %-24s %s\n",
+			util.Truncate(c.Path, 55), c.Files, util.Truncate(newest, 24), modified)
+	}
+	fmt.Fprintf(w, "\nPin a location with: moxie saves path %d --set %s\n", game.ID, candidates[0].Path)
+}
+
 // savesRemove deletes a named set and its stored files.
 func savesRemove(args []string) {
 	fs := flag.NewFlagSet("saves-remove", flag.ExitOnError)
@@ -370,9 +464,11 @@ Subcommands:
   snapshot <id> [--name N] [--label L] Snapshot the game's current live saves
   add <id> <archive|dir> [flags]       Import a save set from an archive or dir
                                        --label L  --name N  --root R
-  apply <id> <set>                     Apply a set to the live save location
+  apply <id> <set> [--replace]         Apply a set to the live save location
+                                       --replace mirrors the set (removes live files)
   restore <id>                         Re-apply the newest snapshot (my saves)
   path <id> [--set PATH|--auto]        Show/pin/clear the live save location
+  scan <id>                            List save-like files under candidate locations
   remove <id> <set>                     Delete a save set
   fetch <id> [--list] [--pick N]        Download a save from the F95 thread OP
       [--password P] [--url URL]       --list to inspect, --pick N to choose

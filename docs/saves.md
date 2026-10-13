@@ -50,7 +50,7 @@ location by hand (see [Manual override](#manual-override)).
 ## How
 
 The manager lives in `internal/saves/` with the CLI in
-`internal/commands/saves.go` (snapshot/import/apply) and
+`internal/commands/saves.go` (snapshot/import/apply/scan) and
 `internal/commands/saves_fetch.go` (the F95 fetch pipeline):
 
 - `saves.go` — types (`Location`, `Engine`) and construction
@@ -144,16 +144,59 @@ moxie saves path 42 --auto     # clear the override, back to auto-detection
 
 The override is stored in the `save_configs` table (`manual_path`).
 
+#### Finding your save location
+
+`saves scan` lists what it can see under the game's candidate locations so you can
+pick one to pin. It is a pure filesystem read: nothing is written and nothing is
+pinned by the scan itself.
+
+```bash
+moxie saves scan 42
+```
+
+It prints the resolved location (when one is known) as `Current:`, then one row per
+candidate that holds save-like files, newest first:
+
+```
+Current: /home/me/.renpy/MyGame-1234567890
+DIR                                             FILES  NEWEST        MODIFIED
+-----------------------------------------------------------------------------------------------
+/home/me/.renpy/MyGame-1234567890                14     persistent    2026-10-12 14:30
+/home/me/games/MyGame/game/saves                    2     slot1.save    2026-08-01 09:00
+
+Pin a location with: moxie saves path 42 --set /home/me/.renpy/MyGame-1234567890
+```
+
+`DIR` and `NEWEST` are truncated with `...` when long, to keep the table aligned;
+the pin hint always prints the top candidate's full path.
+
+When nothing save-like is found it prints `No save-like files found for <game>` and
+prints no table. Copy the path you want from the `DIR` column (or use the suggested
+hint) into `moxie saves path 42 --set <dir>`.
+
 ### Apply semantics
 
-Applying a set is deliberately non-destructive:
+Applying a set is deliberately non-destructive by default:
 
 - **Copy, don't move.** The set's `apply_root` subtree is copied *into* the live
   location. Same-name files are overwritten; live files that the set does not contain
   are left alone. **Live user data is never deleted.**
+- **`--replace` mirrors the set.** With `moxie saves apply <id> <set> --replace`,
+  the live location is mirrored instead: the set is still copied in, but live files the
+  set does not contain are removed first, so the live directory ends up matching the
+  set. The auto-snapshot guard below still runs first, so the previous live state is
+  recoverable. Output reports what was removed, e.g.
+  `Replaced live saves (3 files removed)`.
 - **Auto-snapshot on first apply.** If the game has no active set yet and the live
   location holds saves, moxie first snapshots them (label `my saves (auto)`) so the
   previous state can be restored. Afterwards it applies the requested set.
+- **Version-mismatch warning.** Each set records the `game_version` it was captured
+  for. When it differs from the game's current version (after light
+  normalization — case, leading `v`, and trailing `.0` segments are ignored),
+  apply/restore prints
+  `warning: this set was captured for <setVersion>; the game is at <gameVersion> — saves may not load.`
+  It is a warning only: nothing is blocked, because the recorded version can be stale
+  and either side may be unknown.
 - **One active set.** A partial unique index enforces at most one active set per
   game; applying a set deactivates the previous one in the same transaction. The
   set is marked active *before* its contents are copied, so a database failure
@@ -218,9 +261,10 @@ The database is the source of truth — there are no sidecar metadata files on d
 moxie saves list [id]
 moxie saves snapshot <id> [--name N] [--label L]
 moxie saves add <id> <archive|dir> [--label L] [--name N] [--root R]
-moxie saves apply <id> <set>
+moxie saves apply <id> <set> [--replace]
 moxie saves restore <id>
 moxie saves path <id> [--set PATH|--auto]
+moxie saves scan <id>
 moxie saves remove <id> <set>
 moxie saves fetch <id|name> [--list] [--pick N] [--password P] [--url URL]
 ```
@@ -233,9 +277,10 @@ Flags may appear before or after positionals.
 | `list [id]` | — | List sets for one game, or every game's sets grouped by game. Shows source, size, and active status. |
 | `snapshot <id>` | `--name N`, `--label L` | Capture the game's live saves as a new set. Defaults: name `mine-<YYYYMMDD-HHMMSS>`, label `my saves`. |
 | `add <id> <src>` | `--label L`, `--name N`, `--root R` | Import a set from a directory, an archive (`.zip`, `.tar.gz`, `.7z`, `.rar`), or a single file. `--root` overrides the auto-detected `apply_root`. |
-| `apply <id> <set>` | — | Copy the named set into the live location (auto-snapshotting first when needed) and mark it active. |
+| `apply <id> <set>` | `--replace` | Copy the named set into the live location (auto-snapshotting first when needed) and mark it active. `--replace` mirrors the set instead of merging (see [Apply semantics](#apply-semantics)). |
 | `restore <id>` | — | Apply the game's newest snapshot — your own saves. |
 | `path <id>` | `--set PATH`, `--auto` | Show the resolved location and all candidates; pin a location with `--set`, or clear the override with `--auto`. |
+| `scan <id>` | — | List the save-like files under the resolved and candidate locations, newest first, to help pick a path for `--set` (see [Finding your save location](#finding-your-save-location)). |
 | `remove <id> <set>` | — | Delete the named set's directory and database row. Refuses the game's active set. |
 | `fetch <id>` | `--list`, `--pick N`, `--password P`, `--url URL` | Download a save posted in the thread's first post and import it as a set. `--list` shows candidates, `--pick N` chooses one. `--password` is accepted but encrypted archives are not yet supported by the extraction backend. |
 
@@ -374,18 +419,18 @@ override (`moxie saves path --set`).
 - **Untrusted saves are load-at-your-own-risk.** Ren'Py saves are pickled Python
   objects; a set downloaded from a stranger can execute code when the game loads it.
   Only apply saves from sources you trust.
-- **Version compatibility warnings are not implemented yet.** A 100% save is built
-  for a specific game version and may not load on a different one. The targeted
-  version is recorded in `game_version`, but no warning is issued yet.
+- **`--replace` deletes live files.** Plain apply only overwrites same-name files,
+  but `--replace` removes live files the set does not contain. The auto-snapshot
+  guard only runs on the first apply — when a set is already active, snapshot your
+  progress first (see the drift caveat above) before applying with `--replace`.
+- **`saves scan` is heuristic.** It lists files it recognizes as save-like under the
+  known candidate locations; an unrecognized save format may be missing from the table.
+  It never writes — pin the path you want with `saves path --set`.
 - **`saves fetch` scans the first post only.** It discovers save candidates in a
   thread's OP — F95Zone attachments and external file-host links whose text or
   filename signals a save (e.g. "100% save", "Full Save", "Gallery"). Saves posted as
   links to *other* posts (`…/post-XXXXX`) or in replies are not discovered yet; use
   `add` with a manually downloaded archive for those.
-- **`--replace` apply mode is not implemented.** Apply always copies over same-name
-  files and preserves unmatched live files; it never deletes the live directory
-  contents first.
-- **No `saves scan`.** A heuristic "find my saves" pass is planned but not built.
 - **HTML / Flash games are out of scope.** Their saves live in browser storage with
   no filesystem location to manage.
 - **Best-effort paths only.** Ren'Py resolution targets Linux layouts (native, Wine,

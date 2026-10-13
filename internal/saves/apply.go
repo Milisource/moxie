@@ -14,14 +14,32 @@ import (
 type ApplyResult struct {
 	// Set is the set that was applied, with Active true.
 	Set db.SaveSet
-	// AutoSnapshot is the name of the snapshot auto-created before the apply
-	// (when the game had no active set and live save data to protect), or ""
-	// when no snapshot was needed.
+	// AutoSnapshot is the name of the snapshot taken before the apply to
+	// protect live save data. It is set when the game had no active set and the
+	// live location held data ("my saves (auto)"), or when a replace would
+	// otherwise discard un-snapshotted drift ("pre-replace"); it is "" when no
+	// snapshot was needed.
 	AutoSnapshot string
 	// Target is the live save location the set was copied into.
 	Target Location
 	// FilesCopied is the number of files copied into the live location.
 	FilesCopied int
+	// Replaced reports whether the apply ran in replace mode, i.e. whether the
+	// live save data was deleted before the set was copied.
+	Replaced bool
+	// FilesRemoved is the number of entries the replace deleted from the live
+	// location before copying: each top-level entry for KindDir (including
+	// entries the set then re-copies), or each glob-matched file for KindFiles.
+	// It is 0 when no replace ran.
+	FilesRemoved int
+}
+
+// ApplyOptions tunes an Apply.
+type ApplyOptions struct {
+	// Replace mirrors: the live save data is deleted before the set is
+	// copied, so files not present in the set do not survive. A snapshot
+	// guard captures the live state first when it would otherwise be lost.
+	Replace bool
 }
 
 // Snapshot captures the game's current live save data as a new set.
@@ -111,6 +129,13 @@ func (e *Engine) Snapshot(game *db.Game, name, label string) (*db.SaveSet, error
 }
 
 // Apply copies the named set's contents into the game's live save location.
+// It is ApplyWith with default options, which preserve unmatched live files; see
+// ApplyWith for the full semantics.
+func (e *Engine) Apply(game *db.Game, setName string) (*ApplyResult, error) {
+	return e.ApplyWith(game, setName, ApplyOptions{})
+}
+
+// ApplyWith copies the named set's contents into the game's live save location.
 //
 // If the game has no active set and the live location holds data, the live data
 // is first auto-snapshotted (Source "snapshot", label "my saves (auto)") so the
@@ -119,12 +144,23 @@ func (e *Engine) Snapshot(game *db.Game, name, label string) (*db.SaveSet, error
 // Copying is same-name-overwrite; unmatched live files are preserved and live
 // user data is never deleted.
 //
-// The order is: auto-snapshot (when needed), then mark the set active, then
-// copy. Activating first means a database failure leaves the live location
-// completely untouched; a copy failure after activation is retryable because
-// re-running apply simply copies again into the same live location, and when an
-// auto-snapshot was taken the pre-apply live state is already safely captured.
-func (e *Engine) Apply(game *db.Game, setName string) (*ApplyResult, error) {
+// With opts.Replace the live save data is deleted before the copy, so the live
+// location ends up mirroring the set exactly: KindDir clears the directory
+// contents (the directory itself survives, and is created when missing) and
+// KindFiles removes only the glob-matched files. Deleting is destructive, so a
+// replace snapshots the live state first whenever it holds data — including when
+// an active set already exists, which suppresses the auto-snapshot above — and
+// aborts before deleting anything if that snapshot fails. A replace also refuses
+// to touch a location that holds the game itself (see checkReplaceTarget; the
+// game directory itself is allowed for KindFiles, where the glob-scoped deletion
+// is the engine's own layout).
+//
+// The order is: snapshot (auto and/or pre-replace), delete (replace only), then
+// mark the set active, then copy. Activating before copying means a database
+// failure leaves the live location untouched; a copy failure after activation is
+// retryable because re-running apply simply copies again into the same live
+// location, and the pre-apply live state is already safely captured.
+func (e *Engine) ApplyWith(game *db.Game, setName string, opts ApplyOptions) (*ApplyResult, error) {
 	if e == nil || e.db == nil {
 		return nil, fmt.Errorf("saves: engine is not initialized")
 	}
@@ -152,6 +188,14 @@ func (e *Engine) Apply(game *db.Game, setName string) (*ApplyResult, error) {
 
 	result := &ApplyResult{Target: loc}
 
+	// Refuse a destructive replace before touching anything: the snapshot
+	// guard below must never capture a location we would not delete.
+	if opts.Replace {
+		if err := checkReplaceTarget(game, loc); err != nil {
+			return nil, err
+		}
+	}
+
 	sets, err := e.db.ListSaveSets(game.ID)
 	if err != nil {
 		return nil, fmt.Errorf("saves: list sets: %w", err)
@@ -162,13 +206,38 @@ func (e *Engine) Apply(game *db.Game, setName string) (*ApplyResult, error) {
 			return nil, fmt.Errorf("saves: auto-snapshot before apply: %w", err)
 		}
 		result.AutoSnapshot = snap.Name
+	} else if opts.Replace && liveDataCount(loc) > 0 {
+		// An active set suppresses the auto-snapshot above, so deleting the
+		// live data would lose drift that was never captured; snapshot it.
+		snap, err := e.Snapshot(game, "", "pre-replace")
+		if err != nil {
+			return nil, fmt.Errorf("saves: snapshot before replace: %w", err)
+		}
+		result.AutoSnapshot = snap.Name
 	}
 
-	// Activate before copying: an activation failure leaves the live location
-	// untouched, while a copy failure after activation is retryable (re-running
-	// apply re-copies into the same live location).
+	if opts.Replace {
+		removed, err := removeLiveData(game, loc)
+		if err != nil {
+			return nil, fmt.Errorf("saves: replace live save data: %w", err)
+		}
+		result.Replaced = true
+		result.FilesRemoved = removed
+	}
+
+	if err := e.activateAndCopy(game, set, loc, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// activateAndCopy marks set active and copies its contents into the live
+// location loc, filling in result. Activation precedes the copy: an activation
+// failure leaves the live location untouched, while a copy failure after
+// activation is retryable (re-running apply re-copies into the same location).
+func (e *Engine) activateAndCopy(game *db.Game, set *db.SaveSet, loc Location, result *ApplyResult) error {
 	if err := e.db.SetActiveSaveSet(game.ID, set.ID); err != nil {
-		return nil, fmt.Errorf("saves: mark set active: %w", err)
+		return fmt.Errorf("saves: mark set active: %w", err)
 	}
 	set.Active = true
 	result.Set = *set
@@ -180,12 +249,109 @@ func (e *Engine) Apply(game *db.Game, setName string) (*ApplyResult, error) {
 
 	copied, err := e.copySetInto(set, loc, src)
 	if err != nil {
-		return nil, fmt.Errorf(
+		return fmt.Errorf(
 			"saves: set %q is now marked active but copying it into the live location failed; re-run apply to retry the copy: %w",
 			set.Name, err)
 	}
 	result.FilesCopied = copied
-	return result, nil
+	return nil
+}
+
+// removeLiveData deletes the live save data at loc ahead of a replace apply,
+// returning the number of entries removed. KindDir clears the contents of
+// loc.Path, keeping the directory itself (creating it when missing) and refusing
+// to touch a location that holds the game; KindFiles removes only the files
+// matching loc.Globs, leaving everything else in place.
+func removeLiveData(game *db.Game, loc Location) (int, error) {
+	if err := checkReplaceTarget(game, loc); err != nil {
+		return 0, err
+	}
+	if loc.Kind == KindFiles {
+		return removeGlobFiles(loc.Path, loc.Globs)
+	}
+	return clearDirContents(loc.Path)
+}
+
+// checkReplaceTarget refuses a replace target whose contents must not be deleted:
+// an empty path, a filesystem root, or a directory holding the game itself.
+//
+// For KindDir the location's whole tree is deleted, so pointing it at the game
+// directory (or above) would destroy the game. For KindFiles only glob-matched
+// save files are deleted, so the game directory itself is the legitimate VX Ace
+// layout (the game's own Save*.rvdata2 files live there) and is allowed; a
+// strict ancestor of the game directory is refused for both kinds.
+func checkReplaceTarget(game *db.Game, loc Location) error {
+	if loc.Path == "" {
+		return fmt.Errorf("saves: refusing to replace an empty save location")
+	}
+	clean := filepath.Clean(loc.Path)
+	if filepath.Dir(clean) == clean {
+		return fmt.Errorf("saves: refusing to replace %q: it is a filesystem root", loc.Path)
+	}
+	if game == nil || game.Path == "" {
+		return nil
+	}
+	gamePath := filepath.Clean(game.Path)
+	if ensurePathWithin(clean, gamePath) != nil {
+		return nil // the game directory is not inside the location
+	}
+	if clean != gamePath {
+		return fmt.Errorf("saves: refusing to replace %q: it contains the game directory %q", loc.Path, game.Path)
+	}
+	if loc.Kind != KindFiles {
+		return fmt.Errorf("saves: refusing to replace %q: it is the game directory", loc.Path)
+	}
+	return nil
+}
+
+// clearDirContents removes every entry inside dir, keeping dir itself and
+// creating it first when missing so a following copy has a target.
+func clearDirContents(dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return 0, fmt.Errorf("create live save dir: %w", err)
+			}
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read live save dir: %w", err)
+	}
+
+	removed := 0
+	for _, ent := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, ent.Name())); err != nil {
+			return removed, fmt.Errorf("remove %s: %w", ent.Name(), err)
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+// removeGlobFiles removes the files in dir whose names match globs, returning
+// the number removed. Directories are never removed: for KindFiles only the
+// glob-matched files are save data, and a matching directory name is a
+// coincidence, not a set of files to delete.
+func removeGlobFiles(dir string, globs []string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read live save dir: %w", err)
+	}
+
+	removed := 0
+	for _, ent := range entries {
+		if ent.IsDir() || !saveGlobMatch(ent.Name(), globs) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, ent.Name())); err != nil {
+			return removed, fmt.Errorf("remove %s: %w", ent.Name(), err)
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 // Restore applies the newest snapshot set ("mine-*" by default), returning the

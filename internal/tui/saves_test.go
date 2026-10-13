@@ -430,6 +430,48 @@ func TestSavesKey_MutationsBlockedWhileLoading(t *testing.T) {
 	}
 }
 
+// TestApplyResultNotice_VersionMismatch pins the compact version warning in the
+// apply/restore notice: matching versions (including light-normalized forms) and
+// unknown versions on either side stay silent, differing ones warn.
+func TestApplyResultNotice_VersionMismatch(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		setVersion  string
+		gameVersion string
+		wantWarn    bool
+	}{
+		{"matching", "1.0", "1.0", false},
+		{"matching after normalization", "v1.0.0", "1.0", false},
+		{"differing", "0.9", "1.0", true},
+		{"set version unknown", "", "1.0", false},
+		{"game version unknown", "1.0", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := &saves.ApplyResult{
+				Set:    db.SaveSet{Name: "100-percent", GameVersion: tt.setVersion},
+				Target: saves.Location{Path: "/live/saves"},
+			}
+			notice := applyResultNotice("Applied", res, &db.Game{Version: tt.gameVersion})
+			if got := strings.Contains(notice, "saves may not load"); got != tt.wantWarn {
+				t.Errorf("applyResultNotice(%q, %q) = %q, wantWarn=%v",
+					tt.setVersion, tt.gameVersion, notice, tt.wantWarn)
+			}
+			if !strings.Contains(notice, "100-percent") {
+				t.Errorf("notice = %q, want the set name", notice)
+			}
+		})
+	}
+}
+
+func TestApplyResultNotice_NilResult(t *testing.T) {
+	t.Parallel()
+	if got := applyResultNotice("Applied", nil, nil); got != "Applied save set" {
+		t.Errorf("applyResultNotice(nil) = %q, want the placeholder notice", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Remove confirmation
 // ---------------------------------------------------------------------------

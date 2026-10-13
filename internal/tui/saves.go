@@ -11,6 +11,7 @@ import (
 
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/saves"
+	"github.com/mili/moxie/internal/version"
 )
 
 // errSavesUnavailable is reported when the saves engine could not be built
@@ -89,7 +90,7 @@ func (m model) applySaveSetCmd(name string) tea.Cmd {
 		if err != nil {
 			return savesOpMsg{gameID: gameID, err: err}
 		}
-		return savesOpMsg{gameID: gameID, notice: applyResultNotice("Applied", res), state: mustSavesState(engine, game)}
+		return savesOpMsg{gameID: gameID, notice: applyResultNotice("Applied", res, game), state: mustSavesState(engine, game)}
 	}
 }
 
@@ -123,7 +124,7 @@ func (m model) restoreSavesCmd() tea.Cmd {
 		if err != nil {
 			return savesOpMsg{gameID: gameID, err: err}
 		}
-		return savesOpMsg{gameID: gameID, notice: applyResultNotice("Restored", res), state: mustSavesState(engine, game)}
+		return savesOpMsg{gameID: gameID, notice: applyResultNotice("Restored", res, game), state: mustSavesState(engine, game)}
 	}
 }
 
@@ -179,8 +180,9 @@ func mustSavesState(engine *saves.Engine, game *db.Game) savesState {
 }
 
 // applyResultNotice formats the confirmation shown after an apply or restore,
-// including the auto-snapshot note when one was created.
-func applyResultNotice(verb string, res *saves.ApplyResult) string {
+// including the auto-snapshot note when one was created and a compact version
+// warning when the set was captured for a different game version.
+func applyResultNotice(verb string, res *saves.ApplyResult, game *db.Game) string {
 	if res == nil {
 		return verb + " save set"
 	}
@@ -189,7 +191,21 @@ func applyResultNotice(verb string, res *saves.ApplyResult) string {
 	if res.AutoSnapshot != "" {
 		notice += fmt.Sprintf(" — auto-snapshotted your saves as %s", res.AutoSnapshot)
 	}
+	if savesVersionMismatch(res.Set.GameVersion, game) {
+		notice += fmt.Sprintf(" — captured for %s, game is %s; saves may not load",
+			res.Set.GameVersion, game.Version)
+	}
 	return notice
+}
+
+// savesVersionMismatch reports whether the version a set was captured for
+// differs from the game's current version, comparing light-normalized forms.
+// An empty version on either side means "unknown" and never counts as a mismatch.
+func savesVersionMismatch(setVersion string, game *db.Game) bool {
+	if game == nil || setVersion == "" || game.Version == "" {
+		return false
+	}
+	return version.Normalize(setVersion) != version.Normalize(game.Version)
 }
 
 // ─── Key handling ──────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 package saves
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -576,4 +577,332 @@ func TestResolveLocationManualOverride(t *testing.T) {
 	if back.Path != autoDir {
 		t.Errorf("after clear Path = %q, want %q", back.Path, autoDir)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Replace applies
+// ---------------------------------------------------------------------------
+
+// TestApplyReplaceKindDir pins the KindDir replace flow: the live directory is
+// cleared before the set is copied, so it mirrors the set exactly, and the live
+// drift that the deletion would destroy is captured by a pre-replace snapshot
+// (the active set suppresses the normal auto-snapshot).
+func TestApplyReplaceKindDir(t *testing.T) {
+	t.Parallel()
+	engine, game := saveStoreEngine(t, "Replace Dir")
+
+	live := t.TempDir()
+	if err := engine.SetManualPath(game, live); err != nil {
+		t.Fatalf("SetManualPath: %v", err)
+	}
+
+	src := t.TempDir()
+	saveTestWrite(t, filepath.Join(src, "persistent"), "set-p")
+	saveTestWrite(t, filepath.Join(src, "slot1.save"), "set-s")
+	set, err := engine.Import(game, src, ImportOptions{Name: "replace-dir"})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if err := engine.DB().SetActiveSaveSet(game.ID, set.ID); err != nil {
+		t.Fatalf("SetActiveSaveSet: %v", err)
+	}
+
+	saveTestWrite(t, filepath.Join(live, "persistent"), "live-p")
+	saveTestWrite(t, filepath.Join(live, "slot1.save"), "live-s")
+	saveTestWrite(t, filepath.Join(live, "extra.txt"), "keep-until-replace")
+
+	res, err := engine.ApplyWith(game, set.Name, ApplyOptions{Replace: true})
+	if err != nil {
+		t.Fatalf("ApplyWith(replace): %v", err)
+	}
+	if !res.Replaced {
+		t.Error("Replaced = false, want true")
+	}
+	if res.FilesRemoved != 3 {
+		t.Errorf("FilesRemoved = %d, want 3 (every live entry was cleared)", res.FilesRemoved)
+	}
+	if res.FilesCopied != 2 {
+		t.Errorf("FilesCopied = %d, want 2", res.FilesCopied)
+	}
+	if res.AutoSnapshot == "" {
+		t.Fatal("replace with live drift and an active set must snapshot first")
+	}
+
+	// The live location mirrors the set exactly: drift is gone, set files win.
+	saveStoreAssertFile(t, filepath.Join(live, "persistent"), "set-p")
+	saveStoreAssertFile(t, filepath.Join(live, "slot1.save"), "set-s")
+	saveStoreAssertAbsent(t, filepath.Join(live, "extra.txt"))
+
+	// The pre-replace snapshot kept the drift recoverable.
+	snap, err := engine.DB().GetSaveSet(game.ID, res.AutoSnapshot)
+	if err != nil {
+		t.Fatalf("GetSaveSet: %v", err)
+	}
+	if snap == nil {
+		t.Fatalf("pre-replace snapshot %q row missing", res.AutoSnapshot)
+	}
+	if snap.Source != "snapshot" || snap.Label != "pre-replace" {
+		t.Errorf("pre-replace snapshot = %+v, want Source snapshot label pre-replace", snap)
+	}
+	snapDir := engine.SetPath(game, res.AutoSnapshot)
+	saveStoreAssertFile(t, filepath.Join(snapDir, "persistent"), "live-p")
+	saveStoreAssertFile(t, filepath.Join(snapDir, "slot1.save"), "live-s")
+	saveStoreAssertFile(t, filepath.Join(snapDir, "extra.txt"), "keep-until-replace")
+}
+
+// TestApplyReplaceCreatesMissingLiveDir pins that a replace re-creates a live
+// directory that does not exist yet, so the set still lands there.
+func TestApplyReplaceCreatesMissingLiveDir(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	engine, game := saveStoreEngineAt(t, base, "Replace Missing")
+
+	live := filepath.Join(base, "live") // deliberately never created
+	if err := engine.SetManualPath(game, live); err != nil {
+		t.Fatalf("SetManualPath: %v", err)
+	}
+
+	src := t.TempDir()
+	saveTestWrite(t, filepath.Join(src, "persistent"), "set-p")
+	set, err := engine.Import(game, src, ImportOptions{Name: "replace-missing"})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	res, err := engine.ApplyWith(game, set.Name, ApplyOptions{Replace: true})
+	if err != nil {
+		t.Fatalf("ApplyWith(replace): %v", err)
+	}
+	if res.FilesRemoved != 0 {
+		t.Errorf("FilesRemoved = %d, want 0 (nothing to delete)", res.FilesRemoved)
+	}
+	if res.FilesCopied != 1 {
+		t.Errorf("FilesCopied = %d, want 1", res.FilesCopied)
+	}
+	if res.AutoSnapshot != "" {
+		t.Errorf("AutoSnapshot = %q, want none (the live dir was empty)", res.AutoSnapshot)
+	}
+	saveStoreAssertFile(t, filepath.Join(live, "persistent"), "set-p")
+}
+
+// TestApplyReplaceKindFiles pins the KindFiles replace flow (RPG Maker VX Ace
+// saves live in the game directory): only glob-matched files are deleted, and the
+// game's own non-save files survive untouched. No active set exists here, so the
+// ordinary auto-snapshot already protects the files the replace deletes.
+func TestApplyReplaceKindFiles(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	engine, game := saveStoreEngineAt(t, base, "VX Replace")
+
+	game.Engine = "RPGMakerVXAce"
+	gameDir := filepath.Join(base, "vxgame")
+	game.Path = gameDir
+	saveTestWrite(t, filepath.Join(gameDir, "Save01.rvdata2"), "live-1")
+	saveTestWrite(t, filepath.Join(gameDir, "Save02.rvdata2"), "live-2")
+	saveTestWrite(t, filepath.Join(gameDir, "readme.txt"), "game-readme")
+
+	src := t.TempDir()
+	saveTestWrite(t, filepath.Join(src, "Save01.rvdata2"), "set-1")
+	saveTestWrite(t, filepath.Join(src, "readme.txt"), "set-readme")
+	set, err := engine.Import(game, src, ImportOptions{Name: "vx-replace"})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	res, err := engine.ApplyWith(game, set.Name, ApplyOptions{Replace: true})
+	if err != nil {
+		t.Fatalf("ApplyWith(replace): %v", err)
+	}
+	if !res.Replaced {
+		t.Error("Replaced = false, want true")
+	}
+	if res.FilesRemoved != 2 {
+		t.Errorf("FilesRemoved = %d, want 2 (both live Save*.rvdata2 files)", res.FilesRemoved)
+	}
+	if res.FilesCopied != 1 {
+		t.Errorf("FilesCopied = %d, want 1 (glob-matched set file only)", res.FilesCopied)
+	}
+	if !strings.HasPrefix(res.AutoSnapshot, "mine-") {
+		t.Errorf("AutoSnapshot = %q, want a mine- snapshot of the live saves", res.AutoSnapshot)
+	}
+
+	// The set's Save01.rvdata2 replaced the live one; Save02 was deleted; the
+	// game's readme survived and the set's readme was never copied over it.
+	saveStoreAssertFile(t, filepath.Join(gameDir, "Save01.rvdata2"), "set-1")
+	saveStoreAssertAbsent(t, filepath.Join(gameDir, "Save02.rvdata2"))
+	saveStoreAssertFile(t, filepath.Join(gameDir, "readme.txt"), "game-readme")
+
+	// The auto-snapshot holds the pre-replace live saves.
+	snapDir := engine.SetPath(game, res.AutoSnapshot)
+	saveStoreAssertFile(t, filepath.Join(snapDir, "Save01.rvdata2"), "live-1")
+	saveStoreAssertFile(t, filepath.Join(snapDir, "Save02.rvdata2"), "live-2")
+}
+
+// TestApplyReplaceSnapshotGuardFailureAborts proves a replace never deletes
+// before its snapshot guard succeeds: a live location that cannot be captured
+// (here it holds a symlink, which save data must never carry) aborts the apply
+// with the live data untouched.
+func TestApplyReplaceSnapshotGuardFailureAborts(t *testing.T) {
+	t.Parallel()
+	engine, game := saveStoreEngine(t, "Guard Fail")
+
+	live := t.TempDir()
+	if err := engine.SetManualPath(game, live); err != nil {
+		t.Fatalf("SetManualPath: %v", err)
+	}
+	saveTestWrite(t, filepath.Join(live, "persistent"), "live")
+
+	src := t.TempDir()
+	saveTestWrite(t, filepath.Join(src, "persistent"), "set-p")
+	set, err := engine.Import(game, src, ImportOptions{Name: "guard-fail"})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	// An active set suppresses the auto-snapshot, so the replace's own guard
+	// is what must capture the live state.
+	if err := engine.DB().SetActiveSaveSet(game.ID, set.ID); err != nil {
+		t.Fatalf("SetActiveSaveSet: %v", err)
+	}
+	if err := os.Symlink("persistent", filepath.Join(live, "link.save")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if _, err := engine.ApplyWith(game, set.Name, ApplyOptions{Replace: true}); err == nil {
+		t.Fatal("replace whose snapshot fails should abort")
+	}
+
+	// Nothing was deleted: the live data (and the hostile link) survived.
+	saveStoreAssertFile(t, filepath.Join(live, "persistent"), "live")
+	if _, statErr := os.Lstat(filepath.Join(live, "link.save")); statErr != nil {
+		t.Errorf("live link should survive an aborted replace (lstat err = %v)", statErr)
+	}
+}
+
+// TestCheckReplaceTarget pins the replace safety refusals directly: an empty
+// path, a filesystem root, and (for KindDir) the game directory or an ancestor
+// of it are refused; the game directory itself is the normal KindFiles layout.
+func TestCheckReplaceTarget(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	game := &db.Game{Title: "Guarded", Engine: "RenPy", Path: filepath.Join(base, "game")}
+
+	tests := []struct {
+		name    string
+		loc     Location
+		wantErr bool
+	}{
+		{"empty path", Location{Kind: KindDir, Path: ""}, true},
+		{"filesystem root", Location{Kind: KindDir, Path: "/"}, true},
+		{"game dir as KindDir", Location{Kind: KindDir, Path: game.Path}, true},
+		{"ancestor as KindDir", Location{Kind: KindDir, Path: base}, true},
+		{"game dir as KindFiles", Location{Kind: KindFiles, Path: game.Path, Globs: []string{"save*.rvdata2"}}, false},
+		{"ancestor as KindFiles", Location{Kind: KindFiles, Path: base, Globs: []string{"save*.rvdata2"}}, true},
+		{"unrelated KindDir", Location{Kind: KindDir, Path: filepath.Join(base, "saves")}, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := checkReplaceTarget(game, tc.loc)
+			if tc.wantErr && err == nil {
+				t.Error("checkReplaceTarget should refuse")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("checkReplaceTarget = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// TestApplyReplaceRefusesUnsafeTarget proves ApplyWith refuses a destructive
+// replace before deleting anything when the resolved location holds the game.
+func TestApplyReplaceRefusesUnsafeTarget(t *testing.T) {
+	t.Parallel()
+
+	t.Run("game directory", func(t *testing.T) {
+		t.Parallel()
+		base := t.TempDir()
+		engine, game := saveStoreEngineAt(t, base, "Unsafe Dir")
+		saveTestWrite(t, filepath.Join(game.Path, "keep.txt"), "keep-me")
+
+		if err := engine.SetManualPath(game, game.Path); err != nil {
+			t.Fatalf("SetManualPath: %v", err)
+		}
+		src := t.TempDir()
+		saveTestWrite(t, filepath.Join(src, "persistent"), "set-p")
+		set, err := engine.Import(game, src, ImportOptions{Name: "unsafe"})
+		if err != nil {
+			t.Fatalf("Import: %v", err)
+		}
+
+		if _, err := engine.ApplyWith(game, set.Name, ApplyOptions{Replace: true}); err == nil {
+			t.Fatal("replace of the game directory should be refused")
+		}
+		saveStoreAssertFile(t, filepath.Join(game.Path, "keep.txt"), "keep-me")
+	})
+
+	t.Run("filesystem root", func(t *testing.T) {
+		t.Parallel()
+		engine, game := saveStoreEngine(t, "Unsafe Root")
+
+		if err := engine.SetManualPath(game, "/"); err != nil {
+			t.Fatalf("SetManualPath: %v", err)
+		}
+		src := t.TempDir()
+		saveTestWrite(t, filepath.Join(src, "persistent"), "set-p")
+		set, err := engine.Import(game, src, ImportOptions{Name: "unsafe-root"})
+		if err != nil {
+			t.Fatalf("Import: %v", err)
+		}
+
+		_, err = engine.ApplyWith(game, set.Name, ApplyOptions{Replace: true})
+		if err == nil {
+			t.Fatal("replace of a filesystem root should be refused")
+		}
+		if !strings.Contains(err.Error(), "filesystem root") {
+			t.Errorf("error = %q, want it to mention the filesystem root", err)
+		}
+	})
+}
+
+// TestApplyWithoutReplacePreservesExtras pins that a plain Apply stays
+// copy-overwrite: live files the set does not carry survive, no deletion runs
+// and no replace snapshot is taken.
+func TestApplyWithoutReplacePreservesExtras(t *testing.T) {
+	t.Parallel()
+	engine, game := saveStoreEngine(t, "Preserve Extras")
+
+	live := t.TempDir()
+	if err := engine.SetManualPath(game, live); err != nil {
+		t.Fatalf("SetManualPath: %v", err)
+	}
+	saveTestWrite(t, filepath.Join(live, "persistent"), "live-p")
+	saveTestWrite(t, filepath.Join(live, "extra.txt"), "keep-me")
+
+	src := t.TempDir()
+	saveTestWrite(t, filepath.Join(src, "persistent"), "set-p")
+	set, err := engine.Import(game, src, ImportOptions{Name: "preserve"})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	res, err := engine.Apply(game, set.Name)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if res.Replaced {
+		t.Error("Replaced = true, want false for a plain apply")
+	}
+	if res.FilesRemoved != 0 {
+		t.Errorf("FilesRemoved = %d, want 0", res.FilesRemoved)
+	}
+	if res.FilesCopied != 1 {
+		t.Errorf("FilesCopied = %d, want 1", res.FilesCopied)
+	}
+	if res.AutoSnapshot == "" {
+		t.Error("expected the ordinary auto-snapshot of the untracked live data")
+	}
+
+	saveStoreAssertFile(t, filepath.Join(live, "persistent"), "set-p")
+	saveStoreAssertFile(t, filepath.Join(live, "extra.txt"), "keep-me")
 }
