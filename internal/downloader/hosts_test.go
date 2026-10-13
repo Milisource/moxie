@@ -1453,8 +1453,6 @@ func rewriteToServer(hostname, serverURL string) roundTripFunc {
 	}
 }
 
-
-
 func TestResolveDatanodes_AttachesBrowserCookiesToGETAndPOST(t *testing.T) {
 	// NOT parallel — replaces http.DefaultTransport which is global state.
 
@@ -1577,7 +1575,7 @@ func TestResolve_NoCookieSourceSkipsAttachment(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUnwrapMasked_OK(t *testing.T) {
-	t.Parallel()
+	// NOT parallel — replaces http.DefaultTransport which is global state.
 	const realURL = "https://pixeldrain.com/u/BYzajuVk"
 	var gotBody, gotXHR, gotCookie string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1590,9 +1588,15 @@ func TestUnwrapMasked_OK(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// The unwrap target must be a genuine F95Zone host for the session cookie
+	// to be attached, so route f95zone.to to the test server.
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = rewriteToServer("f95zone.to", srv.URL)
+	defer func() { http.DefaultTransport = origTransport }()
+
 	r := NewHostResolver()
 	r.SetF95Cookie("xf_session=abc123")
-	got, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	got, err := r.unwrapMasked("https://f95zone.to/masked/pixeldrain.com/x")
 	if err != nil {
 		t.Fatalf("unwrapMasked failed: %v", err)
 	}
@@ -1661,16 +1665,20 @@ func TestUnwrapMasked_CaptchaStatus(t *testing.T) {
 // "could not extract file ID" error would also lose the challenge marker
 // the browser fallback depends on.
 func TestResolveMasked_CaptchaPropagates(t *testing.T) {
-	t.Parallel()
+	// NOT parallel — replaces http.DefaultTransport which is global state.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"status":"captcha","msg":"challenge"}`)
 	}))
 	defer srv.Close()
 
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = rewriteToServer("f95zone.to", srv.URL)
+	defer func() { http.DefaultTransport = origTransport }()
+
 	r := NewHostResolver()
 	r.unwrapBackoff = nil // single attempt — the retry path is covered separately
-	_, err := r.Resolve(srv.URL+"/masked/pixeldrain.com/6004/6265512/abc/def/ghi", "pixeldrain")
+	_, err := r.Resolve("https://f95zone.to/masked/pixeldrain.com/6004/6265512/abc/def/ghi", "pixeldrain")
 	if err == nil {
 		t.Fatal("expected error for captcha-walled masked unwrap")
 	}
@@ -1871,7 +1879,7 @@ func TestUnwrapMasked_NonJSONFallsBackToRedirect(t *testing.T) {
 }
 
 func TestResolve_MaskedURLUnwrapsThenResolves(t *testing.T) {
-	t.Parallel()
+	// NOT parallel — replaces http.DefaultTransport which is global state.
 	const realURL = "https://pixeldrain.com/u/BYzajuVk"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1879,11 +1887,16 @@ func TestResolve_MaskedURLUnwrapsThenResolves(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = rewriteToServer("f95zone.to", srv.URL)
+	defer func() { http.DefaultTransport = origTransport }()
+
 	r := NewHostResolver()
 	r.SetF95Cookie("xf_session=abc123")
-	// The masked URL is on our test server; after unwrap the pixeldrain
-	// resolver runs on the real URL (no HTTP request — pure URL rewrite).
-	result, err := r.Resolve(srv.URL+"/masked/pixeldrain.com/123/x", "pixeldrain")
+	// The masked URL is a genuine f95zone.to endpoint (routed to our test
+	// server); after unwrap the pixeldrain resolver runs on the real URL
+	// (no HTTP request — pure URL rewrite).
+	result, err := r.Resolve("https://f95zone.to/masked/pixeldrain.com/123/x", "pixeldrain")
 	if err != nil {
 		t.Fatalf("Resolve masked pixeldrain failed: %v", err)
 	}

@@ -382,9 +382,14 @@ func retryable(err error) bool {
 	return true
 }
 
-// doOnce performs a single paced, rate-limited request attempt.
-// It reads the response body once and returns it directly.
-func (c *Client) doOnce(req *http.Request, baseDelay time.Duration) (bodyStr string, err error) {
+// paceRequest enforces the client's request pacing before an outgoing request:
+// the periodic human-like cooldown, then the minimum inter-request delay
+// (baseDelay, or the client's current adaptive delay when larger) plus random
+// jitter. On success it stamps lastRequest and increments the request counter.
+//
+// It returns ctx.Err() when the context is cancelled during a wait. doOnce and
+// DownloadToWriter share it so their pacing stays identical.
+func (c *Client) paceRequest(ctx context.Context, baseDelay time.Duration, urlStr string) error {
 	c.mu.Lock()
 
 	// Periodic cooldown — pause longer every N requests to look human.
@@ -392,13 +397,13 @@ func (c *Client) doOnce(req *http.Request, baseDelay time.Duration) (bodyStr str
 		log.Debug("cooldown pause",
 			"duration", cooldownDuration,
 			"req_count", c.reqCount,
-			"url", req.URL.Redacted(),
+			"url", urlStr,
 		)
 		c.mu.Unlock()
 		select {
 		case <-time.After(cooldownDuration):
-		case <-req.Context().Done():
-			return "", req.Context().Err()
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 		c.mu.Lock()
 	}
@@ -413,20 +418,45 @@ func (c *Client) doOnce(req *http.Request, baseDelay time.Duration) (bodyStr str
 		wait := waitFor - elapsed + time.Duration(rand.Int63n(int64(maxJitter)))
 		log.Debug("pacing wait",
 			"duration", wait,
-			"url", req.URL.Redacted(),
+			"url", urlStr,
 		)
 		c.mu.Unlock()
 		select {
 		case <-time.After(wait):
-		case <-req.Context().Done():
-			return "", req.Context().Err()
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 		c.mu.Lock()
 	}
-	start := time.Now()
-	c.lastRequest = start
+	c.lastRequest = time.Now()
 	c.reqCount++
 	c.mu.Unlock()
+
+	return nil
+}
+
+// resetAfterSuccess clears the consecutive-block counter and gradually reduces
+// the adaptive delay after a successful request. Decay only happens above the
+// floor: a zero delay (unsafe/paced clients) must stay zero, not snap up to
+// minDelay after the first success.
+func (c *Client) resetAfterSuccess() {
+	c.mu.Lock()
+	c.consecutiveBlocks = 0
+	if c.delay > minDelay {
+		c.delay = time.Duration(float64(c.delay) * 0.95)
+		if c.delay < minDelay {
+			c.delay = minDelay
+		}
+	}
+	c.mu.Unlock()
+}
+
+// doOnce performs a single paced, rate-limited request attempt.
+// It reads the response body once and returns it directly.
+func (c *Client) doOnce(req *http.Request, baseDelay time.Duration) (bodyStr string, err error) {
+	if err := c.paceRequest(req.Context(), baseDelay, req.URL.Redacted()); err != nil {
+		return "", err
+	}
 
 	applyBrowserHeaders(req)
 
@@ -455,17 +485,7 @@ func (c *Client) doOnce(req *http.Request, baseDelay time.Duration) (bodyStr str
 	}
 
 	// Request succeeded — reset the block counter and gradually reduce delay.
-	// Decay only when above the floor: a zero delay (unsafe/paced clients)
-	// must stay zero, not snap up to minDelay after the first success.
-	c.mu.Lock()
-	c.consecutiveBlocks = 0
-	if c.delay > minDelay {
-		c.delay = time.Duration(float64(c.delay) * 0.95)
-		if c.delay < minDelay {
-			c.delay = minDelay
-		}
-	}
-	c.mu.Unlock()
+	c.resetAfterSuccess()
 
 	return bodyStr, nil
 }
@@ -572,6 +592,145 @@ func (c *Client) checkBlocked(resp *http.Response) (bodyStr string, err error) {
 	}
 
 	return bodyStr, nil
+}
+
+// DownloadToWriter streams the response body for rawURL into w and returns the
+// number of bytes copied.
+//
+// Unlike do(), it never buffers the body: it is meant for F95Zone attachment
+// downloads (which 302 to attachments.f95zone.to with signed query parameters)
+// and other large archives. The transfer reuses the client's cookie session
+// (host-scoped at the transport level), so rawURL is typically an
+// f95zone.to/attachments/... URL.
+//
+// Pacing is identical to do() — minimum delay, jitter, periodic cooldown, and
+// 429 backoff — and block detection is status-code-only: 429/403/503 become a
+// *BlockedError, any other non-200 a plain error. An archive is not HTML, so
+// the body is never buffered or scanned for Cloudflare markers.
+//
+// There is no fixed client timeout; callers must apply a deadline via ctx
+// (e.g. 15 minutes for save archives). Range/resume is not supported: a failed
+// transfer restarts from the beginning (future work).
+func (c *Client) DownloadToWriter(ctx context.Context, rawURL string, w io.Writer) (int64, error) {
+	if rawURL == "" {
+		return 0, fmt.Errorf("scraper: download URL is empty")
+	}
+	if c.isBlocked() {
+		return 0, c.blockedErr()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("scraper: failed to create download request: %w", err)
+	}
+	urlStr := req.URL.Redacted()
+
+	if err := c.paceRequest(ctx, minDelay, urlStr); err != nil {
+		return 0, err
+	}
+
+	applyBrowserHeaders(req)
+
+	// Use a dedicated client: c.http has a 10s total timeout, far too short
+	// for a save archive. Cancellation comes from ctx instead.
+	resp, err := c.downloadClient().Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("scraper: download request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Status-code-only block detection: never read the body for markers.
+	if blockedErr := blockErrorForStatus(resp); blockedErr != nil {
+		return 0, c.noteBlocked(blockedErr, urlStr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, &HTTPStatusError{StatusCode: resp.StatusCode}
+	}
+
+	n, err := io.Copy(w, resp.Body)
+	if err != nil {
+		// Surface the partial byte count so callers can report/resume later.
+		return n, fmt.Errorf("scraper: download stream failed after %d bytes: %w", n, err)
+	}
+
+	c.resetAfterSuccess()
+	return n, nil
+}
+
+// downloadClient returns an http.Client that mirrors c.http's transport,
+// redirect policy, and cookie jar but has no overall timeout, so large
+// transfers are not aborted mid-stream. Callers cancel via the request context.
+func (c *Client) downloadClient() *http.Client {
+	return &http.Client{
+		Transport:     c.http.Transport,
+		CheckRedirect: c.http.CheckRedirect,
+		Jar:           c.http.Jar,
+	}
+}
+
+// blockErrorForStatus maps an HTTP status code to a *BlockedError using the
+// same status semantics as checkBlocked, but without reading or scanning the
+// response body — safe for streaming non-HTML downloads. Retry-After is
+// honoured for 429/503 exactly as checkBlocked honours it.
+func blockErrorForStatus(resp *http.Response) *BlockedError {
+	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+	switch resp.StatusCode {
+	case http.StatusTooManyRequests:
+		return &BlockedError{Reason: "rate limited", StatusCode: http.StatusTooManyRequests, RetryAfter: retryAfter}
+	case http.StatusForbidden:
+		return &BlockedError{
+			Reason:     "access denied (HTTP 403) — possible IP block or missing cookies",
+			StatusCode: http.StatusForbidden,
+		}
+	case http.StatusServiceUnavailable:
+		return &BlockedError{
+			Reason:     "service unavailable (HTTP 503) — possible Cloudflare challenge",
+			StatusCode: http.StatusServiceUnavailable,
+			RetryAfter: retryAfter,
+		}
+	}
+	return nil
+}
+
+// noteBlocked logs a blocked download and applies the same per-request
+// bookkeeping do() performs for blocked responses: the consecutive-block
+// circuit breaker, and the 429 adaptive-delay backoff (preferring the server's
+// Retry-After when it gave one, else doubling). It returns blockedErr so
+// callers can chain it.
+func (c *Client) noteBlocked(blockedErr *BlockedError, urlStr string) error {
+	log.Warn("request blocked",
+		"status", blockedErr.StatusCode,
+		"reason", blockedErr.Reason,
+		"url", urlStr,
+	)
+
+	retryAfter := blockedErr.RetryAfter
+	if retryAfter > maxBackoff {
+		retryAfter = maxBackoff
+	}
+
+	c.mu.Lock()
+	c.consecutiveBlocks++
+	if c.consecutiveBlocks >= maxConsecutiveBlocks {
+		c.blocked = true
+		log.Warn("circuit breaker tripped; refusing further requests until cookies are refreshed",
+			"status", blockedErr.StatusCode,
+			"url", urlStr,
+		)
+	}
+	if blockedErr.StatusCode == http.StatusTooManyRequests {
+		if retryAfter > 0 {
+			c.delay = retryAfter
+		} else {
+			c.delay = time.Duration(float64(c.delay) * backoffMultiplier)
+		}
+		if c.delay > maxBackoff {
+			c.delay = maxBackoff
+		}
+	}
+	c.mu.Unlock()
+
+	return blockedErr
 }
 
 // Preflight verifies the F95Zone session is still valid before a long sync

@@ -57,11 +57,15 @@ func maskedUnwrapServer(t *testing.T, realURL string, unwrapCalls *atomic.Int32)
 // endpoint at all — zero POSTs across repeated Resolve calls. The cached
 // destination still runs host-specific resolution (pixeldrain rewrite).
 func TestResolve_MaskedURLCacheHitSkipsUnwrap(t *testing.T) {
-	t.Parallel()
+	// NOT parallel — replaces http.DefaultTransport which is global state.
 	const realURL = "https://pixeldrain.com/u/BYzajuVk"
 	var unwrapCalls atomic.Int32
 	srv := maskedUnwrapServer(t, realURL, &unwrapCalls)
-	masked := srv.URL + "/masked/pixeldrain.com/123/x"
+	masked := "https://f95zone.to/masked/pixeldrain.com/123/x"
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = rewriteToServer("f95zone.to", srv.URL)
+	defer func() { http.DefaultTransport = origTransport }()
 
 	cache := newMemResolvedCache()
 	cache.seed(masked, realURL)
@@ -87,11 +91,15 @@ func TestResolve_MaskedURLCacheHitSkipsUnwrap(t *testing.T) {
 // result; the second resolve is served from the cache (still one unwrap
 // total).
 func TestResolve_MaskedURLCacheMissStores(t *testing.T) {
-	t.Parallel()
+	// NOT parallel — replaces http.DefaultTransport which is global state.
 	const realURL = "https://pixeldrain.com/u/BYzajuVk"
 	var unwrapCalls atomic.Int32
 	srv := maskedUnwrapServer(t, realURL, &unwrapCalls)
-	masked := srv.URL + "/masked/pixeldrain.com/123/x"
+	masked := "https://f95zone.to/masked/pixeldrain.com/123/x"
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = rewriteToServer("f95zone.to", srv.URL)
+	defer func() { http.DefaultTransport = origTransport }()
 
 	cache := newMemResolvedCache()
 	r := NewHostResolver()
@@ -117,11 +125,15 @@ func TestResolve_MaskedURLCacheMissStores(t *testing.T) {
 // With no cache wired (nil pair), every resolve hits the unwrap endpoint —
 // the zero-value resolver keeps the pre-cache behavior.
 func TestResolve_MaskedURLNoCacheHitsEndpointEachTime(t *testing.T) {
-	t.Parallel()
+	// NOT parallel — replaces http.DefaultTransport which is global state.
 	const realURL = "https://pixeldrain.com/u/BYzajuVk"
 	var unwrapCalls atomic.Int32
 	srv := maskedUnwrapServer(t, realURL, &unwrapCalls)
-	masked := srv.URL + "/masked/pixeldrain.com/123/x"
+	masked := "https://f95zone.to/masked/pixeldrain.com/123/x"
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = rewriteToServer("f95zone.to", srv.URL)
+	defer func() { http.DefaultTransport = origTransport }()
 
 	r := NewHostResolver()
 	for i := 0; i < 2; i++ {

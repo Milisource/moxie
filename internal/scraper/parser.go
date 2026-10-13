@@ -102,6 +102,7 @@ func parseThreadHTML(html string, threadURL string) (*ThreadData, error) {
 	td.Overview = extractOverviewText(bodyText)
 	td.DownloadLinks = extractDownloadLinks(contentSel)
 	td.StoreLinks = extractStoreLinks(contentSel)
+	td.SaveCandidates = extractSaveCandidates(contentSel)
 
 	// JSON-LD is a supplemental, DOM-structure-independent source — it
 	// never overrides F95Zone-specific fields (title/version/tags/status),
@@ -166,4 +167,3 @@ func extractThreadID(url string) int64 {
 func stripBracketed(s string) string {
 	return strings.TrimSpace(bracketedRe.ReplaceAllString(s, ""))
 }
-

@@ -10,16 +10,17 @@ type ScrapeInput struct {
 
 // ThreadData contains metadata extracted from a XenForo thread page.
 type ThreadData struct {
-	Title         string            `json:"title"`
-	Version       string            `json:"version,omitempty"`
-	Developer     string            `json:"developer,omitempty"`
-	Tags          []string          `json:"tags"`
-	Overview      string            `json:"overview,omitempty"`
-	CoverURL      string            `json:"cover_url,omitempty"`
-	ThreadID      int64             `json:"thread_id"`
-	DownloadLinks []DownloadLink    `json:"download_links,omitempty"`
-	StoreLinks    map[string]string `json:"store_links,omitempty"`
-	Status        string            `json:"status,omitempty"` // completed, abandoned, on_hold
+	Title          string            `json:"title"`
+	Version        string            `json:"version,omitempty"`
+	Developer      string            `json:"developer,omitempty"`
+	Tags           []string          `json:"tags"`
+	Overview       string            `json:"overview,omitempty"`
+	CoverURL       string            `json:"cover_url,omitempty"`
+	ThreadID       int64             `json:"thread_id"`
+	DownloadLinks  []DownloadLink    `json:"download_links,omitempty"`
+	StoreLinks     map[string]string `json:"store_links,omitempty"`
+	Status         string            `json:"status,omitempty"` // completed, abandoned, on_hold
+	SaveCandidates []SaveCandidate   `json:"save_candidates,omitempty"`
 
 	// PublishedAt/UpdatedAt come from the thread page's JSON-LD structured
 	// data (schema.org "datePublished"/"dateModified"), when present. They
@@ -38,4 +39,21 @@ type DownloadLink struct {
 	Host string `json:"host"`           // mega, keep2share, uploaded, mediafire, workupload, googledrive, dropbox, other
 	Name string `json:"name"`           // link text
 	Size int64  `json:"size,omitempty"` // advertised file size in bytes; 0 = not exposed by the thread
+}
+
+// SaveCandidateKind classifies a save-file candidate found in a thread.
+type SaveCandidateKind string
+
+const (
+	SaveCandidateAttachment SaveCandidateKind = "attachment" // hosted on f95zone.to/attachments
+	SaveCandidateExternal   SaveCandidateKind = "external"   // recognized file host
+)
+
+// SaveCandidate is a downloadable save file discovered in a thread's first post.
+type SaveCandidate struct {
+	URL      string            `json:"url"`
+	Kind     SaveCandidateKind `json:"kind"`
+	Host     string            `json:"host"`              // identifyHost label ("f95zone" for attachments)
+	Filename string            `json:"filename"`          // best-effort human filename
+	Context  string            `json:"context,omitempty"` // surrounding post text for UI display, whitespace-collapsed, capped ~300 chars
 }

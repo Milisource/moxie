@@ -17,6 +17,32 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// f95Hostnames are the F95Zone hosts that serve masked redirect endpoints.
+// Only requests to these hosts may carry the session cookie, and only a URL on
+// one of them may be treated as a masked unwrap target: a foreign URL must
+// never receive the cookie nor trigger unwrapping.
+var f95Hostnames = map[string]bool{
+	"f95zone.to":             true,
+	"attachments.f95zone.to": true,
+}
+
+// isF95Hostname reports whether host (a bare hostname) is an F95Zone host.
+func isF95Hostname(host string) bool {
+	return f95Hostnames[strings.ToLower(host)]
+}
+
+// isMaskedF95URL reports whether u is an F95Zone masked redirect URL
+// (f95zone.to/masked/...), whose trailing path segments are opaque tokens
+// rather than filenames. The host must be a genuine F95Zone host and the path
+// must start with "/masked/": a foreign URL that merely contains the substring
+// is not an F95Zone endpoint and must not be followed with the session cookie.
+func isMaskedF95URL(u *url.URL) bool {
+	if u == nil || !isF95Hostname(u.Hostname()) {
+		return false
+	}
+	return strings.HasPrefix(u.EscapedPath(), "/masked/")
+}
+
 // HostResolver resolves a file host URL to a direct downloadable URL.
 // Many hosts require cookies, headers, or API calls before serving the file.
 type HostResolver struct {
@@ -237,32 +263,35 @@ func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) 
 
 // resolveDepth implements Resolve with a recursion bound so a malicious
 // masked→masked redirect chain cannot recurse indefinitely.
-func (r *HostResolver) resolveDepth(url string, host string, depth int) (*ResolveResult, error) {
+func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*ResolveResult, error) {
 	if depth > 5 {
 		return nil, fmt.Errorf("masked URL chain too deep")
 	}
 	// Normalize legacy labels (e.g. "google drive" stored by older scrapes):
 	// all canonical labels are single lowercase words.
 	host = strings.ToLower(strings.ReplaceAll(host, " ", ""))
-	log.Debug("resolving host URL", "host", host, "url", url)
+	log.Debug("resolving host URL", "host", host, "url", rawURL)
 
 	// F95Zone masked URLs are redirect endpoints — unwrap them first by following
 	// a HEAD request to get the real download URL, then resolve from there.
-	if strings.Contains(strings.ToLower(url), "/masked/") {
-		log.Debug("masked URL detected", "url", url)
+	// Masked handling is host- and path-gated: a foreign URL that merely
+	// contains "/masked/" is never treated as an F95Zone endpoint (and never
+	// receives the session cookie).
+	if u, err := url.Parse(rawURL); err == nil && isMaskedF95URL(u) {
+		log.Debug("masked URL detected", "url", rawURL)
 
 		// Cache consult: skip the rate-limited unwrap endpoint when this
 		// masked URL was already unwrapped. The cached destination still
 		// goes through host-specific resolution below.
 		if r.resolvedCache != nil {
-			if cached, ok := r.resolvedCache(url); ok && cached != "" && cached != url {
+			if cached, ok := r.resolvedCache(rawURL); ok && cached != "" && cached != rawURL {
 				cachedHost := IdentifyHostInURL(cached)
-				log.Debug("masked URL cache hit", "masked", url, "resolved", cached, "host", cachedHost)
+				log.Debug("masked URL cache hit", "masked", rawURL, "resolved", cached, "host", cachedHost)
 				return r.resolveDepth(cached, cachedHost, depth+1)
 			}
 		}
 
-		realURL, err := r.unwrapMasked(url)
+		realURL, err := r.unwrapMasked(rawURL)
 		realHost := IdentifyHostInURL(realURL)
 		log.Debug("masked unwrap result", "real_url", realURL, "real_host", realHost, "error", err)
 		if err != nil {
@@ -272,45 +301,45 @@ func (r *HostResolver) resolveDepth(url string, host string, depth int) (*Resolv
 			// extract anything from a masked path (they only produce the
 			// misleading "could not extract file ID" error), and the
 			// challenge-marked error is what triggers the browser fallback.
-			log.Warn("failed to unwrap masked URL", "url", url, "error", err)
+			log.Warn("failed to unwrap masked URL", "url", rawURL, "error", err)
 			return nil, fmt.Errorf("unwrap masked URL: %w", err)
 		}
-		if realURL != url {
+		if realURL != rawURL {
 			// Cache store: a successful unwrap, so the next resolve of this
 			// masked URL skips the endpoint entirely.
 			if r.resolvedCachePut != nil {
-				r.resolvedCachePut(url, realURL, realHost)
+				r.resolvedCachePut(rawURL, realURL, realHost)
 			}
-			log.Debug("masked URL resolved", "original", url, "real", realURL)
+			log.Debug("masked URL resolved", "original", rawURL, "real", realURL)
 			return r.resolveDepth(realURL, realHost, depth+1)
 		}
 	}
 
 	switch host {
 	case "pixeldrain":
-		return r.resolvePixeldrain(url)
+		return r.resolvePixeldrain(rawURL)
 	case "buzzheavier":
-		return r.resolveBuzzheavier(url)
+		return r.resolveBuzzheavier(rawURL)
 	case "gofile":
-		return r.resolveGofile(url)
+		return r.resolveGofile(rawURL)
 	case "mediafire":
-		return r.resolveMediafire(url)
+		return r.resolveMediafire(rawURL)
 	case "datanodes":
-		return r.resolveDatanodes(url)
+		return r.resolveDatanodes(rawURL)
 	case "vikingfile":
-		return r.resolveVikingFile(url)
+		return r.resolveVikingFile(rawURL)
 	case "workupload":
-		return r.resolveWorkupload(url)
+		return r.resolveWorkupload(rawURL)
 	case "mixdrop":
-		return r.resolveMixdrop(url)
+		return r.resolveMixdrop(rawURL)
 	case "googledrive":
-		return r.resolveGoogleDrive(url)
+		return r.resolveGoogleDrive(rawURL)
 	case "mega":
-		return r.resolveMega(url)
+		return r.resolveMega(rawURL)
 	default:
 		// Direct download - just pass through
 		return &ResolveResult{
-			URL:     url,
+			URL:     rawURL,
 			Headers: map[string]string{},
 		}, nil
 	}
@@ -410,8 +439,9 @@ func (r *HostResolver) unwrapOnce(rawURL string) (status, msg string, err error)
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("Referer", rawURL)
 	// Explicit caller cookie wins; otherwise fall back to browser cookies
-	// for f95zone.to (the session may live only in the browser).
-	if r.f95Cookie != "" {
+	// for f95zone.to (the session may live only in the browser). The session
+	// cookie is host-scoped: a non-f95 target never receives it.
+	if r.f95Cookie != "" && isF95Hostname(req.URL.Hostname()) {
 		req.Header.Set("Cookie", r.f95Cookie)
 	} else {
 		r.attachBrowserCookies(req)
@@ -473,7 +503,9 @@ func (r *HostResolver) followRedirect(url string) (string, error) {
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 	req.Header.Set("Referer", "https://f95zone.to/")
-	if r.f95Cookie != "" {
+	// The session cookie is host-scoped: only a genuine F95Zone destination
+	// may receive it, never a foreign host reached via a caller-supplied URL.
+	if r.f95Cookie != "" && isF95Hostname(req.URL.Hostname()) {
 		req.Header.Set("Cookie", r.f95Cookie)
 	}
 
