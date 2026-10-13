@@ -11,7 +11,6 @@ import (
 
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/saves"
-	"github.com/mili/moxie/internal/version"
 )
 
 // errSavesUnavailable is reported when the saves engine could not be built
@@ -199,13 +198,14 @@ func applyResultNotice(verb string, res *saves.ApplyResult, game *db.Game) strin
 }
 
 // savesVersionMismatch reports whether the version a set was captured for
-// differs from the game's current version, comparing light-normalized forms.
-// An empty version on either side means "unknown" and never counts as a mismatch.
+// differs from the game's current version. An empty version on either side means
+// "unknown" and never counts as a mismatch. The comparison itself lives in the
+// saves package so the TUI, CLI, and desktop app cannot drift apart.
 func savesVersionMismatch(setVersion string, game *db.Game) bool {
-	if game == nil || setVersion == "" || game.Version == "" {
+	if game == nil {
 		return false
 	}
-	return version.Normalize(setVersion) != version.Normalize(game.Version)
+	return saves.VersionsDiffer(setVersion, game.Version)
 }
 
 // ─── Key handling ──────────────────────────────────────────────────────────

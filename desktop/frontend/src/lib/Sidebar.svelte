@@ -43,6 +43,7 @@
     {id: 'updates', label: 'Updates', badge: updateCount},
     {id: 'downloads', label: 'Downloads'},
     {id: 'collections', label: 'Collections', badge: collectionCount},
+    {id: 'saves', label: 'Saves'},
   ])
 
   const manageItems = [

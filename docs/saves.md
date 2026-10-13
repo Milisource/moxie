@@ -394,6 +394,26 @@ GAME   GAME TITLE    SET                     SOURCE    SIZE       STATUS
 42     My Game       100-save (100% save)    import    96.1 KB
 ```
 
+### Desktop app
+
+The Wails desktop app drives the same engine (`internal/saves`) against the same
+database, so a set snapshotted in one surface shows up in the others.
+
+- **Game detail → Saves** — per-game management: the resolved live location with its
+  provenance and a pinned-path control (Change / Clear), the set list (label, source,
+  active badge, recorded game version, size, file count, created date), and the
+  actions Apply / Replace / Snapshot / Restore my saves / Import / Scan / Delete.
+  *Replace*, *Restore*, and *Delete* ask for confirmation first.
+- **Sidebar → Saves** — cross-game overview: every game that has sets, with set counts,
+  whether a set is active, and the live save location. Click a row to open the game.
+- **Version mismatch** — a set recorded for a different game version is badged
+  `(mismatch)`, and applying or restoring it shows the same warning as the CLI.
+- **Import** opens a file picker (`.zip`, `.7z`, `.rar`, `.tar`, `.gz`, `.tgz`);
+  **Scan** lists candidate directories newest-first and pins one with a click.
+
+Desktop operations are synchronous and show a busy state while they run. `fetch`
+(downloading a save from an F95Zone thread) is not yet exposed in the desktop.
+
 ## Why
 
 **Non-destructive copy model** — applying a set overwrites same-name files but never

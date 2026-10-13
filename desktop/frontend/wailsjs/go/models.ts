@@ -296,6 +296,26 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class DesktopGameSavesSummary {
+	    gameId: number;
+	    title: string;
+	    sets: number;
+	    hasActive: boolean;
+	    livePath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopGameSavesSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.gameId = source["gameId"];
+	        this.title = source["title"];
+	        this.sets = source["sets"];
+	        this.hasActive = source["hasActive"];
+	        this.livePath = source["livePath"];
+	    }
+	}
 	export class DesktopGameSummary {
 	    id: number;
 	    title: string;
@@ -347,6 +367,160 @@ export namespace main {
 	    }
 	}
 	
+	export class DesktopSaveOpResult {
+	    notice: string;
+	    versionWarn: string;
+	    setName: string;
+	    targetPath: string;
+	    filesCopied: number;
+	    filesRemoved: number;
+	    autoSnapshot: string;
+	    replaced: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopSaveOpResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.notice = source["notice"];
+	        this.versionWarn = source["versionWarn"];
+	        this.setName = source["setName"];
+	        this.targetPath = source["targetPath"];
+	        this.filesCopied = source["filesCopied"];
+	        this.filesRemoved = source["filesRemoved"];
+	        this.autoSnapshot = source["autoSnapshot"];
+	        this.replaced = source["replaced"];
+	    }
+	}
+	export class DesktopSaveScanCandidate {
+	    path: string;
+	    files: number;
+	    newestFile: string;
+	    // Go type: time
+	    newestMod: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopSaveScanCandidate(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.files = source["files"];
+	        this.newestFile = source["newestFile"];
+	        this.newestMod = this.convertValues(source["newestMod"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DesktopSaveSet {
+	    name: string;
+	    label: string;
+	    source: string;
+	    active: boolean;
+	    gameVersion: string;
+	    files: number;
+	    bytes: number;
+	    // Go type: time
+	    createdAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopSaveSet(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.label = source["label"];
+	        this.source = source["source"];
+	        this.active = source["active"];
+	        this.gameVersion = source["gameVersion"];
+	        this.files = source["files"];
+	        this.bytes = source["bytes"];
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DesktopSavesState {
+	    gameId: number;
+	    gameTitle: string;
+	    gameVersion: string;
+	    livePath: string;
+	    liveNote: string;
+	    liveExists: boolean;
+	    liveFiles: number;
+	    manualPath: string;
+	    sets: DesktopSaveSet[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopSavesState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.gameId = source["gameId"];
+	        this.gameTitle = source["gameTitle"];
+	        this.gameVersion = source["gameVersion"];
+	        this.livePath = source["livePath"];
+	        this.liveNote = source["liveNote"];
+	        this.liveExists = source["liveExists"];
+	        this.liveFiles = source["liveFiles"];
+	        this.manualPath = source["manualPath"];
+	        this.sets = this.convertValues(source["sets"], DesktopSaveSet);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class DetectionResult {
 	    engine: string;
 	    version: string;

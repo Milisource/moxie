@@ -9,7 +9,10 @@
     GetInstallTargets, GetOrganizeInstalls, GetCoverBaseURL,
     OpenDownloadURL, OpenUpdateDownloadPage,
     FindCoverCandidates, SetGameCover, SetCoverLocked, RevertCover,
+    GetSavesState, ApplySaveSet, SnapshotSaveSet, RestoreSaveSet, RemoveSaveSet,
+    ImportSaveSet, SetSavesLivePath, ScanSaveDirs, PickSaveArchive, PickDirectory,
   } from '../../wailsjs/go/main/App'
+  import {formatBytes} from './format.js'
   import {engineColor, engineOptions} from './engineColors.js'
   import {safeExternalUrl} from './sanitizeUrl.js'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
@@ -554,6 +557,187 @@
     }
   }
 
+  // ── Saves ──────────────────────────────────────
+  // Per-game save-set management. Local state — GameDetail is remounted per
+  // visit, so nothing here needs to survive navigation. Every mutation
+  // re-fetches GetSavesState and surfaces the backend's notice / version
+  // warning inline. savesSeq guards a slow earlier fetch landing after a
+  // newer one; `id` captures in each op guard against a result landing after
+  // the user moved to another game.
+  let saves = $state(null)          // DesktopSavesState | null
+  let savesLoading = $state(false)
+  let savesOp = $state('')          // '' = idle, else the in-flight op key
+  let savesBusy = $derived(savesOp !== '')
+  let savesError = $state('')
+  let savesNotice = $state('')
+  let savesVersionWarn = $state('')
+  let savesSeq = 0
+
+  // Scan candidates: null = not scanned, [] = scanned with nothing found.
+  let scanResults = $state(null)
+  let scanBusy = $state(false)
+
+  const SAVE_SOURCE_LABELS = {
+    snapshot: 'snapshot',
+    import: 'import',
+    f95_attachment: 'F95 attachment',
+    f95_link: 'F95 link',
+  }
+  function saveSourceLabel(src) {
+    return SAVE_SOURCE_LABELS[src] || src || 'unknown'
+  }
+
+  // Light version normalization for the mismatch hint — mirrors the intent of
+  // internal/version.Normalize (case-insensitive, leading "v" dropped, trailing
+  // ".0" segments stripped). Either side empty/unknown means "no mismatch".
+  function normVersion(v) {
+    if (!v) return ''
+    let s = String(v).trim().toLowerCase()
+    if (s.startsWith('v')) s = s.slice(1)
+    while (s.endsWith('.0')) s = s.slice(0, -2)
+    return s
+  }
+  function setVersionMismatch(setVersion) {
+    const current = saves?.gameVersion || detail?.version || ''
+    if (!setVersion || !current) return false
+    return normVersion(setVersion) !== normVersion(current)
+  }
+
+  function fmtSavesDate(iso) {
+    if (!iso) return ''
+    const d = new Date(iso)
+    // A Go zero time.Time serializes as 0001-01-01, not "" — treat it (and any
+    // unparseable value) as "no date" rather than rendering "1/1/1".
+    if (isNaN(d.getTime()) || d.getFullYear() <= 1) return ''
+    return d.toLocaleDateString()
+  }
+
+  async function loadSaves() {
+    if (!gameId) return
+    const seq = ++savesSeq
+    savesLoading = true
+    try {
+      const res = await GetSavesState(gameId)
+      if (seq !== savesSeq) return
+      saves = res || null
+      savesError = ''
+    } catch (e) {
+      if (seq !== savesSeq) return
+      savesError = fmtErr(e)
+    }
+    if (seq === savesSeq) savesLoading = false
+  }
+
+  // Run a save mutation under a shared busy flag, then re-fetch state and
+  // surface the result's notice / version warning.
+  async function runSavesOp(op, fn) {
+    if (!gameId || savesOp) return
+    const id = gameId
+    savesOp = op
+    savesError = ''
+    savesNotice = ''
+    savesVersionWarn = ''
+    try {
+      const res = await fn()
+      if (id !== gameId) return
+      if (res) {
+        savesNotice = res.notice || ''
+        savesVersionWarn = res.versionWarn || ''
+      }
+      await loadSaves()
+    } catch (e) {
+      if (id !== gameId) return
+      savesError = fmtErr(e)
+    } finally {
+      if (id === gameId) savesOp = ''
+    }
+  }
+
+  async function changeSavesPath() {
+    if (!gameId || savesOp) return
+    const dir = await PickDirectory()
+    if (!dir) return
+    await runSavesOp('path', () => SetSavesLivePath(gameId, dir))
+  }
+
+  async function clearSavesPath() {
+    await runSavesOp('path', () => SetSavesLivePath(gameId, ''))
+  }
+
+  async function applySaveSet(name) {
+    await runSavesOp('apply', () => ApplySaveSet(gameId, name, false))
+  }
+
+  async function replaceSaveSet(set) {
+    if (savesOp) return
+    const ok = await confirmAction({
+      title: `Replace live saves with "${set.label || set.name}"?`,
+      description: 'Live save files the set does not contain are removed. A pre-replace snapshot is taken automatically.',
+      confirmLabel: 'Replace',
+      danger: true,
+    })
+    if (!ok) return
+    await runSavesOp('replace', () => ApplySaveSet(gameId, set.name, true))
+  }
+
+  async function deleteSaveSet(set) {
+    if (savesOp) return
+    const ok = await confirmAction({
+      title: `Delete the save set "${set.label || set.name}"?`,
+      description: 'The set is removed from moxie. Your live saves are not touched.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
+    await runSavesOp('delete', () => RemoveSaveSet(gameId, set.name))
+  }
+
+  async function snapshotSaves() {
+    await runSavesOp('snapshot', () => SnapshotSaveSet(gameId, ''))
+  }
+
+  async function restoreSaves() {
+    if (savesOp) return
+    const ok = await confirmAction({
+      title: 'Restore your saves?',
+      description: 'Applies your newest snapshot over the live save location. The current live saves are snapshotted first.',
+      confirmLabel: 'Restore',
+      danger: true,
+    })
+    if (!ok) return
+    await runSavesOp('restore', () => RestoreSaveSet(gameId))
+  }
+
+  async function importSaves() {
+    if (!gameId || savesOp) return
+    const path = await PickSaveArchive()
+    if (!path) return
+    await runSavesOp('import', () => ImportSaveSet(gameId, path, ''))
+  }
+
+  async function scanSaves() {
+    if (!gameId || scanBusy) return
+    const id = gameId
+    scanBusy = true
+    savesError = ''
+    try {
+      const res = await ScanSaveDirs(gameId)
+      if (id !== gameId) return
+      scanResults = res || []
+    } catch (e) {
+      if (id !== gameId) return
+      savesError = fmtErr(e)
+      scanResults = []
+    } finally {
+      if (id === gameId) scanBusy = false
+    }
+  }
+
+  async function useScanPath(cand) {
+    await runSavesOp('path', () => SetSavesLivePath(gameId, cand.path))
+    scanResults = null
+  }
+
   onMount(async () => {
     try {
       coverBase = await GetCoverBaseURL()
@@ -563,6 +747,7 @@
     loadDetail()
     loadCollections()
     loadInstallTargets()
+    loadSaves()
   })
 
   // The App shell owns the game-update:* / game-install:* subscriptions and the
@@ -1156,6 +1341,130 @@
             {/if}
           </div>
         {/if}
+
+        <!-- Saves -->
+        <div class="section-card saves-section">
+          <div class="section-card-header">
+            <h3>Saves</h3>
+            {#if saves}
+              {@const setCount = (saves.sets || []).length}
+              <span class="saves-count">{setCount} set{setCount !== 1 ? 's' : ''}</span>
+            {/if}
+          </div>
+
+          {#if savesLoading && !saves}
+            <p class="notes-empty">Loading saves…</p>
+          {:else if savesError && !saves}
+            <p class="save-error">{savesError}</p>
+          {:else}
+            <!-- Live save location + provenance -->
+            <div class="saves-live">
+              <div class="saves-live-head">
+                <span class="saves-live-label">Live location</span>
+                {#if saves?.manualPath}
+                  <span class="pin-badge" title="Pinned manually: {saves.manualPath}">pinned</span>
+                {/if}
+              </div>
+              <div class="saves-live-path mono" title={saves?.livePath || ''}>
+                {saves?.livePath || 'Not resolved — pin a location with Change path or Scan.'}
+              </div>
+              <div class="saves-live-meta">
+                {#if saves?.liveNote}<span class="saves-note">{saves.liveNote}</span>{/if}
+                <span class="saves-files">
+                  {saves?.liveExists === false
+                    ? 'no live files'
+                    : `${saves?.liveFiles || 0} file${(saves?.liveFiles || 0) !== 1 ? 's' : ''}`}
+                </span>
+              </div>
+              <div class="saves-row-actions">
+                <button class="btn btn-xs" onclick={changeSavesPath} disabled={savesBusy}>
+                  {savesOp === 'path' ? 'Saving…' : 'Change path…'}
+                </button>
+                {#if saves?.manualPath}
+                  <button class="btn btn-xs" onclick={clearSavesPath} disabled={savesBusy}>Clear path</button>
+                {/if}
+              </div>
+            </div>
+
+            <!-- Global actions -->
+            <div class="saves-global">
+              <button class="btn btn-xs btn-primary" onclick={snapshotSaves} disabled={savesBusy}>
+                {savesOp === 'snapshot' ? 'Snapshotting…' : 'Snapshot'}
+              </button>
+              <button class="btn btn-xs" onclick={restoreSaves} disabled={savesBusy}>
+                {savesOp === 'restore' ? 'Restoring…' : 'Restore my saves'}
+              </button>
+              <button class="btn btn-xs" onclick={importSaves} disabled={savesBusy}>
+                {savesOp === 'import' ? 'Importing…' : 'Import…'}
+              </button>
+              <button class="btn btn-xs" onclick={scanSaves} disabled={savesBusy || scanBusy}>
+                {scanBusy ? 'Scanning…' : 'Scan'}
+              </button>
+            </div>
+
+            <!-- Result feedback: notice is neutral, version mismatch is a warning -->
+            {#if savesNotice}<p class="save-notice">✓ {savesNotice}</p>{/if}
+            {#if savesVersionWarn}<p class="save-warn">Warning: {savesVersionWarn}</p>{/if}
+            {#if savesError && saves}<p class="save-error">{savesError}</p>{/if}
+
+            <!-- Set list -->
+            {#if (saves?.sets || []).length === 0}
+              <p class="notes-empty">No save sets yet. Snapshot your saves or import an archive.</p>
+            {:else}
+              <div class="saves-list">
+                {#each saves.sets as set (set.name)}
+                  <div class="save-set" class:active={set.active}>
+                    <div class="save-set-top">
+                      <span class="save-set-label" title={set.name}>{set.label || set.name}</span>
+                      <span class="save-badges">
+                        <span class="badge badge-source">{saveSourceLabel(set.source)}</span>
+                        {#if set.active}<span class="badge badge-active">active</span>{/if}
+                        {#if setVersionMismatch(set.gameVersion)}
+                          <span class="badge badge-warn" title="Captured for v{set.gameVersion}; the game is at v{saves.gameVersion}">v{set.gameVersion} (mismatch)</span>
+                        {/if}
+                      </span>
+                    </div>
+                    <div class="save-set-meta">
+                      {#if set.gameVersion}<span class="mono">v{set.gameVersion}</span>{/if}
+                      <span>{set.files} file{set.files !== 1 ? 's' : ''}</span>
+                      <span>{formatBytes(set.bytes)}</span>
+                      {#if fmtSavesDate(set.createdAt)}<span>{fmtSavesDate(set.createdAt)}</span>{/if}
+                    </div>
+                    <div class="saves-row-actions">
+                      <button class="btn btn-xs btn-primary" onclick={() => applySaveSet(set.name)} disabled={set.active || savesBusy}>Apply</button>
+                      <button class="btn btn-xs" onclick={() => replaceSaveSet(set)} disabled={savesBusy}>Replace…</button>
+                      <button class="btn btn-xs btn-danger" onclick={() => deleteSaveSet(set)} disabled={savesBusy}>Delete…</button>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          {/if}
+
+          <!-- Scan candidates -->
+          {#if scanResults}
+            <div class="scan-results">
+              <p class="scan-title">Candidate save locations</p>
+              {#if scanResults.length === 0}
+                <p class="notes-empty">No candidate locations found.</p>
+              {:else}
+                {#each scanResults as cand}
+                  <div class="scan-row">
+                    <div class="scan-info">
+                      <span class="scan-path mono" title={cand.path}>{cand.path}</span>
+                      <span class="scan-meta">
+                        {cand.files} file{cand.files !== 1 ? 's' : ''}
+                        {#if cand.newestFile} · newest {cand.newestFile}{/if}
+                        {#if fmtSavesDate(cand.newestMod)} · {fmtSavesDate(cand.newestMod)}{/if}
+                      </span>
+                    </div>
+                    <button class="btn btn-xs" onclick={() => useScanPath(cand)} disabled={savesBusy}>Use this path</button>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+          {/if}
+        </div>
 
       </div>
     </div>
@@ -1753,6 +2062,173 @@
     justify-content: space-between;
     margin-bottom: 8px;
   }
+
+  /* ── Saves ─────────────────────────────────── */
+  .saves-count {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+
+  .saves-live {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-secondary);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .saves-live-head { display: flex; align-items: center; gap: 8px; }
+  .saves-live-label {
+    font-family: var(--font-display);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    color: var(--text-secondary);
+  }
+  .pin-badge {
+    padding: 0 6px;
+    border: 1px solid var(--accent-dim);
+    border-radius: var(--radius-1);
+    color: var(--accent);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .saves-live-path {
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    word-break: break-all;
+  }
+  .saves-live-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+  }
+  .saves-note { color: var(--text-secondary); }
+  .saves-files { font-family: var(--font-mono); }
+
+  .saves-row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .saves-global { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+
+  .save-notice {
+    margin: 10px 0 0;
+    font-size: var(--text-sm);
+    color: var(--success);
+  }
+  .save-warn {
+    margin: 10px 0 0;
+    font-size: var(--text-sm);
+    color: var(--warning);
+  }
+  .save-error {
+    margin: 10px 0 0;
+    font-size: var(--text-sm);
+    color: var(--danger);
+    font-family: var(--font-mono);
+    word-break: break-word;
+  }
+
+  .saves-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 12px;
+  }
+  .save-set {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-secondary);
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .save-set.active { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
+  .save-set-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .save-set-label {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .save-badges { display: flex; gap: 4px; flex-shrink: 0; }
+  .badge {
+    padding: 1px 6px;
+    border-radius: var(--radius-1);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .badge-source {
+    background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+    color: var(--text-secondary);
+  }
+  .badge-active {
+    background: color-mix(in srgb, var(--success) 16%, transparent);
+    color: var(--success);
+  }
+  .badge-warn {
+    background: color-mix(in srgb, var(--warning) 16%, transparent);
+    color: var(--warning);
+  }
+  .save-set-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+  }
+
+  .scan-results {
+    margin-top: 14px;
+    border-top: var(--rule);
+    padding-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .scan-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    color: var(--text-secondary);
+  }
+  .scan-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-secondary);
+  }
+  .scan-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .scan-path {
+    font-size: var(--text-xs);
+    color: var(--text-primary);
+    word-break: break-all;
+  }
+  .scan-meta { font-size: var(--text-2xs); color: var(--text-muted); }
 
   /* ── Notes ─────────────────────────────────── */
   .notes-text {

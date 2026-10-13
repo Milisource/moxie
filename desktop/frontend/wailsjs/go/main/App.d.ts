@@ -13,6 +13,8 @@ export function AddGameToCollection(arg1:number,arg2:number):Promise<void>;
 
 export function AddScanPath(arg1:string):Promise<void>;
 
+export function ApplySaveSet(arg1:number,arg2:string,arg3:boolean):Promise<main.DesktopSaveOpResult>;
+
 export function ApplyUpdate():Promise<void>;
 
 export function BrowseF95Zone(arg1:number,arg2:string):Promise<main.F95BrowsePage>;
@@ -81,6 +83,10 @@ export function GetInstallTargets():Promise<Array<main.InstallTarget>>;
 
 export function GetOrganizeInstalls():Promise<boolean>;
 
+export function GetSavesOverview():Promise<Array<main.DesktopGameSavesSummary>>;
+
+export function GetSavesState(arg1:number):Promise<main.DesktopSavesState>;
+
 export function GetScanPaths():Promise<Array<string>>;
 
 export function GetStartupError():Promise<string>;
@@ -95,6 +101,8 @@ export function GetUpdateConcurrency():Promise<number>;
 
 export function GetVersion():Promise<string>;
 
+export function ImportSaveSet(arg1:number,arg2:string,arg3:string):Promise<main.DesktopSaveOpResult>;
+
 export function InstallGame(arg1:number,arg2:string):Promise<void>;
 
 export function ListDeletedGames():Promise<Array<main.DesktopGameSummary>>;
@@ -106,6 +114,8 @@ export function OpenUpdateDownloadPage(arg1:number):Promise<string>;
 export function PickCoverImage():Promise<string>;
 
 export function PickDirectory():Promise<string>;
+
+export function PickSaveArchive():Promise<string>;
 
 export function PlayGame(arg1:number):Promise<string>;
 
@@ -121,6 +131,8 @@ export function RemoveGame(arg1:number,arg2:boolean):Promise<void>;
 
 export function RemoveGameFromCollection(arg1:number,arg2:number):Promise<void>;
 
+export function RemoveSaveSet(arg1:number,arg2:string):Promise<void>;
+
 export function RemoveScanPath(arg1:string):Promise<void>;
 
 export function RenameGame(arg1:number,arg2:string):Promise<void>;
@@ -129,9 +141,13 @@ export function RescanDirectory(arg1:context.Context,arg2:string,arg3:Array<stri
 
 export function RestoreGame(arg1:number):Promise<void>;
 
+export function RestoreSaveSet(arg1:number):Promise<main.DesktopSaveOpResult>;
+
 export function RevertCover(arg1:number):Promise<void>;
 
 export function ScanDirectory(arg1:string,arg2:boolean):Promise<void>;
+
+export function ScanSaveDirs(arg1:number):Promise<Array<main.DesktopSaveScanCandidate>>;
 
 export function SearchF95Zone(arg1:string):Promise<Array<main.F95SearchResult>>;
 
@@ -151,9 +167,13 @@ export function SetGameWinePrefix(arg1:number,arg2:string):Promise<void>;
 
 export function SetOrganizeInstalls(arg1:boolean):Promise<void>;
 
+export function SetSavesLivePath(arg1:number,arg2:string):Promise<void>;
+
 export function SetSteamGridDBKey(arg1:string):Promise<void>;
 
 export function SetUpdateConcurrency(arg1:number):Promise<void>;
+
+export function SnapshotSaveSet(arg1:number,arg2:string):Promise<main.DesktopSaveOpResult>;
 
 export function SyncAllGames(arg1:boolean):Promise<void>;
 

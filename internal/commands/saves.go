@@ -293,13 +293,10 @@ func printApplyResult(verb string, game *db.Game, res *saves.ApplyResult) {
 }
 
 // savesVersionMismatch reports whether the version a set was captured for
-// differs from the game's current version, comparing light-normalized forms.
-// An empty version on either side means "unknown" and never counts as a mismatch.
+// differs from the game's current version; see saves.VersionsDiffer, the shared
+// comparator the desktop app uses too.
 func savesVersionMismatch(setVersion, gameVersion string) bool {
-	if setVersion == "" || gameVersion == "" {
-		return false
-	}
-	return NormalizeVersion(setVersion) != NormalizeVersion(gameVersion)
+	return saves.VersionsDiffer(setVersion, gameVersion)
 }
 
 // savesVersionWarning returns the one-line warning shown when a set's captured

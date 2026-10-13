@@ -18,6 +18,10 @@ export function AddScanPath(arg1) {
   return window['go']['main']['App']['AddScanPath'](arg1);
 }
 
+export function ApplySaveSet(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ApplySaveSet'](arg1, arg2, arg3);
+}
+
 export function ApplyUpdate() {
   return window['go']['main']['App']['ApplyUpdate']();
 }
@@ -154,6 +158,14 @@ export function GetOrganizeInstalls() {
   return window['go']['main']['App']['GetOrganizeInstalls']();
 }
 
+export function GetSavesOverview() {
+  return window['go']['main']['App']['GetSavesOverview']();
+}
+
+export function GetSavesState(arg1) {
+  return window['go']['main']['App']['GetSavesState'](arg1);
+}
+
 export function GetScanPaths() {
   return window['go']['main']['App']['GetScanPaths']();
 }
@@ -182,6 +194,10 @@ export function GetVersion() {
   return window['go']['main']['App']['GetVersion']();
 }
 
+export function ImportSaveSet(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ImportSaveSet'](arg1, arg2, arg3);
+}
+
 export function InstallGame(arg1, arg2) {
   return window['go']['main']['App']['InstallGame'](arg1, arg2);
 }
@@ -204,6 +220,10 @@ export function PickCoverImage() {
 
 export function PickDirectory() {
   return window['go']['main']['App']['PickDirectory']();
+}
+
+export function PickSaveArchive() {
+  return window['go']['main']['App']['PickSaveArchive']();
 }
 
 export function PlayGame(arg1) {
@@ -234,6 +254,10 @@ export function RemoveGameFromCollection(arg1, arg2) {
   return window['go']['main']['App']['RemoveGameFromCollection'](arg1, arg2);
 }
 
+export function RemoveSaveSet(arg1, arg2) {
+  return window['go']['main']['App']['RemoveSaveSet'](arg1, arg2);
+}
+
 export function RemoveScanPath(arg1) {
   return window['go']['main']['App']['RemoveScanPath'](arg1);
 }
@@ -250,12 +274,20 @@ export function RestoreGame(arg1) {
   return window['go']['main']['App']['RestoreGame'](arg1);
 }
 
+export function RestoreSaveSet(arg1) {
+  return window['go']['main']['App']['RestoreSaveSet'](arg1);
+}
+
 export function RevertCover(arg1) {
   return window['go']['main']['App']['RevertCover'](arg1);
 }
 
 export function ScanDirectory(arg1, arg2) {
   return window['go']['main']['App']['ScanDirectory'](arg1, arg2);
+}
+
+export function ScanSaveDirs(arg1) {
+  return window['go']['main']['App']['ScanSaveDirs'](arg1);
 }
 
 export function SearchF95Zone(arg1) {
@@ -294,12 +326,20 @@ export function SetOrganizeInstalls(arg1) {
   return window['go']['main']['App']['SetOrganizeInstalls'](arg1);
 }
 
+export function SetSavesLivePath(arg1, arg2) {
+  return window['go']['main']['App']['SetSavesLivePath'](arg1, arg2);
+}
+
 export function SetSteamGridDBKey(arg1) {
   return window['go']['main']['App']['SetSteamGridDBKey'](arg1);
 }
 
 export function SetUpdateConcurrency(arg1) {
   return window['go']['main']['App']['SetUpdateConcurrency'](arg1);
+}
+
+export function SnapshotSaveSet(arg1, arg2) {
+  return window['go']['main']['App']['SnapshotSaveSet'](arg1, arg2);
 }
 
 export function SyncAllGames(arg1) {

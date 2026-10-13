@@ -15,6 +15,7 @@
   import DedupDialog from './lib/DedupDialog.svelte'
   import CollectionsView from './lib/CollectionsView.svelte'
   import CoversView from './lib/CoversView.svelte'
+  import SavesView from './lib/SavesView.svelte'
   import SettingsView from './lib/SettingsView.svelte'
   import StatusBar from './lib/StatusBar.svelte'
   import ConfirmDialog from './lib/ConfirmDialog.svelte'
@@ -1079,6 +1080,8 @@
               onOpenDetail={openDetail}
               onCollectionsChanged={() => lastUpdate++}
             />
+          {:else if activeView === 'saves'}
+            <SavesView onOpenDetail={openDetail} />
           {:else if activeView === 'duplicates'}
             <DedupDialog onDedupDone={refreshGames}/>
           {:else if activeView === 'trash'}
