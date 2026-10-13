@@ -33,34 +33,34 @@ type GameDupSummary struct {
 
 // Game represents a game in the user's local library.
 type Game struct {
-	ID          int64             `json:"id"`
-	Title       string            `json:"title"`
-	Engine      string            `json:"engine"` // Unity, RenPy, RPGMakerMV, RPGMakerMZ, RPGMakerVXAce, RPGMaker, Godot, Unreal, Electron, HTML, Unknown
-	Path        string            `json:"path"`   // absolute directory path (unique)
-	ExePath     string            `json:"exe_path,omitempty"`
-	Version     string            `json:"version,omitempty"`
-	SizeBytes   int64             `json:"size_bytes"`
-	F95URL      string            `json:"f95_url,omitempty"`
-	F95ThreadID int64             `json:"f95_thread_id,omitempty"`
-	Tags        []string          `json:"tags"`   // stored as JSON array string in SQLite
-	Status      string            `json:"status"` // active, completed, abandoned, on_hold, unknown
-	Notes       string            `json:"notes,omitempty"`
-	StoreLinks  map[string]string `json:"store_links,omitempty"` // stored as JSON in SQLite
-	SteamAppID  int64             `json:"steam_app_id,omitempty"`
-	WinePrefix  string            `json:"wine_prefix,omitempty"`
-	LatestVersion  string         `json:"latest_version,omitempty"`
-	VersionCheckedAt time.Time    `json:"version_checked_at,omitempty"`
-	LastScannedAt time.Time       `json:"last_scanned_at,omitempty"`
-	DirMTime     time.Time        `json:"dir_mtime,omitempty"`
-	SeriesID    *int64            `json:"series_id,omitempty"` // nullable FK to game_series
-	SeriesOrder int               `json:"series_order,omitempty"`
-	DeletedAt   time.Time         `json:"deleted_at,omitempty"`
+	ID               int64             `json:"id"`
+	Title            string            `json:"title"`
+	Engine           string            `json:"engine"` // Unity, RenPy, RPGMakerMV, RPGMakerMZ, RPGMakerVXAce, RPGMaker, Godot, Unreal, Electron, HTML, Unknown
+	Path             string            `json:"path"`   // absolute directory path (unique)
+	ExePath          string            `json:"exe_path,omitempty"`
+	Version          string            `json:"version,omitempty"`
+	SizeBytes        int64             `json:"size_bytes"`
+	F95URL           string            `json:"f95_url,omitempty"`
+	F95ThreadID      int64             `json:"f95_thread_id,omitempty"`
+	Tags             []string          `json:"tags"`   // stored as JSON array string in SQLite
+	Status           string            `json:"status"` // active, completed, abandoned, on_hold, unknown
+	Notes            string            `json:"notes,omitempty"`
+	StoreLinks       map[string]string `json:"store_links,omitempty"` // stored as JSON in SQLite
+	SteamAppID       int64             `json:"steam_app_id,omitempty"`
+	WinePrefix       string            `json:"wine_prefix,omitempty"`
+	LatestVersion    string            `json:"latest_version,omitempty"`
+	VersionCheckedAt time.Time         `json:"version_checked_at,omitempty"`
+	LastScannedAt    time.Time         `json:"last_scanned_at,omitempty"`
+	DirMTime         time.Time         `json:"dir_mtime,omitempty"`
+	SeriesID         *int64            `json:"series_id,omitempty"` // nullable FK to game_series
+	SeriesOrder      int               `json:"series_order,omitempty"`
+	DeletedAt        time.Time         `json:"deleted_at,omitempty"`
 	// EngineSource / VersionSource record who last set the engine/version:
 	// "" or "scanner" (scanner-owned, correctable by a rescan), "f95"
 	// (authoritative F95Zone association), or "user" (manual edit, never
 	// overwritten by a scan).
-	EngineSource  string `json:"engine_source,omitempty"`
-	VersionSource string `json:"version_source,omitempty"`
+	EngineSource  string    `json:"engine_source,omitempty"`
+	VersionSource string    `json:"version_source,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -177,6 +177,34 @@ type DownloadLink struct {
 	DeadReason  string    `json:"dead_reason,omitempty"`
 	LastChecked time.Time `json:"last_checked,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+// SaveSet is a named snapshot of a game's save data: the user's own saves
+// (source "snapshot"), an imported set, or one downloaded from F95Zone. A
+// partial unique index keeps at most one set active per game.
+type SaveSet struct {
+	ID          int64     `json:"id"`
+	GameID      int64     `json:"game_id"`
+	Name        string    `json:"name"`
+	Label       string    `json:"label,omitempty"`
+	Source      string    `json:"source"`
+	SourceURL   string    `json:"source_url,omitempty"`
+	GameVersion string    `json:"game_version,omitempty"`
+	ApplyRoot   string    `json:"apply_root,omitempty"`
+	SizeBytes   int64     `json:"size_bytes"`
+	FileCount   int       `json:"file_count"`
+	Active      bool      `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// SaveConfig is the per-game save location: manual_path pins the live save
+// directory (and always wins over detection), while resolved_path caches the last
+// auto-detected location.
+type SaveConfig struct {
+	GameID       int64     `json:"game_id"`
+	ManualPath   string    `json:"manual_path,omitempty"`
+	ResolvedPath string    `json:"resolved_path,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`
 }
 
 // marshalTags serializes a string slice to a JSON string for SQLite storage.

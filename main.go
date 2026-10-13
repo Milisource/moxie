@@ -149,6 +149,8 @@ func main() {
 			commands.ListDownloads(args[1:])
 		case "check-links":
 			commands.CheckDeadLinks(args[1:])
+		case "saves":
+			commands.Saves(args[1:])
 		case "restore":
 			commands.Restore(args[1:])
 		case "purge":
@@ -211,6 +213,16 @@ DOWNLOADS
   install <id> <archive>      Install a downloaded archive into game directory
   downloads [flags]           List download history
   check-links [flags]         Validate download links (detect dead URLs)
+
+SAVES
+  saves list [id]              List save sets (all games when no id)
+  saves snapshot <id> [flags]  Snapshot the game's current live saves
+  saves add <id> <src> [flags] Import a set from a directory or archive
+  saves apply <id> <set>      Apply a set to the live save location
+  saves restore <id>          Re-apply the newest snapshot (my saves)
+  saves path <id> [flags]     Show/pin/clear the live save location
+  saves remove <id> <set>     Delete a save set
+  saves fetch <id> [flags]    Download a save from the F95 thread OP
 
 STEAM
   steam add <id> [flags]      Add a game to Steam library

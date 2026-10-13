@@ -108,14 +108,17 @@ func (db *Database) Close() error {
 //     created_at is unix seconds; entries older than ResolvedURLTTL
 //     (7 days) are auto-pruned — unwraps can go stale.
 //  12. Engine/version provenance: engine_source and version_source TEXT NOT
-//     NULL DEFAULT '' on games. Records who last set each field (''/scanner,
+//     NULL DEFAULT ” on games. Records who last set each field (”/scanner,
 //     f95, or user) so a normal rescan can self-correct scanner-owned
 //     mis-detections without clobbering manual edits or F95Zone associations.
 //  13. Scan exclusions: excluded_paths table. Paths the user resolved away
 //     as duplicates are skipped by the scan upsert so the directory on disk
 //     cannot resurrect the row or insert a fresh one. Restoring the game
 //     from Trash clears its exclusion.
-const currentSchemaVersion = 13
+//  14. Save manager: save_sets (named per-game save sets, at most one of
+//     them active per game via a partial unique index) and save_configs
+//     (per-game live save-path override plus cached resolution).
+const currentSchemaVersion = 14
 
 // gamesTableColumns is the games table column definition, shared between the
 // fresh-DB CREATE TABLE and the v8 rebuild (the engine CHECK constraint
@@ -295,6 +298,33 @@ func migrate(conn *sql.DB) error {
 			path       TEXT PRIMARY KEY,
 			reason     TEXT NOT NULL DEFAULT '',
 			created_at TEXT DEFAULT (datetime('now'))
+		);
+
+		CREATE TABLE IF NOT EXISTS save_sets (
+			id INTEGER PRIMARY KEY,
+			game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			label TEXT NOT NULL DEFAULT '',
+			source TEXT NOT NULL DEFAULT 'import'
+				CHECK (source IN ('snapshot','import','f95_attachment','f95_link')),
+			source_url TEXT,
+			game_version TEXT,
+			apply_root TEXT NOT NULL DEFAULT '',
+			size_bytes INTEGER NOT NULL DEFAULT 0,
+			file_count INTEGER NOT NULL DEFAULT 0,
+			active INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT DEFAULT (datetime('now')),
+			UNIQUE(game_id, name)
+		);
+		CREATE INDEX IF NOT EXISTS idx_save_sets_game ON save_sets(game_id);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_save_sets_one_active
+			ON save_sets(game_id) WHERE active = 1;
+
+		CREATE TABLE IF NOT EXISTS save_configs (
+			game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+			manual_path TEXT,
+			resolved_path TEXT,
+			updated_at TEXT DEFAULT (datetime('now'))
 		);
 	`
 
@@ -686,6 +716,41 @@ func migrateVersionStep(conn *sql.DB, version int) error {
 			)
 		`); err != nil {
 			return fmt.Errorf("create excluded_paths: %w", err)
+		}
+	case 14:
+		// Save manager: named per-game save sets plus the per-game live
+		// save-path config. UNIQUE(game_id, name) keeps set names unique
+		// within a game; the partial unique index keeps at most one active
+		// set per game.
+		if _, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS save_sets (
+				id INTEGER PRIMARY KEY,
+				game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+				name TEXT NOT NULL,
+				label TEXT NOT NULL DEFAULT '',
+				source TEXT NOT NULL DEFAULT 'import'
+					CHECK (source IN ('snapshot','import','f95_attachment','f95_link')),
+				source_url TEXT,
+				game_version TEXT,
+				apply_root TEXT NOT NULL DEFAULT '',
+				size_bytes INTEGER NOT NULL DEFAULT 0,
+				file_count INTEGER NOT NULL DEFAULT 0,
+				active INTEGER NOT NULL DEFAULT 0,
+				created_at TEXT DEFAULT (datetime('now')),
+				UNIQUE(game_id, name)
+			);
+			CREATE INDEX IF NOT EXISTS idx_save_sets_game ON save_sets(game_id);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_save_sets_one_active
+				ON save_sets(game_id) WHERE active = 1;
+
+			CREATE TABLE IF NOT EXISTS save_configs (
+				game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+				manual_path TEXT,
+				resolved_path TEXT,
+				updated_at TEXT DEFAULT (datetime('now'))
+			);
+		`); err != nil {
+			return fmt.Errorf("create save tables: %w", err)
 		}
 	default:
 		return fmt.Errorf("unknown migration version %d", version)

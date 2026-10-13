@@ -85,6 +85,49 @@ func TestConfigPath_ReturnsPath(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// DefaultSavesDir
+// ---------------------------------------------------------------------------
+
+func TestDefaultSavesDir_XDGDataHome(t *testing.T) {
+	SetChannel("main")
+	t.Cleanup(func() { SetChannel("main") })
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+
+	want := filepath.Join(os.Getenv("XDG_DATA_HOME"), "moxie", "saves")
+	if got := DefaultSavesDir(); got != want {
+		t.Errorf("DefaultSavesDir() = %q, want %q", got, want)
+	}
+}
+
+// TestDefaultSavesDir_HomeFallback covers the XDG_DATA_HOME-unset path: the
+// store then lives under ~/.local/share, the conventional XDG data root.
+func TestDefaultSavesDir_HomeFallback(t *testing.T) {
+	SetChannel("main")
+	t.Cleanup(func() { SetChannel("main") })
+	home := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("HOME", home)
+
+	want := filepath.Join(home, ".local", "share", "moxie", "saves")
+	if got := DefaultSavesDir(); got != want {
+		t.Errorf("DefaultSavesDir() = %q, want %q", got, want)
+	}
+}
+
+// TestDefaultSavesDir_DevChannel: like ConfigDir, the dev channel gets its own
+// directory so a dev build never shares saves with a stable install.
+func TestDefaultSavesDir_DevChannel(t *testing.T) {
+	SetChannel("dev")
+	t.Cleanup(func() { SetChannel("main") })
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+
+	want := filepath.Join(os.Getenv("XDG_DATA_HOME"), "moxie-dev", "saves")
+	if got := DefaultSavesDir(); got != want {
+		t.Errorf("DefaultSavesDir() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // readConfigFrom / writeConfigTo (test helpers that accept explicit paths)
 // ---------------------------------------------------------------------------
 
@@ -148,6 +191,7 @@ func TestWriteConfig_RoundTrip(t *testing.T) {
 	cfg.Set("steamgriddb-key", "my-secret-key")
 	cfg.ScanPaths = []string{"/home/user/games", "/media/games"}
 	cfg.DefaultDownloadDir = "/home/user/downloads"
+	cfg.SavesDir = "/home/user/saves"
 	cfg.RateLimitDelay = 3
 
 	if err := writeConfigTo(path, cfg); err != nil {
@@ -170,6 +214,9 @@ func TestWriteConfig_RoundTrip(t *testing.T) {
 	}
 	if got.DefaultDownloadDir != "/home/user/downloads" {
 		t.Errorf("DefaultDownloadDir = %q, want %q", got.DefaultDownloadDir, "/home/user/downloads")
+	}
+	if got.SavesDir != "/home/user/saves" {
+		t.Errorf("SavesDir = %q, want %q", got.SavesDir, "/home/user/saves")
 	}
 	if got.RateLimitDelay != 3 {
 		t.Errorf("RateLimitDelay = %d, want 3", got.RateLimitDelay)
@@ -212,6 +259,23 @@ func TestConfig_SetAndGet(t *testing.T) {
 	}
 	if cfg.Get("default_download_dir") != "/downloads" {
 		t.Errorf("Get(default_download_dir) = %q", cfg.Get("default_download_dir"))
+	}
+
+	cfg.Set("saves_dir", "/saves")
+	if cfg.SavesDir != "/saves" {
+		t.Errorf("SavesDir = %q", cfg.SavesDir)
+	}
+	if cfg.Get("saves_dir") != "/saves" {
+		t.Errorf("Get(saves_dir) = %q", cfg.Get("saves_dir"))
+	}
+
+	// Empty clears the pinned store root (falls back to the default).
+	cfg.Set("saves_dir", "")
+	if cfg.SavesDir != "" {
+		t.Errorf("SavesDir = %q after clear, want empty", cfg.SavesDir)
+	}
+	if cfg.Get("saves_dir") != "" {
+		t.Errorf("Get(saves_dir) = %q after clear, want empty", cfg.Get("saves_dir"))
 	}
 
 	cfg.Set("rate_limit_delay", "5")
@@ -266,6 +330,7 @@ func TestConfig_Keys(t *testing.T) {
 	cfg.Set("key2", "val2")
 	cfg.ScanPaths = []string{"/path"}
 	cfg.RateLimitDelay = 3
+	cfg.SavesDir = "/saves"
 
 	keys := cfg.Keys()
 	found := make(map[string]bool)
@@ -283,6 +348,9 @@ func TestConfig_Keys(t *testing.T) {
 	}
 	if !found["rate_limit_delay"] {
 		t.Error("expected rate_limit_delay in Keys()")
+	}
+	if !found["saves_dir"] {
+		t.Error("expected saves_dir in Keys()")
 	}
 }
 
@@ -315,6 +383,7 @@ func TestReadConfig_WithTypedFields(t *testing.T) {
 	typed := map[string]any{
 		"scan_paths":           []string{"/games/a", "/games/b"},
 		"default_download_dir": "/downloads",
+		"saves_dir":            "/saves",
 		"rate_limit_delay":     3,
 		"cookie":               "abc123",
 	}
@@ -333,6 +402,9 @@ func TestReadConfig_WithTypedFields(t *testing.T) {
 	if cfg.DefaultDownloadDir != "/downloads" {
 		t.Errorf("DefaultDownloadDir = %q", cfg.DefaultDownloadDir)
 	}
+	if cfg.SavesDir != "/saves" {
+		t.Errorf("SavesDir = %q, want %q", cfg.SavesDir, "/saves")
+	}
 	if cfg.RateLimitDelay != 3 {
 		t.Errorf("RateLimitDelay = %d", cfg.RateLimitDelay)
 	}
@@ -346,6 +418,7 @@ func TestMarshalUnmarshal_RoundTrip(t *testing.T) {
 	orig := defaultConfig()
 	orig.ScanPaths = []string{"/a", "/b"}
 	orig.DefaultDownloadDir = "/dl"
+	orig.SavesDir = "/saves"
 	orig.RateLimitDelay = 7
 	orig.Set("custom", "value")
 
@@ -364,6 +437,9 @@ func TestMarshalUnmarshal_RoundTrip(t *testing.T) {
 	}
 	if got.DefaultDownloadDir != "/dl" {
 		t.Errorf("DefaultDownloadDir = %q", got.DefaultDownloadDir)
+	}
+	if got.SavesDir != "/saves" {
+		t.Errorf("SavesDir = %q, want %q", got.SavesDir, "/saves")
 	}
 	if got.RateLimitDelay != 7 {
 		t.Errorf("RateLimitDelay = %d", got.RateLimitDelay)
