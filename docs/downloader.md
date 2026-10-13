@@ -278,7 +278,7 @@ UA + TLS fingerprint the clearance was minted to). Wiring:
 | **DataNodes** | Cookie + POST flow to extract CDN URL (mostly dead links + captcha) | Beta |
 | **MixDrop** | Pass-through with User-Agent (blocked by interstitial on file pages) | Beta |
 | **Google Drive** | Two-step confirm token extraction for large files | Beta |
-| **Mega** | Megatools subprocess (`megatools dl`) when the binary is installed; informative error otherwise (Arch: AUR-only) | Binary-gated |
+| **Mega** | Megatools subprocess (`megatools dl`) when the binary is installed; progress is parsed from stdout and a silently-skipped link is reported as a failed download; informative error otherwise (Arch: AUR-only) | Binary-gated |
 
 All other detected hosts (40+) pass through for standard HTTP download. See [Host Feasibility](#host-feasibility) below for the full breakdown of which hosts work.
 
@@ -348,7 +348,7 @@ Response mapping:
 
 ## Known Limitations
 
-- **Mega not supported** — Mega uses a proprietary encrypted protocol not accessible via HTTP. Links receive a -200 score penalty so they are always tried last. If no other link succeeds, the error suggests manual download or megatools. A native SDK integration is planned.
+- **Mega requires megatools** — Mega uses a proprietary encrypted protocol not accessible via HTTP, handled by the `megatools dl` subprocess when the binary is installed. Without it, Mega links receive a -200 score penalty so they are always tried last, and the error suggests installing megatools or downloading manually. A native SDK integration is planned.
 - **Masked URLs** — F95Zone wraps external links as `f95zone.to/masked/<host>/...`. These are unwrapped via HEAD redirect before host-specific resolution. If the redirect fails, the link is skipped and the fallback loop tries other links.
 - **Captcha-heavy hosts** — MediaFire, WorkUpload, and premium hosts (Keep2Share, Uploaded) require CAPTCHA solving or premium accounts. These hosts are passed through for HTTP download but may fail on captcha interstitials. The fallback loop will try the next link.
 - **Gofile API changes** — As of March 2026, Gofile's API may restrict free downloads to premium accounts. The resolver falls back to direct download patterns.
