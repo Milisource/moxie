@@ -66,6 +66,14 @@ printf '%s\n' "ERROR: Download failed for 'https://mega.nz/file/abc123#key': Too
 exit 1
 `
 
+// fakeMegatoolsSkippedScript mimics megatools rejecting a syntactically
+// invalid link: a stderr WARNING and exit 0, with no file and no
+// "Downloaded" marker on stdout.
+const fakeMegatoolsSkippedScript = `#!/bin/sh
+printf '%s\n' "WARNING: Skipping invalid Mega download link: https://mega.nz/#!bad!key" >&2
+exit 0
+`
+
 // fakeMegatoolsSleepScript hangs until killed — used for cancellation and
 // timeout tests. exec replaces the shell so the kill lands on the sleeper
 // itself.
@@ -376,6 +384,23 @@ func TestRunMegatoolsDownload_NonZeroExit(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Too many requests") {
 		t.Errorf("expected megatools stderr summary in error, got: %v", err)
+	}
+}
+
+func TestRunMegatoolsDownload_SilentSkip(t *testing.T) {
+	// NOT parallel — replaces the findMegatools global.
+	path := writeFakeMegatools(t, fakeMegatoolsSkippedScript)
+	t.Cleanup(stubFindMegatools(path, nil))
+
+	err := runMegatoolsDownload(context.Background(), "https://mega.nz/file/abc123#key", t.TempDir(), 0, nil)
+	if err == nil {
+		t.Fatal("expected error when megatools exits 0 without downloading, got nil")
+	}
+	if !strings.Contains(err.Error(), "no file downloaded") {
+		t.Errorf("expected 'no file downloaded' in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Skipping invalid Mega download link") {
+		t.Errorf("expected stderr warning surfaced in error, got: %v", err)
 	}
 }
 

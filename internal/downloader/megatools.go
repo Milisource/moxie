@@ -167,13 +167,22 @@ const maxMegatoolsErrTail = 4096
 // streamMegatoolsProgress reads megatools' stdout line by line, forwarding
 // parsed progress samples to onProgress and retaining the last sample in
 // last. megatools writes its progress bar to stdout via g_print (not stderr),
-// so the subprocess must capture stdout for this to fire.
-func streamMegatoolsProgress(r io.Reader, expectedTotal int64, onProgress func(Progress), last *megatoolsProgress) error {
+// so the subprocess must capture stdout for this to fire. sawDownload is set
+// when the "Downloaded <name>" success marker appears, which lets the caller
+// tell a real download apart from a link megatools silently skipped.
+func streamMegatoolsProgress(r io.Reader, expectedTotal int64, onProgress func(Progress), last *megatoolsProgress, sawDownload *bool) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		p, ok := parseMegatoolsProgress(scanner.Text())
+		line := scanner.Text()
+		// Legacy progress lines also begin with "Downloaded" ("Downloaded
+		// 123456 bytes"), so parse progress first: only a line that is not
+		// progress can be the success marker.
+		p, ok := parseMegatoolsProgress(line)
 		if !ok {
+			if sawDownload != nil && strings.HasPrefix(line, "Downloaded ") {
+				*sawDownload = true
+			}
 			continue
 		}
 		*last = p
@@ -300,11 +309,12 @@ func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTota
 	// and — because each pipe must be fully read before Wait — avoidance of a
 	// blocked child on a full pipe buffer.
 	var last megatoolsProgress
+	var sawDownload bool
 	var errTail strings.Builder
 	progressErrCh := make(chan error, 1)
 	stderrErrCh := make(chan error, 1)
 	go func() {
-		progressErrCh <- streamMegatoolsProgress(stdout, expectedTotal, onProgress, &last)
+		progressErrCh <- streamMegatoolsProgress(stdout, expectedTotal, onProgress, &last, &sawDownload)
 	}()
 	go func() {
 		stderrErrCh <- drainMegatoolsStderr(stderr, &errTail)
@@ -333,6 +343,17 @@ func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTota
 	}
 	if stderrErr != nil {
 		return fmt.Errorf("megatools dl: %w", stderrErr)
+	}
+
+	// A zero exit is not proof of a download: megatools skips syntactically
+	// invalid links with only a stderr WARNING and still exits 0 (dl.c:dl_main).
+	// Require the success marker so such a run is reported as a failure rather
+	// than a completed download that produced no file.
+	if !sawDownload {
+		if tail := megatoolsErrSummary(errTail.String()); tail != "" {
+			return fmt.Errorf("megatools dl: no file downloaded (%s)", tail)
+		}
+		return errors.New("megatools dl: no file downloaded")
 	}
 
 	if onProgress != nil {
