@@ -8,7 +8,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/saves"
 	"github.com/mili/moxie/internal/scraper"
 )
 
@@ -23,9 +25,28 @@ func Run(dbPath string, scraperClient *scraper.Client, f95Cookie string) error {
 	}
 	defer database.Close()
 
-	p := tea.NewProgram(initialModel(database, scraperClient, f95Cookie), tea.WithAltScreen(), tea.WithMouseAllMotion())
+	// Build the saves engine up front. A failure here is not fatal — the TUI
+	// still browses the library, and the Saves screen surfaces the message.
+	savesEngine, savesErr := openSavesEngine(database)
+
+	p := tea.NewProgram(
+		initialModel(database, scraperClient, f95Cookie, savesEngine, savesErr),
+		tea.WithAltScreen(), tea.WithMouseAllMotion())
 	if _, err := p.Run(); err != nil {
 		return err
 	}
 	return nil
+}
+
+// openSavesEngine builds a saves.Engine rooted at the configured saves_dir,
+// falling back to config.DefaultSavesDir(). It mirrors the CLI construction in
+// internal/commands/saves.go without importing that package.
+func openSavesEngine(database *db.Database) (*saves.Engine, error) {
+	root := config.DefaultSavesDir()
+	if cfg, err := config.ReadConfig(); err == nil {
+		if v := cfg.Get("saves_dir"); v != "" {
+			root = v
+		}
+	}
+	return saves.NewEngine(database, root)
 }

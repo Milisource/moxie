@@ -23,29 +23,30 @@ var (
 	yellow    lipgloss.Color
 	cyan      lipgloss.Color
 
-	titleStyle          lipgloss.Style
-	accentStyle         lipgloss.Style
-	subtleStyle         lipgloss.Style
-	errorStyle          lipgloss.Style
-	noticeStyle         lipgloss.Style
-	labelStyle          lipgloss.Style
-	valueStyle          lipgloss.Style
-	statusBarStyle      lipgloss.Style
-	boxStyle            lipgloss.Style
-	helpBoxStyle        lipgloss.Style
-	deletePromptStyle   lipgloss.Style
-	appStyle            lipgloss.Style
-	separatorStyle      lipgloss.Style
-	filterActiveStyle   lipgloss.Style
-	filterInputStyle    lipgloss.Style
-	updateAvailableStyle lipgloss.Style
-	greenStyle          lipgloss.Style
-	redStyle            lipgloss.Style
-	noPathStyle         lipgloss.Style
-	sectionHeaderStyle  lipgloss.Style
-	tagStyle            lipgloss.Style
-	copyHintStyle       lipgloss.Style
-	statusOptionStyle   lipgloss.Style
+	titleStyle            lipgloss.Style
+	accentStyle           lipgloss.Style
+	subtleStyle           lipgloss.Style
+	errorStyle            lipgloss.Style
+	noticeStyle           lipgloss.Style
+	labelStyle            lipgloss.Style
+	valueStyle            lipgloss.Style
+	statusBarStyle        lipgloss.Style
+	boxStyle              lipgloss.Style
+	helpBoxStyle          lipgloss.Style
+	deletePromptStyle     lipgloss.Style
+	appStyle              lipgloss.Style
+	separatorStyle        lipgloss.Style
+	filterActiveStyle     lipgloss.Style
+	filterInputStyle      lipgloss.Style
+	updateAvailableStyle  lipgloss.Style
+	greenStyle            lipgloss.Style
+	redStyle              lipgloss.Style
+	noPathStyle           lipgloss.Style
+	sectionHeaderStyle    lipgloss.Style
+	tagStyle              lipgloss.Style
+	copyHintStyle         lipgloss.Style
+	statusOptionStyle     lipgloss.Style
+	savesRowSelectedStyle lipgloss.Style
 )
 
 var (
@@ -183,6 +184,12 @@ func initStyles() {
 
 	// statusOptionStyle renders interactive status selector options.
 	statusOptionStyle = lipgloss.NewStyle().
+		Foreground(white).
+		Bold(true)
+
+	// savesRowSelectedStyle highlights the cursor row on the Saves screen.
+	savesRowSelectedStyle = lipgloss.NewStyle().
+		Background(purpleBg).
 		Foreground(white).
 		Bold(true)
 

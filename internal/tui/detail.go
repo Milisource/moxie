@@ -86,7 +86,7 @@ func (m model) buildDetailContent() string {
 
 	// ── Header ────────────────────────────────────────────────────
 	back := titleStyle.Render("◂  Back to Library  ")
-	hint := subtleStyle.Render("[Esc] back  [s] status  [e] edit  [x] exe  [Ctrl+U] url  [p] play  [g] dl  [d] delete  [?] help")
+	hint := subtleStyle.Render("[Esc] back  [s] status  [e] edit  [x] exe  [Ctrl+U] url  [v] saves  [p] play  [g] dl  [d] delete  [?] help")
 	gap := max(0, w-lipgloss.Width(back)-lipgloss.Width(hint)-4)
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, back, strings.Repeat(" ", gap), hint))
 	b.WriteString("\n")
@@ -215,7 +215,7 @@ func (m model) buildDetailContent() string {
 
 	// ── Action buttons ────────────────────────────────────────────
 	actions := subtleStyle.Render(
-		"  [e] Edit  [s] Status  [x] Exe  [Ctrl+U] URL  [o] Path  [p] Play  [g] Download  [d] Delete  [Esc] Back  ",
+		"  [e] Edit  [s] Status  [x] Exe  [Ctrl+U] URL  [v] Saves  [o] Path  [p] Play  [g] Download  [d] Delete  [Esc] Back  ",
 	)
 	b.WriteString("\n\n")
 	b.WriteString(actions)

@@ -21,6 +21,7 @@ A local game library manager for adult games. Scans directories, detects engines
 | **Scraper** | [scraper.md](scraper.md) | HTTP client, rate limiting, HTML parsing, auto-association |
 | **Downloader** | [downloader.md](downloader.md) | HTTP downloads with resume, host-specific resolvers, progress tracking, SSRF protection, platform priority (Wine/Proton chain), dead link validation |
 | **Archive** | [archive.md](archive.md) | Archive extraction (.zip, .7z, .rar, .tar.gz), zip-slip protection, system tool fallback |
+| **Saves** | [saves.md](saves.md) | Save-set storage and schema, Ren'Py/RPGM save-path resolution, snapshot/apply/restore semantics, `saves fetch` for F95-posted saves |
 | **Commands** | (this doc) | 30+ CLI handlers: crud, scrape, sync, cleanup, play, steam, rename, config, download |
 | **Config** | (this doc) | Config I/O (`ConfigDir`, `DbPath`, `ReadConfig`, `WriteConfig`) in `internal/config/` |
 | **Utilities** | (this doc) | Formatters, version normalization, helpers in `internal/util/` |
@@ -48,6 +49,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Cookie-based F95Zone scraping (Firefox auto-detect, explicit, SQLite fallback)
 - [x] Auto-association via F95Zone search with title scoring + engine mismatch prevention
 - [x] Bubble Tea TUI with list/detail views, engine/status filters, engine colors
+- [x] Save manager: named per-game save sets (`moxie saves list/snapshot/add/apply/restore/path/remove`), a TUI Saves screen (`v` from the detail view), automatic first-apply snapshot of your own saves, Ren'Py/RPGM save-path resolution with manual override, and `saves fetch` to download 100% saves posted in F95 threads (attachment + external-host candidates, cookie-authenticated)
 - [x] Version tracking with `LatestVersion` fallback for unknown local versions
 - [x] Version normalization (trailing .0 stripping, v-prefix handling)
 - [x] `--force` flag for bypassing 24h update-check cooldown

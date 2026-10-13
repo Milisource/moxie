@@ -74,6 +74,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleEditKey(msg, key)
 		}
 
+		if m.savesConfirmDelete {
+			return m.handleSavesDeleteConfirm(key)
+		}
+
+		if m.savesEditingPath {
+			return m.handleSavesPathInput(msg, key)
+		}
+
+		if m.viewMode == SavesView {
+			return m.handleSavesKey(key)
+		}
+
 		if m.viewMode == DetailView {
 			return m.handleDetailKey(key)
 		}
@@ -191,6 +203,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case detailGameLoadedMsg:
 		msg.game.Tags = sortedTags(msg.game.Tags)
 		m.detailGame = msg.game
+		return m, nil
+
+	case savesLoadedMsg:
+		// Drop a load that belongs to a game the user has since left; otherwise
+		// the previous game's sets would render under the current game's title.
+		if m.detailGame == nil || m.detailGame.ID != msg.gameID {
+			return m, nil
+		}
+		m.savesLoading = false
+		if msg.err != nil {
+			m.err = fmt.Errorf("saves: %v", msg.err)
+			m.savesSets = nil
+			m.savesCursor = 0
+			return m, nil
+		}
+		m.applySavesState(msg.state)
+		return m, nil
+
+	case savesOpMsg:
+		// Drop a completed mutation for a game the user has since left; applying
+		// its state would clobber the current game's screen.
+		if m.detailGame == nil || m.detailGame.ID != msg.gameID {
+			return m, nil
+		}
+		m.savesLoading = false
+		if msg.err != nil {
+			m.err = fmt.Errorf("saves: %v", msg.err)
+			return m, nil
+		}
+		m.err = nil
+		if msg.notice != "" {
+			m.notice = msg.notice
+		}
+		m.applySavesState(msg.state)
 		return m, nil
 
 	case gameDeletedMsg:
@@ -512,6 +558,17 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		}
 		m.notice = game.Path
 		return m, nil
+	case "v":
+		// Open the saves screen for this game.
+		if m.detailGame == nil {
+			return m, nil
+		}
+		m.viewMode = SavesView
+		m.resetSavesState()
+		m.err = nil
+		m.notice = ""
+		m.detailViewport.YOffset = 999999 // auto-scroll so returning shows the bottom
+		return m, m.loadSaves()
 	case "ctrl+u":
 		game, err := m.db.GetGame(m.selectedID)
 		if err != nil || game == nil {

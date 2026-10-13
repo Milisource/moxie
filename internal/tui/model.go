@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
+	"github.com/mili/moxie/internal/saves"
 	"github.com/mili/moxie/internal/scraper"
 )
 
@@ -26,6 +28,7 @@ type ViewMode int
 const (
 	LibraryView ViewMode = iota
 	DetailView
+	SavesView
 )
 
 // ─── Sort Field ────────────────────────────────────────────────────────────
@@ -117,6 +120,27 @@ type downloadProgressMsg struct{}
 
 type downloadStartedMsg struct {
 	gameID int64
+	err    error
+}
+
+// savesLoadedMsg carries a refreshed Saves-screen state (the game's set list
+// plus its resolved live save location). gameID identifies the game the state
+// belongs to so a load that finishes after the user has navigated to another
+// game is dropped instead of rendered under the wrong title.
+type savesLoadedMsg struct {
+	gameID int64
+	state  savesState
+	err    error
+}
+
+// savesOpMsg reports a completed Saves-screen mutation (apply, snapshot,
+// restore, remove, path pin) together with a freshly reloaded state. gameID
+// identifies the game the mutation targeted so an in-flight op for a game the
+// user has since left cannot overwrite the current game's screen.
+type savesOpMsg struct {
+	gameID int64
+	notice string
+	state  savesState
 	err    error
 }
 
@@ -220,6 +244,20 @@ type model struct {
 	setUrl   bool
 	urlInput textinput.Model
 
+	// saves screen
+	savesEngine        *saves.Engine
+	savesSets          []db.SaveSet
+	savesLocation      saves.Location
+	savesCandidates    []saves.Location
+	savesManualPath    string
+	savesCursor        int
+	savesLoading       bool
+	savesConfirmDelete bool
+	savesDeleteName    string
+	savesDeleteLabel   string
+	savesEditingPath   bool
+	savesPathInput     textinput.Model
+
 	// scraper
 	scraperClient *scraper.Client
 
@@ -274,7 +312,9 @@ func dismissStartupTip() tea.Cmd {
 }
 
 // initialModel creates the root model with default Bubble Tea components.
-func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) model {
+// savesEngine may be nil; savesErr carries why the saves engine could not be
+// built so the Saves screen can surface it instead of crashing.
+func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string, savesEngine *saves.Engine, savesErr error) model {
 	initStyles()
 
 	cols := []table.Column{
@@ -337,13 +377,14 @@ func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) m
 		EmptyDirectory:   lipgloss.NewStyle().Foreground(subtle).PaddingLeft(2).SetString("  No directories found."),
 	}
 
-	return model{
+	m := model{
 		db:                database,
 		table:             t,
 		filterInput:       fi,
 		sortBy:            SortID,
 		scraperClient:     sc,
 		f95Cookie:         f95Cookie,
+		savesEngine:       savesEngine,
 		activeDownloadsMu: &sync.Mutex{},
 		activeDownloads:   make(map[int64]*activeDownload),
 		browserFallbacks:  make(map[int64]*browserFallback),
@@ -356,6 +397,10 @@ func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) m
 		showFilePicker:    false,
 		filePicker:        fp,
 	}
+	if savesErr != nil {
+		m.err = fmt.Errorf("saves unavailable: %w", savesErr)
+	}
+	return m
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────────
@@ -374,6 +419,8 @@ func (m model) View() string {
 		return m.filePickerView()
 	case m.viewMode == DetailView:
 		return m.detailView()
+	case m.viewMode == SavesView:
+		return m.savesView()
 	default:
 		return m.libraryView()
 	}

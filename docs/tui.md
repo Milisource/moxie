@@ -20,7 +20,7 @@ Model ←─── Update ←─── View
 - **Update** — receives `tea.Msg` (key presses, async results, window resize events, spinner ticks) and returns a new model plus optional commands. Update stays pure and fast: every network operation (link resolution, scraping, downloads, extraction, merges) runs in background `tea.Cmd` goroutines that report back via messages — a rate-limited F95Zone scrape must never stall the UI
 - **View** — renders the model as a styled string for terminal output
 
-### File Structure (11 files)
+### File Structure (12 files)
 
 | File | Responsibility |
 |---|---|
@@ -33,10 +33,11 @@ Model ←─── Update ←─── View
 | `styles.go` | Lip Gloss style palette, engine/status color lookups (engine colors from the shared `internal/engine/engine-colors.json`), section header styles, tag styles |
 | `helpers.go` | Filter/sort logic, table row building, size formatting, delegates to `internal/launcher/` for executable listing |
 | `commands.go` | Tea commands for async DB operations (loadGames, loadMeta, startDownload, pollDownloads, loadCollections) |
+| `saves.go` | Saves screen rendering, key handling, path editor, apply/snapshot/restore/remove commands |
 
 ### Views
 
-The TUI has four visual modes, switched via the `viewMode` field in the model:
+The TUI has five visual modes, switched via the `viewMode` field in the model:
 
 1. **Library view** — the default. Shows a sortable table of all games with a startup tip (auto-dismisses after 6s), a status bar (`12/82 games | Unity | Active | ID ↑ | Filter: — | Collections: RPG`), a filter input overlay (`/` to activate), and a dynamic footer with key hints.
 
@@ -46,9 +47,11 @@ The TUI has four visual modes, switched via the `viewMode` field in the model:
    - **Metadata**: Path, Exe, Size, Created/Updated dates
    Action keys are displayed in the header.
 
-3. **Help overlay** — a centered box listing all keyboard shortcuts grouped by category (Library Navigation, Global, Detail Actions), dismissed with any key.
+3. **Saves view** — opened with `v` from the detail view. Lists the game's save sets (the active one marked `●`), shows the resolved live save location (or the pinned override), and offers apply/snapshot/restore/path/remove actions; see the Saves Screen section below.
 
-4. **Startup tip** — a brief one-line tip that auto-dismisses after 6 seconds on first launch.
+4. **Help overlay** — a centered box listing all keyboard shortcuts grouped by category (Library Navigation, Global, Detail Actions), dismissed with any key.
+
+5. **Startup tip** — a brief one-line tip that auto-dismisses after 6 seconds on first launch.
 
 ### Filtering and Sorting
 
@@ -76,6 +79,23 @@ The TUI has four visual modes, switched via the `viewMode` field in the model:
 | `g` | Start download flow |
 | `Ctrl+u` | Edit F95Zone URL |
 | `p` | Launch game |
+
+### Saves Screen
+
+Opened with `v` from the detail view. Manages the game's named save sets and the live save location.
+
+| Key | Action |
+|-----|--------|
+| `Esc` / `←` / `⌫` | Back to detail |
+| `↑` / `↓` / `j` / `k` | Move the cursor |
+| `a` | Apply the selected set (auto-snapshots your saves on first apply) |
+| `b` | Snapshot the live saves as a new set |
+| `r` | Restore the newest snapshot (your saves) |
+| `p` | Pin or clear the live save location (empty input clears) |
+| `d` | Delete the selected set — never the active one — with `y`/`n` confirmation |
+| `?` | Help |
+
+Apply, snapshot, restore, remove, and path edits run asynchronously; results and errors appear on the status line. The header shows the resolved location (or the pinned path, or candidates when detection is ambiguous) and which set is currently active.
 
 ### Downloads
 

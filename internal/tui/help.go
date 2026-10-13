@@ -39,6 +39,7 @@ func (m model) helpView() string {
 		"  s            Cycle game status",
 		"  x            Edit executable path",
 		"  Ctrl+U       Set/edit F95Zone URL",
+		"  v            Open saves screen",
 		"  o            Show game folder path",
 		"  p            Play game",
 		"  g            Download game",
@@ -46,6 +47,16 @@ func (m model) helpView() string {
 	if m.viewMode == DetailView {
 		// In detail view, q quits directly too
 		detailKeys = append(detailKeys, "  q            Quit")
+	}
+
+	savesKeys := []string{
+		"  ↑/k ↓/j      Move selection",
+		"  a            Apply selected set",
+		"  b            Snapshot current saves",
+		"  r            Restore my saves",
+		"  p            Pin/clear live save path",
+		"  d            Remove selected set",
+		"  Esc/←        Back to game detail",
 	}
 
 	globalKeys := []string{
@@ -71,6 +82,9 @@ func (m model) helpView() string {
 		"  ── Detail View Actions ──",
 	}
 	rightLines = append(rightLines, detailKeys...)
+	rightLines = append(rightLines, "")
+	rightLines = append(rightLines, "  ── Saves Screen ([v]) ──")
+	rightLines = append(rightLines, savesKeys...)
 
 	rightContent := strings.Join(rightLines, "\n")
 

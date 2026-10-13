@@ -340,6 +340,21 @@ Run `moxie <command> --help` for any command's flags. Global flags: `--help` / `
 </details>
 
 <details>
+<summary><strong>Save commands</strong></summary>
+
+| Command | What it does |
+|---------|-------------|
+| `saves list [id]` | List save sets (all games, or one game's). |
+| `saves snapshot <id>` | Capture the game's live saves as a new set (`mine-<timestamp>`). |
+| `saves add <id> <archive\|dir>` | Import a save set from an archive or directory. |
+| `saves apply <id> <set>` | Switch the game to a stored set (auto-snapshots your saves first). |
+| `saves restore <id>` | Switch back to your newest snapshot. |
+| `saves path <id>` | Show or pin the game's live save location. |
+| `saves remove <id> <set>` | Delete a set (never the active one). |
+| `saves fetch <id>` | Fetch a save posted in the game's F95Zone thread and import it as a set. |
+</details>
+
+<details>
 <summary><strong>Library management commands</strong></summary>
 
 | Command | What it does |
