@@ -40,8 +40,8 @@ func writeFakeMegatools(t *testing.T, script string) string {
 }
 
 // fakeMegatoolsSuccessScript mimics megatools dl: records the args it was
-// invoked with, streams progress lines to stderr, and writes a file into the
-// --path destination.
+// invoked with, streams progress lines to stdout (as the real binary does via
+// g_print), and writes a file into the --path destination.
 const fakeMegatoolsSuccessScript = `#!/bin/sh
 outdir=""
 prev=""
@@ -50,18 +50,18 @@ for arg in "$@"; do
   prev="$arg"
 done
 printf '%s\n' "$*" > "$outdir/args.txt"
-printf '%s\n' "game.zip: 0.00% - 0 bytes of 9.5MiB" >&2
-printf '%s\n' "game.zip: 42.10% - 4.0MiB (4194304 bytes) of 9.5MiB (1.5MiB/s)" >&2
-printf '%s\n' "game.zip: 100.00% - 9.5MiB (9961472 bytes) of 9.5MiB (2.0MiB/s)" >&2
+printf '%s\n' "game.zip: 0.00% - 0 bytes of 9.5 MiB"
+printf '%s\n' "game.zip: 42.10% - 4.0 MiB (4194304 bytes) of 9.5 MiB (1.5 MiB/s)"
+printf '%s\n' "game.zip: 100.00% - 9.5 MiB (9961472 bytes) of 9.5 MiB (2.0 MiB/s)"
 printf '%s\n' 'fake mega archive content' > "$outdir/game.zip"
-printf '%s\n' "Downloaded game.zip" >&2
+printf '%s\n' "Downloaded game.zip"
 exit 0
 `
 
-// fakeMegatoolsFailureScript exits non-zero with a rate-limit-style error on
-// stderr.
+// fakeMegatoolsFailureScript exits non-zero; progress goes to stdout and the
+// error to stderr, matching the real binary's stream split.
 const fakeMegatoolsFailureScript = `#!/bin/sh
-printf '%s\n' "game.zip: 12.00% - 1.0MiB (1048576 bytes) of 9.5MiB" >&2
+printf '%s\n' "game.zip: 12.00% - 1.0 MiB (1048576 bytes) of 9.5 MiB"
 printf '%s\n' "ERROR: Download failed for 'https://mega.nz/file/abc123#key': Too many requests" >&2
 exit 1
 `
@@ -121,11 +121,15 @@ func TestParseHumanSize(t *testing.T) {
 		want int64
 	}{
 		{"512B", 512},
-		{"12.4KiB", 12697},  // 12.4 * 1024, truncated
-		{"2.9MiB", 3040870}, // 2.9 * 1024 * 1024, truncated
+		{"512 bytes", 512},
+		{"12.4KiB", 12697}, // 12.4 * 1024, truncated
+		{"12.4 KiB", 12697},
+		{"2.9 MiB", 3040870}, // 2.9 * 1024 * 1024, truncated
+		{"9.5 MiB", 9961472},
 		{"1.5MiB", 1572864},
 		{"1GiB", 1 << 30},
 		{"2TiB", 2 * (1 << 40)},
+		{"0 bytes", 0},
 		{"KB", 0},
 		{"", 0},
 		{"abc", 0},
@@ -157,7 +161,7 @@ func TestParseMegatoolsProgress(t *testing.T) {
 	}{
 		{
 			name:     "new style full",
-			line:     "game.zip: 50.00% - 4.0MiB (4194304 bytes) of 8.0MiB (1.5MiB/s)",
+			line:     "game.zip: 50.00% - 4.0 MiB (4194304 bytes) of 8.0 MiB (1.5 MiB/s)",
 			wantDone: 4194304,
 			wantTot:  8388608,
 			wantPct:  50,
@@ -166,25 +170,31 @@ func TestParseMegatoolsProgress(t *testing.T) {
 		},
 		{
 			name:     "new style no speed",
-			line:     "game.zip: 25.00% - 2.0MiB (2097152 bytes) of 8.0MiB",
+			line:     "game.zip: 25.00% - 2.0 MiB (2097152 bytes) of 8.0 MiB",
 			wantDone: 2097152,
 			wantTot:  8388608,
 			wantPct:  25,
 			wantOK:   true,
 		},
 		{
-			name:   "new style zero bytes first line",
-			line:   "game.zip: 0.00% - 0 bytes of 9.5MiB",
-			wantOK: true,
+			name:    "new style zero bytes first line",
+			line:    "game.zip: 0.00% - 0 bytes of 9.5 MiB",
+			wantTot: 9961472,
+			wantOK:  true,
 		},
 		{
 			name:     "new style name with parens and digits",
-			line:     "Game (fixed) 2.zip: 75.00% - 6.0MiB (6291456 bytes) of 8.0MiB (2.0MiB/s)",
+			line:     "Game (fixed) 2.zip: 75.00% - 6.0 MiB (6291456 bytes) of 8.0 MiB (2.0 MiB/s)",
 			wantDone: 6291456,
 			wantTot:  8388608,
 			wantPct:  75,
 			wantSpd:  2097152,
 			wantOK:   true,
+		},
+		{
+			name:   "new style final summary is not progress",
+			line:   "game.zip: 100.00% - done 9.5 MiB (avg. 2.0 MiB/s)",
+			wantOK: false,
 		},
 		{
 			name:     "legacy full",

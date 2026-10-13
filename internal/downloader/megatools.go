@@ -62,27 +62,30 @@ func extractMegaFileID(rawURL string) string {
 }
 
 // megatoolsOldProgressRe matches the legacy progress lines megatools (< 1.10)
-// wrote to stderr. The total and percentage are omitted when the file size is
-// unknown:
+// wrote. The total and percentage are omitted when the file size is unknown:
 //
 //	Downloaded 123456 bytes
 //	Downloaded 123456 bytes of 987654 bytes (12.5%)
 var megatoolsOldProgressRe = regexp.MustCompile(`Downloaded (\d+) bytes(?: of (\d+) bytes)?(?: \(([\d.]+)%\))?`)
 
-// megatoolsNewProgressRe matches current megatools progress lines, e.g.
+// megatoolsNewProgressRe matches current megatools progress lines. GLib's
+// g_format_size_full puts a space between the number and the IEC unit, e.g.
 //
-//	game.zip: 42.1% - 1.2MiB (1260000 bytes) of 2.9MiB (1.5MiB/s)
+//	game.zip: 42.10% - 4.0 MiB (4194304 bytes) of 9.5 MiB (1.5 MiB/s)
 //
-// Group 2 holds the "done" portion (human size, optionally with an exact
-// byte count in parens); group 3/4 are the speed number and unit.
-var megatoolsNewProgressRe = regexp.MustCompile(`([\d.]+)% - (.+?) of [^ (]+(?: \(([\d.]+)\s*([KMGT]?i?B)/s\))?`)
+// Group 1 is the percentage, group 2 the "done" portion (human size with an
+// exact byte count in parens once the file exceeds 1 KiB), group 3 the total,
+// and groups 4/5 the speed number and unit.
+var megatoolsNewProgressRe = regexp.MustCompile(`([\d.]+)% - (.*?) of (.*?)(?: \(([\d.]+)\s*([KMGT]i?B)/s\))?\s*$`)
 
 // megatoolsByteCountRe extracts the exact byte count megatools prints in
 // parens on progress lines.
 var megatoolsByteCountRe = regexp.MustCompile(`\((\d+) bytes\)`)
 
-// humanSizeRe matches a megatools human-readable size ("12.4KiB", "2.9MiB").
-var humanSizeRe = regexp.MustCompile(`^([\d.]+)\s*([KMGT]?i?B)$`)
+// humanSizeRe matches a megatools human-readable size. GLib formats sizes
+// with a space before the IEC unit ("12.4 KiB", "2.9 MiB") and renders
+// sub-1-KiB sizes as "512 bytes".
+var humanSizeRe = regexp.MustCompile(`^([\d.]+)\s*([KMGT]?i?B|bytes)$`)
 
 // parseHumanSize converts a megatools human-readable size to bytes. Sizes are
 // binary (KiB = 1024); unparseable input returns 0.
@@ -109,7 +112,7 @@ func parseHumanSize(s string) int64 {
 	return int64(v * mult)
 }
 
-// megatoolsProgress is one parsed progress sample from megatools' stderr.
+// megatoolsProgress is one parsed progress sample from megatools' stdout.
 type megatoolsProgress struct {
 	done       int64
 	total      int64
@@ -118,7 +121,7 @@ type megatoolsProgress struct {
 }
 
 // parseMegatoolsProgress extracts a progress sample from one megatools dl
-// stderr line. Returns false when the line carries no progress information.
+// stdout line. Returns false when the line carries no progress information.
 func parseMegatoolsProgress(line string) (megatoolsProgress, bool) {
 	if m := megatoolsOldProgressRe.FindStringSubmatch(line); m != nil {
 		p := megatoolsProgress{}
@@ -144,8 +147,13 @@ func parseMegatoolsProgress(line string) (megatoolsProgress, bool) {
 		if p.percent > 0 {
 			p.total = int64(float64(p.done) / p.percent * 100)
 		}
-		if m[3] != "" {
-			p.speedBytes = parseHumanSize(m[3] + m[4])
+		if p.total == 0 {
+			// At 0% the percentage carries no total information, so fall
+			// back to the rounded human size on the first progress line.
+			p.total = parseHumanSize(m[3])
+		}
+		if m[4] != "" {
+			p.speedBytes = parseHumanSize(m[4] + m[5])
 		}
 		return p, true
 	}
@@ -153,29 +161,18 @@ func parseMegatoolsProgress(line string) (megatoolsProgress, bool) {
 }
 
 // maxMegatoolsErrTail caps how much of megatools' stderr is retained for
-// error messages; progress lines scroll past quickly on long downloads.
+// error messages; warnings scroll past on long downloads.
 const maxMegatoolsErrTail = 4096
 
-// streamMegatoolsOutput reads megatools' stderr line by line, forwarding
-// progress samples to onProgress and retaining a bounded tail of recent
-// output for error reporting. The last progress sample is stored in last.
-func streamMegatoolsOutput(r io.Reader, expectedTotal int64, onProgress func(Progress), last *megatoolsProgress, errTail *strings.Builder) error {
+// streamMegatoolsProgress reads megatools' stdout line by line, forwarding
+// parsed progress samples to onProgress and retaining the last sample in
+// last. megatools writes its progress bar to stdout via g_print (not stderr),
+// so the subprocess must capture stdout for this to fire.
+func streamMegatoolsProgress(r io.Reader, expectedTotal int64, onProgress func(Progress), last *megatoolsProgress) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		line := scanner.Text()
-		if errTail.Len() >= maxMegatoolsErrTail {
-			// Progress lines scroll by; keep only the most recent output so
-			// the final error line survives long downloads.
-			kept := errTail.String()
-			kept = kept[len(kept)-maxMegatoolsErrTail/2:]
-			errTail.Reset()
-			errTail.WriteString(kept)
-		}
-		errTail.WriteString(line)
-		errTail.WriteByte('\n')
-
-		p, ok := parseMegatoolsProgress(line)
+		p, ok := parseMegatoolsProgress(scanner.Text())
 		if !ok {
 			continue
 		}
@@ -200,6 +197,30 @@ func streamMegatoolsOutput(r io.Reader, expectedTotal int64, onProgress func(Pro
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read megatools output: %w", err)
+	}
+	return nil
+}
+
+// drainMegatoolsStderr consumes megatools' stderr, retaining a bounded tail of
+// recent output for error reporting. Progress lives on stdout; stderr carries
+// ERROR:/WARNING: lines, and megatoolsErrSummary surfaces the last ERROR: line.
+func drainMegatoolsStderr(r io.Reader, errTail *strings.Builder) error {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		if errTail.Len() >= maxMegatoolsErrTail {
+			// Keep only the most recent output so the final error line
+			// survives a long stream of warnings.
+			kept := errTail.String()
+			kept = kept[len(kept)-maxMegatoolsErrTail/2:]
+			errTail.Reset()
+			errTail.WriteString(kept)
+		}
+		errTail.WriteString(scanner.Text())
+		errTail.WriteByte('\n')
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read megatools stderr: %w", err)
 	}
 	return nil
 }
@@ -233,9 +254,10 @@ func megatoolsErrSummary(tail string) string {
 //	megatools dl --path <destDir> <url>
 //
 // The full URL — including the #key fragment that carries the decryption
-// key — is passed through unchanged. Progress lines are streamed from stderr
-// and reported through onProgress; ctx controls cancellation and a
-// megatoolsTimeout cap mirrors the HTTP path's runaway-transfer guard.
+// key — is passed through unchanged. megatools emits its progress bar on
+// stdout and diagnostics on stderr; both are captured, progress is reported
+// through onProgress, and ctx controls cancellation. A megatoolsTimeout cap
+// mirrors the HTTP path's runaway-transfer guard.
 func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTotal int64, onProgress func(Progress)) error {
 	if extractMegaFileID(url) == "" {
 		return fmt.Errorf("could not extract Mega file ID from URL: %s", redactedURL(url))
@@ -259,6 +281,13 @@ func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTota
 	defer cancel()
 
 	cmd := exec.CommandContext(dlCtx, bin, "dl", "--path", destDir, url)
+	// megatools writes the progress bar to stdout (g_print) and errors to
+	// stderr (g_printerr), so both pipes must be captured: stdout feeds the
+	// progress callback, stderr feeds the error summary.
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("megatools: create stdout pipe: %w", err)
+	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return fmt.Errorf("megatools: create stderr pipe: %w", err)
@@ -267,22 +296,27 @@ func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTota
 		return fmt.Errorf("megatools: start: %w", err)
 	}
 
-	// Drain stderr in a goroutine: progress forwarding, error-tail capture,
-	// and — because the pipe must be fully read before Wait — avoidance of
-	// a blocked child on a full pipe buffer.
+	// Drain both pipes in goroutines: progress forwarding, error-tail capture,
+	// and — because each pipe must be fully read before Wait — avoidance of a
+	// blocked child on a full pipe buffer.
 	var last megatoolsProgress
 	var errTail strings.Builder
-	streamErrCh := make(chan error, 1)
+	progressErrCh := make(chan error, 1)
+	stderrErrCh := make(chan error, 1)
 	go func() {
-		streamErrCh <- streamMegatoolsOutput(stderr, expectedTotal, onProgress, &last, &errTail)
+		progressErrCh <- streamMegatoolsProgress(stdout, expectedTotal, onProgress, &last)
+	}()
+	go func() {
+		stderrErrCh <- drainMegatoolsStderr(stderr, &errTail)
 	}()
 
-	// Drain stderr to EOF BEFORE calling Wait: Wait closes a StderrPipe the
-	// moment it sees the command exit, so a concurrent scanner would hit
-	// "file already closed" (visible under -race). The drain is unblocking —
-	// the pipe reaches EOF when the child exits, and ctx kills the child on
+	// Drain both pipes to EOF BEFORE calling Wait: Wait closes the pipes the
+	// moment it sees the command exit, so concurrent scanners would hit
+	// "file already closed" (visible under -race). The drains are unblocking —
+	// the pipes reach EOF when the child exits, and ctx kills the child on
 	// timeout.
-	streamErr := <-streamErrCh
+	progressErr := <-progressErrCh
+	stderrErr := <-stderrErrCh
 	waitErr := cmd.Wait()
 
 	if dlCtx.Err() != nil {
@@ -294,8 +328,11 @@ func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTota
 		}
 		return fmt.Errorf("megatools dl failed: %w", waitErr)
 	}
-	if streamErr != nil {
-		return fmt.Errorf("megatools dl: %w", streamErr)
+	if progressErr != nil {
+		return fmt.Errorf("megatools dl: %w", progressErr)
+	}
+	if stderrErr != nil {
+		return fmt.Errorf("megatools dl: %w", stderrErr)
 	}
 
 	if onProgress != nil {
