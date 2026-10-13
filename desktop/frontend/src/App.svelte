@@ -1,7 +1,7 @@
 <script>
   import {onMount, tick} from 'svelte'
   import {fly} from 'svelte/transition'
-  import {EventsOn} from '../wailsjs/runtime/runtime'
+  import {EventsOn, BrowserOpenURL} from '../wailsjs/runtime/runtime'
   import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted, GetCookieStatus, SyncAllGames, DownloadGameUpdate, DownloadAllUpdates, CancelGameUpdate, CancelGameUpdateFor, CancelSync, ProvideUpdateFile, ScanDirectory, FetchCovers, UpgradeCovers, GetGameCount, CheckForUpdate, DownloadUpdate, ApplyUpdate, InstallGame} from '../wailsjs/go/main/App'
   import Sidebar from './lib/Sidebar.svelte'
   import GameList from './lib/GameList.svelte'
@@ -755,9 +755,26 @@
     tick().then(() => gameListRef?.focusSearch())
   }
 
+  // Wails v2 never opens external links on its own — an <a href> click
+  // (target="_blank" emits a create request nothing handles) is swallowed by
+  // the webview, so the link looks clickable but does nothing. Delegate on the
+  // document so every external anchor the app renders — game-profile F95Zone /
+  // Steam / store links, Browse results, update-notes links — opens in the
+  // system browser. Only http(s) is intercepted; anything else falls through
+  // to the webview's default handling.
+  function handleExternalLinkClick(e) {
+    const anchor = e.target?.closest?.('a[href]')
+    if (!anchor) return
+    const url = anchor.getAttribute('href') || ''
+    if (!/^https?:\/\//i.test(url)) return
+    e.preventDefault()
+    BrowserOpenURL(url)
+  }
+
   onMount(() => {
     init()
     window.addEventListener('keydown', handleGlobalKeydown)
+    document.addEventListener('click', handleExternalLinkClick)
     // Live library refresh when the directory watcher finishes an auto-scan.
     subs.push(EventsOn('scan:auto-complete', async (r) => {
       let msg = ''
@@ -945,6 +962,7 @@
     }))
     return () => {
       window.removeEventListener('keydown', handleGlobalKeydown)
+      document.removeEventListener('click', handleExternalLinkClick)
       subs.forEach(unsub => unsub())
       syncPipeline.unsubscribe()
       coverPipeline.unsubscribe()
