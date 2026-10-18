@@ -20,15 +20,16 @@ import (
 	_ "github.com/browserutils/kooky/browser/chrome"
 	_ "github.com/browserutils/kooky/browser/chromium"
 	_ "github.com/browserutils/kooky/browser/edge"
-	_ "github.com/browserutils/kooky/browser/firefox"
+	"github.com/browserutils/kooky/browser/firefox"
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
 
 // cookieCacheTTL bounds how often the browser cookie stores are re-read.
-// Reading every browser profile via kooky is comparatively expensive, while
-// Cloudflare clearance tokens (cf_clearance, __cf_bm) expire in roughly
-// 30 min-2 h — a 60 s cache keeps headers fresh without a kooky read per
-// request, and is shared across all hosts and callers.
+// Reading every browser profile — kooky's set plus every Firefox profile on
+// disk — is comparatively expensive, while Cloudflare clearance tokens
+// (cf_clearance, __cf_bm) expire in roughly 30 min-2 h; a 60 s cache keeps
+// headers fresh without a full read per request, and is shared across all
+// hosts and callers.
 const cookieCacheTTL = 60 * time.Second
 
 // maxCookieHeaderLen caps the Cookie header built for download hosts. Some
@@ -36,7 +37,7 @@ const cookieCacheTTL = 60 * time.Second
 // the most valuable cookie, so the cap only trims low-value extras.
 const maxCookieHeaderLen = 6000
 
-// cookieCache holds the kooky snapshot; refreshed at most once per
+// cookieCache holds the cookie snapshot; refreshed at most once per
 // cookieCacheTTL. The error is kept so callers can distinguish "no cookies
 // stored" from "could not read the stores" and degrade accordingly.
 var cookieCache = struct {
@@ -46,23 +47,91 @@ var cookieCache = struct {
 	at      time.Time
 }{}
 
-// cachedBrowserCookies returns the kooky cookie snapshot, refreshing it at
-// most once per cookieCacheTTL. On refresh failure the previous snapshot is
-// kept (and the error returned) so callers can decide how to degrade.
+// cachedBrowserCookies returns the cookie snapshot, refreshing it at most
+// once per cookieCacheTTL. On refresh failure the previous snapshot is kept
+// (and the error returned) so callers can decide how to degrade.
+//
+// The snapshot spans every browser kooky knows about plus every Firefox
+// profile found on disk — see readExtraFirefoxCookies for why kooky's own
+// profile discovery is not sufficient.
 func cachedBrowserCookies() ([]*kooky.Cookie, error) {
 	cookieCache.mu.Lock()
 	defer cookieCache.mu.Unlock()
 	if cookieCache.at.IsZero() || time.Since(cookieCache.at) > cookieCacheTTL {
-		cookieCache.cookies, cookieCache.readErr = kooky.ReadCookies(context.Background(), kooky.Valid)
+		cookies, err := kooky.ReadCookies(context.Background(), kooky.Valid)
+		cookies = append(cookies, readExtraFirefoxCookies(cookies)...)
+		cookieCache.cookies, cookieCache.readErr = cookies, err
 		cookieCache.at = time.Now()
 	}
 	return cookieCache.cookies, cookieCache.readErr
 }
 
+// firefoxProfileRoots returns the directories that may hold Firefox profile
+// subdirectories. It mirrors kooky's own Firefox roots plus the
+// distro-specific ~/.config/mozilla/firefox location.
+func firefoxProfileRoots() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, "snap", "firefox", "common", ".mozilla", "firefox"),
+		filepath.Join(home, ".mozilla", "firefox"),
+		filepath.Join(home, ".mozilla", "firefox-esr"),
+		filepath.Join(home, ".config", "mozilla", "firefox"),
+	}
+}
+
+// firefoxProfileCookieFiles returns the cookies.sqlite path of every Firefox
+// profile directory found under the known roots.
+//
+// kooky only walks the profiles named in profiles.ini, and on modern Firefox
+// that file is rewritten to point at whichever profile was activated last
+// (and may omit the others entirely). Which profile Firefox last activated has
+// nothing to do with which one the user is logged into, so the raw directory
+// scan is what keeps every profile — including a second window's — reachable.
+func firefoxProfileCookieFiles() []string {
+	var files []string
+	for _, root := range firefoxProfileRoots() {
+		matches, err := filepath.Glob(filepath.Join(root, "*", "cookies.sqlite"))
+		if err != nil {
+			continue
+		}
+		files = append(files, matches...)
+	}
+	return files
+}
+
+// readExtraFirefoxCookies reads every Firefox profile cookies.sqlite the kooky
+// snapshot did not already cover. Files already present in known are skipped by
+// path so a profile is never read twice. Individual profile read failures are
+// ignored: a profile that cannot be read simply contributes no cookies.
+func readExtraFirefoxCookies(known []*kooky.Cookie) []*kooky.Cookie {
+	seen := make(map[string]bool, len(known))
+	for _, c := range known {
+		if c == nil || c.Browser == nil {
+			continue
+		}
+		if path := c.Browser.FilePath(); path != "" {
+			seen[filepath.Clean(path)] = true
+		}
+	}
+	var extra []*kooky.Cookie
+	for _, file := range firefoxProfileCookieFiles() {
+		if seen[filepath.Clean(file)] {
+			continue
+		}
+		cookies, _ := firefox.ReadCookies(context.Background(), file, kooky.Valid)
+		extra = append(extra, cookies...)
+	}
+	return extra
+}
+
 // GetF95Cookies extracts f95zone.to cookies from installed browsers.
 // Returns a Cookie header string suitable for HTTP requests.
-// Checks kooky's standard paths first, then falls back to non-standard
-// locations like ~/.config/mozilla/firefox (used by some distros).
+// Reads every browser store kooky finds plus every Firefox profile on disk
+// (see firefoxProfileCookieFiles), so it does not depend on Firefox's mutable
+// profiles.ini pointer.
 func GetF95Cookies() (string, error) {
 	// No kooky.Domain filter here: kooky's Domain filter matches with exact
 	// equality (cookie.Domain == "f95zone.to"), which drops domain-scoped
@@ -70,21 +139,11 @@ func GetF95Cookies() (string, error) {
 	// All cookies are read and the f95zone filter below runs locally.
 	cookies, kookyErr := cachedBrowserCookies()
 
-	f95 := filterF95Cookies(cookies)
-	// Same cookie name from multiple browsers/profiles (xf_session,
-	// xf_user) would otherwise produce duplicate name=value pairs with
-	// nondeterministic order — keep the newest value per name.
-	f95 = dedupCookies(f95)
+	f95 := selectF95Cookies(cookies)
 
 	if len(f95) > 0 {
 		sort.Slice(f95, func(i, j int) bool { return f95[i].Name < f95[j].Name })
 		return buildCookieHeader(f95), nil
-	}
-
-	// kooky didn't find cookies — try non-standard Firefox profile locations
-	// (e.g. ~/.config/mozilla/firefox used on some distros and custom setups).
-	if cookie, err := tryNonStandardFirefoxPaths(); err == nil && cookie != "" {
-		return cookie, nil
 	}
 
 	msg := "no f95zone.to cookies found in any browser"
@@ -93,6 +152,79 @@ func GetF95Cookies() (string, error) {
 	}
 	msg += "\nMake sure you're logged into f95zone.to in Firefox or Chrome"
 	return "", fmt.Errorf("%s", msg)
+}
+
+// selectF95Cookies returns the F95Zone cookies to send for the login session.
+//
+// A login is a pair — xf_user and xf_session must come from the same store to
+// be accepted — while the snapshot spans every browser and every Firefox
+// profile on disk. Merging purely by name (newest value wins) could therefore
+// pair one profile's xf_user with another profile's xf_session. So the store
+// holding the newest login cookie wins outright, and only names that store
+// lacks (e.g. a cf_clearance held by a profile that is not logged in) are
+// filled in from the remaining stores. With no login cookie anywhere, the
+// cookies are merged by name as before.
+func selectF95Cookies(cookies []*kooky.Cookie) []*kooky.Cookie {
+	f95 := filterF95Cookies(cookies)
+	if len(f95) == 0 {
+		return nil
+	}
+	session := newestF95SessionStore(f95)
+	if session == "" {
+		return dedupCookies(f95)
+	}
+
+	var store []*kooky.Cookie
+	for _, c := range f95 {
+		if c != nil && cookieStoreKey(c) == session {
+			store = append(store, c)
+		}
+	}
+	chosen := dedupCookies(store)
+	seen := make(map[string]bool, len(chosen))
+	for _, c := range chosen {
+		seen[c.Name] = true
+	}
+	for _, c := range dedupCookies(f95) {
+		if c == nil || seen[c.Name] {
+			continue
+		}
+		seen[c.Name] = true
+		chosen = append(chosen, c)
+	}
+	return chosen
+}
+
+// f95SessionCookie reports whether name is one of the F95Zone login cookies.
+func f95SessionCookie(name string) bool {
+	return name == "xf_user" || name == "xf_session"
+}
+
+// newestF95SessionStore returns the store key of the newest F95Zone login
+// cookie, or "" when the cookies contain no login cookie.
+func newestF95SessionStore(f95 []*kooky.Cookie) string {
+	var newest *kooky.Cookie
+	for _, c := range f95 {
+		if c == nil || !f95SessionCookie(c.Name) {
+			continue
+		}
+		if newest == nil || cookieNewer(c, newest) {
+			newest = c
+		}
+	}
+	if newest == nil {
+		return ""
+	}
+	return cookieStoreKey(newest)
+}
+
+// cookieStoreKey identifies the browser profile a cookie came from, so cookies
+// from different stores are never mixed within one login session.
+func cookieStoreKey(c *kooky.Cookie) string {
+	if c == nil || c.Browser == nil {
+		return ""
+	}
+	return c.Browser.Browser() + "\x00" + c.Browser.Profile() + "\x00" + c.Browser.FilePath()
 }
 
 // GetCookiesForHost extracts cookies valid for hostname from installed
@@ -108,20 +240,8 @@ func GetCookiesForHost(hostname string) (string, error) {
 		return "", nil
 	}
 
-	cookies, readErr := cachedBrowserCookies()
-	if header := buildHostCookieHeader(cookies, hostname); header != "" {
-		return header, nil
-	}
-
-	// kooky read failed outright (e.g. distro-specific Firefox profile
-	// paths) — retry through the SQLite fallback. A successful read with no
-	// matching cookies means the browser genuinely has none for this host.
-	if readErr != nil {
-		if header, err := tryNonStandardFirefoxPathsForHost(hostname); err == nil && header != "" {
-			return header, nil
-		}
-	}
-	return "", nil
+	cookies, _ := cachedBrowserCookies()
+	return buildHostCookieHeader(cookies, hostname), nil
 }
 
 // buildHostCookieHeader filters cookies to those valid for hostname, dedups
@@ -337,33 +457,6 @@ func GetCookiesFromSQLite(path, hostname string) (string, error) {
 	}
 	sort.Strings(pairs)
 	return strings.Join(pairs, "; "), nil
-}
-
-// tryNonStandardFirefoxPathsForHost checks Firefox profile locations that
-// kooky doesn't cover (e.g. ~/.config/mozilla/firefox) for cookies matching
-// hostname.
-func tryNonStandardFirefoxPathsForHost(hostname string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	matches, err := filepath.Glob(filepath.Join(home, ".config", "mozilla", "firefox", "*", "cookies.sqlite"))
-	if err != nil || len(matches) == 0 {
-		return "", fmt.Errorf("no cookie stores found in non-standard paths")
-	}
-	for _, match := range matches {
-		cookie, err := GetCookiesFromSQLite(match, hostname)
-		if err == nil && cookie != "" {
-			return cookie, nil
-		}
-	}
-	return "", fmt.Errorf("no %s cookies found in non-standard paths", hostname)
-}
-
-// tryNonStandardFirefoxPaths checks Firefox profile locations that kooky
-// doesn't cover (e.g. ~/.config/mozilla/firefox).
-func tryNonStandardFirefoxPaths() (string, error) {
-	return tryNonStandardFirefoxPathsForHost("f95zone.to")
 }
 
 // f95ZoneDomain reports whether a cookie domain is f95zone.to or one of its
