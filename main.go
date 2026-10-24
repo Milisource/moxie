@@ -116,6 +116,8 @@ func main() {
 			commands.Rename(args[1:])
 		case "check-updates", "updates":
 			commands.CheckUpdates(args[1:])
+		case "auto-update", "auto":
+			commands.AutoUpdate(args[1:])
 		case "sync":
 			commands.Sync(args[1:])
 		case "play":
@@ -205,6 +207,7 @@ F95ZONE
   sync [id] [flags]           Full sync: auto-associate + check version updates
   scrape <id> [flags]         Scrape F95Zone metadata for a game
   check-updates [flags]       Check all games for newer versions on F95Zone
+  auto-update [flags]         Check and install every update that can complete
   refresh-versions [flags]    Re-detect installed versions from folders and game files
   covers upgrade [flags]      Replace landscape/low-res covers with portrait art (Steam, SteamGridDB, VNDB)
 
@@ -262,6 +265,20 @@ COMMON FLAGS
     --cookie-file <path>      Read cookie from file
     --unsafe                  Skip rate limiting (unsafe: may get IP-banned)
     --force                   Re-check even if checked within 24h
+    --auto                    Install updates immediately after checking
+
+  auto-update:
+    --check-only              Only check for updates; do not download
+    --no-check                Skip the check; act on updates already in the DB
+    --dry-run                 Show what would be updated
+    --max <n>                 Update at most n games this run
+    --no-extract              Download only; do not extract/merge
+    --force                   Ignore the 24h cooldown and the retry backoff
+    --platform <p>            linux, windows or macos (default: auto)
+
+  config keys for unattended updates:
+    auto_update               true to update after sync/check-updates/scan --sync
+    auto_update_max           cap the number of games per automatic run
 
   scrape:
     --cookie <str>            Cookie header from browser DevTools

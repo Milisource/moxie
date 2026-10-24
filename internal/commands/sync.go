@@ -64,6 +64,10 @@ type SyncConfig struct {
 	Unsafe     bool
 	Force      bool
 	Parallel   int
+	// AutoUpdate installs updates immediately after the check, even when the
+	// auto_update config key is off (the --auto flag). Config-based runs do
+	// not need this field.
+	AutoUpdate bool
 }
 
 // RunSync performs a full library sync: associate games with F95Zone threads
@@ -113,6 +117,13 @@ func RunSync(database *db.Database, cfg SyncConfig) error {
 
 	updatesFound, _ := RunUpdateCheck(database, client, trackable, cfg.Force, public)
 	fmt.Fprintf(os.Stderr, "\n=== %d updates available ===\n", updatesFound)
+
+	if updatesFound > 0 {
+		runAutoUpdateIfEnabled(database, cookie, client, autoUpdateOptions{
+			Extract: true,
+			Force:   cfg.Force,
+		}, cfg.AutoUpdate)
+	}
 	return nil
 }
 
@@ -248,6 +259,7 @@ func Sync(args []string) {
 	unsafe := fs.Bool("unsafe", false, "Skip rate limiting (unsafe)")
 	force := fs.Bool("force", false, "Force re-check even if checked within 24h")
 	parallel := fs.Int("parallel", 3, "Number of concurrent scrapers (default 3)")
+	auto := fs.Bool("auto", false, "Install updates immediately after checking")
 	// hoistFlags keeps flags written after an id (e.g. `sync <id> --force`)
 	// from being ignored as positional args by stdlib flag parsing.
 	fs.Parse(hoistFlags(args, syncValueFlags))
@@ -274,6 +286,7 @@ func Sync(args []string) {
 		Unsafe:     *unsafe,
 		Force:      *force,
 		Parallel:   *parallel,
+		AutoUpdate: *auto,
 	}
 	if err := RunSync(database, cfg); err != nil {
 		if errors.Is(err, ErrSyncInterrupted) {

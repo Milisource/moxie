@@ -20,6 +20,7 @@ A local game library manager for adult games. Scans directories, detects engines
 | **Scanner** | [scanner.md](scanner.md) | Directory walk, engine detection profiles, exclusion list, limitations |
 | **Scraper** | [scraper.md](scraper.md) | HTTP client, rate limiting, HTML parsing, auto-association |
 | **Downloader** | [downloader.md](downloader.md) | HTTP downloads with resume, host-specific resolvers, progress tracking, SSRF protection, platform priority (Wine/Proton chain), dead link validation |
+| **Updates** | [updates.md](updates.md) | Update queue semantics, staged merge, installed-version recording, auto-update, browser-verification handoff |
 | **Archive** | [archive.md](archive.md) | Archive extraction (.zip, .7z, .rar, .tar.gz), zip-slip protection, system tool fallback |
 | **Saves** | [saves.md](saves.md) | Save-set storage and schema, Ren'Py/RPGM save-path resolution, snapshot/apply/restore semantics, `saves fetch` for F95-posted saves |
 | **Commands** | (this doc) | 30+ CLI handlers: crud, scrape, sync, cleanup, play, steam, rename, config, download |
@@ -95,6 +96,12 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Scraper domain logic extracted — `StripThreadPrefix` moved to `scraper/title.go`, `ApplyThreadData` moved to `scraper/apply.go`
 - [x] Steam domain logic extracted — `ExtractSteamAppID` moved from `commands/steam_artwork.go` to `steam/appid.go`
 - [x] Downloader domain logic extracted — `DetectPlatformFromLink` moved from `commands/scrape.go` to `downloader/detect.go`
+- [x] Update queue excludes downgrades and cosmetic reformats (`version.NeedsUpdate`); `CountGamesNeedingUpdate` shares the same decision
+- [x] `moxie download` records the installed version after a successful merge, so updated games leave the queue instead of re-downloading forever
+- [x] Merge failures are reported as failures (archive kept for retry) instead of being swallowed as warnings
+- [x] `moxie auto-update` with `--check-only`, `--no-check`, `--dry-run`, `--max`, `--force`, a lock file and 30-minute retry backoff
+- [x] Auto-update trigger from `sync`, `check-updates` and post-scan sync via the `auto_update` config key or `--auto`
+- [x] Auto-update installs only unambiguously newer versions; unorderable (`Changed`) candidates are reported for manual review
 - [x] Cross-package deduplication — `IsOnlineOnly`, `ScoreLinkHost`, `ScoreDownloadLink`, `FindMostRecentFile` unified in `downloader/links.go`
 - [x] File separation — 7 monolith files split into 22+ entity-grouped files across all packages (db: entity CRUD, downloader: per-host resolvers, commands: sync/steam/download subcommand files, scraper: parser sub-files)
 - [x] Lipgloss style cache — 14 pre-built engine styles eliminate per-cell allocations

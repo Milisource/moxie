@@ -536,6 +536,7 @@ func CheckUpdates(args []string) {
 	jsonOut := fs.Bool("json", false, "JSON output")
 	unsafe := fs.Bool("unsafe", false, "Skip rate limiting (unsafe)")
 	force := fs.Bool("force", false, "Force re-check even if checked within 24h")
+	auto := fs.Bool("auto", false, "Install updates immediately after checking")
 	// hoistFlags keeps flags written after positional args from being
 	// ignored (check-updates currently takes none, but stay consistent).
 	fs.Parse(hoistFlags(args, syncValueFlags))
@@ -579,5 +580,12 @@ func CheckUpdates(args []string) {
 		if r.IsNew {
 			fmt.Printf("  %s: %s → %s\n", r.Game.Title, r.Current, r.Latest)
 		}
+	}
+
+	if updatesFound > 0 {
+		runAutoUpdateIfEnabled(database, cookie, client, autoUpdateOptions{
+			Extract: true,
+			Force:   *force,
+		}, *auto)
 	}
 }
