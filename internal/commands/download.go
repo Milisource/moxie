@@ -197,10 +197,12 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 	}
 
 	if len(links) > 0 {
-		// F95Zone's /dl/ links point at the post revision that was live
-		// when they were generated; re-scrape so the download matches the
-		// current OP. Without a cookie the stored link is still worth a try.
-		if cookie == "" || !hasF95CheckLinks(links) {
+		// Always refresh from the thread when a session is available: stored
+		// links (masked or /dl/) point at the revision that was live when
+		// they were scraped, so a game updated since the last sync would
+		// otherwise download the previous build. On scrape failure the
+		// stored links still fall through to the ranking below.
+		if cookie == "" {
 			selectedLink = selectBestLinkByPlatform(links, platform)
 		}
 	}

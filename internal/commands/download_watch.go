@@ -32,9 +32,9 @@ func resolveBestLink(database *db.Database, game db.Game, cookie, targetPlatform
 
 	var selectedLink *db.DownloadLink
 	if len(links) > 0 {
-		// Stored /dl/ links point at the revision that was live when they
-		// were generated: re-scrape so the opened page matches the current OP.
-		if cookie == "" || !hasF95CheckLinks(links) {
+		// Refresh from the thread when a session is available so the opened
+		// page matches the current OP; stored links are the fallback.
+		if cookie == "" {
 			selectedLink = selectBestLinkByPlatform(links, platform)
 		}
 	}

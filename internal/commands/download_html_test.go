@@ -139,3 +139,78 @@ func TestApplyHTMLGameInstall_RecordsVersion(t *testing.T) {
 		t.Errorf("stored game = version %q exe %q", stored.Version, stored.ExePath)
 	}
 }
+
+func TestVersionFromFilename(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ in, want string }{
+		{"Ashfall_RPG_v0.4.0.html", "0.4.0"},
+		{"Game-v1.2.zip", "1.2"},
+		{"EraMegatenP_2026.10.02.zip", "2026.10.02"},
+		{"Game_v1.0.2a.zip", "1.0.2a"},
+		{"Cool_Game.zip", ""},
+		{"game.html", ""},
+	}
+	for _, tt := range tests {
+		if got := versionFromFilename(tt.in); got != tt.want {
+			t.Errorf("versionFromFilename(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestSameVersionNumbers(t *testing.T) {
+	t.Parallel()
+	same := [][2]string{{"0.5.0", "0.5"}, {"v0.5", "0.5"}, {"v1.2.0", "1.2"}}
+	for _, p := range same {
+		if !sameVersionNumbers(p[0], p[1]) {
+			t.Errorf("sameVersionNumbers(%q, %q) = false, want true", p[0], p[1])
+		}
+	}
+	diff := [][2]string{{"0.4.0", "0.5"}, {"0.4.0", "0.4.1"}}
+	for _, p := range diff {
+		if sameVersionNumbers(p[0], p[1]) {
+			t.Errorf("sameVersionNumbers(%q, %q) = true, want false", p[0], p[1])
+		}
+	}
+}
+
+// TestApplyHTMLGameInstall_StaleMirrorRecordsPayloadVersion: a mirror serving
+// an older file than the thread's latest must not be recorded as up to date.
+func TestApplyHTMLGameInstall_StaleMirrorRecordsPayloadVersion(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	database, err := db.Open(filepath.Join(base, "moxie.sqlite"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	gameDir := filepath.Join(base, "Game")
+	if err := os.MkdirAll(gameDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	game := &db.Game{
+		Title:         "Ashfall RPG",
+		Engine:        "HTML",
+		Path:          gameDir,
+		EngineSource:  "scan",
+		Version:       "0.3",
+		LatestVersion: "0.5",
+		Status:        "active",
+	}
+	id, err := database.InsertGame(game)
+	if err != nil {
+		t.Fatalf("InsertGame: %v", err)
+	}
+	game.ID = id
+
+	src := filepath.Join(base, "Ashfall_RPG_v0.4.0.html")
+	if err := os.WriteFile(src, []byte("<html>old mirror</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !applyHTMLGameInstall(database, game, src) {
+		t.Fatal("applyHTMLGameInstall returned false")
+	}
+	if game.Version != "0.4.0" {
+		t.Errorf("version = %q, want 0.4.0 (payload version, not thread latest)", game.Version)
+	}
+}

@@ -50,19 +50,6 @@ func selectBestLinkByPlatform(links []db.DownloadLink, targetPlatform downloader
 	return &best.link
 }
 
-// hasF95CheckLinks reports whether any stored link is an F95Zone /dl/
-// download-link page. Those point at the post revision that was live when
-// they were generated, so the caller re-scrapes before downloading to match
-// the current OP (and to pick up a new version).
-func hasF95CheckLinks(links []db.DownloadLink) bool {
-	for _, l := range links {
-		if downloader.IsF95DownloadLink(l.URL) {
-			return true
-		}
-	}
-	return false
-}
-
 // dataHasF95CheckLinks reports whether a freshly scraped link set contains
 // F95Zone's browser-checked /dl/ links.
 func dataHasF95CheckLinks(links []scraper.DownloadLink) bool {

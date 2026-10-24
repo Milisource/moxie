@@ -333,6 +333,8 @@ Only when none applies does it reject with `server returned HTML instead of file
 
 On success the CLI installs the page into the game directory instead of extracting it: the previous entry page is renamed to `<name>.pre-update` (kept for rollback, excluded from the entry scan), `ExePath` points at the new page, and the installed version is recorded. `moxie play` already resolves HTML entry pages inside the game directory.
 
+**Stale mirrors:** before downloading, `download` re-scrapes the thread whenever a session cookie is available, so stored links (masked or `/dl/`) cannot silently deliver the previous build. If the delivered payload's filename declares an older version than the thread (`Ashfall_RPG_v0.4.0.html` vs `v0.5`), the installer records the **payload** version and warns, so the update still shows as pending instead of being falsely marked up to date.
+
 Files that fail validation are typically interstitial HTML pages, captcha walls, or ad pages that malicious or anti-bot-protected hosts serve instead of the real file. The downloader removes the invalid file and the caller's fallback loop tries the next link.
 
 ### Dead Link Validation (`validator.go`)
