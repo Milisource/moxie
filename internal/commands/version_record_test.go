@@ -15,9 +15,11 @@ func TestRecordInstalledVersion(t *testing.T) {
 		archive string
 		want    string
 	}{
-		{"thread version wins", "1.0", "1.1", "Game.zip", "1.1"},
-		{"archive newer than thread", "1.0", "1.1", "Game_v1.2_Win.zip", "1.2"},
-		{"archive older than thread is ignored", "1.0", "1.2", "Game_v1.1_Win.zip", "1.2"},
+		{"thread version stands in without a payload version", "1.0", "1.1", "Game.zip", "1.1"},
+		{"payload newer than thread", "1.0", "1.1", "Game_v1.2_Win.zip", "1.2"},
+		{"payload lags the thread", "0.4", "0.5", "Game_v0.4.5_Win.zip", "0.4.5"},
+		{"payload equals the thread release", "1.0", "1.1", "Game_v1.1.0.zip", "1.1"},
+		{"payload older than current never downgrades", "1.2", "1.3", "Game_v1.1_Win.zip", "1.2"},
 		{"reverted thread never downgrades", "1.2", "1.1", "Game.zip", "1.2"},
 		{"same release is a no-op", "1.0.0", "1.0", "Game.zip", "1.0.0"},
 		{"manual install uses archive name", "0.9", "", "Game_v1.0.zip", "1.0"},
@@ -59,6 +61,9 @@ func TestRecordInstalledVersion(t *testing.T) {
 			}
 			if stored.Version != tt.want {
 				t.Errorf("stored version = %q, want %q", stored.Version, tt.want)
+			}
+			if tt.want != tt.current && stored.VersionSource != "f95" {
+				t.Errorf("version_source = %q, want f95", stored.VersionSource)
 			}
 		})
 	}

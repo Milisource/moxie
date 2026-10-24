@@ -490,7 +490,13 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 			database.UpdateDownload(dlRecord)
 		} else if downloadedFile != "" {
 			// Single-file HTML games: the payload is the game, not an archive.
-			applyHTMLGameInstall(database, game, downloadedFile)
+			if !applyHTMLGameInstall(database, game, downloadedFile) {
+				// A plain executable/patch cannot be merged automatically.
+				// Report it so auto-update does not claim success and requeue.
+				fmt.Fprintf(os.Stderr, "  Downloaded file is not an archive or HTML game: %s\n", downloadedFile)
+				fmt.Fprintf(os.Stderr, "  Install it manually: moxie install %d %s\n", game.ID, downloadedFile)
+				return fmt.Errorf("downloaded file is not an archive or HTML game; install manually")
+			}
 		}
 	}
 
