@@ -13,6 +13,7 @@
     ImportSaveSet, SetSavesLivePath, ScanSaveDirs, PickSaveArchive, PickDirectory,
   } from '../../wailsjs/go/main/App'
   import {formatBytes} from './format.js'
+  import {installPhaseLabel} from './install.js'
   import {engineColor, engineOptions} from './engineColors.js'
   import {safeExternalUrl} from './sanitizeUrl.js'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
@@ -137,16 +138,7 @@
   // A /virtual/ path means the game exists only as an F95Zone reference.
   let needsInstall = $derived(!!detail?.path?.startsWith('/virtual/'))
 
-  let installPhaseLabel = $derived.by(() => {
-    switch (installPhase) {
-      case 'selecting-link': return 'Finding link…'
-      case 'downloading':    return 'Downloading…'
-      case 'extracting':     return 'Extracting…'
-      case 'installing':     return 'Installing…'
-      case 'updating-db':    return 'Finalizing…'
-      default:               return 'Working…'
-    }
-  })
+  let installLabel = $derived(installPhaseLabel(installPhase))
 
   async function loadInstallTargets() {
     try {
@@ -893,7 +885,7 @@
                     disabled={installing || !installDest || installElsewhere}
                     title={installElsewhere ? 'Another install is already running' : undefined}
                   >
-                    {installing ? installPhaseLabel : installElsewhere ? 'Busy…' : '↓ Install'}
+                    {installing ? installLabel : installElsewhere ? 'Busy…' : '↓ Install'}
                   </button>
                 </div>
                 {#if installing && installProgress}
