@@ -825,6 +825,52 @@ func TestParseThreadHTML_TitlePrefixLabels(t *testing.T) {
 
 // TestParseThreadHTML_StatusFromPrefixLabel: a "Completed" prefix label must
 // set the status even though the title no longer contains the word.
+func TestStripAttachmentSignature(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ in, want string }{
+		{
+			"https://attachments.f95zone.to/2024/05/3618062_x.png?h=r8vla&e=1792958400&u=6265512",
+			"https://attachments.f95zone.to/2024/05/3618062_x.png",
+		},
+		{
+			"https://attachments.f95zone.to/2024/05/3618062_x.png",
+			"https://attachments.f95zone.to/2024/05/3618062_x.png",
+		},
+		{
+			// Other hosts are never touched.
+			"https://example.com/a.png?h=1",
+			"https://example.com/a.png?h=1",
+		},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := StripAttachmentSignature(tt.in); got != tt.want {
+			t.Errorf("StripAttachmentSignature(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestParseThreadHTML_StripsCoverSignature(t *testing.T) {
+	t.Parallel()
+
+	html := `<html><body>
+<h1 class="p-title-value">Signed Cover [v1.0]</h1>
+<article class="message-content"><div class="bbWrapper">
+<h2>Overview</h2><p>Story.</p>
+<img data-src="https://attachments.f95zone.to/2024/05/banner.png?h=abc&amp;e=1792958400&amp;u=6265512" class="bbImage" />
+</div></article>
+</body></html>`
+
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	if want := "https://attachments.f95zone.to/2024/05/banner.png"; td.CoverURL != want {
+		t.Errorf("CoverURL = %q, want %q", td.CoverURL, want)
+	}
+}
+
 func TestParseThreadHTML_StatusFromPrefixLabel(t *testing.T) {
 	t.Parallel()
 

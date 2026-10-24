@@ -238,12 +238,13 @@ func (p *PublicAPI) SearchCovers(ctx context.Context, query string) (map[int64]s
 
 // fullResCoverURL rewrites preview.f95zone.to (F95Checker's downscaled
 // 400px CDN) to attachments.f95zone.to, which serves the same path at the
-// original resolution. Other hosts are returned unchanged.
+// original resolution, and drops any short-lived signing params. Other hosts
+// are returned unchanged.
 func fullResCoverURL(u string) string {
 	if strings.HasPrefix(u, "https://preview.f95zone.to/") {
-		return "https://attachments.f95zone.to/" + strings.TrimPrefix(u, "https://preview.f95zone.to/")
+		u = "https://attachments.f95zone.to/" + strings.TrimPrefix(u, "https://preview.f95zone.to/")
 	}
-	return u
+	return StripAttachmentSignature(u)
 }
 
 // CacheThread is the parsed response of the F95Checker cache API /full

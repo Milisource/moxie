@@ -129,6 +129,9 @@ func parseThreadHTML(html string, threadURL string) (*ThreadData, error) {
 			td.CoverURL = img
 		}
 	}
+	// Attachment URLs arrive signed (?h=…&e=…&u=…); store the durable form so
+	// a later cover/save fetch does not depend on a signature that expires.
+	td.CoverURL = StripAttachmentSignature(td.CoverURL)
 	if v, ok := ld["datePublished"].(string); ok {
 		td.PublishedAt = v
 	}

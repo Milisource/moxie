@@ -1,6 +1,7 @@
 package scraper
 
 import (
+	urlpkg "net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -255,6 +256,29 @@ func isValidCoverURL(src string) bool {
 		return false
 	}
 	return true
+}
+
+// StripAttachmentSignature removes F95Zone's short-lived attachment signing
+// parameters (?h=…&e=…&u=…) from an attachments.f95zone.to URL, leaving the
+// durable path. Since 2026-10 the site appends these to OP images and
+// attachment links; a stored signed URL can expire before a later
+// cover/save fetch. The unsigned URL still serves the same file (verified
+// 2026-10-24), and F95Checker's indexer strips them for the same reason.
+// Other hosts and unsigned URLs are returned unchanged.
+func StripAttachmentSignature(raw string) string {
+	u, err := urlpkg.Parse(strings.TrimSpace(raw))
+	if err != nil || !strings.EqualFold(u.Hostname(), "attachments.f95zone.to") {
+		return raw
+	}
+	q := u.Query()
+	if q.Get("h") == "" {
+		return raw
+	}
+	q.Del("h")
+	q.Del("e")
+	q.Del("u")
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // ---------------------------------------------------------------------------

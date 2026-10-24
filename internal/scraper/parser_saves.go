@@ -88,7 +88,7 @@ func extractSaveCandidates(content *goquery.Selection) []SaveCandidate {
 			}
 			seen[href] = true
 			candidates = append(candidates, SaveCandidate{
-				URL:      href,
+				URL:      StripAttachmentSignature(href),
 				Kind:     SaveCandidateAttachment,
 				Host:     "f95zone",
 				Filename: filename,
