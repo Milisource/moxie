@@ -265,6 +265,9 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 			if len(trackable) > 0 {
 				updatesFound, _ := RunUpdateCheck(database, client, trackable, false, public)
 				fmt.Fprintf(os.Stderr, "\n=== %d updates available ===\n", updatesFound)
+				if updatesFound > 0 {
+					runAutoUpdateIfEnabled(database, cookie, client, autoUpdateOptions{Extract: true}, false)
+				}
 			}
 		} else {
 			// Scrape only (no update check).

@@ -107,15 +107,14 @@ func Install(args []string) {
 	}
 	fmt.Fprintf(os.Stderr, "\n")
 
-	// Update version in DB — if the game has a latest_version from F95Zone, use it;
-	// otherwise prompt the user to enter a version (non-interactive, just note it).
-	if game.LatestVersion != "" && game.LatestVersion != game.Version {
-		game.Version = game.LatestVersion
-		if err := database.UpdateGame(game); err != nil {
-			log.Warn("failed to update game version", "game_id", game.ID, "error", err)
-		} else {
-			fmt.Fprintf(os.Stderr, "  Version updated to: %s\n", game.Version)
-		}
+	// Update version in DB — the thread version or the archive name,
+	// whichever is genuinely newer. Older candidates are never written.
+	previousVersion := game.Version
+	if installed, err := recordInstalledVersion(database, game, archivePath); err != nil {
+		log.Warn("failed to update game version", "game_id", game.ID, "error", err)
+		fmt.Fprintf(os.Stderr, "  Warning: could not record version: %v\n", err)
+	} else if installed != previousVersion {
+		fmt.Fprintf(os.Stderr, "  Version updated to: %s\n", installed)
 	} else {
 		fmt.Fprintf(os.Stderr, "  Run 'moxie info %d' to see details, or set version with 'moxie config'\n", game.ID)
 	}

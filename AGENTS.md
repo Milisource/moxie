@@ -55,6 +55,8 @@ Documentation lives in `docs/`. Keep it in sync with code changes — update the
 | `docs/architecture.md` | Package diagram, data flow, design decisions, future path |
 | `docs/scanner.md` | Directory walk algorithm, engine detection profiles |
 | `docs/scraper.md` | HTTP client, rate limiting, HTML parsing, auto-association |
+| `docs/downloader.md` | Download pipeline, host resolvers, gateway hooks, host limits |
+| `docs/updates.md` | Update queue, staged merge, version recording, auto-update, browser-verification handoff |
 | `docs/database.md` | SQLite schema, version tracking, migration strategy |
 | `docs/tui.md` | Bubble Tea model/update/view, keyboard shortcuts, filters |
 | `docs/f95zone-browser-design.md` | F95Zone `/sam/latest_alpha` design reference + Moxie F95Browser.svelte data flow, covers, recommendations status |
