@@ -131,12 +131,27 @@ Installed as `downloader.SetDefaultDLSolver` by `InstallDownloaderFallback()`,
 i.e. only when a click-capable Chrome-family binary exists (the raw-launch
 Firefox engine has no DOM access).
 
+**Human verification handoff (2026-10-24):** when the automated session is met
+with Cloudflare's *"Performing security verification"* page — the failure that
+previously surfaced as `no Continue button on the F95Zone download-link page` —
+the solver no longer fails outright. The headless session returns
+`ErrVerificationPage`, `ResolveDownloadLinkURL` / `ResolveMaskedURL` retry once
+in a **visible browser window** on the same URL, log that the check needs the
+user, and poll until the page moves on (2 min budget, inside the solvers' 5 min
+bound). The user clicks the check in that window and the flow continues by
+itself. If no display server exists (Linux without `DISPLAY`/`WAYLAND_DISPLAY`),
+the retry is skipped and the error tells the user to run
+`moxie download --open <id>` (or `--extension`). The same 2 min window is
+granted to a visible session that is still sitting on an hCaptcha image
+challenge after the click budget, so a human can finish it there too.
+
 **Known limitation (verified live):** automation-detected sessions cannot mint
 an hCaptcha token. Playwright/rod reach the check page, click Continue, and get
 *"The check wasn't passed"*; rod additionally trips Cloudflare's managed
-challenge on the copied profile. The user's own browser passes the check
-normally, so `moxie download --open <id>` (fresh link → default browser) is the
-reliable fallback and is what the CLI suggests when every link fails.
+challenge on the copied profile. The visible-window handoff above is the
+in-tool path for those checks; the user's own browser still passes them most
+reliably, so `moxie download --open <id>` (fresh link → default browser)
+remains the fallback the CLI suggests when every link fails.
 
 ## Firefox engine (raw-launch, zero new deps)
 

@@ -2,6 +2,7 @@ package browserresolve
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -17,6 +18,12 @@ import (
 // the host or to the older /masked/ interstitial, which this function also
 // clicks through.
 //
+// When the automated session is met with Cloudflare's "Performing security
+// verification" page instead, the check needs a human. The headless attempt
+// fails with ErrVerificationPage and the URL is retried once in a visible
+// browser window; the user passes the check there and the flow continues by
+// itself.
+//
 // Requires the click-capable Chrome-family engine; auto selection prefers
 // rod for /dl/ URLs.
 func ResolveDownloadLinkURL(ctx context.Context, dlURL string, opts ...Option) (string, error) {
@@ -24,6 +31,19 @@ func ResolveDownloadLinkURL(ctx context.Context, dlURL string, opts ...Option) (
 	for _, f := range opts {
 		f(&o)
 	}
+	dest, err := resolveDownloadLinkAttempt(ctx, o, dlURL)
+	if err == nil || !errors.Is(err, ErrVerificationPage) {
+		return dest, err
+	}
+	return retryHeadful(ctx, o, err, func(ctx context.Context, o Options) (string, error) {
+		return resolveDownloadLinkAttempt(ctx, o, dlURL)
+	})
+}
+
+// resolveDownloadLinkAttempt is one browser session for a /dl/ link: engine
+// selection, profile discovery/copy, then the click flow. The profile copy is
+// per attempt so a visible retry starts clean.
+func resolveDownloadLinkAttempt(ctx context.Context, o Options, dlURL string) (string, error) {
 	eng, err := selectEngine(&o, dlURL)
 	if err != nil {
 		return "", err

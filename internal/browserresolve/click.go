@@ -254,7 +254,7 @@ func pageURL(page *rod.Page) string {
 // navigates away from the interstitial. Only masked-page triggers are
 // used — generic download buttons must NOT be clicked here: the
 // destination page's own buttons would start downloads.
-func clickMaskedFlow(ctx context.Context, page *rod.Page, maskedURL string) (string, error) {
+func clickMaskedFlow(ctx context.Context, page *rod.Page, maskedURL string, waitForHuman bool) (string, error) {
 	first := true
 	for click := 0; click < maxDownloadClicks; click++ {
 		if ctx.Err() != nil {
@@ -264,6 +264,11 @@ func clickMaskedFlow(ctx context.Context, page *rod.Page, maskedURL string) (str
 		// captcha) can complete before the settle below — check first.
 		if dest, ok := waitForMaskedDestination(ctx, page, maskedURL, 2*time.Second); ok {
 			return dest, nil
+		}
+		// Cloudflare's managed challenge can gate the interstitial itself;
+		// headless fails it, headful waits for the user to pass it.
+		if err := verificationGate(ctx, page, waitForHuman); err != nil {
+			return "", err
 		}
 		timeout := clickElementTimeout
 		if first {
@@ -303,6 +308,14 @@ func clickMaskedFlow(ctx context.Context, page *rod.Page, maskedURL string) (str
 		log.Debug("browserresolve: no masked trigger on page", "url", pageURL(page))
 		return "", fmt.Errorf("no Continue link or reCAPTCHA checkbox on the masked page")
 	}
+	// A visible session may still have a human challenge on screen; give the
+	// user the same window a verification page gets instead of failing on
+	// the click budget.
+	if waitForHuman {
+		if dest, ok := waitForMaskedDestination(ctx, page, maskedURL, verificationWaitTimeout); ok {
+			return dest, nil
+		}
+	}
 	return "", fmt.Errorf("masked page did not navigate to the real host within %d clicks", maxDownloadClicks)
 }
 
@@ -311,7 +324,7 @@ func clickMaskedFlow(ctx context.Context, page *rod.Page, maskedURL string) (str
 // that only a browser can satisfy; pressing Continue submits the form and
 // the server answers with a page whose data-url is the destination (or the
 // older /masked/ interstitial, which is clicked through as well).
-func clickDownloadLinkFlow(ctx context.Context, page *rod.Page, startURL string) (string, error) {
+func clickDownloadLinkFlow(ctx context.Context, page *rod.Page, startURL string, waitForHuman bool) (string, error) {
 	first := true
 	for click := 0; click < maxDownloadClicks; click++ {
 		if ctx.Err() != nil {
@@ -322,6 +335,12 @@ func clickDownloadLinkFlow(ctx context.Context, page *rod.Page, startURL string)
 		}
 		if reason := f95InterstitialError(page); reason != "" {
 			return "", fmt.Errorf("%s — the link expired or the check was rate-limited; re-scrape the thread for a fresh link", reason)
+		}
+		// Cloudflare's managed challenge in front of the check page needs a
+		// human: headless fails with ErrVerificationPage (the caller retries
+		// in a visible window), headful waits for the user to pass it.
+		if err := verificationGate(ctx, page, waitForHuman); err != nil {
+			return "", err
 		}
 
 		timeout := clickElementTimeout
@@ -357,8 +376,19 @@ func clickDownloadLinkFlow(ctx context.Context, page *rod.Page, startURL string)
 			if reason := f95InterstitialError(page); reason != "" {
 				return "", fmt.Errorf("%s — the link expired or the check was rate-limited; re-scrape the thread for a fresh link", reason)
 			}
+			if err := verificationGate(ctx, page, waitForHuman); err != nil {
+				return "", err
+			}
 			log.Debug("browserresolve: no download-link trigger on page", "url", pageURL(page))
 			return "", fmt.Errorf("no Continue button on the F95Zone download-link page (url=%s, text=%q)", pageURL(page), pageTextSnippet(page))
+		}
+	}
+	// A visible session may still have a human challenge on screen; give the
+	// user the same window a verification page gets instead of failing on
+	// the click budget.
+	if waitForHuman {
+		if dest, ok := waitForMaskedDestination(ctx, page, startURL, verificationWaitTimeout); ok {
+			return dest, nil
 		}
 	}
 	return "", fmt.Errorf("F95Zone download-link page did not reach the host within %d clicks", maxDownloadClicks)

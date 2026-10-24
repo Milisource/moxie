@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/go-rod/rod/lib/launcher"
 )
 
 // ---------------------------------------------------------------------------
@@ -47,6 +49,21 @@ func TestLaunchFlagsAlwaysPinUserDataDir(t *testing.T) {
 		want := "--user-data-dir=/tmp/pinned"
 		if !slices.Contains(args, want) {
 			t.Errorf("launchFlags(headful=%v) missing %q: %v", headful, want, args)
+		}
+	}
+}
+
+// TestApplyLaunchFlagsHeadfulRemovesRodDefault guards the visible-window
+// handoff: rod enables --headless by default, so a headful session must delete
+// it or the human verification window never appears.
+func TestApplyLaunchFlagsHeadfulRemovesRodDefault(t *testing.T) {
+	t.Parallel()
+	for _, headful := range []bool{false, true} {
+		l := launcher.New()
+		applyLaunchFlags(l, launchFlags("/tmp/pinned", headful), headful)
+		got := strings.Join(l.FormatArgs(), " ")
+		if headless := strings.Contains(got, "--headless"); headless == headful {
+			t.Errorf("headful=%v launched with headless=%v: %s", headful, headless, got)
 		}
 	}
 }

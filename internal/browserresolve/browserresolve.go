@@ -63,6 +63,12 @@ var (
 	// HTML page instead of a file — a CAPTCHA or challenge the automated
 	// session could not clear.
 	ErrChallengePage = errors.New("browserresolve: server returned an HTML challenge page instead of a file")
+	// ErrVerificationPage means the site served its bot-verification
+	// interstitial (Cloudflare "Performing security verification") in front
+	// of the download page. Only a human can clear it, so the solvers retry
+	// in a visible browser window and wait; when that wait is not possible
+	// the error carries the manual fallback.
+	ErrVerificationPage = errors.New("browserresolve: site requires a human-completed security verification")
 )
 
 // Defaults for the ResolveDownload timeouts. A whole session budgets

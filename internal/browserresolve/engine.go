@@ -128,7 +128,7 @@ func detectBrowserBinary() (string, error) {
 // Brave profiles core-dump at startup). The webdriver signal is patched
 // instead via script injection in open() (EvalOnNewDocument), which has
 // the same effect without the launch flag.
-func applyLaunchFlags(l *launcher.Launcher, args []string) {
+func applyLaunchFlags(l *launcher.Launcher, args []string, headful bool) {
 	for _, arg := range args {
 		name, val, hasVal := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
 		if hasVal {
@@ -136,6 +136,11 @@ func applyLaunchFlags(l *launcher.Launcher, args []string) {
 		} else {
 			l.Set(flags.Flag(name))
 		}
+	}
+	// rod enables --headless by default. Without this deletion a headful
+	// session (the human verification handoff) would still launch windowless.
+	if headful {
+		l.Delete(flags.Flag("headless"))
 	}
 	l.Delete(flags.Flag("enable-automation"))
 }
@@ -169,7 +174,7 @@ func (e *rodEngine) open(ctx context.Context, req engineRequest) (b *rod.Browser
 	if bin != "" {
 		l.Bin(bin)
 	}
-	applyLaunchFlags(l, launchFlags(req.profileDir, e.opts.Headful))
+	applyLaunchFlags(l, launchFlags(req.profileDir, e.opts.Headful), e.opts.Headful)
 
 	u, err := l.Launch()
 	if err != nil {
@@ -247,7 +252,7 @@ func (e *rodEngine) resolveMasked(ctx context.Context, req engineRequest) (strin
 		log.Debug("browserresolve: masked flow download behavior failed", "error", err)
 	}
 
-	dest, err := clickMaskedFlow(ctx, page, req.url)
+	dest, err := clickMaskedFlow(ctx, page, req.url, e.opts.Headful)
 	if err != nil {
 		return "", fmt.Errorf("browserresolve: masked unwrap in browser: %w", err)
 	}
@@ -272,7 +277,7 @@ func (e *rodEngine) resolveDownloadLink(ctx context.Context, req engineRequest) 
 		log.Debug("browserresolve: download-link flow download behavior failed", "error", err)
 	}
 
-	dest, err := clickDownloadLinkFlow(ctx, page, req.url)
+	dest, err := clickDownloadLinkFlow(ctx, page, req.url, e.opts.Headful)
 	if err != nil {
 		return "", fmt.Errorf("browserresolve: download-link unwrap in browser: %w", err)
 	}

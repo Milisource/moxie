@@ -121,6 +121,12 @@ The browser fallback is installed by default when a supported browser exists
 pages are handed to the real browser; the Go client downloads the revealed URL
 with resume and progress. There is no captcha-solving code in moxie.
 
+When the automated session hits Cloudflare's *"Performing security
+verification"* page (most often in front of F95Zone's `/dl/` check page), the
+solver retries once in a visible browser window and waits up to two minutes for
+the user to pass the check; unattended runs on display-less machines cannot do
+that and stop with a "needs a browser check" error.
+
 A game that still fails for a verification reason is reported as needing a
 browser check. Re-running after the browser has cleared the site's check (or
 with fresh cookies) retries it.
