@@ -2398,7 +2398,7 @@ func (a *App) GetThreadPreview(url string) (*ThreadPreview, error) {
 	}
 
 	prefix := scraper.ThreadEngine(data)
-	cleanTitle := strings.TrimSpace(scraper.StripThreadPrefix(data.Title))
+	cleanTitle := strings.TrimSpace(scraper.ThreadTitle(data))
 	if cleanTitle == "" {
 		cleanTitle = data.Title
 	}
@@ -2466,14 +2466,15 @@ func (a *App) AddGameFromF95Zone(url, title, engineName string) (int64, error) {
 	engineName = string(engine.Normalize(engineName))
 
 	// Build the game record. Since this game is not locally installed,
-	// use the thread title (sanitized) as a virtual path identifier.
-	gameTitle := data.Title
-	if title != "" {
-		gameTitle = title
-	}
-	cleanTitle := strings.TrimSpace(scraper.StripThreadPrefix(gameTitle))
+	// use the thread title (sanitized) as a virtual path identifier. A title
+	// supplied by the caller (the preview) is already clean; a scraped title
+	// may still need legacy prefix stripping when no labels were parsed.
+	cleanTitle := strings.TrimSpace(title)
 	if cleanTitle == "" {
-		cleanTitle = gameTitle
+		cleanTitle = strings.TrimSpace(scraper.ThreadTitle(data))
+	}
+	if cleanTitle == "" {
+		cleanTitle = data.Title
 	}
 
 	// Extract thread ID from thread data.
@@ -4180,7 +4181,7 @@ func (a *App) associateGame(ctx context.Context, game *db.Game, query string, de
 	// positively contradicting engine means this thread belongs to a
 	// different game.
 	if eng := ct.Engine; eng != "" {
-		if !engine.EngineMatchesThread(detEngine, []string{eng}, best.Title) {
+		if !engine.EngineMatchesThread(detEngine, nil, []string{eng}, best.Title) {
 			slog.Warn("engine mismatch; skipping association",
 				"game", game.Title, "engine", detEngine.Engine, "thread", best.Title)
 			return false, false, false
@@ -4230,7 +4231,7 @@ func (a *App) associateByScrape(ctx context.Context, game *db.Game, url string, 
 	// Engine-consistency refusal (CLI sync.go:616): scraped metadata that
 	// positively contradicts the detected engine means this is the wrong
 	// thread — never associate it.
-	if !engine.EngineMatchesThread(detEngine, data.Tags, data.Title) {
+	if !engine.EngineMatchesThread(detEngine, data.Prefixes, data.Tags, data.Title) {
 		slog.Warn("engine mismatch; skipping association",
 			"game", game.Title, "engine", detEngine.Engine, "thread", data.Title)
 		return false, false

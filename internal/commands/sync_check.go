@@ -438,7 +438,7 @@ func runDirectUpdateCheck(database *db.Database, client *scraper.Client, games [
 			// Signal: check for engine mismatch between scanner and F95Zone metadata.
 			var engineWarn string
 			detEngine := engine.Detect(g.Path)
-			if !engine.EngineMatchesThread(detEngine, data.Tags, data.Title) {
+			if !engine.EngineMatchesThread(detEngine, data.Prefixes, data.Tags, data.Title) {
 				engineWarn = fmt.Sprintf(" ! engine mismatch (scanner: %s)",
 					detEngine.Engine)
 			}

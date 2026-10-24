@@ -601,7 +601,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 						// type is absent, skip the check: the direct-scrape
 						// path validates with real content tags.
 						eng := ct.Engine
-						if eng != "" && !engine.EngineMatchesThread(detEngine, []string{eng}, best.Title) {
+						if eng != "" && !engine.EngineMatchesThread(detEngine, nil, []string{eng}, best.Title) {
 							atomic.AddInt64(&completedCount, 1)
 							resultCh <- workResult{
 								game: game, query: query,
@@ -700,7 +700,7 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 				}
 
 				// Check engine consistency.
-				if !engine.EngineMatchesThread(detEngine, data.Tags, best.Title) {
+				if !engine.EngineMatchesThread(detEngine, data.Prefixes, data.Tags, best.Title) {
 					atomic.AddInt64(&completedCount, 1)
 					resultCh <- workResult{
 						game: game, query: query,

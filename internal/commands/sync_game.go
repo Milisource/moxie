@@ -121,7 +121,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 		// Check engine consistency before associating (skip when
 		// using cached association — already verified previously).
 		if !fromCache {
-			if !engine.EngineMatchesThread(detEngine, data.Tags, best.Title) {
+			if !engine.EngineMatchesThread(detEngine, data.Prefixes, data.Tags, best.Title) {
 				result.EngineMismatch = true
 				if interactive {
 					fmt.Fprintf(os.Stderr, "  ! Engine mismatch (scanner: %s, thread: %q, tags: %s)\n",
@@ -191,7 +191,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 
 		// Signal: check engine consistency with freshly scraped metadata.
 		detEngine := engine.Detect(game.Path)
-		if !engine.EngineMatchesThread(detEngine, data.Tags, data.Title) {
+		if !engine.EngineMatchesThread(detEngine, data.Prefixes, data.Tags, data.Title) {
 			result.EngineMismatch = true
 		}
 

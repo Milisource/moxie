@@ -138,10 +138,41 @@ func TestEngineMatchesThread(t *testing.T) {
 	tests := []struct {
 		name     string
 		detected Result
+		prefixes []string
 		tags     []string
 		title    string
 		want     bool
 	}{
+		// === Prefix labels (scraped threads) ===
+		{
+			name:     "RPGM detected, prefix label says RPGM and title is clean",
+			detected: Result{Engine: RPGM},
+			prefixes: []string{"RPGM", "Completed"},
+			title:    "Slave Princess Elnea",
+			want:     true,
+		},
+		{
+			name:     "RenPy detected, prefix label says Ren'Py and title is clean",
+			detected: Result{Engine: RenPy},
+			prefixes: []string{"VN", "Ren'Py"},
+			title:    "FurrHouse",
+			want:     true,
+		},
+		{
+			name:     "Unity detected, prefix label says RPGM — true mismatch",
+			detected: Result{Engine: Unity},
+			prefixes: []string{"RPGM", "Completed"},
+			title:    "Some Game",
+			want:     false,
+		},
+		{
+			name:     "HTML detected, prefix label says RPGM — compatible",
+			detected: Result{Engine: HTML},
+			prefixes: []string{"RPGM"},
+			title:    "Some Game",
+			want:     true,
+		},
+
 		// === Title prefix matches (primary signal) ===
 		{
 			name:     "Unity detected, search result title has Unity prefix",
@@ -275,10 +306,10 @@ func TestEngineMatchesThread(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := EngineMatchesThread(tt.detected, tt.tags, tt.title)
+			got := EngineMatchesThread(tt.detected, tt.prefixes, tt.tags, tt.title)
 			if got != tt.want {
-				t.Errorf("EngineMatchesThread(%v, %v, %q) = %v, want %v",
-					tt.detected, tt.tags, tt.title, got, tt.want)
+				t.Errorf("EngineMatchesThread(%v, %v, %v, %q) = %v, want %v",
+					tt.detected, tt.prefixes, tt.tags, tt.title, got, tt.want)
 			}
 		})
 	}

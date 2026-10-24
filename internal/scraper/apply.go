@@ -38,6 +38,19 @@ func ThreadEngine(data *ThreadData) string {
 	return engine.ExtractEngineFromTitle(data.Title)
 }
 
+// ThreadTitle returns the game title from scraped thread data. The current
+// parser strips F95Zone's prefix labels out of the title and exposes them in
+// Prefixes, so stripping again would eat a legitimate leading word (a game
+// genuinely titled "Unity of Command", for example). Thread data without
+// prefixes is legacy or externally constructed and keeps the old strip
+// behaviour.
+func ThreadTitle(data *ThreadData) string {
+	if len(data.Prefixes) > 0 {
+		return data.Title
+	}
+	return StripThreadPrefix(data.Title)
+}
+
 // ApplyThreadData copies scraped ThreadData fields onto a Game.
 // Non-empty fields in data overwrite the corresponding game fields.
 func ApplyThreadData(game *db.Game, data *ThreadData, url string) {
@@ -48,7 +61,7 @@ func ApplyThreadData(game *db.Game, data *ThreadData, url string) {
 				game.EngineSource = "f95"
 			}
 		}
-		game.Title = StripThreadPrefix(data.Title)
+		game.Title = ThreadTitle(data)
 	}
 	if data.Version != "" {
 		// LatestVersion always tracks the F95Zone version for
