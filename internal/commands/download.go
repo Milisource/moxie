@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"github.com/mili/moxie/internal/browserresolve"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
+	"github.com/mili/moxie/internal/extensionbridge"
 	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/updater"
@@ -29,6 +31,7 @@ func Download(args []string) {
 	platform := fs.String("platform", "", "Platform preference (linux/windows/macos/all, default: auto-detect)")
 	all := fs.Bool("all", false, "Download all games with pending updates")
 	open := fs.Bool("open", false, "Open download links in browser instead of direct download (bypasses bot detection)")
+	extBridge := fs.Bool("extension", false, "Resolve /dl/ check pages in your browser via the moxie-bridge extension, then download automatically (implies browser-assisted flow)")
 	watch := fs.Bool("watch", false, "Watch download directory for new files and auto-install (use with --open)")
 	browserDir := fs.String("browser-dir", "", "Browser download directory to watch (default: ~/Downloads)")
 	verbose := fs.Bool("verbose", false, "Verbose logging (debug level)")
@@ -57,6 +60,32 @@ func Download(args []string) {
 	// browser is installed (MOXIE_BROWSER=auto|chrome|firefox); the Go path
 	// stays primary.
 	browserresolve.InstallDownloaderFallback()
+
+	// --extension: resolve F95Zone /dl/ check pages in the user's own browser
+	// (where hCaptcha passes) instead of the automated browser. Overrides the
+	// browser /dl/ solver installed above; the rest of the pipeline is
+	// unchanged.
+	if *extBridge {
+		bridge, err := extensionbridge.New(extensionbridge.WithOpener(openURL))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error starting the extension bridge: %v\n", err)
+			os.Exit(1)
+		}
+		defer bridge.Close()
+		var extTimedOut bool
+		downloader.SetDefaultDLSolver(func(ctx context.Context, dlURL string) (string, error) {
+			if extTimedOut {
+				return "", fmt.Errorf("extension check already timed out — re-run `moxie download --extension` when you can pass the check")
+			}
+			fmt.Fprintf(os.Stderr, "  Opening F95Zone's check in your browser (port %d) — pass it there and the download continues automatically...\n", bridge.Port())
+			dest, err := bridge.Resolve(ctx, dlURL)
+			if errors.Is(err, context.DeadlineExceeded) {
+				extTimedOut = true
+			}
+			return dest, err
+		})
+		fmt.Fprintf(os.Stderr, "Extension bridge listening on 127.0.0.1:%d\n", bridge.Port())
+	}
 
 	cookie := ResolveCookie(*cookieStr, *cookieFile)
 

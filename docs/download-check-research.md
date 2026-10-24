@@ -141,13 +141,33 @@ session on a residential IP and still gets the active widget, this would only
 reduce challenge frequency, not remove it. No advantage over option 1 for a
 single-user desktop tool.
 
-### 6. Browser-extension bridge (XLibrary model)
+### 6. Browser-extension bridge (XLibrary model) — prototype implemented
 
-A small extension performs the click inside the user's real browser and hands
-the resolved URL back to moxie (e.g. via a localhost callback). Best UX if the
-project wants full automation **with** a human check, but it is a separate
-distribution surface (extension store, permissions, updates) — not worth it
-for the current CLI/desktop scope.
+A small extension performs the check inside the user's real browser and hands
+the resolved URL back to moxie over a loopback callback. This is the best UX
+short of a full integrated webview: the human still passes the captcha, but
+moxie keeps its normal download pipeline (progress, resume, archive, install).
+
+Prototype: [`extensions/moxie-bridge/`](../extensions/moxie-bridge/README.md)
+(Chrome MV3 + Firefox MV2) and `moxie download --extension`.
+
+Flow:
+
+```
+moxie: loopback listener on 127.0.0.1:<port>, single-use token
+  → opens /dl/…?#moxie=<port>:<token>  (fragment never reaches F95Zone)
+extension: content script reads fragment → background watches that tab
+  → POST 127.0.0.1:<port>/resolved {token,url} once the tab leaves f95zone.to
+moxie: validates token + destination host, downloads the URL normally
+```
+
+Security: loopback bind, random single-use token per resolve, F95Zone-internal
+destinations rejected, 10-minute timeout, `127.0.0.1` only. The extension is
+loaded unpacked (no store listing) and matches only `https://f95zone.to/dl/*`.
+
+Trade-offs: a separate distribution surface (extension permissions/updates),
+and the user must install it once per browser profile. It is opt-in
+(`--extension`); the default remains browser attempt → `--open`.
 
 ---
 
@@ -157,10 +177,13 @@ for the current CLI/desktop scope.
    is the correct flow and will work on setups hCaptcha does not flag
    (e.g. a real non-CDP browser, or when the user solves the widget).
 2. **Always offer `--open`** on failure with the exact command (implemented).
-3. **Add donor DDL** support behind a capability probe; it is the only clean
-   automated path. Filed as a follow-up.
-4. **Do not** ship captcha-solver integrations or accessibility-cookie
+3. **Offer `--extension`** for users who want the download to continue
+   automatically after they pass the check once (prototype implemented; see
+   option 6).
+4. **Add donor DDL** support behind a capability probe; it is the only clean
+   automated path with no human step. Filed as a follow-up (`F95-m8tz`).
+5. **Do not** ship captcha-solver integrations or accessibility-cookie
    automation.
-5. **Strip attachment signatures** from stored cover/save URLs (implemented):
+6. **Strip attachment signatures** from stored cover/save URLs (implemented):
    unsigned `attachments.f95zone.to` URLs still work, and stored signed URLs
    would expire before a later fetch. F95Checker applies the same fix.
