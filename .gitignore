@@ -39,3 +39,6 @@ EchoesVault/
 # Scraper work products (downloaded site-theme assets, accidentally committed once)
 internal/css.css
 internal/style.css
+
+# moxie-bridge: generated from manifest.chrome.json / manifest.firefox.json
+extensions/moxie-bridge/manifest.json
