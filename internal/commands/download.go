@@ -168,7 +168,12 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 	}
 
 	if len(links) > 0 {
-		selectedLink = selectBestLinkByPlatform(links, platform)
+		// F95Zone's /dl/ links point at the post revision that was live
+		// when they were generated; re-scrape so the download matches the
+		// current OP. Without a cookie the stored link is still worth a try.
+		if cookie == "" || !hasF95CheckLinks(links) {
+			selectedLink = selectBestLinkByPlatform(links, platform)
+		}
 	}
 
 	// Fall back to scraping F95Zone
@@ -195,6 +200,14 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 						Platform: db.Platform(linkPlatform),
 					}
 					database.CreateDownloadLink(link)
+				}
+				// The thread page exposes only browser-checked /dl/ links;
+				// add the cache API's still-unwrappable /masked/ links for
+				// the same version so a failed check still has a path.
+				if dataHasF95CheckLinks(data.DownloadLinks) {
+					if added := addCacheDownloadLinks(database, game, data, cookie); added > 0 {
+						fmt.Fprintf(os.Stderr, "  Added %d cache fallback link(s)\n", added)
+					}
 				}
 				links, _ = database.ListDownloadLinks(game.ID, "", false)
 				selectedLink = selectBestLinkByPlatform(links, platform)
@@ -344,6 +357,10 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 
 		log.Error("download failed (all links exhausted)", "game_id", game.ID, "links_tried", len(scored), "error", lastErr)
 		fmt.Fprintf(os.Stderr, "  ✗ Failed: %s\n", lastErr.Error())
+		if containsF95CheckLink(groupLinks) {
+			fmt.Fprintf(os.Stderr, "  F95Zone now gates every download link behind a human hCaptcha check.\n")
+			fmt.Fprintf(os.Stderr, "  Open the game's links in your browser instead: moxie download --open %d\n", game.ID)
+		}
 		return lastErr
 	}
 

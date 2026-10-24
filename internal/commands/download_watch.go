@@ -32,7 +32,11 @@ func resolveBestLink(database *db.Database, game db.Game, cookie, targetPlatform
 
 	var selectedLink *db.DownloadLink
 	if len(links) > 0 {
-		selectedLink = selectBestLinkByPlatform(links, platform)
+		// Stored /dl/ links point at the revision that was live when they
+		// were generated: re-scrape so the opened page matches the current OP.
+		if cookie == "" || !hasF95CheckLinks(links) {
+			selectedLink = selectBestLinkByPlatform(links, platform)
+		}
 	}
 
 	// Fall back to scraping F95Zone.
@@ -55,6 +59,9 @@ func resolveBestLink(database *db.Database, game db.Game, cookie, targetPlatform
 					Platform: db.Platform(linkPlatform),
 				}
 				database.CreateDownloadLink(link)
+			}
+			if dataHasF95CheckLinks(data.DownloadLinks) {
+				addCacheDownloadLinks(database, &game, data, cookie)
 			}
 			links, _ = database.ListDownloadLinks(game.ID, "", false)
 			selectedLink = selectBestLinkByPlatform(links, platform)

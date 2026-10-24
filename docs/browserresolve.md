@@ -106,6 +106,38 @@ Brave, Firefox) on any of the three target OSes (Linux, macOS, Windows).
   out unless the resolved URL starts the download on navigation. Click
   automation is a future rod/CDP enhancement (see F95-* follow-up).
 
+## F95Zone /dl/ download links (2026-10-24)
+
+F95Zone replaced the masked-only link format: every thread download anchor now
+points at `https://f95zone.to/dl/<postID>/?u=…&k=…&r=…&t=…`, which serves a
+"Just a quick check" page. The page combines an **hCaptcha** (rendered visibly
+via the site's own `captcha.js`; the `?captcha=xenforo` alternative renders
+XenForo's invisible hCaptcha) with a script check (`data-code` → base64/reversed
+value posted as `w`). The script check alone is not enough — the server answers
+*"The check wasn't passed."* without an hCaptcha token, and the token cannot be
+minted outside a browser. Verified 2026-10-24.
+
+`ResolveDownloadLinkURL(ctx, dlURL)` drives the page in the rod engine:
+
+1. navigate to the `/dl/` URL (session cookies injected from every kooky store);
+2. click `button.js-f95dlContinue`; the page's script submits the check form;
+3. the response embeds the destination in a `f95dl-go` element (`data-url`),
+   which the page replaces itself with — poll the URL until it leaves
+   `f95zone.to`;
+4. if it hands off to the older `/masked/` interstitial, the same click loop
+   presses `a.host_link` and the reCAPTCHA checkbox.
+
+Installed as `downloader.SetDefaultDLSolver` by `InstallDownloaderFallback()`,
+i.e. only when a click-capable Chrome-family binary exists (the raw-launch
+Firefox engine has no DOM access).
+
+**Known limitation (verified live):** automation-detected sessions cannot mint
+an hCaptcha token. Playwright/rod reach the check page, click Continue, and get
+*"The check wasn't passed"*; rod additionally trips Cloudflare's managed
+challenge on the copied profile. The user's own browser passes the check
+normally, so `moxie download --open <id>` (fresh link → default browser) is the
+reliable fallback and is what the CLI suggests when every link fails.
+
 ## Firefox engine (raw-launch, zero new deps)
 
 Instead of CDP (rod does not support Firefox; playwright-go would add ~50 MB

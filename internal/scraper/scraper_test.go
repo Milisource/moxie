@@ -96,6 +96,10 @@ func TestExtractThreadID_Valid(t *testing.T) {
 		{"https://f95zone.to/threads/game-name.12345/", 12345},
 		{"https://f95zone.to/threads/some-long-slug.67890/", 67890},
 		{"https://f95zone.to/threads/a.b.c.111/", 111},
+		// Slug-agnostic form built by ThreadURL / ResolveScrapeURL.
+		{"https://f95zone.to/threads/180466/", 180466},
+		{"https://f95zone.to/threads/180466", 180466},
+		{"https://f95zone.to/threads/180466/page-2", 180466},
 	}
 	for _, tt := range tests {
 		t.Run(tt.url, func(t *testing.T) {
@@ -777,6 +781,104 @@ func threadHTMLWith(title, body string) string {
 <h1 class="p-title-value">` + title + `</h1>
 <article class="message-content"><div class="bbWrapper">` + body + `</div></article>
 </body></html>`
+}
+
+// TestParseThreadHTML_TitlePrefixLabels: F95Zone renders the thread's
+// engine/status/category prefixes inside h1.p-title-value as
+// span.p-title-prefix links. Reading the h1 text verbatim turned "FurrHouse"
+// into "VN Ren'Py FurrHouse" and "Noxian Nights" into
+// "RPGM Completed Noxian Nights"; the labels belong in Prefixes, and the
+// status must still be detected from them.
+func TestParseThreadHTML_TitlePrefixLabels(t *testing.T) {
+	t.Parallel()
+
+	html := `<html><body>
+<h1 class="p-title-value"><span class="p-title-prefix"><a href="/forums/games.2/?prefix_id=13"><span class="label label--red">VN</span></a><span class="label-append">&nbsp;</span><a href="/forums/games.2/?prefix_id=7"><span class="pre-renpy">Ren&#039;Py</span></a><span class="label-append">&nbsp;</span></span>FurrHouse [Ch.27] [Chimeros]</h1>
+<article class="message-content"><div class="bbWrapper">
+<h2>Overview</h2>
+<p>A visual novel.</p>
+<p>Version: Chapter 27</p>
+</div></article>
+</body></html>`
+
+	// Slug-agnostic URL: the form ThreadURL/ResolveScrapeURL build.
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/180466/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	if td.Title != "FurrHouse" {
+		t.Errorf("Title = %q, want %q", td.Title, "FurrHouse")
+	}
+	wantPrefixes := []string{"VN", "Ren'Py"}
+	if len(td.Prefixes) != len(wantPrefixes) {
+		t.Fatalf("Prefixes = %v, want %v", td.Prefixes, wantPrefixes)
+	}
+	for i, want := range wantPrefixes {
+		if td.Prefixes[i] != want {
+			t.Errorf("Prefixes[%d] = %q, want %q", i, td.Prefixes[i], want)
+		}
+	}
+	if td.ThreadID != 180466 {
+		t.Errorf("ThreadID = %d, want 180466", td.ThreadID)
+	}
+}
+
+// TestParseThreadHTML_StatusFromPrefixLabel: a "Completed" prefix label must
+// set the status even though the title no longer contains the word.
+func TestParseThreadHTML_StatusFromPrefixLabel(t *testing.T) {
+	t.Parallel()
+
+	html := `<html><body>
+<h1 class="p-title-value"><span class="p-title-prefix"><a href="/forums/games.2/?prefix_id=2"><span class="label">RPGM</span></a><a href="/forums/games.2/?prefix_id=18"><span class="label label--green">Completed</span></a></span>Noxian Nights [v1.2.4]</h1>
+<article class="message-content"><div class="bbWrapper"><h2>Overview</h2><p>Story.</p></div></article>
+</body></html>`
+
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/2/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	if td.Title != "Noxian Nights" {
+		t.Errorf("Title = %q, want %q", td.Title, "Noxian Nights")
+	}
+	if td.Status != "completed" {
+		t.Errorf("Status = %q, want %q", td.Status, "completed")
+	}
+}
+
+// TestExtractDownloadLinks_DLRedirect covers the 2026-10 markup: download
+// anchors point at /dl/<postID>/?u=…&k=…&r=…&t=…, the destination host is
+// only in the anchor's favicon, and each row starts with a hidden duplicate
+// anchor (span.u-hidden.js-noSelectToQuote) that the endpoint rejects.
+func TestExtractDownloadLinks_DLRedirect(t *testing.T) {
+	t.Parallel()
+
+	body := `<b><span style="font-size: 22px">DOWNLOAD</span><br />
+<span style="font-size: 18px">Win/Linux</span></b><span style="font-size: 18px">:
+<span class="u-hidden js-noSelectToQuote" aria-hidden="true"><a href="https://f95zone.to/dl/12120217/?u=1&amp;k=hidden&amp;r=1&amp;t=decoy" target="_blank" class="link link--external has-favicon" style="background-image: url(&quot;https://external-content.duckduckgo.com/ip3/mega.nz.ico&quot;);" tabindex="-1">MEGA</a></span>
+<a href="https://f95zone.to/dl/12120217/?u=1&amp;k=mega1&amp;r=1&amp;t=tok1" target="_blank" class="link link--external has-favicon" style="background-image: url(&quot;https://external-content.duckduckgo.com/ip3/mega.nz.ico&quot;);">MEGA</a> -
+<a href="https://f95zone.to/dl/12120217/?u=1&amp;k=buzz1&amp;r=1&amp;t=tok2" target="_blank" class="link link--external has-favicon" style="background-image: url(&quot;https://external-content.duckduckgo.com/ip3/bzzhr.to.ico&quot;);">BUZZHEAVIER</a> -
+<a href="https://f95zone.to/dl/12120217/?u=1&amp;k=pd1&amp;r=1&amp;t=tok3" target="_blank" class="link link--external has-favicon" style="background-image: url(&quot;https://external-content.duckduckgo.com/ip3/pixeldrain.com.ico&quot;);">PIXELDRAIN</a><br />
+<b>Mac</b>: <a href="https://f95zone.to/dl/12120217/?u=1&amp;k=pd2&amp;r=1&amp;t=tok4" class="link link--external has-favicon" style="background-image: url(&quot;https://external-content.duckduckgo.com/ip3/pixeldrain.com.ico&quot;);">PIXELDRAIN</a>`
+
+	td, err := parseThreadHTML(threadHTMLWith("FurrHouse [Ch.27] [Chimeros]", body), "https://f95zone.to/threads/180466/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+
+	if len(td.DownloadLinks) != 4 {
+		t.Fatalf("expected 4 download links, got %d: %+v", len(td.DownloadLinks), td.DownloadLinks)
+	}
+	wantHosts := []string{"mega", "buzzheavier", "pixeldrain", "pixeldrain"}
+	for i, want := range wantHosts {
+		if td.DownloadLinks[i].Host != want {
+			t.Errorf("link[%d].Host = %q, want %q", i, td.DownloadLinks[i].Host, want)
+		}
+	}
+	for _, l := range td.DownloadLinks {
+		if strings.Contains(l.URL, "k=hidden") {
+			t.Errorf("hidden decoy anchor was collected: %+v", l)
+		}
+	}
 }
 
 // A changelog lists every past release. The title bracket is the version

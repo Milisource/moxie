@@ -14,6 +14,7 @@ type ThreadData struct {
 	Version        string            `json:"version,omitempty"`
 	Developer      string            `json:"developer,omitempty"`
 	Tags           []string          `json:"tags"`
+	Prefixes       []string          `json:"prefixes,omitempty"` // thread prefix labels (engine/status/category) from the h1
 	Overview       string            `json:"overview,omitempty"`
 	CoverURL       string            `json:"cover_url,omitempty"`
 	ThreadID       int64             `json:"thread_id"`

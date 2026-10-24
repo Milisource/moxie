@@ -15,6 +15,11 @@ import (
 // maskedHostLinkXPath is the F95Zone masked "Continue to <host>" link.
 const maskedHostLinkXPath = `//a[contains(concat(' ', normalize-space(@class), ' '), ' host_link ')]`
 
+// downloadLinkContinueXPath is the Continue button on F95Zone's /dl/
+// "Just a quick check" page (class js-f95dlContinue on the button, or any
+// f95dl-continue element).
+const downloadLinkContinueXPath = `//button[contains(concat(' ', normalize-space(@class), ' '), ' js-f95dlContinue ')] | //*[contains(concat(' ', normalize-space(@class), ' '), ' f95dl-continue ')]`
+
 // Download triggers, in priority order. The first match on the current page
 // is clicked; after a click the loop re-checks, because a masked "Continue"
 // lands on the host's page, which usually has its own download button.
@@ -181,6 +186,36 @@ func clickRecaptchaCheckbox(ctx context.Context, page *rod.Page) bool {
 	}
 }
 
+// hcaptchaFrameXPath locates the hCaptcha widget iframe. F95Zone's /dl/
+// check page renders a normal (non-invisible) hCaptcha widget, so a headless
+// session gets the checkbox challenge.
+var hcaptchaFrameXPath = `//iframe[contains(@src, 'hcaptcha.com')]`
+
+// clickHcaptchaCheckbox clicks hCaptcha's checkbox when the widget is showing
+// the interactive challenge. Returns true when a checkbox click was issued.
+func clickHcaptchaCheckbox(ctx context.Context, page *rod.Page) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	frameEl, err := page.Timeout(clickElementTimeout).ElementX(hcaptchaFrameXPath)
+	if err != nil {
+		return false
+	}
+	frame, err := frameEl.Frame()
+	if err != nil {
+		return false
+	}
+	box, err := frame.Timeout(clickElementTimeout).ElementX(`//*[@id='checkbox' or @aria-label='Click to verify']`)
+	if err != nil {
+		return false
+	}
+	if err := box.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		return false
+	}
+	log.Info("browserresolve: clicked hCaptcha checkbox")
+	return true
+}
+
 // waitForDownloadOrSettle blocks until a download starts (tracker) or the
 // context expires (returns true), or the settle window elapses (false).
 func waitForDownloadOrSettle(ctx context.Context, tr *downloadTracker, d time.Duration) bool {
@@ -271,7 +306,107 @@ func clickMaskedFlow(ctx context.Context, page *rod.Page, maskedURL string) (str
 	return "", fmt.Errorf("masked page did not navigate to the real host within %d clicks", maxDownloadClicks)
 }
 
-// waitForMaskedDestination polls the page URL until it leaves the masked
+// clickDownloadLinkFlow drives F95Zone's /dl/ "Just a quick check" page to
+// its destination. The page runs an invisible hCaptcha and a script check
+// that only a browser can satisfy; pressing Continue submits the form and
+// the server answers with a page whose data-url is the destination (or the
+// older /masked/ interstitial, which is clicked through as well).
+func clickDownloadLinkFlow(ctx context.Context, page *rod.Page, startURL string) (string, error) {
+	first := true
+	for click := 0; click < maxDownloadClicks; click++ {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		if dest, ok := waitForMaskedDestination(ctx, page, startURL, 2*time.Second); ok {
+			return dest, nil
+		}
+		if reason := f95InterstitialError(page); reason != "" {
+			return "", fmt.Errorf("%s — the link expired or the check was rate-limited; re-scrape the thread for a fresh link", reason)
+		}
+
+		timeout := clickElementTimeout
+		if first {
+			timeout = firstClickElementTimeout
+			first = false
+		}
+		clicked := false
+		for _, xpath := range []string{downloadLinkContinueXPath, maskedHostLinkXPath} {
+			el, err := page.Timeout(timeout).ElementX(xpath)
+			if err != nil {
+				continue
+			}
+			if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
+				log.Debug("browserresolve: download-link click failed", "xpath", xpath, "error", err)
+				continue
+			}
+			clicked = true
+			log.Debug("browserresolve: download-link continue clicked", "xpath", xpath)
+			if dest, ok := waitForMaskedDestination(ctx, page, startURL, clickSettleTimeout); ok {
+				return dest, nil
+			}
+			// The masked interstitial behind /dl/ can still show the
+			// reCAPTCHA checkbox challenge in headless sessions.
+			if clickRecaptchaCheckbox(ctx, page) || clickHcaptchaCheckbox(ctx, page) {
+				if dest, ok := waitForMaskedDestination(ctx, page, startURL, clickSettleTimeout); ok {
+					return dest, nil
+				}
+			}
+			break
+		}
+		if !clicked && !clickRecaptchaCheckbox(ctx, page) && !clickHcaptchaCheckbox(ctx, page) {
+			if reason := f95InterstitialError(page); reason != "" {
+				return "", fmt.Errorf("%s — the link expired or the check was rate-limited; re-scrape the thread for a fresh link", reason)
+			}
+			log.Debug("browserresolve: no download-link trigger on page", "url", pageURL(page))
+			return "", fmt.Errorf("no Continue button on the F95Zone download-link page (url=%s, text=%q)", pageURL(page), pageTextSnippet(page))
+		}
+	}
+	return "", fmt.Errorf("F95Zone download-link page did not reach the host within %d clicks", maxDownloadClicks)
+}
+
+// f95InterstitialError returns the user-facing error text shown by the
+// /dl/ check page, if the page is currently failing.
+func f95InterstitialError(page *rod.Page) string {
+	text, err := page.Timeout(2 * time.Second).Element(`body`)
+	if err != nil {
+		return ""
+	}
+	body, err := text.Text()
+	if err != nil {
+		return ""
+	}
+	for _, marker := range []string{
+		"Too many tries",
+		"The check wasn't passed",
+		"The link couldn't be fetched",
+		"That link is no longer in the post",
+	} {
+		if strings.Contains(body, marker) {
+			return marker
+		}
+	}
+	return ""
+}
+
+// pageTextSnippet returns a short, whitespace-collapsed body text for
+// diagnostics.
+func pageTextSnippet(page *rod.Page) string {
+	el, err := page.Timeout(2 * time.Second).Element(`body`)
+	if err != nil {
+		return ""
+	}
+	text, err := el.Text()
+	if err != nil {
+		return ""
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > 200 {
+		text = text[:200]
+	}
+	return text
+}
+
+// waitForMaskedDestination polls the page URL until it leaves the
 // interstitial (different URL, off f95zone.to) or the window elapses.
 func waitForMaskedDestination(ctx context.Context, page *rod.Page, maskedURL string, d time.Duration) (string, bool) {
 	timer := time.NewTimer(d)

@@ -1,13 +1,17 @@
 package commands
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
+	"github.com/mili/moxie/internal/log"
+	"github.com/mili/moxie/internal/scraper"
 )
 
 // selectBestLinkByPlatform selects the best download link based on platform priority.
@@ -44,6 +48,122 @@ func selectBestLinkByPlatform(links []db.DownloadLink, targetPlatform downloader
 	}
 
 	return &best.link
+}
+
+// hasF95CheckLinks reports whether any stored link is an F95Zone /dl/
+// download-link page. Those point at the post revision that was live when
+// they were generated, so the caller re-scrapes before downloading to match
+// the current OP (and to pick up a new version).
+func hasF95CheckLinks(links []db.DownloadLink) bool {
+	for _, l := range links {
+		if downloader.IsF95DownloadLink(l.URL) {
+			return true
+		}
+	}
+	return false
+}
+
+// dataHasF95CheckLinks reports whether a freshly scraped link set contains
+// F95Zone's browser-checked /dl/ links.
+func dataHasF95CheckLinks(links []scraper.DownloadLink) bool {
+	for _, l := range links {
+		if downloader.IsF95DownloadLink(l.URL) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsF95CheckLink reports whether any scored link is a /dl/ check link.
+func containsF95CheckLink(scored []db.DownloadLink) bool {
+	for _, l := range scored {
+		if downloader.IsF95DownloadLink(l.URL) {
+			return true
+		}
+	}
+	return false
+}
+
+// addCacheDownloadLinks appends the F95Checker cache API's /masked/ download
+// links for the same thread version. F95Zone's 2026-10 /dl/ links require a
+// browser-satisfied hCaptcha; the cache API still carries the older
+// /masked/ form, which moxie unwraps over plain HTTP. Links are only used
+// when the cache's version matches the freshly scraped one, so a stale
+// cache can never silently install an older build.
+//
+// Returns the number of links inserted. Best-effort: any failure (thread
+// untracked, cache behind, network) is logged and ignored.
+func addCacheDownloadLinks(database *db.Database, game *db.Game, data *scraper.ThreadData, cookie string) int {
+	if game.F95ThreadID <= 0 || len(data.DownloadLinks) == 0 {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	public := scraper.NewPublicAPIWithCookie(cookie)
+	ct, err := public.CacheFullThread(ctx, game.F95ThreadID)
+	if err != nil {
+		log.Debug("cache download links unavailable", "game_id", game.ID, "error", err)
+		return 0
+	}
+	if !sameVersion(ct.Version, data.Version) {
+		log.Debug("cache download links skipped (stale version)",
+			"game_id", game.ID, "cache", ct.Version, "thread", data.Version)
+		return 0
+	}
+
+	existing, _ := database.ListDownloadLinks(game.ID, "", true)
+	have := make(map[string]bool, len(existing))
+	for _, l := range existing {
+		have[l.URL] = true
+	}
+
+	added := 0
+	for _, cd := range ct.Downloads {
+		if have[cd.URL] {
+			continue
+		}
+		// Only the older /masked/ (and rare direct-host) forms are useful:
+		// a cached /dl/ link is just another browser-check page.
+		if downloader.IsF95DownloadLink(cd.URL) {
+			continue
+		}
+		host := downloader.IdentifyHostInURL(cd.URL)
+		if host == "other" {
+			continue
+		}
+		platform := downloader.DetectPlatform(cd.Platform, cd.URL)
+		name := cd.Platform + " · " + cd.Host
+		if cd.Platform == "" {
+			name = cd.Host
+		}
+		link := &db.DownloadLink{
+			GameID:   game.ID,
+			URL:      cd.URL,
+			Host:     host,
+			Name:     name,
+			Platform: db.Platform(platform),
+		}
+		if _, err := database.CreateDownloadLink(link); err != nil {
+			log.Debug("failed to insert cache download link", "url", cd.URL, "error", err)
+			continue
+		}
+		have[cd.URL] = true
+		added++
+	}
+	return added
+}
+
+// sameVersion compares two version strings after reducing both to their
+// numeric core, so "v1.2", "1.2" and "V1.2" match.
+func sameVersion(a, b string) bool {
+	norm := func(v string) string {
+		v = strings.ToLower(strings.TrimSpace(scraper.StripVersionQualifier(v)))
+		v = strings.TrimPrefix(v, "v")
+		return strings.TrimSpace(v)
+	}
+	na, nb := norm(a), norm(b)
+	return na != "" && na == nb
 }
 
 // ListDownloads shows all downloads and their status.
@@ -152,6 +272,14 @@ func CheckDeadLinks(args []string) {
 		}
 
 		fmt.Printf("Checking [%s] %s... ", link.Host, link.Name)
+		if downloader.IsF95DownloadLink(link.URL) {
+			// The destination is behind F95Zone's browser check and the
+			// token is short-lived: a HEAD only proves the check page
+			// answered, not that the link still works.
+			fmt.Println("OK (browser check required; link expires — re-scrape before downloading)")
+			checked++
+			continue
+		}
 		if err := downloader.CheckLink(link.URL); err != nil {
 			fmt.Printf("DEAD: %v\n", err)
 			if *deleteDead {

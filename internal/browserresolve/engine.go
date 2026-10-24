@@ -255,6 +255,31 @@ func (e *rodEngine) resolveMasked(ctx context.Context, req engineRequest) (strin
 	return dest, nil
 }
 
+// resolveDownloadLink drives the /dl/ "Just a quick check" page (and any
+// /masked/ interstitial it hands off to) and returns the destination URL.
+func (e *rodEngine) resolveDownloadLink(ctx context.Context, req engineRequest) (string, error) {
+	b, page, cleanup, err := e.open(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	if err := (proto.BrowserSetDownloadBehavior{
+		Behavior:         proto.BrowserSetDownloadBehaviorBehaviorAllowAndName,
+		BrowserContextID: b.BrowserContextID,
+		DownloadPath:     os.TempDir(),
+	}).Call(b); err != nil {
+		log.Debug("browserresolve: download-link flow download behavior failed", "error", err)
+	}
+
+	dest, err := clickDownloadLinkFlow(ctx, page, req.url)
+	if err != nil {
+		return "", fmt.Errorf("browserresolve: download-link unwrap in browser: %w", err)
+	}
+	log.Info("browserresolve: download-link unwrap in browser succeeded", "dest", dest)
+	return dest, nil
+}
+
 func (e *rodEngine) run(ctx context.Context, req engineRequest) (engineResult, error) {
 	b, page, cleanup, err := e.open(ctx, req)
 	if err != nil {

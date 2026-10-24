@@ -23,12 +23,24 @@ import (
 // never receive the cookie nor trigger unwrapping.
 var f95Hostnames = map[string]bool{
 	"f95zone.to":             true,
+	"www.f95zone.to":         true,
 	"attachments.f95zone.to": true,
 }
 
 // isF95Hostname reports whether host (a bare hostname) is an F95Zone host.
 func isF95Hostname(host string) bool {
 	return f95Hostnames[strings.ToLower(host)]
+}
+
+// IsF95DownloadLink reports whether rawURL is one of F95Zone's opaque
+// /dl/<postID>/ download-link pages (2026-10 link format). These cannot be
+// resolved over plain HTTP: the page needs a browser-satisfied check.
+func IsF95DownloadLink(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	return isF95DownloadLinkURL(u)
 }
 
 // isMaskedF95URL reports whether u is an F95Zone masked redirect URL
@@ -41,6 +53,18 @@ func isMaskedF95URL(u *url.URL) bool {
 		return false
 	}
 	return strings.HasPrefix(u.EscapedPath(), "/masked/")
+}
+
+// isF95DownloadLinkURL reports whether u is one of F95Zone's opaque
+// download-link pages (f95zone.to/dl/<postID>/?u=…&k=…&r=…&t=…). Since
+// 2026-10 thread posts expose only these; the destination host is not in the
+// URL and the page requires a browser-satisfied check before it resolves.
+func isF95DownloadLinkURL(u *url.URL) bool {
+	if u == nil || !isF95Hostname(u.Hostname()) {
+		return false
+	}
+	path := u.EscapedPath()
+	return strings.HasPrefix(path, "/dl/") || path == "/dl"
 }
 
 // HostResolver resolves a file host URL to a direct downloadable URL.
@@ -75,6 +99,12 @@ type HostResolver struct {
 	// with progress/resume. nil = walled links fail with the captcha error
 	// (the browser-download fallback may still pick them up).
 	maskedSolver func(ctx context.Context, maskedURL string) (string, error)
+	// dlSolver, when set, resolves F95Zone's /dl/<postID>/?u=…&k=…&r=…&t=…
+	// download-link page — hCaptcha + script-check interstitial — to the
+	// destination URL in a real browser. Since 2026-10 thread posts expose
+	// only these opaque links, so this is the primary path for freshly
+	// scraped downloads.
+	dlSolver func(ctx context.Context, dlURL string) (string, error)
 	// unwrapLimiter paces unwrap pacing state. F95Zone's masked endpoint is
 	// rate-budgeted (live A/B: ok, ok, wall, wall, wall, wall) — pacing
 	// unwraps keeps bursts under the budget, retries ride out transient
@@ -113,6 +143,9 @@ var (
 	// defaultMaskedSolver is the browser-masked-solver hook every
 	// HostResolver created after SetDefaultMaskedSolver picks up.
 	defaultMaskedSolver func(ctx context.Context, maskedURL string) (string, error)
+	// defaultDLSolver is the browser download-link (/dl/) solver hook every
+	// HostResolver created after SetDefaultDLSolver picks up.
+	defaultDLSolver func(ctx context.Context, dlURL string) (string, error)
 )
 
 // SetDefaultResolvedCache installs the resolved-URL cache pair used by every
@@ -142,6 +175,14 @@ func SetDefaultBrowserFallback(fn func(ctx context.Context, url, destDir string)
 // then downloads. Pass nil to clear.
 func SetDefaultMaskedSolver(fn func(ctx context.Context, maskedURL string) (string, error)) {
 	defaultMaskedSolver = fn
+}
+
+// SetDefaultDLSolver installs the browser solver for F95Zone /dl/ download
+// links used by every HostResolver created afterwards. The browser clicks
+// through the "Just a quick check" page and returns the destination, which
+// the Go path downloads with progress/resume. Pass nil to clear.
+func SetDefaultDLSolver(fn func(ctx context.Context, dlURL string) (string, error)) {
+	defaultDLSolver = fn
 }
 
 // sharedUnwrapLimiter paces F95Zone masked-URL unwraps across every
@@ -186,6 +227,21 @@ func serialMaskedSolver(fn func(ctx context.Context, maskedURL string) (string, 
 	}
 }
 
+// serialDLSolver wraps fn so only one browser /dl/ solve runs at a time.
+func serialDLSolver(fn func(ctx context.Context, dlURL string) (string, error)) func(ctx context.Context, dlURL string) (string, error) {
+	if fn == nil {
+		return nil
+	}
+	return func(ctx context.Context, dlURL string) (string, error) {
+		browserMu.Lock()
+		defer browserMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return fn(ctx, dlURL)
+	}
+}
+
 // NewHostResolver creates a resolver with a shared HTTP client.
 func NewHostResolver() *HostResolver {
 	return &HostResolver{
@@ -203,6 +259,7 @@ func NewHostResolver() *HostResolver {
 		resolvedCachePut: defaultResolvedCachePut,
 		browserFallback:  serialBrowserFallback(defaultBrowserFallback),
 		maskedSolver:     serialMaskedSolver(defaultMaskedSolver),
+		dlSolver:         serialDLSolver(defaultDLSolver),
 		// F95Zone's masked unwrap is rate-budgeted; live A/B showed the
 		// wall after ~2-3 back-to-back unwraps, clearing minutes later.
 		// Pace unwraps and retry with backoff before surfacing the wall.
@@ -221,6 +278,12 @@ func (r *HostResolver) SetBrowserFallback(fn func(ctx context.Context, url, dest
 // resolver (see SetDefaultMaskedSolver). Pass nil to disable.
 func (r *HostResolver) SetMaskedSolver(fn func(ctx context.Context, maskedURL string) (string, error)) {
 	r.maskedSolver = fn
+}
+
+// SetDLSolver overrides the /dl/ download-link browser-solver hook for this
+// resolver (see SetDefaultDLSolver). Pass nil to disable.
+func (r *HostResolver) SetDLSolver(fn func(ctx context.Context, dlURL string) (string, error)) {
+	r.dlSolver = fn
 }
 
 // browserCookieHeader extracts the browser's cookies for a hostname as a
@@ -271,6 +334,24 @@ func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*Res
 	// all canonical labels are single lowercase words.
 	host = strings.ToLower(strings.ReplaceAll(host, " ", ""))
 	log.Debug("resolving host URL", "host", host, "url", rawURL)
+
+	// F95Zone /dl/ download-link pages are a browser-satisfied check
+	// (hCaptcha + script check): not resolvable over plain HTTP, so hand
+	// them to the browser solver and continue with the destination it
+	// returns (a host URL or an older /masked/ interstitial).
+	if u, err := url.Parse(rawURL); err == nil && isF95DownloadLinkURL(u) {
+		if r.dlSolver == nil {
+			return nil, fmt.Errorf("F95Zone download link %s needs the browser check; enable browser-assisted downloads with `moxie config set browser_fallback auto` or MOXIE_BROWSER=auto", rawURL)
+		}
+		dest, err := r.dlSolver(context.Background(), rawURL)
+		if err != nil {
+			return nil, fmt.Errorf("resolve F95Zone download link: %w", err)
+		}
+		if dest == "" || dest == rawURL {
+			return nil, fmt.Errorf("resolve F95Zone download link: browser returned no destination")
+		}
+		return r.resolveDepth(dest, IdentifyHostInURL(dest), depth+1)
+	}
 
 	// F95Zone masked URLs are redirect endpoints — unwrap them first by following
 	// a HEAD request to get the real download URL, then resolve from there.

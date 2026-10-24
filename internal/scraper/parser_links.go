@@ -12,6 +12,11 @@ import (
 
 var (
 	steamStoreRe = regexp.MustCompile(`store\.steampowered\.com/app/\d+`)
+	// faviconHostRe extracts the host from the link-favicon service F95Zone
+	// uses on external links (".../ip3/mega.nz.ico"). Since the /dl/ links
+	// no longer carry the destination host in the URL, this is the most
+	// reliable host signal on a download row.
+	faviconHostRe = regexp.MustCompile(`ip3/([a-z0-9.-]+)\.ico`)
 	// platformLabelRe matches thread row labels like "<b>Win</b>:".
 	platformLabelRe = regexp.MustCompile(`(?i)^\s*(win|windows|mac|macos|linux|android|web)\s*:?\s*$`)
 	// sectionHeadingRe matches short bold headings that name a download
@@ -126,15 +131,26 @@ func isOnlineOnlyLink(text, url string) bool {
 
 // extractDownloadLinks finds all download links in the first post's content.
 // It skips store links, online-only links, and links to unrecognised hosts.
+//
+// Since F95Zone's 2026-10 download-link change every download anchor points
+// at /dl/<postID>/?u=…&k=…&r=…&t=…, so the destination host is no longer in
+// the URL; it is resolved from the anchor's favicon (ip3/<host>.ico) with the
+// anchor text as fallback. Each row also carries a hidden duplicate anchor
+// (span.u-hidden.js-noSelectToQuote) that the site answers with "That link is
+// no longer in the post" — those are not real download links and are skipped.
 func extractDownloadLinks(content *goquery.Selection) []DownloadLink {
 	if content.Length() == 0 {
 		return nil
 	}
 
 	var links []DownloadLink
+	seen := make(map[string]bool)
 	content.Find("a[href]").Each(func(_ int, a *goquery.Selection) {
 		href, ok := a.Attr("href")
 		if !ok || href == "" {
+			return
+		}
+		if isHiddenAnchor(a) {
 			return
 		}
 		text := strings.TrimSpace(a.Text())
@@ -142,10 +158,14 @@ func extractDownloadLinks(content *goquery.Selection) []DownloadLink {
 		if isOnlineOnlyLink(text, href) {
 			return
 		}
-		host := identifyHost(href, text)
+		host := identifyHost(href, text, faviconHost(a))
 		if host == "other" {
 			return
 		}
+		if seen[href] {
+			return
+		}
+		seen[href] = true
 		links = append(links, DownloadLink{
 			URL:  href,
 			Host: host,
@@ -154,6 +174,27 @@ func extractDownloadLinks(content *goquery.Selection) []DownloadLink {
 		})
 	})
 	return links
+}
+
+// isHiddenAnchor reports whether an anchor is invisible to users — F95Zone
+// duplicates the first link of each download row inside an aria-hidden,
+// u-hidden span, and that duplicate is rejected by the /dl/ endpoint.
+func isHiddenAnchor(a *goquery.Selection) bool {
+	return a.Closest(`[aria-hidden="true"], .u-hidden`).Length() > 0
+}
+
+// faviconHost returns the destination host advertised by the link's favicon
+// (e.g. ".../ip3/mega.nz.ico" → "mega.nz"), or "" when the anchor has none.
+func faviconHost(a *goquery.Selection) string {
+	style, ok := a.Attr("style")
+	if !ok {
+		return ""
+	}
+	m := faviconHostRe.FindStringSubmatch(strings.ToLower(style))
+	if len(m) < 2 {
+		return ""
+	}
+	return m[1]
 }
 
 // downloadLinkName builds a display name for a download link. Threads like
@@ -341,10 +382,11 @@ func extractStoreLinks(content *goquery.Selection) map[string]string {
 // See: https://f95zone.to/threads/approved-file-hosts-updated-2025-02-26.3432/
 //
 // Matching is two-phase: hostname needles are suffix-matched against the
-// parsed URL host (a short needle like "k2s" or "dp.ua" must not match an
-// unrelated URL that merely contains the substring), and text needles fall
-// back to substring matching over the link text.
-func identifyHost(rawURL, text string) string {
+// parsed URL host or the optional hints (a link favicon's domain, which is
+// the only host signal on F95Zone's /dl/ redirect links), and text needles
+// fall back to substring matching over the link text. A short needle like
+// "k2s" must not match an unrelated URL that merely contains the substring.
+func identifyHost(rawURL, text string, hints ...string) string {
 	host := ""
 	var u *urlpkg.URL
 	if parsed, err := urlpkg.Parse(rawURL); err == nil && parsed.Hostname() != "" {
@@ -357,6 +399,15 @@ func identifyHost(rawURL, text string) string {
 	if u != nil && strings.Contains(strings.ToLower(u.Path), "/masked/") {
 		if parts := strings.SplitN(strings.TrimPrefix(u.Path, "/masked/"), "/", 2); len(parts) >= 1 && parts[0] != "" {
 			host = strings.ToLower(parts[0])
+		}
+	}
+	// A favicon hint beats the URL host when the URL itself is F95Zone's
+	// opaque /dl/ redirect (the hint is the destination the link
+	// advertises, and the redirect carries no host at all).
+	for _, h := range hints {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h != "" && (host == "" || host == "f95zone.to" || strings.HasSuffix(host, ".f95zone.to")) {
+			host = h
 		}
 	}
 	lowerURL := strings.ToLower(rawURL)

@@ -2,10 +2,12 @@ package scraper
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mili/moxie/internal/db"
@@ -435,6 +437,51 @@ func TestCacheFullThread(t *testing.T) {
 	}
 }
 
+func TestCacheFullThread_Downloads(t *testing.T) {
+	t.Parallel()
+
+	// The live API double-encodes `downloads` (a JSON string holding the
+	// array) and mixes real masked URLs with XPath selectors for hosts it
+	// could not pre-resolve.
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"version":"Ch.27","name":"FurrHouse","downloads":
+			"[[\"Win/Linux\",[[\"MEGA\",\"https://f95zone.to/masked/mega.nz/180466/8240571/tok\"],[\"BUZZHEAVIER\",\"//a[starts-with(@href,'https://bzzhr.to/')][1]\"]]],[\"Mac\",[[\"PIXELDRAIN\",\"https://f95zone.to/masked/pixeldrain.com/180466/8240571/tok2\"]]]]"}`)
+	}))
+
+	ct, err := api.CacheFullThread(context.Background(), 180466)
+	if err != nil {
+		t.Fatalf("CacheFullThread failed: %v", err)
+	}
+	got := ct.Downloads
+	if len(got) != 2 {
+		t.Fatalf("Downloads = %d entries, want 2 (XPath selector skipped): %+v", len(got), got)
+	}
+	if got[0].Platform != "Win/Linux" || got[0].Host != "MEGA" || !strings.Contains(got[0].URL, "/masked/mega.nz/") {
+		t.Errorf("Downloads[0] = %+v", got[0])
+	}
+	if got[1].Platform != "Mac" || got[1].Host != "PIXELDRAIN" {
+		t.Errorf("Downloads[1] = %+v", got[1])
+	}
+	for _, d := range got {
+		if strings.HasPrefix(d.URL, "//a[") {
+			t.Errorf("XPath selector was kept as a URL: %+v", d)
+		}
+	}
+}
+
+func TestParseCacheDownloads_PlainArray(t *testing.T) {
+	t.Parallel()
+
+	raw := json.RawMessage(`[["Win",[["MEGA","https://f95zone.to/masked/mega.nz/1/2/x"]]]]`)
+	got := parseCacheDownloads(raw)
+	if len(got) != 1 || got[0].Host != "MEGA" {
+		t.Fatalf("parseCacheDownloads = %+v", got)
+	}
+	if got := parseCacheDownloads(json.RawMessage(`not json`)); got != nil {
+		t.Errorf("garbage should yield nil, got %+v", got)
+	}
+}
+
 func TestCacheFullThread_EngineType(t *testing.T) {
 	t.Parallel()
 
@@ -818,6 +865,31 @@ func TestApplyThreadData_StatusResolution(t *testing.T) {
 				t.Errorf("status = %q, want %q", game.Status, tt.want)
 			}
 		})
+	}
+}
+
+func TestApplyThreadData_EngineFromPrefixes(t *testing.T) {
+	t.Parallel()
+
+	// The engine now arrives as a separate prefix label, not glued onto the
+	// title ("RPGM Completed Noxian Nights" → Title "Noxian Nights").
+	game := &db.Game{Engine: "Unknown", EngineSource: "scan"}
+	ApplyThreadData(game, &ThreadData{
+		Title:    "Noxian Nights",
+		Prefixes: []string{"RPGM", "Completed"},
+	}, "https://f95zone.to/threads/2/")
+	if game.Engine != "RPGM" || game.EngineSource != "f95" {
+		t.Errorf("engine = %q (%s), want RPGM (f95)", game.Engine, game.EngineSource)
+	}
+	if game.Title != "Noxian Nights" {
+		t.Errorf("title = %q, want Noxian Nights", game.Title)
+	}
+
+	// A confident scanner result is never overridden by a prefix.
+	game = &db.Game{Engine: "Unity", EngineSource: "scan"}
+	ApplyThreadData(game, &ThreadData{Title: "X", Prefixes: []string{"RPGM"}}, "u")
+	if game.Engine != "Unity" {
+		t.Errorf("engine = %q, want Unity (scan result preserved)", game.Engine)
 	}
 }
 

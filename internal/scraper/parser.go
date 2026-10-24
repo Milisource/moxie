@@ -30,6 +30,12 @@ var knownMetaKeys = map[string]bool{
 var (
 	threadIDPattern = regexp.MustCompile(`/threads/[^/]*\.(\d+)/`)
 
+	// threadIDOnlyPattern matches the slug-agnostic form ThreadURL builds
+	// (https://f95zone.to/threads/180466/). XenForo resolves by ID alone, so
+	// that is the form moxie scrapes — without this fallback every scrape
+	// reported ThreadID 0.
+	threadIDOnlyPattern = regexp.MustCompile(`/threads/(\d+)(?:/|$|\?)`)
+
 	// bracketedRe strips XenForo-style bracket tags from titles.
 	// Matches [tag], (tag) and their leading whitespace.
 	bracketedRe = regexp.MustCompile(`\s*[\[\(][^\]\)]*[\]\)]`)
@@ -60,16 +66,26 @@ func parseThreadHTML(html string, threadURL string) (*ThreadData, error) {
 	}
 
 	// --- Title ---
+	// The h1 also carries the thread's prefix labels (engine, status,
+	// category) inside span.p-title-prefix. Stripping them from the title
+	// text keeps "VN Ren'Py FurrHouse" from becoming the game name, while
+	// the labels themselves are kept as a separate signal.
+	titleSel := doc.Find("h1.p-title-value").First()
+	td.Prefixes = extractTitlePrefixes(titleSel)
 	var rawTitle string
-	if sel := doc.Find("h1.p-title-value").First(); sel.Length() > 0 {
-		rawTitle = strings.TrimSpace(sel.Text())
+	if titleSel.Length() > 0 {
+		cleaned := titleSel.Clone()
+		cleaned.Find(".p-title-prefix").Remove()
+		rawTitle = strings.TrimSpace(cleaned.Text())
 	}
 	// Strip XenForo-style bracketed tags (e.g., [v1.31], [BadColor], (Steam))
 	// that duplicate metadata already captured in version/developer fields.
 	td.Title = stripBracketed(rawTitle)
 
 	// --- Status ---
-	td.Status = extractStatus(td.Tags, td.Title)
+	// Prefix labels are the site's own classification; check them before
+	// the free-text tags and the title.
+	td.Status = extractStatus(append(append([]string{}, td.Prefixes...), td.Tags...), td.Title)
 
 	// Strip <script> elements from the content selection before extracting
 	// text. F95Zone (XenForo 2) stores image markup inside
@@ -149,16 +165,44 @@ func extractJSONLD(doc *goquery.Document) map[string]any {
 // ---------------------------------------------------------------------------
 
 // extractThreadID parses the XenForo thread ID from a URL like
-// "/threads/slug.12345/". Returns 0 when no ID can be extracted.
+// "/threads/slug.12345/" or the slug-agnostic "/threads/12345/". Returns 0
+// when no ID can be extracted.
 func extractThreadID(url string) int64 {
-	matches := threadIDPattern.FindStringSubmatch(url)
-	if len(matches) >= 2 {
-		id, err := strconv.ParseInt(matches[1], 10, 64)
-		if err == nil {
+	if matches := threadIDPattern.FindStringSubmatch(url); len(matches) >= 2 {
+		if id, err := strconv.ParseInt(matches[1], 10, 64); err == nil {
+			return id
+		}
+	}
+	if matches := threadIDOnlyPattern.FindStringSubmatch(url); len(matches) >= 2 {
+		if id, err := strconv.ParseInt(matches[1], 10, 64); err == nil {
 			return id
 		}
 	}
 	return 0
+}
+
+// extractTitlePrefixes returns the thread's prefix labels (engine, status,
+// category) from h1.p-title-value span.p-title-prefix. F95Zone renders these
+// as links to the forum's prefix filter, outside the title text proper.
+func extractTitlePrefixes(titleSel *goquery.Selection) []string {
+	if titleSel.Length() == 0 {
+		return nil
+	}
+	labels := titleSel.Find(".p-title-prefix a")
+	if labels.Length() == 0 {
+		labels = titleSel.Find(".p-title-prefix .label")
+	}
+	seen := make(map[string]bool)
+	var prefixes []string
+	labels.Each(func(_ int, s *goquery.Selection) {
+		label := strings.TrimSpace(s.Text())
+		if label == "" || seen[label] {
+			return
+		}
+		seen[label] = true
+		prefixes = append(prefixes, label)
+	})
+	return prefixes
 }
 
 // stripBracketed removes bracketed tags (e.g., [v1.31], [BadColor], (Steam))

@@ -58,7 +58,9 @@ func selectEngine(o *Options, rawURL string) (engine, error) {
 	// with {"status":"captcha"}) cannot be passed by raw-launch Firefox.
 	// Prefer the rod engine: it clicks, and session cookies are injected
 	// from every browser store regardless of which browser holds them.
-	if strings.Contains(rawURL, "/masked/") {
+	// /dl/ download-link pages need the same click capability (hCaptcha +
+	// script check).
+	if strings.Contains(rawURL, "/masked/") || strings.Contains(rawURL, "/dl/") {
 		if _, err := detectBrowserBinary(); err == nil {
 			return newRodEngine(*o), nil
 		}
@@ -197,6 +199,15 @@ func InstallDownloaderFallback() (installed bool, reason string) {
 		solveCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 		defer cancel()
 		return ResolveMaskedURL(solveCtx, maskedURL)
+	})
+	// F95Zone /dl/ download-link pages (2026-10) put an hCaptcha + script
+	// check in front of every link; only a browser can pass it. The browser
+	// returns the destination (host URL or /masked/ interstitial), which
+	// the Go path then resolves/downloads.
+	downloader.SetDefaultDLSolver(func(ctx context.Context, dlURL string) (string, error) {
+		solveCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer cancel()
+		return ResolveDownloadLinkURL(solveCtx, dlURL)
 	})
 	// Turnstile-gated file pages (vikingfile.com) need the browser to clear
 	// the widget and read the client-side link; the Go path then downloads the

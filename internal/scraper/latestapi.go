@@ -42,7 +42,9 @@ const (
 	maxBulkVersionIDs = 100
 	// The cache API fast-check accepts up to 10 IDs per request.
 	maxFastCheckIDs = 10
-	// Latest-search row count. F95Checker uses 15; the API accepts up to 90.
+	// Latest-search row count. F95Checker uses 15; the API accepts up to 90,
+	// quantized to multiples of 15 (15/30/45/60/75/90). See
+	// docs/latest-data-api.md.
 	searchRows = 15
 )
 
@@ -158,7 +160,10 @@ type LatestSearchResult struct {
 	Ts     int64  // unix update timestamp
 }
 
-// latestItem is one row of latest_data.php's msg.data array.
+// latestItem is one row of latest_data.php's msg.data array. The wire row also
+// carries `screens` (a screenshot gallery), `watched`, `ignored` and `new`
+// (unread since last visit) — not parsed yet; docs/latest-data-api.md has the
+// full 16-field schema and the server-side filter/sort language.
 type latestItem struct {
 	ThreadID int64           `json:"thread_id"`
 	Title    string          `json:"title"`
@@ -258,6 +263,18 @@ type CacheThread struct {
 	// Type enum ("" when the type is unknown/unmapped). Unlike the prefix
 	// IDs from latest_data.php, the Type numbering is correct.
 	Engine string
+	// Downloads are the thread's download rows from the cache API, already
+	// flattened: platform heading → host label + URL. The URLs are
+	// F95Zone's older /masked/<host>/… form, which still unwraps over plain
+	// HTTP — useful when the thread page only exposes /dl/ check links.
+	Downloads []CacheDownload
+}
+
+// CacheDownload is one download link from the F95Checker cache API.
+type CacheDownload struct {
+	Platform string // row heading, e.g. "Win/Linux", "Mac", "Android"
+	Host     string // host label as posted, e.g. "MEGA", "PIXELDRAIN"
+	URL      string // f95zone.to/masked/... (only real URLs are kept)
 }
 
 // searchStopwords are stripped from latest-updates search queries — the
@@ -617,8 +634,9 @@ func latestResults(items []latestItem) []LatestSearchResult {
 // Discover feed: /sam/latest_alpha/latest_data.php?cmd=list (no search)
 // ---------------------------------------------------------------------------
 
-// browseSorts are the sort keys latest_data.php accepts for the Discover
-// feed. Anything else falls back to "date".
+// browseSorts are the sort keys moxie exposes for the Discover feed; anything
+// else falls back to "date". The endpoint also accepts "title" (alphabetical),
+// which is deliberately not wired up yet — see docs/latest-data-api.md.
 var browseSorts = map[string]bool{
 	"date":   true,
 	"likes":  true,
@@ -626,8 +644,9 @@ var browseSorts = map[string]bool{
 	"rating": true,
 }
 
-// browseRows is the Discover page size. The endpoint clamps rows to a smooth
-// window (below ~20 it still returns 20); 30 matches F95Zone's own default.
+// browseRows is the Discover page size. The endpoint honors only multiples of
+// 15 (15/30/45/60/75/90); any other value falls back to its default of 30,
+// which matches F95Zone's own default. See docs/latest-data-api.md.
 const browseRows = 30
 
 // LatestPage is one page of the Discover feed: the results plus the
@@ -762,6 +781,7 @@ func (p *PublicAPI) CacheFullThread(ctx context.Context, id int64) (*CacheThread
 		LastUpdated json.RawMessage `json:"last_updated"`
 		Score       json.RawMessage `json:"score"`
 		Type        json.RawMessage `json:"type"`
+		Downloads   json.RawMessage `json:"downloads"`
 		IndexError  string          `json:"INDEX_ERROR"`
 	}
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
@@ -797,7 +817,56 @@ func (p *PublicAPI) CacheFullThread(ctx context.Context, id int64) (*CacheThread
 		LastUpdated: lastUpdated,
 		Score:       score,
 		Engine:      engine,
+		Downloads:   parseCacheDownloads(resp.Downloads),
 	}, nil
+}
+
+// parseCacheDownloads parses the cache API's `downloads` field:
+//
+//	[["Win/Linux", [["MEGA","https://f95zone.to/masked/…"], …]], …]
+//
+// The field arrives double-encoded (a JSON string holding the array) in the
+// live API, but a plain array is accepted too. Rows whose value is an XPath
+// selector instead of a URL (`//a[starts-with(@href,…)]`) are skipped — the
+// cache API emits those for hosts it cannot pre-resolve.
+func parseCacheDownloads(raw json.RawMessage) []CacheDownload {
+	if len(raw) == 0 {
+		return nil
+	}
+	data := []byte(raw)
+	var encoded string
+	if err := json.Unmarshal(data, &encoded); err == nil {
+		data = []byte(encoded)
+	}
+	var groups [][]json.RawMessage
+	if err := json.Unmarshal(data, &groups); err != nil {
+		return nil
+	}
+	var out []CacheDownload
+	for _, group := range groups {
+		if len(group) != 2 {
+			continue
+		}
+		var platform string
+		if err := json.Unmarshal(group[0], &platform); err != nil {
+			continue
+		}
+		var pairs [][]string
+		if err := json.Unmarshal(group[1], &pairs); err != nil {
+			continue
+		}
+		for _, pair := range pairs {
+			if len(pair) != 2 {
+				continue
+			}
+			host, url := strings.TrimSpace(pair[0]), strings.TrimSpace(pair[1])
+			if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
+				continue
+			}
+			out = append(out, CacheDownload{Platform: platform, Host: host, URL: url})
+		}
+	}
+	return out
 }
 
 // errIsThreadGone reports whether a cache-API error means the thread itself

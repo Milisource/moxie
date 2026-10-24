@@ -28,12 +28,22 @@ func ResolveStatus(parsed, current string) string {
 // Non-empty fields in data overwrite the corresponding game fields.
 func ApplyThreadData(game *db.Game, data *ThreadData, url string) {
 	if data.Title != "" {
-		// Extract engine from F95Zone thread prefix before stripping.
-		// Useful when scanner can't determine the engine (e.g., RPG Maker
-		// MV/MZ games with HTML/JS files get detected as "HTML").
-		if f95Eng := engine.ExtractEngineFromTitle(data.Title); f95Eng != "" {
+		// The engine (and status) now arrive as separate thread-prefix
+		// labels rather than being glued onto the title, so check those
+		// first. Useful when the scanner can't determine the engine (e.g.,
+		// RPG Maker MV/MZ games with HTML/JS files get detected as "HTML").
+		eng := ""
+		for _, p := range data.Prefixes {
+			if eng = engine.ExtractEngineFromTitle(p); eng != "" {
+				break
+			}
+		}
+		if eng == "" {
+			eng = engine.ExtractEngineFromTitle(data.Title)
+		}
+		if eng != "" {
 			if game.Engine == "" || game.Engine == "Unknown" || game.Engine == "Others" {
-				game.Engine = f95Eng
+				game.Engine = eng
 				game.EngineSource = "f95"
 			}
 		}

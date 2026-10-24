@@ -33,6 +33,7 @@ A local game library manager for adult games. Scans directories, detects engines
 | **Cover art** | [cover-art.md](cover-art.md) | Cover cache, thumbnails, portrait sources (Steam, SteamGridDB, VNDB), `moxie covers upgrade` |
 | **Desktop** | [architecture.md](architecture.md) | Wails v2 + Svelte 5 desktop GUI architecture, component tree, build workflow |
 | **F95Zone Browser** | [f95zone-browser-design.md](f95zone-browser-design.md) | F95Zone latest_alpha page analysis, UX patterns, data model, recommendations for F95Browser.svelte |
+| **latest_data.php API** | [latest-data-api.md](latest-data-api.md) | Reverse-engineered F95Zone Latest-Updates endpoint: full row schema, server-side filter/sort query language, prefix/tag taxonomy, `cmd=tags` facets, and planned integrations |
 | **Desktop UI research** | [desktop-ui-research.md](desktop-ui-research.md) | What makes game-library UIs usable (Steam/Playnite/Heroic pattern matrix), evidence-based audit of the desktop frontend, prioritized P0/P1/P2 redesign recommendations |
 
 ---
@@ -293,7 +294,7 @@ A local game library manager for adult games. Scans directories, detects engines
 
 ### Known Limitations
 
-- **Sync public endpoints are undocumented** — `checker.php` and `latest_data.php` are F95Zone's own endpoints used by its Latest Updates page; they could change or be locked down. The 3-layer fallback (bulk API → F95Checker cache API → direct scrape) degrades gracefully, and `checker.php` hard-caps at 100 thread IDs per request.
+- **Sync public endpoints are undocumented** — `checker.php` and `latest_data.php` are F95Zone's own endpoints used by its Latest Updates page; they could change or be locked down. The 3-layer fallback (bulk API → F95Checker cache API → direct scrape) degrades gracefully, and `checker.php` hard-caps at 100 thread IDs per request. The full reverse-engineered surface of `latest_data.php` — and the features it unlocks — is in [latest-data-api.md](latest-data-api.md).
 - **F95Checker cache API is third-party** — `api.f95checker.dev` is run by the F95Checker project (one maintainer, open source) and is the same service that project's thousands of users rely on. Its `/full` endpoint 404s transiently (handled with one retry) and returns numeric fields as strings (handled by lenient parsing). If it goes down, sync falls back to direct scraping.
 - **Threads not in the Latest Updates index** — games whose threads checker.php doesn't track (about 20% of a typical library) rely on the cache API or, failing that, cookie-based scraping. A tiny fraction of threads (deleted/privated) are unresolvable through any path.
 - **Mega downloads binary-gated** — Mega's encrypted protocol is handled via a `megatools dl` subprocess when the binary is installed; without it, Mega links are deprioritized to -200 in host scoring and the downloader auto-fallbacks to the next-best link. Arch users need the AUR package (`megatools`/`megatools-git` — not in the official repos).
