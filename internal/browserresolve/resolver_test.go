@@ -140,7 +140,7 @@ func TestResolver_ChallengePage(t *testing.T) {
 	t.Parallel()
 	htmlPath := filepath.Join(t.TempDir(), "stage")
 	writeFile(t, htmlPath, "<!DOCTYPE html><html><body>turnstile</body></html>")
-	f := &fakeEngine{result: engineResult{path: htmlPath, suggested: "x.html"}}
+	f := &fakeEngine{result: engineResult{path: htmlPath, suggested: "game.zip"}}
 	r := newTestResolver(t, f)
 	dest := filepath.Join(t.TempDir(), "games")
 

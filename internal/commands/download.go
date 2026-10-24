@@ -450,6 +450,9 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 			dlRecord.PercentComplete = 100
 			dlRecord.CompletedAt = time.Now()
 			database.UpdateDownload(dlRecord)
+		} else if downloadedFile != "" {
+			// Single-file HTML games: the payload is the game, not an archive.
+			applyHTMLGameInstall(database, game, downloadedFile)
 		}
 	}
 

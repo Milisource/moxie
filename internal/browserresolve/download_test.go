@@ -174,7 +174,7 @@ func TestVerifyDownloadedFile(t *testing.T) {
 			if err := os.WriteFile(path, tt.content, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			err := verifyDownloadedFile(path, tt.minSize, tt.expectedSize)
+			err := verifyDownloadedFile(path, tt.minSize, tt.expectedSize, "")
 			if tt.wantErr == nil {
 				if err != nil {
 					t.Errorf("verifyDownloadedFile = %v, want nil", err)
@@ -188,9 +188,32 @@ func TestVerifyDownloadedFile(t *testing.T) {
 	}
 }
 
+func TestVerifyDownloadedFile_HTMLGamePayload(t *testing.T) {
+	t.Parallel()
+	// An HTML game's file is text/html and starts with <!DOCTYPE html>. It is
+	// the payload, not a challenge page, whenever the browser proposed an
+	// .html filename.
+	content := []byte("<!DOCTYPE html>\n<html><body>a whole game</body></html>")
+	path := filepath.Join(t.TempDir(), "guid-file")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyDownloadedFile(path, 0, int64(len(content)), "Ashfall_RPG_v0.5.0.html"); err != nil {
+		t.Errorf("verifyDownloadedFile with .html name = %v, want nil", err)
+	}
+	// A path that already carries the .html extension is equally explicit.
+	htmlPath := filepath.Join(t.TempDir(), "game.html")
+	if err := os.WriteFile(htmlPath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyDownloadedFile(htmlPath, 0, int64(len(content)), ""); err != nil {
+		t.Errorf("verifyDownloadedFile with .html path = %v, want nil", err)
+	}
+}
+
 func TestVerifyDownloadedFile_MissingFile(t *testing.T) {
 	t.Parallel()
-	err := verifyDownloadedFile(filepath.Join(t.TempDir(), "nope"), 0, 0)
+	err := verifyDownloadedFile(filepath.Join(t.TempDir(), "nope"), 0, 0, "")
 	if !errors.Is(err, ErrDownload) {
 		t.Fatalf("expected ErrDownload, got %v", err)
 	}

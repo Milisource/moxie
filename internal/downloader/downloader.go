@@ -201,6 +201,33 @@ func checkHostSizeLimit(total, limit int64, host string) error {
 	return nil
 }
 
+// minHTMLPayloadBytes is the size above which an unlabeled text/html
+// response is treated as a real HTML game file rather than a bot-challenge
+// page. Challenge/landing pages are tens of kilobytes; published HTML games
+// are megabytes.
+const minHTMLPayloadBytes = 512 * 1024
+
+// isHTMLFilename reports whether name (a URL path segment or a
+// Content-Disposition filename) declares an HTML document. Query strings and
+// fragments are ignored.
+func isHTMLFilename(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if i := strings.IndexAny(name, "?#"); i >= 0 {
+		name = name[:i]
+	}
+	return strings.HasSuffix(name, ".html") || strings.HasSuffix(name, ".htm")
+}
+
+// firstNonEmpty returns the first non-empty value (diagnostics).
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // downloadTimeout is the maximum time allowed for a single download.
 const downloadTimeout = 6 * time.Hour
 
@@ -318,6 +345,14 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 	// Content-Type validation: reject HTML pages that indicate redirect/login pages.
 	// Missing Content-Type is allowed (some hosts omit it).
 	//
+	// An HTML payload is also a legitimate FILE for HTML games: F95Zone
+	// threads for engine=HTML often distribute a single .html file, and
+	// pixeldrain/datanodes serve it as text/html. The payload is recognized
+	// by the filename the server advertises (Content-Disposition) or by the
+	// URL path ending in .html/.htm. Only when neither is present do we
+	// treat text/html as a landing/challenge page, because those pages never
+	// carry an attachment filename.
+	//
 	// A 200 text/html from a known browser-gated file host (mixdrop,
 	// uploadnow, dropmefiles, googledrive, ...) is a landing/JS-driven
 	// download page, not a dead link: the Go client cannot run the page's
@@ -328,8 +363,15 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 	// costs a multi-minute browser run, and terminal error statuses (404,
 	// ...) are never handed to the browser.
 	if ct := resp.Header.Get("Content-Type"); ct != "" && strings.HasPrefix(ct, "text/html") {
-		if browserFallback != nil && resp.StatusCode == http.StatusOK &&
-			(isBrowserGatedHost(host) || isBrowserGatedURL(urlStr)) {
+		cdName := contentDispositionFilename(resp.Header.Get("Content-Disposition"))
+		gated := browserFallback != nil && resp.StatusCode == http.StatusOK &&
+			(isBrowserGatedHost(host) || isBrowserGatedURL(urlStr))
+		switch {
+		case isHTMLFilename(cdName) || isHTMLFilename(base):
+			// A named .html/.htm file: HTML game payload, not a challenge.
+			log.Info("accepting text/html payload as an HTML game file",
+				"url", redactedURL(urlStr), "filename", firstNonEmpty(cdName, base))
+		case gated:
 			resp.Body.Close()
 			path, fbErr := browserFallback(ctx, originalURL, destDir)
 			if fbErr == nil {
@@ -338,9 +380,15 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 			}
 			log.Warn("browser fallback failed after browser-gated HTML landing", "url", redactedURL(originalURL), "error", fbErr)
 			return fmt.Errorf("download rejected: server returned HTML instead of file (Content-Type: %s) (browser fallback also failed: %v)", ct, fbErr)
+		case resp.ContentLength >= minHTMLPayloadBytes:
+			// No filename signal, but far larger than any challenge page:
+			// treat it as an HTML game distributed without Content-Disposition.
+			log.Info("accepting large text/html payload as an HTML game file",
+				"url", redactedURL(urlStr), "bytes", resp.ContentLength)
+		default:
+			log.Warn("download rejected: Content-Type is text/html", "url", redactedURL(urlStr), "content_type", ct)
+			return fmt.Errorf("download rejected: server returned HTML instead of file (Content-Type: %s)", ct)
 		}
-		log.Warn("download rejected: Content-Type is text/html", "url", redactedURL(urlStr), "content_type", ct)
-		return fmt.Errorf("download rejected: server returned HTML instead of file (Content-Type: %s)", ct)
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
@@ -557,7 +605,7 @@ func IsValidGameFile(path string) bool {
 	}
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
-	case ".exe", ".sh", ".x86_64", ".bin", ".run", ".AppImage":
+	case ".exe", ".sh", ".x86_64", ".bin", ".run", ".AppImage", ".html", ".htm":
 		return true
 	}
 	return false

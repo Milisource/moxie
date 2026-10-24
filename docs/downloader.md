@@ -49,7 +49,7 @@ The `f95Cookie` parameter is an optional F95Zone session cookie string used to a
 
 5. **Progress**: `writeCounter` reports progress via callback every 500ms (speed, bytes, percentage).
 
-6. **Validation**: After download completes, the caller calls `IsValidGameFile(path)` to reject files smaller than 4096 bytes or that aren't archives/executables. This catches interstitial HTML pages that some hosts serve instead of real files.
+6. **Validation**: After download completes, the caller calls `IsValidGameFile(path)` to reject files smaller than 4096 bytes or that aren't archives/executables (or `.html`/`.htm` entry pages — see [HTML game payloads](#html-game-payloads)). This catches interstitial HTML pages that some hosts serve instead of real files.
 
 7. **Finalize**: `fsync()` + rename `.part` → final filename. The saved filename percent-decodes the URL path (`file%20name.zip` → `file name.zip`).
 
@@ -319,7 +319,19 @@ After a download completes, the caller should validate the downloaded file befor
 
 1. **Minimum size**: Files under 4096 bytes are rejected — they're too small to be a real game archive or executable.
 2. **Archive check**: If `archive.IsArchiveFile(path)` returns true (zip, 7z, rar, tar.gz), the file is accepted.
-3. **Executable check**: Files with extensions `.exe`, `.sh`, `.x86_64`, `.bin`, `.run`, or `.AppImage` are accepted.
+3. **Executable check**: Files with extensions `.exe`, `.sh`, `.x86_64`, `.bin`, `.run`, `.AppImage`, `.html`, or `.htm` are accepted.
+
+### HTML game payloads
+
+HTML games are often distributed as a **single `.html` file**, and file hosts serve it with `Content-Type: text/html` (verified 2026-10-24: pixeldrain `Ashfall_RPG_v*.html`, 5.2 MB). The downloader therefore does not treat every `text/html` response as a challenge page. It accepts the payload when any of these holds:
+
+1. `Content-Disposition` names a `.html`/`.htm` file (`attachment; filename=Game.html`),
+2. the request URL path ends in `.html`/`.htm`,
+3. the response is at least 512 KiB — far larger than any captcha/landing page, so it is an unlabeled HTML game.
+
+Only when none applies does it reject with `server returned HTML instead of file` (or hand a known browser-gated host to the browser fallback). The browser fallback (`browserresolve`) applies the same rule using the filename the browser proposed.
+
+On success the CLI installs the page into the game directory instead of extracting it: the previous entry page is renamed to `<name>.pre-update` (kept for rollback, excluded from the entry scan), `ExePath` points at the new page, and the installed version is recorded. `moxie play` already resolves HTML entry pages inside the game directory.
 
 Files that fail validation are typically interstitial HTML pages, captcha walls, or ad pages that malicious or anti-bot-protected hosts serve instead of the real file. The downloader removes the invalid file and the caller's fallback loop tries the next link.
 

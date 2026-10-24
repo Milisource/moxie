@@ -271,7 +271,7 @@ func (r *resolver) resolve(ctx context.Context, resolvedURL, destDir string) (st
 		return "", err
 	}
 
-	if err := verifyDownloadedFile(res.path, r.opts.MinSize, res.totalBytes); err != nil {
+	if err := verifyDownloadedFile(res.path, r.opts.MinSize, res.totalBytes, res.suggested); err != nil {
 		return "", err
 	}
 

@@ -135,8 +135,10 @@ func (t *downloadTracker) snapshot() downloadSnapshot {
 // verifyDownloadedFile sanity-checks a finished browser download before it
 // is moved into the destination game directory: the file must exist, be
 // non-empty, not look like an HTML challenge page, and match the size the
-// browser reported when one was reported.
-func verifyDownloadedFile(path string, minSize, expectedSize int64) error {
+// browser reported when one was reported. suggestedName is the filename the
+// browser proposed (Content-Disposition/URL); when it declares .html/.htm the
+// payload is an HTML game, not a challenge page.
+func verifyDownloadedFile(path string, minSize, expectedSize int64, suggestedName string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrDownload, err)
@@ -150,10 +152,16 @@ func verifyDownloadedFile(path string, minSize, expectedSize int64) error {
 	if expectedSize > 0 && info.Size() != expectedSize {
 		return fmt.Errorf("%w: size mismatch for %q: %d bytes on disk, browser reported %d", ErrDownload, path, info.Size(), expectedSize)
 	}
-	if looksLikeHTML(path) {
+	if !isHTMLFilename(suggestedName) && !isHTMLFilename(path) && looksLikeHTML(path) {
 		return fmt.Errorf("%w: downloaded content of %q looks like an HTML page (%d bytes), not a file", ErrChallengePage, path, info.Size())
 	}
 	return nil
+}
+
+// isHTMLFilename reports whether name declares an HTML document.
+func isHTMLFilename(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return strings.HasSuffix(name, ".html") || strings.HasSuffix(name, ".htm")
 }
 
 // looksLikeHTML sniffs the head of a file for the signature of an HTML
