@@ -24,24 +24,25 @@ func ResolveStatus(parsed, current string) string {
 	return current
 }
 
+// ThreadEngine returns the engine implied by the thread's prefix labels,
+// falling back to an engine word at the start of the title. Prefix labels are
+// authoritative: F95Zone renders them separately from the title and the parser
+// strips them, so the title does not carry the engine for those threads.
+//
+// Useful when the scanner can't determine the engine (e.g., RPG Maker MV/MZ
+// games with HTML/JS files get detected as "HTML").
+func ThreadEngine(data *ThreadData) string {
+	if eng := engine.EngineFromPrefixes(data.Prefixes); eng != "" {
+		return eng
+	}
+	return engine.ExtractEngineFromTitle(data.Title)
+}
+
 // ApplyThreadData copies scraped ThreadData fields onto a Game.
 // Non-empty fields in data overwrite the corresponding game fields.
 func ApplyThreadData(game *db.Game, data *ThreadData, url string) {
 	if data.Title != "" {
-		// The engine (and status) now arrive as separate thread-prefix
-		// labels rather than being glued onto the title, so check those
-		// first. Useful when the scanner can't determine the engine (e.g.,
-		// RPG Maker MV/MZ games with HTML/JS files get detected as "HTML").
-		eng := ""
-		for _, p := range data.Prefixes {
-			if eng = engine.ExtractEngineFromTitle(p); eng != "" {
-				break
-			}
-		}
-		if eng == "" {
-			eng = engine.ExtractEngineFromTitle(data.Title)
-		}
-		if eng != "" {
+		if eng := ThreadEngine(data); eng != "" {
 			if game.Engine == "" || game.Engine == "Unknown" || game.Engine == "Others" {
 				game.Engine = eng
 				game.EngineSource = "f95"

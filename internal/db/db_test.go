@@ -216,6 +216,63 @@ func TestInsertGameEmptyTags(t *testing.T) {
 	}
 }
 
+func TestInsertGameEmptyEngineDefaultsToUnknown(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	g := &Game{Title: "No Engine", Path: "/no-engine"}
+	id, err := db.InsertGame(g)
+	if err != nil {
+		t.Fatalf("InsertGame with empty engine failed: %v", err)
+	}
+
+	got, err := db.GetGame(id)
+	if err != nil {
+		t.Fatalf("GetGame failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetGame returned nil")
+	}
+	if got.Engine != "Unknown" {
+		t.Errorf("Engine = %q, want %q", got.Engine, "Unknown")
+	}
+}
+
+func TestIsCanonicalEngine(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{in: "RenPy", want: true},
+		{in: "renpy", want: false},
+		{in: "ren'py", want: false},
+		{in: "", want: false},
+		{in: "Godot", want: true},
+		{in: "UnrealEngine5", want: false},
+	}
+	for _, tt := range tests {
+		if got := IsCanonicalEngine(tt.in); got != tt.want {
+			t.Errorf("IsCanonicalEngine(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestCanonicalEnginesSatisfyConstraint(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	for i, eng := range CanonicalEngines {
+		g := &Game{
+			Title:  "Engine " + eng,
+			Engine: eng,
+			Path:   fmt.Sprintf("/engine-%d", i),
+		}
+		if _, err := db.InsertGame(g); err != nil {
+			t.Errorf("InsertGame with canonical engine %q failed: %v", eng, err)
+		}
+	}
+}
+
 func TestGetGameNotFound(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()

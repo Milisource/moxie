@@ -15,6 +15,7 @@ import (
 
 	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/db"
+	engines "github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/scanner"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/util"
@@ -475,7 +476,7 @@ func Add(args []string) {
 	}
 	game := &db.Game{
 		Title:         *title,
-		Engine:        *engine,
+		Engine:        string(engines.Normalize(*engine)),
 		Path:          absPath,
 		Version:       *version,
 		Tags:          tagList,
@@ -489,7 +490,7 @@ func Add(args []string) {
 		fmt.Fprintf(os.Stderr, "Error adding game: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Added game with ID %d: %s (%s)\n", id, *title, *engine)
+	fmt.Printf("Added game with ID %d: %s (%s)\n", id, *title, game.Engine)
 }
 
 // SetExe sets the executable path for a game.

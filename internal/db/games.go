@@ -152,6 +152,13 @@ func scanGame(s scanner) (*Game, error) {
 
 // applyDefaults sets sensible defaults for fields that have CHECK constraints.
 func applyDefaults(g *Game) {
+	if g.Engine == "" {
+		// The engine column's CHECK constraint has no '' member, so an
+		// insert without a detected engine would fail outright. Other
+		// non-canonical values still fail loudly — callers that accept
+		// free-form input normalise through engine.Normalize first.
+		g.Engine = "Unknown"
+	}
 	if g.Status == "" {
 		g.Status = "unknown"
 	}

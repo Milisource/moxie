@@ -606,6 +606,61 @@ func TestExtractEngineFromTitle(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// EngineFromPrefixes
+// ---------------------------------------------------------------------------
+
+func TestEngineFromPrefixes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		prefixes []string
+		want     string
+	}{
+		{name: "Ren'Py label", prefixes: []string{"VN", "Ren'Py"}, want: "RenPy"},
+		{name: "RPGM label", prefixes: []string{"RPGM", "Completed"}, want: "RPGM"},
+		{name: "Godot label", prefixes: []string{"Godot"}, want: "Godot"},
+		{name: "multi-word label", prefixes: []string{"Unreal Engine"}, want: "UnrealEngine"},
+		{name: "multi-word Wolf label", prefixes: []string{"Wolf RPG"}, want: "WolfRPG"},
+		{name: "no engine label", prefixes: []string{"VN", "Completed"}, want: ""},
+		{name: "empty", prefixes: nil, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := EngineFromPrefixes(tt.prefixes); got != tt.want {
+				t.Errorf("EngineFromPrefixes(%v) = %q, want %q", tt.prefixes, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeEngine(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want Engine
+	}{
+		{name: "canonical", in: "RenPy", want: RenPy},
+		{name: "lowercase canonical", in: "unity", want: Unity},
+		{name: "descriptive alias", in: "ren'py", want: RenPy},
+		{name: "rpg maker alias", in: "rpg maker", want: RPGM},
+		{name: "rpg maker version alias", in: "rpgmakermv", want: RPGM},
+		{name: "multi-word alias", in: "wolf rpg", want: WolfRPG},
+		{name: "unknown value", in: "electron", want: "Unknown"},
+		{name: "empty", in: "  ", want: "Unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := Normalize(tt.in); got != tt.want {
+				t.Errorf("Normalize(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // optionalNote returns a colon-prefixed note if s is non-empty.
 func optionalNote(s string) string {
 	if s == "" {

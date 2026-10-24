@@ -59,6 +59,42 @@ func FindInText(text string) string {
 	return findInText(text)
 }
 
+// EngineFromPrefixes returns the engine named by a thread's prefix labels
+// (e.g. ["VN", "Ren'Py"] → "RenPy"), or "" when no label names an engine.
+//
+// F95Zone renders prefixes as separate labels inside the thread heading and
+// the scraper strips them from the title, so the title alone no longer carries
+// the engine for those threads.
+func EngineFromPrefixes(prefixes []string) string {
+	for _, prefix := range prefixes {
+		if eng := findInText(prefix); eng != "" {
+			return eng
+		}
+	}
+	return ""
+}
+
+// Normalize maps a user-supplied or legacy engine name to a canonical engine.
+// Matching ignores case and accepts the descriptive variants in
+// EngineTagVariants ("ren'py", "rpg maker", "rpgmakermv", "unreal", …).
+// Values that name no known engine become "Unknown", which the games.engine
+// CHECK constraint always accepts.
+func Normalize(name string) Engine {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "Unknown"
+	}
+	for _, canonical := range db.CanonicalEngines {
+		if strings.EqualFold(name, canonical) {
+			return Engine(canonical)
+		}
+	}
+	if eng := findInText(name); eng != "" {
+		return Engine(eng)
+	}
+	return "Unknown"
+}
+
 // EngineMatchesTags checks whether the scanner-detected engine is consistent
 // with the F95Zone thread tags.  Returns true when:
 //   - There are no tags to compare (inconclusive)

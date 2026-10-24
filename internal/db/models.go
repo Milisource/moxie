@@ -5,6 +5,25 @@ import (
 	"time"
 )
 
+// CanonicalEngines lists every value accepted by the games.engine CHECK
+// constraint. Keep in sync with the DDL in db.go.
+var CanonicalEngines = []string{
+	"ADRIFT", "Flash", "Godot", "HTML", "Java", "Others", "QSP", "RAGS",
+	"RPGM", "RenPy", "Tads", "Unity", "UnrealEngine", "WebGL", "WolfRPG",
+	"Unknown",
+}
+
+// IsCanonicalEngine reports whether name is accepted by the games.engine
+// CHECK constraint.
+func IsCanonicalEngine(name string) bool {
+	for _, eng := range CanonicalEngines {
+		if name == eng {
+			return true
+		}
+	}
+	return false
+}
+
 // GameSummary is a lightweight view of a game used for table/list rendering.
 // It contains only the columns needed for display and filtering, avoiding the
 // overhead of loading all 20+ columns for every row.

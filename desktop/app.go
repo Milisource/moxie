@@ -2397,7 +2397,7 @@ func (a *App) GetThreadPreview(url string) (*ThreadPreview, error) {
 		return nil, fmt.Errorf("scraping thread failed: %w", err)
 	}
 
-	prefix := engine.ExtractEngineFromTitle(data.Title)
+	prefix := scraper.ThreadEngine(data)
 	cleanTitle := strings.TrimSpace(scraper.StripThreadPrefix(data.Title))
 	if cleanTitle == "" {
 		cleanTitle = data.Title
@@ -2459,10 +2459,11 @@ func (a *App) AddGameFromF95Zone(url, title, engineName string) (int64, error) {
 
 	// Use detected engine from thread prefix if not explicitly provided.
 	if engineName == "" {
-		if f95Eng := engine.ExtractEngineFromTitle(data.Title); f95Eng != "" {
-			engineName = f95Eng
-		}
+		engineName = scraper.ThreadEngine(data)
 	}
+	// "Unknown" when the thread carries no engine signal; the add must still
+	// succeed rather than trip the engine CHECK constraint.
+	engineName = string(engine.Normalize(engineName))
 
 	// Build the game record. Since this game is not locally installed,
 	// use the thread title (sanitized) as a virtual path identifier.
@@ -3143,6 +3144,9 @@ func (a *App) AddGame(path string, title string, eng string, version string) (in
 			slog.Debug("auto-detected engine", "path", absPath, "engine", eng)
 		}
 	}
+	// The Add Game dialog offers descriptive names ("ren'py", "rpg maker"),
+	// which the engine CHECK constraint does not accept verbatim.
+	eng = string(engine.Normalize(eng))
 
 	// Check for duplicates by path.
 	existing, err := a.db.GetGameByPath(absPath)
@@ -3400,7 +3404,9 @@ func (a *App) EditGame(id int64, fields EditGameFields) error {
 		game.Title = title
 	}
 	if fields.Engine != nil {
-		game.Engine = strings.TrimSpace(*fields.Engine)
+		// The Edit Game dialog lists descriptive aliases alongside canonical
+		// names; normalise before the CHECK constraint sees the value.
+		game.Engine = string(engine.Normalize(*fields.Engine))
 		game.EngineSource = "user"
 	}
 	if fields.Version != nil {
