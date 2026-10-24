@@ -6,10 +6,18 @@
     GetThreadPreview,
     AddGameFromF95Zone,
     BrowseF95Zone,
+    GetCollections,
+    GetGameCollections,
+    AddGameToCollection,
+    RemoveGameFromCollection,
+    CreateCollection,
+    GetInstallTargets,
   } from '../../wailsjs/go/main/App'
   import {engineColor, engineStyle} from './engineColors.js'
   import {safeExternalUrl} from './sanitizeUrl.js'
   import {formatCount} from './format.js'
+  import {installPhaseLabel} from './install.js'
+  import {promptAction} from './promptDialog.svelte.js'
   import {createVirtualList} from './virtualList.svelte.js'
   import {browser, setBrowseFilters} from './viewState.svelte.js'
 
@@ -23,6 +31,8 @@
 
   let {
     onAdded = () => {},
+    installState = null,        // shared install pipeline state (owned by App)
+    onInstall = () => {},
   } = $props()
 
   // Cookie status
@@ -77,6 +87,11 @@
     // the user asks for a new search. With no persisted search, the Discover
     // feed fills the surface.
     if (!browser.searched && discoverStale()) loadDiscover(true)
+    // Library-side context for the post-add actions. Both are local backend
+    // reads (no network), so they don't compete for the F95Zone single-flight.
+    loadCollections()
+    loadInstallTargets()
+    if (browser.addResult?.success) loadAddedCollections(browser.addResult.gameId)
     await checkCookieStatus()
   })
 
@@ -422,6 +437,7 @@
       // preview started) mid-add, don't let this response resurrect the pane.
       if (seq === browser.previewSeq) {
         browser.addResult = { success: true, gameId }
+        loadAddedCollections(gameId)
         onAdded()
       }
     } catch (e) {
@@ -433,6 +449,127 @@
       // backend call settling, or a remounted view would be stuck disabled.
       browser.addingInFlight = false
     }
+  }
+
+  // ── Post-add actions: download / collections ───────────────
+  // A browser-added game is a library record only (virtual path). The two
+  // things users almost always want next are installing it and filing it into
+  // a collection, so both are offered right here instead of forcing a trip to
+  // the detail view. Install reuses the App-owned pipeline so navigating away
+  // mid-download can't orphan its state or start a duplicate run.
+
+  let collections = $state([])
+  let addedCollections = $state([])     // collections the added game belongs to
+  let collectionsError = $state('')
+  let creatingCollection = $state(false)
+  let installTargets = $state([])
+  let installDest = $state('')
+
+  let addedGameId = $derived(
+    browser.addResult?.success ? (Number(browser.addResult.gameId) || null) : null
+  )
+  let availableCollections = $derived.by(() => {
+    const member = new Set(addedCollections.map(c => c.id))
+    return collections.filter(c => !member.has(c.id))
+  })
+  let installForAdded = $derived(
+    !!installState && addedGameId !== null &&
+    Number(installState.gameId) === addedGameId
+  )
+  let installing = $derived(installForAdded && !!installState.running)
+  let installElsewhere = $derived(!!installState?.running && !installing)
+  let installPhase = $derived(installForAdded ? installState.phase : '')
+  let installProgress = $derived(installForAdded ? installState.progress : 0)
+  let installError = $derived(installForAdded ? installState.error : '')
+  let installDone = $derived(installForAdded && installState.phase === 'done')
+
+  const fmtErr = (e) => String(e).replace(/^Error:\s*/, '')
+
+  async function loadCollections() {
+    try {
+      collections = (await GetCollections()) || []
+      collectionsError = ''
+    } catch (e) {
+      collectionsError = fmtErr(e)
+    }
+  }
+
+  async function loadAddedCollections(gameID = addedGameId) {
+    const id = Number(gameID) || 0
+    if (!id) {
+      addedCollections = []
+      return
+    }
+    try {
+      addedCollections = (await GetGameCollections(id)) || []
+      collectionsError = ''
+    } catch (e) {
+      collectionsError = fmtErr(e)
+    }
+  }
+
+  async function loadInstallTargets() {
+    try {
+      installTargets = (await GetInstallTargets()) || []
+      if (!installDest) {
+        const first = installTargets.find(t => t.available)
+        if (first) installDest = first.path
+      }
+    } catch (e) {
+      installTargets = []
+    }
+  }
+
+  function handleInstall() {
+    if (addedGameId === null || !installDest || installing || installElsewhere) return
+    onInstall(addedGameId, installDest)
+  }
+
+  async function handleAddToCollection(e) {
+    const collectionID = Number(e.target.value)
+    e.target.value = ''
+    if (!collectionID || addedGameId === null) return
+    try {
+      await AddGameToCollection(addedGameId, collectionID)
+      await loadAddedCollections()
+      onAdded()   // collection counts/badges in the shell changed
+    } catch (err) {
+      collectionsError = fmtErr(err)
+    }
+  }
+
+  async function handleRemoveFromCollection(collectionID) {
+    if (addedGameId === null) return
+    try {
+      await RemoveGameFromCollection(addedGameId, collectionID)
+      await loadAddedCollections()
+      onAdded()
+    } catch (err) {
+      collectionsError = fmtErr(err)
+    }
+  }
+
+  // From this pane a new collection only makes sense as a container for the
+  // game that was just added, so create it and file the game into it.
+  async function handleCreateCollection() {
+    if (creatingCollection) return
+    const name = await promptAction({title: 'New collection', label: 'Name'})
+    const trimmed = (name || '').trim()
+    if (!trimmed) return
+    creatingCollection = true
+    try {
+      const id = await CreateCollection(trimmed)
+      if (addedGameId !== null && id) {
+        await AddGameToCollection(addedGameId, id)
+        await loadAddedCollections()
+        onAdded()
+      }
+      await loadCollections()
+      collectionsError = ''
+    } catch (err) {
+      collectionsError = fmtErr(err)
+    }
+    creatingCollection = false
   }
 
   // ── Overview truncation ────────────────────────────────────
@@ -919,12 +1056,88 @@
             </div>
           {/if}
 
-          <!-- Add to Library Button -->
+          <!-- Add to Library + post-add actions -->
           <div class="preview-actions">
             {#if browser.addResult?.success}
               <div class="add-success">
                 <span>✓</span>
                 <span>Game added to library (ID: {browser.addResult.gameId})</span>
+              </div>
+
+              <div class="post-add">
+                <!-- Download & install: same managed pipeline as the detail view -->
+                <div class="post-add-row">
+                  <span class="post-add-label">Download</span>
+                  {#if installDone}
+                    <span class="post-add-done">✓ Downloaded and installed</span>
+                  {:else if installTargets.length === 0}
+                    <span class="post-add-hint">
+                      Add a scan path in Settings to install games.
+                    </span>
+                  {:else}
+                    <select
+                      class="post-add-select install-select"
+                      bind:value={installDest}
+                      disabled={installing || installElsewhere}
+                    >
+                      {#each installTargets as t}
+                        <option value={t.path} disabled={!t.available}>
+                          {t.path}{t.available ? '' : ' (unavailable)'}
+                        </option>
+                      {/each}
+                    </select>
+                    <button
+                      class="btn btn-primary"
+                      onclick={handleInstall}
+                      disabled={installing || !installDest || installElsewhere}
+                      title={installElsewhere ? 'Another install is already running' : undefined}
+                    >
+                      {installing ? installPhaseLabel(installPhase) : installElsewhere ? 'Busy…' : '↓ Download & Install'}
+                    </button>
+                  {/if}
+                </div>
+                {#if installing && installProgress}
+                  <div class="install-progress">
+                    <div class="install-bar-fill" style="width: {installProgress}%"></div>
+                  </div>
+                {/if}
+                {#if installError}
+                  <p class="post-add-error">{installError}</p>
+                {/if}
+
+                <!-- Collections -->
+                <div class="post-add-row">
+                  <span class="post-add-label">Collections</span>
+                  <div class="coll-chips">
+                    {#each addedCollections as c}
+                      <span class="coll-chip">
+                        {c.name}
+                        <button
+                          class="coll-chip-x"
+                          title="Remove from {c.name}"
+                          onclick={() => handleRemoveFromCollection(c.id)}
+                        >✕</button>
+                      </span>
+                    {/each}
+                    {#if addedCollections.length === 0}
+                      <span class="post-add-hint">None</span>
+                    {/if}
+                  </div>
+                  {#if availableCollections.length > 0}
+                    <select class="post-add-select coll-select" value="" onchange={handleAddToCollection}>
+                      <option value="" disabled selected>Add to collection…</option>
+                      {#each availableCollections as c}
+                        <option value={c.id}>{c.name}</option>
+                      {/each}
+                    </select>
+                  {/if}
+                  <button class="post-add-new" onclick={handleCreateCollection} disabled={creatingCollection}>
+                    {creatingCollection ? 'Creating…' : '+ New collection'}
+                  </button>
+                </div>
+                {#if collectionsError}
+                  <p class="post-add-error">{collectionsError}</p>
+                {/if}
               </div>
             {:else if browser.addResult?.error}
               <div class="add-error">
@@ -1825,5 +2038,108 @@
     font-size: var(--text-lg);
     font-weight: 700;
     flex-shrink: 0;
+  }
+
+  /* ── Post-add: download + collections ─────────────── */
+  .post-add {
+    margin-top: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-secondary);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .post-add-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .post-add-label {
+    min-width: 84px;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+  }
+  .post-add-select {
+    flex: 1;
+    min-width: 140px;
+    padding: 6px 26px 6px 10px;
+    font-size: var(--text-sm);
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    cursor: pointer;
+  }
+  .post-add-select.install-select { font-family: var(--font-mono); }
+  .post-add-hint {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+  .post-add-done {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--success);
+  }
+  .post-add-error {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--danger);
+  }
+  .post-add-new {
+    padding: 6px 10px;
+    font-size: var(--text-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-1);
+    cursor: pointer;
+  }
+  .post-add-new:hover:not(:disabled) {
+    color: var(--text-primary);
+    border-color: var(--accent);
+  }
+  .install-progress {
+    height: 5px;
+    border-radius: var(--radius-1);
+    background: var(--bg-tertiary);
+    overflow: hidden;
+  }
+  .install-bar-fill {
+    height: 100%;
+    border-radius: var(--radius-1);
+    background: var(--accent);
+    transition: width 0.2s ease;
+  }
+  .coll-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-items: center;
+  }
+  .coll-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 4px 2px 8px;
+    border-radius: var(--radius-1);
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+  .coll-chip-x {
+    border: none;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: var(--text-2xs);
+    line-height: 1;
+    padding: 2px;
   }
 </style>

@@ -44,3 +44,11 @@ var syncValueFlags = map[string]bool{
 	"--cookie-file": true,
 	"--parallel":    true,
 }
+
+// autoUpdateValueFlags cover auto-update's value-taking flags.
+var autoUpdateValueFlags = map[string]bool{
+	"--cookie":      true,
+	"--cookie-file": true,
+	"--platform":    true,
+	"--max":         true,
+}

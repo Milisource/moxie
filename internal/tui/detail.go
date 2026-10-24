@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
+	"github.com/mili/moxie/internal/version"
 )
 
 // availableStatuses lists all valid game statuses for the TUI status selector.
@@ -108,7 +109,7 @@ func (m model) buildDetailContent() string {
 	}
 
 	writeField(&b, labelStyle, "Title:", game.Title, valueStyle)
-	if game.LatestVersion != "" && game.Version != "" && game.LatestVersion != game.Version {
+	if version.NeedsUpdate(game.LatestVersion, game.Version) {
 		latestStr := fmt.Sprintf(" (latest: %s, new)", game.LatestVersion)
 		writeField(&b, labelStyle, "Version:", ver, valueStyle, updateAvailableStyle.Render(latestStr))
 	} else {
@@ -148,7 +149,7 @@ func (m model) buildDetailContent() string {
 	}
 
 	// Version info from F95Zone
-	if game.LatestVersion != "" && game.LatestVersion != game.Version {
+	if version.NeedsUpdate(game.LatestVersion, game.Version) {
 		writeField(&b, labelStyle, "Latest:", game.LatestVersion, updateAvailableStyle)
 	}
 

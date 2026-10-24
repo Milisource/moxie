@@ -177,6 +177,9 @@ Each tile shows key stats at a glance:
 
 > **Moxie status (2026-10-08, F95 research):** a full reverse-engineering pass over the latest-updates endpoint found it is far richer than the client uses. Rows carry `screens[]` (a ready-made screenshot gallery), plus `new`/`watched`/`ignored` flags; `cmd=list` accepts a server-side filter/sort query language (`prefixes[]`, `noprefixes[]`, `tags[]`, `notags[]`, `tagtype=or`, `creator`, `date` day-limit, `sort=title`) with exact result counts; `cmd=tags` returns counted tag facets scoped to those filters; and the authenticated page publishes the complete prefix/tag taxonomy. The Browse toolbar's engine/AI-CG filters are still applied client-side over loaded pages — moving them server-side (and adding tags, status/category badges, a screenshot gallery, and unread/ignored flags) is tracked as future work in [latest-data-api.md](latest-data-api.md).
 
+> **Moxie status (2026-10-24, post-add actions):** after **Add to Library** the preview pane keeps the new game's next steps in place instead of dead-ending on the success line. **↓ Download & Install** installs the just-added game into a configured scan path through the same app-owned pipeline as the detail view (`GetInstallTargets` → `InstallGame`, live `game-install:*` phase/progress, shared single-run lock, and the engine-folder setting applies). **Collections** shows the game's membership chips plus a selector of the collections it is not yet in; **+ New collection** creates one and files the game into it. Both are local database reads/writes, so they do not touch the F95Zone network single-flight.
+
+
 ### Short-term (P2)
 
 1. **Larger cover thumbnails** — *Partially addressed (2026-08-09):* result cards are 16:9 grid tiles (~220px wide) showing full-res `attachments.f95zone.to` covers from the F95Checker catalog — no more avatars, no more 400px previews. Still not F95Zone's 3:4 portrait tile format; a tile-layout toggle (normal/large/list) remains open work.
@@ -209,7 +212,7 @@ Each tile shows key stats at a glance:
 | **Covers** | Server-rendered in grid | Full-res `attachments.f95zone.to` originals (catalog/feed keyed by thread ID; `preview.f95zone.to` rewritten); preview pane via `GetThreadPreview()` |
 | **Filters** | Server-side (full query language) | Client-side only today (engine include/exclude + Hide AI CG over already-loaded pages); the endpoint's server-side `prefixes[]`/`noprefixes[]`/`tags[]`/`notags[]`/`creator`/`date` language is documented in [latest-data-api.md](latest-data-api.md) and planned |
 | **Pagination** | 878 pages, 30/page | Discover: 30/page with infinite scroll + Load more. Search: single page, max 5 results |
-| **Add to library** | Not available (site only) | One-click "Add to Library" button (requires a session) |
+| **Add to library** | Not available (site only) | One-click "Add to Library" (requires a session), followed by **Download & Install** into a scan path and **collection** assignment without leaving Browse |
 
 ---
 

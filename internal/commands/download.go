@@ -21,6 +21,24 @@ import (
 	"github.com/mili/moxie/internal/updater"
 )
 
+// prepareDownloader wires the process-wide downloader services used by every
+// command that downloads: the DB-backed masked-URL cache and the browser
+// fallback for challenge-graded links. Both are optional; when no browser is
+// available the Go path still runs and reports the challenge.
+func prepareDownloader(database *db.Database) {
+	downloader.SetDefaultResolvedCache(
+		database.GetResolvedURL,
+		func(maskedURL, resolved, host string) {
+			if err := database.PutResolvedURL(maskedURL, resolved, host); err != nil {
+				log.Warn("failed to cache resolved masked URL", "error", err)
+			}
+		},
+	)
+	if installed, reason := browserresolve.InstallDownloaderFallback(); !installed {
+		log.Debug("downloader browser fallback unavailable", "reason", reason)
+	}
+}
+
 // Download downloads a game from F95Zone download links with platform priority.
 func Download(args []string) {
 	fs := flag.NewFlagSet("download", flag.ExitOnError)
@@ -44,22 +62,7 @@ func Download(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
-	// Attach the DB-backed masked-URL unwrap cache: repeated downloads of
-	// the same /masked/ link resolve from the DB instead of re-hitting
-	// F95Zone's rate-limited unwrap endpoint. Every resolver created
-	// afterwards (including the one inside Download) picks it up.
-	downloader.SetDefaultResolvedCache(
-		database.GetResolvedURL,
-		func(maskedURL, resolved, host string) {
-			if err := database.PutResolvedURL(maskedURL, resolved, host); err != nil {
-				log.Warn("failed to cache resolved masked URL", "error", err)
-			}
-		},
-	)
-	// Browser fallback for challenge-graded hosts: wired when a usable
-	// browser is installed (MOXIE_BROWSER=auto|chrome|firefox); the Go path
-	// stays primary.
-	browserresolve.InstallDownloaderFallback()
+	prepareDownloader(database)
 
 	// --extension: resolve F95Zone /dl/ check pages in the user's own browser
 	// (where hCaptcha passes) instead of the automated browser. Overrides the
@@ -129,7 +132,7 @@ func Download(args []string) {
 	if *open {
 		downloadSingleOpen(database, game, cookie, string(targetPlatform), dlWatchDir, *extract, *watch)
 	} else {
-		downloadSingle(database, game, cookie, *downloadDir, string(targetPlatform), *extract)
+		downloadSingle(database, game, cookie, *downloadDir, string(targetPlatform), *extract, nil)
 	}
 }
 
@@ -147,10 +150,15 @@ func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform stri
 	}
 
 	fmt.Fprintf(os.Stderr, "Downloading updates for %d games...\n\n", len(queue))
+	var client *scraper.Client
+	if cookie != "" {
+		client = scraper.NewClient(cookie)
+	}
 	ok, failed := 0, 0
-	for i, g := range queue {
+	for i := range queue {
+		g := &queue[i]
 		fmt.Fprintf(os.Stderr, "[%d/%d] %s: %s → %s\n", i+1, len(queue), g.Title, g.Version, g.LatestVersion)
-		if err := downloadSingle(database, &g, cookie, downloadDir, targetPlatform, extract); err != nil {
+		if err := downloadSingle(database, g, cookie, downloadDir, targetPlatform, extract, client); err != nil {
 			failed++
 			fmt.Fprintf(os.Stderr, "  ✗ %v\n", err)
 		} else {
@@ -167,7 +175,7 @@ func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform stri
 // downloadSingle handles the full download flow for one game.
 // Returns an error when the download did not complete; nil on success or
 // when skipped (e.g. download already in progress).
-func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, targetPlatform string, extract bool) error {
+func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, targetPlatform string, extract bool, client *scraper.Client) error {
 	destDir := downloadDir
 	if destDir == "" {
 		destDir = filepath.Join(filepath.Dir(game.Path), "downloads")
@@ -211,7 +219,9 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 	if selectedLink == nil && game.F95URL != "" {
 		if cookie != "" {
 			fmt.Fprintf(os.Stderr, "  Fetching download links from F95Zone...\n")
-			client := scraper.NewClient(cookie)
+			if client == nil {
+				client = scraper.NewClient(cookie)
+			}
 			scrapeURL := scraper.ResolveScrapeURL(game.F95URL, game.F95ThreadID)
 			data, err := client.ScrapeThread(scrapeURL)
 			if err != nil {
@@ -409,6 +419,13 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 		if downloadedFile == "" {
 			downloadedFile = findDownloadedFile(destDir, dlRecord.Filename)
 		}
+		if downloadedFile != "" && !archive.IsArchiveFile(downloadedFile) {
+			// A plain executable/patch cannot be merged automatically. Report
+			// it so auto-update does not claim success and re-queue forever.
+			fmt.Fprintf(os.Stderr, "  Downloaded file is not an archive: %s\n", downloadedFile)
+			fmt.Fprintf(os.Stderr, "  Install it manually: moxie install %d %s\n", game.ID, downloadedFile)
+			return fmt.Errorf("downloaded file is not an archive; install manually")
+		}
 		if downloadedFile != "" && archive.IsArchiveFile(downloadedFile) {
 			fmt.Fprintf(os.Stderr, "  Extracting archive...\n")
 			dlRecord.Status = db.DownloadStatusExtracting
@@ -429,25 +446,44 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 			})
 
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "\n    Warning: %v\n", err)
-			} else {
-				fmt.Fprintf(os.Stderr, "\n    Extracted %d files\n", result.FilesExtracted)
-				os.Remove(downloadedFile)
-				fmt.Fprintf(os.Stderr, "    Removed archive\n")
-
-				fmt.Fprintf(os.Stderr, "  Merging update into %s...\n", game.Path)
-				mergeResult, mergeErr := updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
-				if mergeErr != nil {
-					fmt.Fprintf(os.Stderr, "    Warning: %v\n", mergeErr)
-				} else {
-					fmt.Fprintf(os.Stderr, "    Files updated: %d  |  User files preserved: %d\n", mergeResult.FilesCopied, mergeResult.FilesPreserved)
-					if mergeResult.BackupPath != "" {
-						fmt.Fprintf(os.Stderr, "    Backup: %s\n", mergeResult.BackupPath)
-					}
-				}
+				dlRecord.Status = db.DownloadStatusFailed
+				dlRecord.Error = err.Error()
+				dlRecord.CompletedAt = time.Now()
+				database.UpdateDownload(dlRecord)
+				fmt.Fprintf(os.Stderr, "\n    Extraction failed: %v\n", err)
+				fmt.Fprintf(os.Stderr, "    Archive kept: %s\n", downloadedFile)
+				return fmt.Errorf("extract %s: %w", filepath.Base(downloadedFile), err)
 			}
-			// Finalize the record: the download, extraction, and merge all
-			// succeeded (extract/merge problems are warnings, not failures).
+			fmt.Fprintf(os.Stderr, "\n    Extracted %d files\n", result.FilesExtracted)
+			defer os.RemoveAll(result.Destination)
+
+			fmt.Fprintf(os.Stderr, "  Merging update into %s...\n", game.Path)
+			mergeResult, mergeErr := updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
+			if mergeErr != nil {
+				dlRecord.Status = db.DownloadStatusFailed
+				dlRecord.Error = mergeErr.Error()
+				dlRecord.CompletedAt = time.Now()
+				database.UpdateDownload(dlRecord)
+				fmt.Fprintf(os.Stderr, "    Merge failed: %v\n", mergeErr)
+				fmt.Fprintf(os.Stderr, "    Version left at %q. Archive kept: %s\n", game.Version, downloadedFile)
+				return fmt.Errorf("merge update: %w", mergeErr)
+			}
+			fmt.Fprintf(os.Stderr, "    Files updated: %d  |  User files preserved: %d\n", mergeResult.FilesCopied, mergeResult.FilesPreserved)
+			if mergeResult.BackupPath != "" {
+				fmt.Fprintf(os.Stderr, "    Backup: %s\n", mergeResult.BackupPath)
+			}
+
+			// Record the installed version so the game leaves the update
+			// queue; only now is it safe to delete the archive.
+			if installed, verr := recordInstalledVersion(database, game, downloadedFile); verr != nil {
+				log.Warn("failed to record installed version", "game_id", game.ID, "error", verr)
+				fmt.Fprintf(os.Stderr, "    Warning: could not record version: %v\n", verr)
+			} else if installed != "" {
+				fmt.Fprintf(os.Stderr, "    Version: %s\n", installed)
+			}
+			if rerr := os.Remove(downloadedFile); rerr != nil {
+				fmt.Fprintf(os.Stderr, "    Warning: could not remove archive: %v\n", rerr)
+			}
 			dlRecord.Status = db.DownloadStatusCompleted
 			dlRecord.PercentComplete = 100
 			dlRecord.CompletedAt = time.Now()

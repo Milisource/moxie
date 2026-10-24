@@ -14,7 +14,6 @@ import (
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/log"
-	"github.com/mili/moxie/internal/scanner"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/updater"
 )
@@ -303,9 +302,11 @@ func matchArchiveToGame(filename string, games []watchedGame) *watchedGame {
 }
 
 // installDownloadedArchive handles the full install flow for a downloaded
-// archive: extract → merge → update version.
+// archive: extract → merge → record the installed version. The version is
+// only recorded when the merge succeeds.
 func installDownloadedArchive(database *db.Database, game *db.Game, archivePath string, doExtract bool) {
 	destDir := filepath.Join(filepath.Dir(game.Path), "downloads")
+	merged := false
 
 	if doExtract {
 		fmt.Fprintf(os.Stderr, "    Extracting...\n")
@@ -314,30 +315,32 @@ func installDownloadedArchive(database *db.Database, game *db.Game, archivePath 
 			fmt.Fprintf(os.Stderr, "    ✗ Extraction failed: %v\n", err)
 			return
 		}
+		defer os.RemoveAll(result.Destination)
 
 		fmt.Fprintf(os.Stderr, "    Merging into %s...\n", game.Path)
 		mergeResult, mergeErr := updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
 		if mergeErr != nil {
-			fmt.Fprintf(os.Stderr, "    Merge warning: %v\n", mergeErr)
-		} else {
-			fmt.Fprintf(os.Stderr, "    Files updated: %d  |  Preserved: %d\n", mergeResult.FilesCopied, mergeResult.FilesPreserved)
+			fmt.Fprintf(os.Stderr, "    ✗ Merge failed, version left at %q: %v\n", game.Version, mergeErr)
+			return
 		}
+		merged = true
+		fmt.Fprintf(os.Stderr, "    Files updated: %d  |  Preserved: %d\n", mergeResult.FilesCopied, mergeResult.FilesPreserved)
 
-		os.Remove(archivePath)
+		if err := os.Remove(archivePath); err != nil {
+			fmt.Fprintf(os.Stderr, "    Warning: could not remove archive: %v\n", err)
+		}
 	}
 
-	// Extract version from archive filename for the most accurate version.
-	archiveVer := scanner.ExtractVersion(filepath.Base(archivePath))
-	if archiveVer != "" && archiveVer != game.Version {
-		game.Version = archiveVer
-	} else if game.LatestVersion != "" && game.LatestVersion != game.Version {
-		game.Version = game.LatestVersion
+	if !merged {
+		return
 	}
 
-	if err := database.UpdateGame(game); err != nil {
+	previous := game.Version
+	if installed, err := recordInstalledVersion(database, game, archivePath); err != nil {
 		log.Warn("failed to update version after install", "game_id", game.ID, "error", err)
-	} else {
-		fmt.Fprintf(os.Stderr, "    ✓ Version updated to %s\n", game.Version)
+		fmt.Fprintf(os.Stderr, "    Warning: could not record version: %v\n", err)
+	} else if installed != previous {
+		fmt.Fprintf(os.Stderr, "    ✓ Version updated to %s\n", installed)
 	}
 
 	fmt.Fprintf(os.Stderr, "    ✓ %q is up to date.\n", game.Title)

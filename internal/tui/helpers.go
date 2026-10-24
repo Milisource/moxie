@@ -10,6 +10,7 @@ import (
 
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/launcher"
+	"github.com/mili/moxie/internal/version"
 )
 
 // sortedTags returns a copy of tags sorted for display. View() must stay
@@ -157,7 +158,7 @@ func (m *model) updateTableRows() {
 		}
 
 		// Update-available indicator (yellow)
-		if g.LatestVersion != "" && g.Version != "" && g.LatestVersion != g.Version {
+		if version.NeedsUpdate(g.LatestVersion, g.Version) {
 			indicator := updateAvailableStyle.Render(" ↑")
 			title += indicator
 		}

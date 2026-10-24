@@ -182,8 +182,8 @@ const App = {
   GetGameCount:        () => delay().then(() => (EMPTY ? 0 : GAME_COUNT)),
   GetGameDetail:       (id) => delay().then(() => detailOf(id)),
   SearchGames:         (q) => delay(80).then(() => searchGames(q)),
-  AddGame:             () => delay().then(() => ({id: 999})),
-  AddGameFromF95Zone:  () => delay().then(() => ({id: 999})),
+  AddGame:             () => delay().then(() => 999),
+  AddGameFromF95Zone:  () => delay().then(() => 999),
   EditGame:            (id, fields = {}) => delay().then(() => {
     const g = gameOf(id)
     if (!g) throw new Error('game with id ' + id + ' not found')
@@ -236,8 +236,10 @@ const App = {
       .map((g) => g.id),
   })))),
   GetCollectionGames:  (id) => delay().then(() => (COLLECTION_GAMES[id] || []).map((gid) => gameOf(gid))),
-  GetGameCollections:  () => delay().then(() => [{gameId: 1, collectionIds: [1, 2]}]),
-  CreateCollection:    (name) => delay().then(() => ({id: 99, name, gameCount: 0})),
+  GetGameCollections:  (gameID) => delay().then(() => (
+    Number(gameID) === 999 ? [] : COLLECTIONS.slice(0, 2).map((c) => ({id: c.id, name: c.name}))
+  )),
+  CreateCollection:    (name) => delay().then(() => 99),
   DeleteCollection:    () => delay().then(() => {}),
   AddGameToCollection: () => delay().then(() => {}),
   RemoveGameFromCollection: () => delay().then(() => {}),

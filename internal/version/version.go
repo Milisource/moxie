@@ -195,6 +195,26 @@ func IsNewer(remote, known string) bool {
 	return Compare(remote, known) == Newer
 }
 
+// NeedsUpdate reports whether latest should replace current in the download
+// queue. Only Newer and Changed qualify: Changed means the two strings differ
+// in a way that cannot be ordered, so surfacing it lets a person decide, while
+// Same and Older are never updates. A thread that reverts to an earlier
+// version therefore stops re-queuing the game.
+//
+// Automatic installation must be stricter: it should call IsNewer, because a
+// Changed comparison is not evidence of a newer build.
+func NeedsUpdate(latest, current string) bool {
+	if strings.TrimSpace(latest) == "" || strings.TrimSpace(current) == "" {
+		return false
+	}
+	switch Compare(latest, current) {
+	case Newer, Changed:
+		return true
+	default:
+		return false
+	}
+}
+
 // IsNewerRelease reports whether the moxie release version latest is newer
 // than current. This is for the project's own release tags (dotted numerics,
 // optionally with a leading "v" and a "-prerelease"/"+build" suffix), not for

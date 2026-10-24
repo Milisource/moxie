@@ -1074,7 +1074,7 @@
               onCancel={cancelSync}
             />
           {:else if activeView === 'browser'}
-            <F95Browser onAdded={handleBrowserGameAdded}/>
+            <F95Browser onAdded={handleBrowserGameAdded} installState={installState} onInstall={startInstall}/>
           {:else if activeView === 'collections'}
             <CollectionsView
               onOpenDetail={openDetail}

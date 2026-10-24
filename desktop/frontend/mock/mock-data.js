@@ -196,7 +196,7 @@ export const PLAY_HISTORY = [
 ]
 
 export const INSTALL_TARGETS = [
-  {id: 1, title: 'Ember Falls', path: '/games/Ember_Falls'},
+  {path: '/games/Ember_Falls', available: true},
 ]
 
 export const COOKIE_STATUS = 'available'

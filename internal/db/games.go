@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mili/moxie/internal/version"
 )
 
 // VirtualPathPrefix is the prefix for games that aren't locally installed.
@@ -694,31 +696,40 @@ func (db *Database) ListDuplicateCandidates() ([]GameDupSummary, error) {
 // Dedicated query methods
 // ---------------------------------------------------------------------------
 
-// GamesNeedingUpdate returns games where latest_version != version (i.e., an
-// update is available). Excludes backup directories (.old paths).
+// GamesNeedingUpdate returns games with an available update. A game qualifies
+// only when version.NeedsUpdate says the thread version is newer or differs in
+// a way that cannot be ordered; a thread that reverts to an older version (or
+// only reformats the same one, "1.0.0" vs "1.0") is not queued.
+//
+// The raw SQL inequality this used to run also queued downgrades, which made
+// `download --all` and auto-update re-install an older build forever.
 func (db *Database) GamesNeedingUpdate() ([]Game, error) {
-	rows, err := db.conn.Query(`
-		SELECT ` + gameColumns + `
-		FROM games
-		WHERE path NOT LIKE '%.old'
-		  AND deleted_at IS NULL
-		  AND latest_version IS NOT NULL
-		  AND latest_version != version
-		ORDER BY title COLLATE NOCASE`)
+	candidates, err := db.GamesWithLatestVersion()
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var games []Game
-	for rows.Next() {
-		g, err := scanGame(rows)
-		if err != nil {
-			return nil, err
+	games := make([]Game, 0, len(candidates))
+	for _, g := range candidates {
+		if version.NeedsUpdate(g.LatestVersion, g.Version) {
+			games = append(games, g)
 		}
-		games = append(games, *g)
 	}
-	return games, rows.Err()
+	return games, nil
+}
+
+// CountGamesNeedingUpdate returns how many games GamesNeedingUpdate would
+// return.
+//
+// It materialises the candidate rows rather than running a parallel COUNT: the
+// decision depends on version.NeedsUpdate's Go-side ordering, and two SQL/Go
+// implementations would drift (they did — a downgrade counted in the badge but
+// not in the list).
+func (db *Database) CountGamesNeedingUpdate() (int, error) {
+	games, err := db.GamesNeedingUpdate()
+	if err != nil {
+		return 0, err
+	}
+	return len(games), nil
 }
 
 // GamesWithLatestVersion returns every active game with a known F95Zone
@@ -1126,20 +1137,6 @@ func (db *Database) CountGamesByStatus() (map[string]int, error) {
 		counts[status] = n
 	}
 	return counts, rows.Err()
-}
-
-// CountGamesNeedingUpdate returns how many games GamesNeedingUpdate would
-// return, without materialising the rows.
-func (db *Database) CountGamesNeedingUpdate() (int, error) {
-	var n int
-	err := db.conn.QueryRow(`
-		SELECT COUNT(*)
-		FROM games
-		WHERE path NOT LIKE '%.old'
-		  AND deleted_at IS NULL
-		  AND latest_version IS NOT NULL
-		  AND latest_version != version`).Scan(&n)
-	return n, err
 }
 
 // Game series is deliberately not implemented.
