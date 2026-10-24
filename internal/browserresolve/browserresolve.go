@@ -207,6 +207,27 @@ func ResolveDownload(ctx context.Context, resolvedURL, destDir string, opts ...O
 	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
 
+	path, err := resolveDownloadAttempt(ctx, o, resolvedURL, destDir)
+	if err == nil || !errors.Is(err, ErrVerificationPage) || o.Headful {
+		return path, err
+	}
+	// Cloudflare wants a human. Retry once in a visible window; the gate in
+	// engine.run waits for the user to pass the check, then the page's own
+	// flow downloads the file.
+	if !canShowBrowserWindow() {
+		return "", fmt.Errorf("%w; no display is available to show the check — open the link in your own browser and retry", err)
+	}
+	log.Warn("browserresolve: the download page needs a security check; opening a visible browser window — pass the check there and the download continues automatically")
+	headful := o
+	headful.Headful = true
+	return resolveDownloadAttempt(ctx, headful, resolvedURL, destDir)
+}
+
+// resolveDownloadAttempt is one browser download session: engine selection,
+// then the resolver (profile copy, download, verify, move). A fresh profile
+// copy per attempt keeps the visible retry independent of the failed headless
+// session.
+func resolveDownloadAttempt(ctx context.Context, o Options, resolvedURL, destDir string) (string, error) {
 	eng, err := selectEngine(&o, resolvedURL)
 	if err != nil {
 		return "", err

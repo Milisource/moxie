@@ -196,19 +196,22 @@ func InstallDownloaderFallback() (installed bool, reason string) {
 		// downloads it with progress/resume. Bound the session so a
 		// stubborn wall (image challenge, login wall) cannot stall the
 		// unwrap indefinitely — long enough for the visible-window
-		// verification retry and the user passing the check.
-		solveCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		// verification retry, the user passing the check, and a browser
+		// download the visible session started itself.
+		solveCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 		defer cancel()
 		return ResolveMaskedURL(solveCtx, maskedURL)
 	})
 	// F95Zone /dl/ download-link pages (2026-10) put an hCaptcha + script
 	// check in front of every link; only a browser can pass it. The browser
 	// returns the destination (host URL or /masked/ interstitial), which
-	// the Go path then resolves/downloads. The 5 min bound covers the
+	// the Go path then resolves/downloads. The 30 min bound covers the
 	// headless attempt, the visible-window retry when Cloudflare wants a
-	// human check, and the user passing that check.
+	// human check, the user passing that check, and a browser download the
+	// visible session started itself (multi-GB archives); the internal
+	// gates still bound inactivity.
 	downloader.SetDefaultDLSolver(func(ctx context.Context, dlURL string) (string, error) {
-		solveCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		solveCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 		defer cancel()
 		return ResolveDownloadLinkURL(solveCtx, dlURL)
 	})

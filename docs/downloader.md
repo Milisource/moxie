@@ -247,6 +247,15 @@ UA + TLS fingerprint the clearance was minted to). Wiring:
   behavior is unchanged until an app wires it).
 - Invoked **at most once per download**; the browser's finished file lands
   in the destination dir and the download is reported complete.
+- **Human-assisted handoff (2026-10-24):** when a `/dl/` or `/masked/` solve
+  required a visible browser window and that window downloaded the file
+  itself, browserresolve returns an opaque `moxie-browser-file://` token
+  instead of a destination URL. The token is random, single-use and consumed
+  by `downloadWithHeaders`, which copies the finished file into `destDir`
+  (sanitized name, size limits, progress) and removes the temp dir. This
+  avoids downloading a multi-GB archive twice and works for one-time/clearance-
+  bound URLs that Go cannot fetch. A scraped link can never forge a token, so
+  it cannot be used to read local files.
 - `browserresolve.InstallDownloaderFallback()` (TUI download, CLI `download`,
   desktop startup) installs the hook when a usable browser exists; default
   is auto-detect, overridable per run via `MOXIE_BROWSER=auto|chrome|firefox`

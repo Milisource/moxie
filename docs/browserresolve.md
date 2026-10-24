@@ -145,6 +145,21 @@ the retry is skipped and the error tells the user to run
 granted to a visible session that is still sitting on an hCaptcha image
 challenge after the click budget, so a human can finish it there too.
 
+**The visible window finishes the download itself (2026-10-24).** Handing the
+first off-site URL back to Go used to close the window right as the host's own
+check (`mediafire.com/file/…?action=check`) was about to start the transfer —
+and the follow-up headless run then sat five minutes on the F95Zone check
+before failing. Now a human-assisted session keeps the window open, drives the
+destination page's download controls (`clickDownloadTriggers`), waits up to
+15 s for a browser download to begin and, when one does, lets it finish (up to
+the download timeout). The finished file is moved to a private temp dir and
+registered with the downloader, which copies it into the game's download dir
+(zero re-download, works for one-time or clearance-bound URLs). If the page
+never starts a download, the destination URL is returned as before. The
+browser-download fallback (`ResolveDownload`) gets the same treatment: a
+verification page there retries once in a visible window instead of stalling
+headless for five minutes.
+
 **Known limitation (verified live):** automation-detected sessions cannot mint
 an hCaptcha token. Playwright/rod reach the check page, click Continue, and get
 *"The check wasn't passed"*; rod additionally trips Cloudflare's managed

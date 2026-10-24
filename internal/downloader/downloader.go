@@ -135,13 +135,17 @@ func DownloadWithContext(ctx context.Context, urlStr, host, destDir string, expe
 		return fmt.Errorf("resolve %s URL: %w", host, resolveErr)
 	}
 	log.Debug("download resolving via HTTP", "resolved_url", redactedURL(resolved.URL), "headers", len(resolved.Headers), "host", host)
-	// Pre-download host health: some hosts (pixeldrain) serve a
-	// server-side speed cap instead of failing. Catch it here, before any
-	// bytes move, so the caller's link-fallback loop tries another host
-	// instead of grinding through a multi-hour 1 MiB/s transfer.
-	if err := resolver.checkHostThrottle(ctx, host, resolved.URL); err != nil {
-		log.Info("host download throttled; skipping to next link", "host", host, "error", err)
-		return err
+	// A browser handoff carries a file, not a URL: skip the HTTP health
+	// probe (there is nothing to probe) and let downloadWithHeaders adopt it.
+	if !IsBrowserFileURL(resolved.URL) {
+		// Pre-download host health: some hosts (pixeldrain) serve a
+		// server-side speed cap instead of failing. Catch it here, before any
+		// bytes move, so the caller's link-fallback loop tries another host
+		// instead of grinding through a multi-hour 1 MiB/s transfer.
+		if err := resolver.checkHostThrottle(ctx, host, resolved.URL); err != nil {
+			log.Info("host download throttled; skipping to next link", "host", host, "error", err)
+			return err
+		}
 	}
 	return downloadWithHeaders(ctx, resolved.URL, resolved.Headers, urlStr, host, destDir, expectedTotal, onProgress, resolver.cookieSource, resolver.browserFallback)
 }
@@ -241,6 +245,12 @@ var sharedDownloadTransport = &http.Transport{
 }
 
 func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]string, originalURL, host, destDir string, expectedTotal int64, onProgress func(Progress), cookieSource func(hostname string) string, browserFallback func(ctx context.Context, url, destDir string) (string, error)) error {
+	// A file the browser already downloaded (human-assisted session) is
+	// adopted directly — fetching its URL again would double the transfer or
+	// fail on one-time links.
+	if path, name, ok := takeBrowserFile(urlStr); ok {
+		return adoptBrowserFile(ctx, path, name, destDir, host, onProgress)
+	}
 	if !isValidDownloadURL(urlStr) {
 		return fmt.Errorf("invalid or blocked URL: %s", urlStr)
 	}

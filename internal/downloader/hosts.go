@@ -330,6 +330,12 @@ func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*Res
 	if depth > 5 {
 		return nil, fmt.Errorf("masked URL chain too deep")
 	}
+	// A browser handoff names a file the browser already downloaded: there is
+	// no host to resolve, and the downloader adopts the file instead of
+	// fetching a URL.
+	if IsBrowserFileURL(rawURL) {
+		return &ResolveResult{URL: rawURL, Headers: map[string]string{}}, nil
+	}
 	// Normalize legacy labels (e.g. "google drive" stored by older scrapes):
 	// all canonical labels are single lowercase words.
 	host = strings.ToLower(strings.ReplaceAll(host, " ", ""))

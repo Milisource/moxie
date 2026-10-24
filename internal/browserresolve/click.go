@@ -254,11 +254,16 @@ func pageURL(page *rod.Page) string {
 // navigates away from the interstitial. Only masked-page triggers are
 // used — generic download buttons must NOT be clicked here: the
 // destination page's own buttons would start downloads.
-func clickMaskedFlow(ctx context.Context, page *rod.Page, maskedURL string, waitForHuman bool) (string, error) {
+func clickMaskedFlow(ctx context.Context, page *rod.Page, maskedURL string, waitForHuman bool, tr *downloadTracker) (string, error) {
 	first := true
 	for click := 0; click < maxDownloadClicks; click++ {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
+		}
+		// The destination can be the file itself: a browser download never
+		// changes the tab URL, so waiting for a URL change would stall.
+		if tr != nil && tr.started() {
+			return "", errBrowserDownloadStarted
 		}
 		// A fast redirect (the unwrap answered ok on the first click — no
 		// captcha) can complete before the settle below — check first.
@@ -324,11 +329,16 @@ func clickMaskedFlow(ctx context.Context, page *rod.Page, maskedURL string, wait
 // that only a browser can satisfy; pressing Continue submits the form and
 // the server answers with a page whose data-url is the destination (or the
 // older /masked/ interstitial, which is clicked through as well).
-func clickDownloadLinkFlow(ctx context.Context, page *rod.Page, startURL string, waitForHuman bool) (string, error) {
+func clickDownloadLinkFlow(ctx context.Context, page *rod.Page, startURL string, waitForHuman bool, tr *downloadTracker) (string, error) {
 	first := true
 	for click := 0; click < maxDownloadClicks; click++ {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
+		}
+		// The destination can be the file itself: a browser download never
+		// changes the tab URL, so waiting for a URL change would stall.
+		if tr != nil && tr.started() {
+			return "", errBrowserDownloadStarted
 		}
 		if dest, ok := waitForMaskedDestination(ctx, page, startURL, 2*time.Second); ok {
 			return dest, nil

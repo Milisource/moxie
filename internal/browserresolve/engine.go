@@ -234,7 +234,9 @@ func (e *rodEngine) open(ctx context.Context, req engineRequest) (b *rod.Browser
 // resolveMasked drives the F95Zone masked download interstitial in the
 // browser and returns the real destination URL once the page navigates
 // away from f95zone.to. Nothing is downloaded — the Go path fetches the
-// destination with progress/resume.
+// destination with progress/resume — unless a human-assisted session
+// downloaded the file itself, in which case the finished file is handed to
+// the downloader instead.
 func (e *rodEngine) resolveMasked(ctx context.Context, req engineRequest) (string, error) {
 	b, page, cleanup, err := e.open(ctx, req)
 	if err != nil {
@@ -242,19 +244,26 @@ func (e *rodEngine) resolveMasked(ctx context.Context, req engineRequest) (strin
 	}
 	defer cleanup()
 
-	// Insurance against destinations that auto-start downloads: they land
-	// in a temp dir instead of the user's default download folder.
-	if err := (proto.BrowserSetDownloadBehavior{
-		Behavior:         proto.BrowserSetDownloadBehaviorBehaviorAllowAndName,
-		BrowserContextID: b.BrowserContextID,
-		DownloadPath:     os.TempDir(),
-	}).Call(b); err != nil {
-		log.Debug("browserresolve: masked flow download behavior failed", "error", err)
-	}
-
-	dest, err := clickMaskedFlow(ctx, page, req.url, e.opts.Headful)
+	// Insurance against destinations that auto-start downloads: they land in
+	// a per-session temp dir instead of the user's default download folder.
+	dlDir, err := os.MkdirTemp("", "moxie-browser-dl-*")
 	if err != nil {
-		return "", fmt.Errorf("browserresolve: masked unwrap in browser: %w", err)
+		return "", fmt.Errorf("browserresolve: creating download dir: %w", err)
+	}
+	defer removeDir("download dir", dlDir)
+	tr := startDownloadTracking(b, dlDir)
+
+	dest, flowErr := clickMaskedFlow(ctx, page, req.url, e.opts.Headful, handoffTracker(e.opts.Headful, tr))
+	if e.opts.Headful && !errors.Is(flowErr, ErrVerificationPage) && ctx.Err() == nil {
+		if token, ok := browserFileHandoff(ctx, page, tr, dlDir, e.opts); ok {
+			return token, nil
+		}
+	}
+	if errors.Is(flowErr, errBrowserDownloadStarted) {
+		return "", fmt.Errorf("browserresolve: masked unwrap in browser: the browser's download did not complete")
+	}
+	if flowErr != nil {
+		return "", fmt.Errorf("browserresolve: masked unwrap in browser: %w", flowErr)
 	}
 	log.Info("browserresolve: masked unwrap in browser succeeded", "dest", dest)
 	return dest, nil
@@ -262,6 +271,8 @@ func (e *rodEngine) resolveMasked(ctx context.Context, req engineRequest) (strin
 
 // resolveDownloadLink drives the /dl/ "Just a quick check" page (and any
 // /masked/ interstitial it hands off to) and returns the destination URL.
+// A human-assisted session that downloads the file itself hands the finished
+// file to the downloader instead.
 func (e *rodEngine) resolveDownloadLink(ctx context.Context, req engineRequest) (string, error) {
 	b, page, cleanup, err := e.open(ctx, req)
 	if err != nil {
@@ -269,17 +280,24 @@ func (e *rodEngine) resolveDownloadLink(ctx context.Context, req engineRequest) 
 	}
 	defer cleanup()
 
-	if err := (proto.BrowserSetDownloadBehavior{
-		Behavior:         proto.BrowserSetDownloadBehaviorBehaviorAllowAndName,
-		BrowserContextID: b.BrowserContextID,
-		DownloadPath:     os.TempDir(),
-	}).Call(b); err != nil {
-		log.Debug("browserresolve: download-link flow download behavior failed", "error", err)
-	}
-
-	dest, err := clickDownloadLinkFlow(ctx, page, req.url, e.opts.Headful)
+	dlDir, err := os.MkdirTemp("", "moxie-browser-dl-*")
 	if err != nil {
-		return "", fmt.Errorf("browserresolve: download-link unwrap in browser: %w", err)
+		return "", fmt.Errorf("browserresolve: creating download dir: %w", err)
+	}
+	defer removeDir("download dir", dlDir)
+	tr := startDownloadTracking(b, dlDir)
+
+	dest, flowErr := clickDownloadLinkFlow(ctx, page, req.url, e.opts.Headful, handoffTracker(e.opts.Headful, tr))
+	if e.opts.Headful && !errors.Is(flowErr, ErrVerificationPage) && ctx.Err() == nil {
+		if token, ok := browserFileHandoff(ctx, page, tr, dlDir, e.opts); ok {
+			return token, nil
+		}
+	}
+	if errors.Is(flowErr, errBrowserDownloadStarted) {
+		return "", fmt.Errorf("browserresolve: download-link unwrap in browser: the browser's download did not complete")
+	}
+	if flowErr != nil {
+		return "", fmt.Errorf("browserresolve: download-link unwrap in browser: %w", flowErr)
 	}
 	log.Info("browserresolve: download-link unwrap in browser succeeded", "dest", dest)
 	return dest, nil
@@ -342,6 +360,13 @@ func (e *rodEngine) run(ctx context.Context, req engineRequest) (engineResult, e
 	// Click-required flows (F95Zone masked "Continue", free-download
 	// buttons): drive the chain until a download starts. Auto-download
 	// pages bail out via the tracker within one selector timeout.
+	//
+	// A Cloudflare verification page in the way needs a human: headless
+	// returns ErrVerificationPage (the caller retries visibly), headful waits
+	// for the user to pass it in the window.
+	if err := verificationGate(ctx, page, e.opts.Headful); err != nil {
+		return engineResult{}, fmt.Errorf("browserresolve: download: %w", err)
+	}
 	clickDownloadTriggers(ctx, page, tr)
 
 	timeout := e.opts.DownloadTimeout
