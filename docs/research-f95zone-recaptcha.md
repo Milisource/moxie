@@ -137,8 +137,11 @@ The paid-API captcha solver was dropped per project decision. Instead:
   real masked link.
 - Audio-challenge solving (whisper/Vosk sidecar): deferred until real
   usage shows image challenges are common.
-- Camoufox: rejected (Python/Playwright-only, downloaded browser, 2026
-  maintenance gap) — see the research round summary.
+- Camoufox: rejected here as a *solver* (Python/Playwright-only, downloaded
+  browser, 2026 maintenance gap). **Revisited 2026-11-01:** used without
+  Playwright as a Cloudflare *clearance minter* only — launched headless,
+  cookie read from its profile DB — see
+  [download-check-research.md](download-check-research.md#update-2026-11-01--the-check-is-now-a-timed-script-check).
 
 ## Probes kept in the repo (all MOXIE_LIVE-gated)
 

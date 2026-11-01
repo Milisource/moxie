@@ -105,6 +105,8 @@ The TUI shares the same Go backend as the CLI. The alternative — a web UI — 
 
 Cloudflare evasion via browser automation (Playwright, Puppeteer, Selenium) is legally risky (CF ToS violation) and technically fragile (undetected-chromedriver version churn). Cookie import works with months-valid sessions, no browser process needed, and is the approach used by similar tools. Firefox auto-detection makes it seamless for the default use case.
 
+`internal/f95session` (wired once at startup from `main.go` and `desktop/app.go`) keeps borrowed cookies acceptable: Cloudflare binds `cf_clearance` to the minting browser's User-Agent, so the scraper and downloader get a UA provider reporting that browser's UA (`browser.F95UserAgent`). When a clearance is missing or expired, the package launches Camoufox or the system Firefox headless — no automation protocol, just a page load on a throwaway profile — and reads the clearance it earned from the profile's cookie DB. Dependency direction: `f95session` → `browser`, `scraper`, `downloader` (they expose `Set…Provider`/`Set…Refresher` hooks and never import it, so their tests never touch real browser stores).
+
 ### Pattern matching over PE binary scanning
 
 File/folder patterns (`UnityPlayer.dll`, `renpy/`, `Game.ini`) are 95%+ reliable for game engine detection and 10x simpler to implement than PE binary parsing. The tradeoff: false positives from tool directories and generic folder names. Handled via an exclusion list and category directory detection.

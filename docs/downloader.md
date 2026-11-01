@@ -196,6 +196,23 @@ Hosts already covered in other sections: WorkUpload (captcha), MediaFire (captch
 | **UploadNow** | Download page with registration/account requirements |
 | **Terminal** | Invite-only uploader system, unclear download flow |
 
+### F95Zone `/dl/` links (`hosts_f95dl.go`)
+
+Thread posts link every mirror through `f95zone.to/dl/<postID>/?u&k&r&t`. `resolveDepth` solves them natively before anything else: GET the check page, decode `data-code` into the form's `w` field, wait out the site's 2.1 s script-check delay (measured from the page load), POST the Continue button's own form (an ad block can carry another form), and read the host URL from the `f95dl_go` page's `data-url` (or an off-site redirect). The destination then goes through the normal host resolver. Requests carry the F95 cookie and `f95UserAgent()` — the UA matching the clearance (see `docs/scraper.md`, Browser-Identical Headers).
+
+Failures are typed so callers can react without string matching:
+
+| Error | Meaning | Caller reaction |
+|---|---|---|
+| `ErrF95Challenge` | Cloudflare challenge; the clearance refresher already ran once | session-level: stop the mirror loop |
+| `ErrF95LoginRequired` | logged-out session | session-level: stop the mirror loop |
+| `ErrF95LinkGone` | "This download link has expired" / "no longer in the post" | stale: re-scrape the thread once, retry with fresh links |
+| `errF95NeedsBrowser` | captcha markers, or the check page returned after the POST | browser `/dl/` solver (`SetDefaultDLSolver`), when installed |
+
+`downloader.IsF95SessionError` / `IsF95StaleLinkError` expose the classes. The desktop (`tryDownloadLinks`), CLI (`download`) and TUI mirror loops stop on either instead of walking every mirror into the same wall (on 2026-10-24 that cost ~40 s per mirror per attempt). Session errors also skip the rod-browser download fallback, which cannot pass the same Cloudflare check.
+
+**Stale links.** `F95LinkStale(url, now)` reports a `/dl/` link whose `r=` timestamp is older than 90 minutes. The desktop update/install pipelines (`freshRankedDownloadLinks`) and the TUI re-scrape the thread before downloading stale links, and the desktop retries once with fresh links if the site reports them expired. The CLI already re-scrapes before every download.
+
 ### Masked F95Zone URLs
 
 F95Zone wraps external download links in redirect endpoints:

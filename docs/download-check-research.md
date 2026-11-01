@@ -9,6 +9,57 @@ Related: [`scraper.md`](scraper.md#host-detection) (link parsing),
 
 ---
 
+## Update 2026-11-01 — the check is now a timed script check
+
+Live-verified against threads 159108 and 21809203. **This supersedes the
+hCaptcha analysis below for the current site;** the rest of the document is
+kept as history and for the browser fallback, which stays wired in case the
+site brings a captcha back for risky sessions (`had_check` suggests it can).
+
+**The `/dl/` page.** Same URL shape (`/dl/<postID>/?u&k&r&t`). The page
+(`data-template="f95dl_check"`) carries no captcha widget any more:
+
+```html
+<div class="f95dl-page" data-xf-init="f95dl-page" data-auto="0"
+     data-code="c<base64(code reversed)>">
+<form action="/dl/…" method="post" class="block f95dl-box">
+  <input name="_xfToken"> <input name="had_check" value="0">
+  <input name="w" class="js-f95dlCode">
+  <button class="js-f95dlContinue">Continue to <host></button>
+```
+
+The site's script (`js/tb72ar/s0rm0/ng6597.js`, commented source) decodes
+`data-code` (strip `c`, base64, reverse) into `w` **2.1 s** after the page
+opens ("the server counts whole seconds and wants more than one") and submits.
+The POST answers `f95dl_go` with `data-xf-init="f95dl-go" data-url="<host
+URL>"`. All of this works over plain HTTP: moxie's native solver
+(`internal/downloader/hosts_f95dl.go`) resolved every mirror of a thread —
+pixeldrain, gofile, datanodes, mega, bzzhr.to, uploadhaven, mixdrop.ag,
+workupload — with no browser.
+
+**Links expire.** An old link answers `message_page`: *"This download link
+has expired: they work for a few hours after the page was opened."* `r=` is
+that page-open time, so `downloader.F95LinkStale` tells stale links apart
+without a request (90-minute budget) and the desktop/TUI re-scrape the thread
+first; an expired response triggers one re-scrape and retry.
+
+**Why everything 403'd from 2026-10-27.** Not a site change: Cloudflare binds
+`cf_clearance` to the User-Agent that solved the challenge. The user's
+Firefox updated to 159 on 2026-10-27; moxie still claimed Firefox 140, so
+every thread fetch got a challenge. Same cookie + `rv:159.0` → 200 from Go
+`net/http` (the TLS fingerprint is not checked on this zone). moxie now
+derives the UA from the browser store that supplied `cf_clearance`
+(`browser.F95UserAgent`: Firefox `compatibility.ini`, Chromium `Last Version`).
+
+**Minting a clearance (Camoufox).** When no borrowed clearance works,
+`internal/f95session` launches Camoufox — or the system Firefox — headless on
+a throwaway profile pointed at f95zone.to and reads `cf_clearance` from the
+profile's `cookies.sqlite`. Camoufox gets its UA pinned via `CAMOU_CONFIG_1`.
+Measured: Camoufox ~5 s, stock Firefox 159 ~4 s; the minted clearance plus the
+user's own `xf_*` login cookies gave a logged-in 200 from Go. rod-driven
+Chrome (headless and headful) stayed on "Just a moment..." for 2 minutes.
+No Python is involved: just a process launch and a SQLite read.
+
 ## What the check is
 
 Every download anchor on a thread is now

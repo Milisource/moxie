@@ -1,6 +1,16 @@
 ## [Unreleased]
 
+### Fixed
+
+- **F95Zone thread fetches no longer 403 after a browser update.** Cloudflare binds `cf_clearance` to the User-Agent that solved its challenge; moxie sent a hard-coded Firefox 140 UA, so every sync, update check and Browse scrape was challenged once Firefox updated to 159 (2026-10-27). The UA is now derived from the browser store that supplied the clearance (Firefox profile `compatibility.ini`, Chromium `Last Version`) and used by the scraper and every F95Zone request in the downloader.
+- **F95Zone `/dl/` download links resolve without a browser.** The 2026-11 check page is a timed script check (decode `data-code`, wait 2.1 s, POST) with no captcha; `internal/downloader/hosts_f95dl.go` solves it over plain HTTP, so updates and Browse installs no longer open a browser window per mirror. The browser solver stays as the fallback when the page asks for more.
+- **Expired download links are refreshed instead of failing every mirror.** `/dl/` links work for a few hours after the thread was opened. Stale stored links (by their `r=` timestamp) trigger a thread re-scrape before downloading in the desktop and TUI, and an "expired" response re-scrapes once and retries.
+- **Session-level failures stop the mirror loop.** A Cloudflare challenge or logged-out session fails every mirror alike; the desktop, CLI and TUI now stop and report it instead of trying each mirror (and the slow browser fallback) in turn.
+- **Hosts:** Buzzheavier's new `bzzhr.to` and Mixdrop's `mixdrop.ag` favicon domains are recognized by hostname. Uploadhaven (no resolver: landing page only) ranks below resolvable hosts, and a downloaded `.html` file must carry an HTML-game signature before it is accepted, so a host landing page can no longer be installed as a game.
+
 ### Added
+
+- **Cloudflare clearance minting (Camoufox / Firefox).** When F95Zone challenges anyway (no or expired clearance), moxie launches Camoufox — or the system Firefox — headless on a throwaway profile, reads the fresh `cf_clearance` from its cookie DB, and retries with it and the matching UA (`internal/f95session`). No Python or automation protocol is needed; the clearance is persisted to `f95-clearance.json` (0600) and a newer one from the user's own browser wins. Opt out with `moxie config set f95_clearance off` or `MOXIE_F95_CLEARANCE=off`. Set `MOXIE_CAMOUFOX_BIN` for a Camoufox outside its default cache.
 
 - **Human verification handoff for F95Zone download links.** When Cloudflare answers the browser solver with its *"Performing security verification"* page instead of the `/dl/` check page, the solver no longer fails with `no Continue button on the F95Zone download-link page`. The headless attempt returns a typed `ErrVerificationPage`, `ResolveDownloadLinkURL`/`ResolveMaskedURL` retry once in a **visible browser window** and wait up to two minutes while the user passes the check there; the download then continues by itself. Display-less Linux skips the window and the error names the manual path (`moxie download --open <id>` / `--extension`). A visible session that is still on an hCaptcha challenge after the click budget gets the same wait, so a human can finish it in that window.
 
