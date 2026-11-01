@@ -76,6 +76,37 @@ func MergeOverlay(ctx context.Context, gameDir, engine, extractedDir string) (*M
 			result.FilesPreserved++
 			return nil
 		}
+		if !destPathSafe(destPath, gameDir) {
+			log.Warn("skipping entry: destination path traverses an escaping symlink", "path", relGame)
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(srcPath)
+			if err != nil {
+				return err
+			}
+			if !linkWithinRoot(target, filepath.Dir(destPath), gameDir) {
+				log.Warn("skipping symlink that escapes destination", "path", relGame, "target", target)
+				return nil
+			}
+			// back up existing if present
+			if _, statErr := os.Stat(destPath); statErr == nil {
+				bak := filepath.Join(backupDir, relGame)
+				if err := os.MkdirAll(filepath.Dir(bak), 0755); err != nil {
+					return err
+				}
+				// backup the link itself by recreating? just remove; copyFile would follow. Skip backup for links.
+			}
+			os.Remove(destPath)
+			if err := os.Symlink(target, destPath); err != nil {
+				return fmt.Errorf("symlink %s: %w", relGame, err)
+			}
+			result.FilesCopied++
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 			return err
 		}

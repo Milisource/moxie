@@ -132,62 +132,34 @@ func classify(v string) kind {
 // qualification. Callers that surface Changed to users should mark it as
 // uncertain, and Older is a signal that something upstream went wrong.
 func Compare(remote, known string) Diff {
-	r, k := Normalize(remote), Normalize(known)
-	if r == k {
+	r, k := strings.TrimSpace(remote), strings.TrimSpace(known)
+	if r == "" && k == "" {
 		return Same
 	}
-
-	rk, kk := classify(r), classify(k)
-	if rk == kindEmpty || kk == kindEmpty {
-		// Nothing to compare against — a missing side is not an update.
+	if r == "" || k == "" {
 		return Changed
 	}
-
-	// A game reaching "Final" is a genuine release event; the reverse
-	// (Final regressing to a number) is not something we can order.
-	if rk == kindFinal {
-		return Newer
+	if strings.EqualFold(r, k) {
+		return Same
 	}
-	if kk == kindFinal {
-		return Changed
-	}
-
-	if rk != kk {
-		return Changed
-	}
-
-	switch rk {
-	case kindDate:
-		// ISO dates order lexicographically.
+	// Date form: lexicographic.
+	if dateRe.MatchString(r) && dateRe.MatchString(k) {
 		if r > k {
 			return Newer
 		}
-		return Older
-	case kindNumeric:
-		return compareNumeric(r, k)
-	case kindChapter:
-		// "Ch.5 Free" vs "Ch.4 Free": compare the first digit run.
-		rn := numRe.FindAllString(r, -1)
-		kn := numRe.FindAllString(k, -1)
-		if len(rn) == 0 || len(kn) == 0 {
-			return Changed
-		}
-		a, aerr := strconv.Atoi(rn[0])
-		b, berr := strconv.Atoi(kn[0])
-		if aerr != nil || berr != nil {
-			return Changed
-		}
-		switch {
-		case a > b:
-			return Newer
-		case a < b:
+		if r < k {
 			return Older
-		default:
-			return Changed
 		}
-	default:
+		return Same
+	}
+	res := CompareStructured(Parse(remote), Parse(known))
+	if res == Same && Canonical(remote) != Canonical(known) {
 		return Changed
 	}
+	if res == Same && strings.TrimSpace(remote) != strings.TrimSpace(known) && Canonical(remote) == Canonical(known) {
+		// canonical equal but raw differ only in case/whitespace? treat same
+	}
+	return res
 }
 
 // IsNewer reports whether remote is unambiguously ahead of known.

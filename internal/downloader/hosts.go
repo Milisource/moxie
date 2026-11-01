@@ -14,6 +14,7 @@ import (
 
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/log"
+	"github.com/mili/moxie/internal/scraper"
 
 	"golang.org/x/time/rate"
 )
@@ -630,7 +631,7 @@ func (r *HostResolver) followRedirect(url string) (string, error) {
 	// If the final URL is the F95Zone login page, the cookie is invalid or
 	// the session expired. Signal this clearly so the caller can surface it.
 	if isLoginRedirect(finalURL) {
-		return url, fmt.Errorf("redirected to login — F95Zone session may have expired; re-import cookies")
+		return url, &scraper.SessionError{HadCookie: true}
 	}
 
 	log.Debug("followRedirect result", "original", url, "final", finalURL, "status", resp.StatusCode)

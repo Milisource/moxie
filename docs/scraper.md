@@ -211,3 +211,18 @@ The URL carries **no host**, so:
 **Conservative rate limiting** — a single `scrape --auto` run of 80 games takes ~8 minutes sequentially (all workers share one rate-limited client, so `--parallel` helps CPU/DB-bound work and fallback scrapes but does not multiply the request rate). The desktop sync instead gives each of its 3 workers its own client, which genuinely parallelizes search throughput. F95Zone runs behind Cloudflare and aggressive scraping gets you blocked — rate limiting per-worker is still enforced even in parallel mode.
 
 **Data sources considered and rejected** — F95Zone has no official public API: XenForo's REST API (`docs.xenforo.com/api`) exists but requires a super-administrator-issued key, which F95Zone doesn't offer third parties. `sam/latest_alpha/latest_data.php` (used above for search, Discover and RSS) is a real but **undocumented** endpoint: anonymous requests are hard rate-limited ("Anonymous users have a limited amount of requests per hour"), so the codebase attaches a session cookie whenever one is available and keeps it as a supplementary signal rather than a replacement for cookie-based scraping or the F95Checker cache API. It is nonetheless far richer than moxie currently uses — screenshot galleries (`screens[]`), per-thread `new`/`watched`/`ignored` flags, and a complete server-side filter/sort query language — see [latest-data-api.md](latest-data-api.md) for the full surface and the planned integrations. JSON-LD was the one genuine gap found by comparing against the reference F95API project; the latest-data query language was the next.
+
+## Bulk version check failure policy
+
+`BulkVersions` returns partial results: versions from successful chunks are
+preserved, and failed chunks are reported as `BulkChunkError` values classified
+as `blocked`, `rate_limited`, `transient`, or `endpoint_gone`.
+
+- `blocked` / `rate_limited`: stop the pass; no per-game fallback; failed-chunk
+  games are reported skipped and keep their previous `version_checked_at`.
+- `transient`: retry the chunk once with backoff; on second failure report the
+  chunk's games failed with no per-game fallback.
+- `endpoint_gone` (bare 404): the only case where per-game fallback runs,
+  capped at 25 games, with a warning naming the cause.
+
+CLI and desktop share this policy via the same `BulkVersions` classification.

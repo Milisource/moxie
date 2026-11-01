@@ -147,7 +147,7 @@ func runBulkVersionCheck(database *db.Database, games []db.Game, public *scraper
 		}
 	}
 
-	versions, err := public.BulkVersions(ctx, ids)
+	versions, chunkErrs, err := public.BulkVersions(ctx, ids)
 	if err != nil {
 		log.Warn("bulk version API unavailable; falling back to direct scraping",
 			"error", err,
@@ -155,6 +155,19 @@ func runBulkVersionCheck(database *db.Database, games []db.Game, public *scraper
 		)
 		fmt.Fprintf(os.Stderr, "  ! Bulk version API unavailable (%v) — falling back to direct scraping\n", err)
 		return games, nil, 0, nil
+	}
+
+	endpointGone := false
+	failedThreadIDs := make(map[int64]bool)
+	for _, ce := range chunkErrs {
+		for _, id := range ce.IDs {
+			failedThreadIDs[id] = true
+		}
+		if ce.Kind == "endpoint_gone" {
+			endpointGone = true
+		}
+		log.Warn("bulk version chunk failed", "kind", ce.Kind, "games", len(ce.IDs), "error", ce.Err)
+		fmt.Fprintf(os.Stderr, "  ! Bulk version check %s (%d games): %v\n", ce.Kind, len(ce.IDs), ce.Err)
 	}
 
 	handled := make(map[int64]bool, len(games))
@@ -231,10 +244,23 @@ func runBulkVersionCheck(database *db.Database, games []db.Game, public *scraper
 	}
 
 	var remaining []db.Game
+	fallbackCount := 0
+	const fallbackCap = 25
 	for _, g := range games {
-		if !handled[g.ID] {
-			remaining = append(remaining, g)
+		if handled[g.ID] {
+			continue
 		}
+		// Games from failed (non-endpoint_gone) chunks are not scraped.
+		if failedThreadIDs[g.F95ThreadID] && !endpointGone {
+			continue
+		}
+		if failedThreadIDs[g.F95ThreadID] && endpointGone {
+			if fallbackCount >= fallbackCap {
+				continue
+			}
+			fallbackCount++
+		}
+		remaining = append(remaining, g)
 	}
 	return remaining, results, updatesFound, entries
 }

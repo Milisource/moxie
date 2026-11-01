@@ -17,6 +17,8 @@ import (
 	"strings"
 
 	"github.com/ulikunitz/xz"
+
+	"github.com/mili/moxie/internal/fsutil"
 )
 
 // Common errors returned by this package.
@@ -25,6 +27,7 @@ var (
 	ErrCorruptArchive  = errors.New("archive is corrupt or invalid")
 	ErrBinNotInstalled = errors.New("required archive tool not installed")
 	ErrPathTraversal   = errors.New("path traversal detected in archive")
+	ErrUnsafeArchive   = errors.New("unsafe archive: link escapes extraction root")
 )
 
 // Progress reports extraction progress.
@@ -199,6 +202,12 @@ func Extract(ctx context.Context, archivePath, destDir string, progress Progress
 		// the caller's destDir.
 		os.RemoveAll(tmpDir)
 		return "", err
+	}
+
+	// Verify the extracted tree is safe (no link escape) before moving.
+	if err := fsutil.VerifyTree(tmpDir, fsutil.LinksWithinRoot); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("%w: %v", ErrUnsafeArchive, err)
 	}
 
 	// Move the extracted files into destDir, then drop the now-empty temp

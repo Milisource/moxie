@@ -87,8 +87,8 @@ func TestRunUpdateCheck_BulkPath(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
-	if !results[0].IsNew || results[0].Latest != "v2.0" {
-		t.Errorf("first result = %+v, want update to v2.0", results[0])
+	if !results[0].IsNew || results[0].Latest != "2" {
+		t.Errorf("first result = %+v, want update to 2", results[0])
 	}
 	if results[1].IsNew {
 		t.Errorf("second result should not be an update: %+v", results[1])
@@ -102,8 +102,8 @@ func TestRunUpdateCheck_BulkPath(t *testing.T) {
 	if err != nil || got == nil {
 		t.Fatalf("failed to reload game: %v", err)
 	}
-	if got.LatestVersion != "v2.0" {
-		t.Errorf("persisted LatestVersion = %q, want v2.0", got.LatestVersion)
+	if got.LatestVersion != "2" {
+		t.Errorf("persisted LatestVersion = %q, want 2", got.LatestVersion)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestRunUpdateCheck_BulkUntrackedViaCache(t *testing.T) {
 	if updatesFound != 1 {
 		t.Errorf("expected 1 update via cache API, got %d", updatesFound)
 	}
-	if len(results) != 1 || results[0].Latest != "v3.0" {
+	if len(results) != 1 || results[0].Latest != "3" {
 		t.Errorf("results = %+v, want v3.0 via cache API", results)
 	}
 	if state.fullCalls.Load() != 1 {

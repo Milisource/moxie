@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/version"
 )
 
 // ---------------------------------------------------------------------------
@@ -439,16 +440,7 @@ func HasAICGTag(tags []int) bool {
 // Compare with version.Compare after stripping — stored versions from older
 // runs may carry qualifiers that would otherwise surface as phantom updates.
 func StripVersionQualifier(v string) string {
-	v = strings.TrimSpace(v)
-	for _, tok := range strings.Fields(v) {
-		if looksLikeVersion(tok) {
-			return tok
-		}
-	}
-	if l := strings.ToLower(v); strings.Contains(l, "final") || strings.Contains(l, "complete") {
-		return "Final"
-	}
-	return ""
+	return version.Canonical(v)
 }
 
 // looksLikeVersion reports whether a token plausibly carries a version:
@@ -467,75 +459,205 @@ func looksLikeVersion(tok string) bool {
 	return false
 }
 
+// BulkChunkError describes a failed checker.php chunk.
+type BulkChunkError struct {
+	// Chunk / IDs / ThreadIDs are the thread IDs in the failed chunk.
+	Chunk     []int64 `json:"chunk"`
+	IDs       []int64 `json:"ids"`
+	ThreadIDs []int64 `json:"thread_ids"`
+
+	// Kind / Class / Type classify the failure: "blocked", "rate_limited",
+	// "transient", or "endpoint_gone".
+	Kind  string `json:"kind"`
+	Class string `json:"class"`
+	Type  string `json:"type"`
+
+	Err   error `json:"-"`
+	Cause error `json:"-"`
+}
+
+func (e BulkChunkError) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	if e.Cause != nil {
+		return e.Cause.Error()
+	}
+	return "bulk chunk failed: " + e.Kind
+}
+
+func (e BulkChunkError) Unwrap() error {
+	if e.Err != nil {
+		return e.Err
+	}
+	return e.Cause
+}
+
+// newBulkChunkError builds a BulkChunkError with aliased fields populated.
+func newBulkChunkError(chunk []int64, kind string, err error) BulkChunkError {
+	cpy := append([]int64{}, chunk...)
+	return BulkChunkError{
+		Chunk:     cpy,
+		IDs:       cpy,
+		ThreadIDs: cpy,
+		Kind:      kind,
+		Class:     kind,
+		Type:      kind,
+		Err:       err,
+		Cause:     err,
+	}
+}
+
+// classifyBulkErr maps an error from p.Client.do to a chunk-failure kind.
+func classifyBulkErr(err error) string {
+	var blockedErr *BlockedError
+	if errors.As(err, &blockedErr) {
+		if blockedErr.StatusCode == http.StatusTooManyRequests {
+			return "rate_limited"
+		}
+		return "blocked"
+	}
+	var statusErr *HTTPStatusError
+	if errors.As(err, &statusErr) {
+		if statusErr.StatusCode == http.StatusNotFound {
+			if !strings.Contains(statusErr.Body, "Thread not found") {
+				return "endpoint_gone"
+			}
+			return "" // not a failure
+		}
+		if statusErr.StatusCode == http.StatusTooManyRequests {
+			return "rate_limited"
+		}
+		if statusErr.StatusCode >= 500 {
+			return "transient"
+		}
+		if statusErr.StatusCode == http.StatusForbidden || statusErr.StatusCode == http.StatusServiceUnavailable {
+			return "blocked"
+		}
+		return "endpoint_gone"
+	}
+	// timeout / network / invalid JSON handled by callers as transient.
+	return "transient"
+}
+
 // BulkVersions fetches the current F95Zone versions for up to maxBulkVersionIDs
 // threads in a single request (chunked for larger sets). Returns a map from
-// thread ID to version. Threads not tracked by F95Zone's "Latest Updates"
-// index are simply absent from the map. Versions are reduced to their
-// numeric core (see stripVersionQualifier) — callers compare with
-// version.Compare.
-func (p *PublicAPI) BulkVersions(ctx context.Context, ids []int64) (map[int64]string, error) {
+// thread ID to version (partial results preserved), a slice of per-chunk
+// failures, and a top-level error only for request/context construction
+// failures. Versions are reduced to their numeric core (see StripVersionQualifier).
+func (p *PublicAPI) BulkVersions(ctx context.Context, ids []int64) (map[int64]string, []BulkChunkError, error) {
 	versions := make(map[int64]string, len(ids))
-	for _, chunk := range chunkInt64(ids, maxBulkVersionIDs) {
-		u := p.Host + p.CheckerPath + "?threads=" + csvInt64(chunk)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-		if err != nil {
-			return nil, fmt.Errorf("scraper: bulk versions: %w", err)
+	var chunkErrs []BulkChunkError
+
+	chunks := chunkInt64(ids, maxBulkVersionIDs)
+	stop := false
+	for _, chunk := range chunks {
+		if stop {
+			break
 		}
-		body, err := p.Client.do(req, minDelay)
-		if err != nil {
-			// checker.php answers HTTP 404 with the same "Thread not
-			// found" body when EVERY thread in the chunk is absent from
-			// its index. Like the JSON error form, that is not a
-			// failure — the threads simply have no tracked version — so
-			// the chunk counts as empty instead of aborting the whole
-			// bulk pass (which would push every game onto the slow
-			// direct-scrape path and risk a block). A bare 404 (endpoint
-			// gone, no such body) still surfaces as an error.
-			var statusErr *HTTPStatusError
-			if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusNotFound && strings.Contains(statusErr.Body, "Thread not found") {
-				continue
-			}
-			return nil, err
+		if ctx.Err() != nil {
+			return versions, chunkErrs, ctx.Err()
 		}
 
+		// attempt with one retry for transient failures
+		var lastErr error
+		var lastKind string
+		var body string
+		succeeded := false
+		_ = succeeded
+		emptyChunk := false
+		for attempt := 0; attempt < 2; attempt++ {
+			if attempt > 0 {
+				// backoff
+				select {
+				case <-ctx.Done():
+					return versions, chunkErrs, ctx.Err()
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
+			u := p.Host + p.CheckerPath + "?threads=" + csvInt64(chunk)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+			if err != nil {
+				return versions, chunkErrs, fmt.Errorf("scraper: bulk versions: %w", err)
+			}
+			b, err := p.Client.do(req, minDelay)
+			if err != nil {
+				lastErr = err
+				kind := classifyBulkErr(err)
+				if kind == "" {
+					// "Thread not found" 404 — not a failure.
+					lastErr = nil
+					lastKind = ""
+					body = ""
+					succeeded = true
+					emptyChunk = true
+					break
+				}
+				lastKind = kind
+				if kind != "transient" {
+					break // don't retry non-transient
+				}
+				continue
+			}
+			body = b
+			lastErr = nil
+			lastKind = ""
+			succeeded = true
+			break
+		}
+
+		if emptyChunk {
+			continue
+		}
+
+		if lastErr != nil {
+			kind := lastKind
+			if kind == "" {
+				kind = "transient"
+			}
+			chunkErrs = append(chunkErrs, newBulkChunkError(chunk, kind, lastErr))
+			if kind == "blocked" || kind == "rate_limited" {
+				stop = true
+			}
+			continue
+		}
+
+		// parse
 		var resp struct {
 			Status string          `json:"status"`
 			Msg    json.RawMessage `json:"msg"`
 		}
 		if err := json.Unmarshal([]byte(body), &resp); err != nil {
-			return nil, fmt.Errorf("scraper: bulk versions: invalid response: %w", err)
+			// invalid JSON -> transient, retry already done
+			chunkErrs = append(chunkErrs, newBulkChunkError(chunk, "transient", fmt.Errorf("scraper: bulk versions: invalid response: %w", err)))
+			continue
 		}
 		if resp.Status != "ok" {
-			// Error responses carry msg as a plain string; success
-			// responses carry a map. checker.php answers "Thread not
-			// found" when EVERY thread in the chunk is absent from its
-			// index — that is not a failure, those threads simply have no
-			// tracked version. Treat the chunk as empty instead of
-			// erroring the whole bulk pass, which would push every game
-			// onto the slow direct-scrape path (and risk a block).
-			if msg := bulkErrorMsg(resp.Msg); msg == "Thread not found" {
+			msg := bulkErrorMsg(resp.Msg)
+			if msg == "Thread not found" {
 				continue
-			} else {
-				return nil, fmt.Errorf("scraper: bulk versions: api error: %s", msg)
 			}
+			// api error -> classify as transient (or endpoint_gone?) default transient
+			chunkErrs = append(chunkErrs, newBulkChunkError(chunk, "transient", fmt.Errorf("scraper: bulk versions: api error: %s", msg)))
+			continue
 		}
 		var msgMap map[string]string
 		if err := json.Unmarshal(resp.Msg, &msgMap); err != nil {
-			return nil, fmt.Errorf("scraper: bulk versions: invalid response: %w", err)
+			chunkErrs = append(chunkErrs, newBulkChunkError(chunk, "transient", fmt.Errorf("scraper: bulk versions: invalid response: %w", err)))
+			continue
 		}
 		for idStr, v := range msgMap {
 			id, err := strconv.ParseInt(idStr, 10, 64)
 			if err != nil || id <= 0 {
 				continue
 			}
-			// "Unknown" means the thread exists but has no tracked version.
 			if v == "Unknown" {
 				v = ""
 			}
 			versions[id] = StripVersionQualifier(v)
 		}
 	}
-	return versions, nil
+	return versions, chunkErrs, nil
 }
 
 // ---------------------------------------------------------------------------

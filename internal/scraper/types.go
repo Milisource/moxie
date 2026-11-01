@@ -20,6 +20,11 @@ type ThreadData struct {
 	ThreadID       int64             `json:"thread_id"`
 	DownloadLinks  []DownloadLink    `json:"download_links,omitempty"`
 	StoreLinks     map[string]string `json:"store_links,omitempty"`
+
+	// LinksHidden reports that the thread page was rendered for a guest
+	// (the F95 session cookie has expired or is absent) so the download
+	// link list is incomplete. Version/title metadata is still populated.
+	LinksHidden bool `json:"links_hidden,omitempty"`
 	Status         string            `json:"status,omitempty"` // completed, abandoned, on_hold
 	SaveCandidates []SaveCandidate   `json:"save_candidates,omitempty"`
 

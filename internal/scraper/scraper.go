@@ -114,6 +114,15 @@ type Client struct {
 	// unsafe skips rate limiting entirely (NewUnsafeClient).
 	unsafe bool
 
+	// authenticated reports whether the client was built with an xf_user
+	// cookie (a logged-in session). Used to decide whether a guest page is
+	// an expired session vs. an expected guest scrape.
+	authenticated bool
+
+	// sessionExpired is set once a guest-rendered page is seen on an
+	// authenticated client, so batches stop issuing further cookie scrapes.
+	sessionExpired bool
+
 	// clearanceRefreshed records that this client already asked the
 	// clearance refresher (session.go) for a new cf_clearance; it asks once.
 	clearanceRefreshed bool
@@ -160,6 +169,7 @@ func NewClientWithHTTP(cookieStr string, httpClient *http.Client) *Client {
 		xfTokenPage:     xfTokenPageURL,
 		xfSearchURL:     xfSearchURL,
 		googleSearchURL: googleSearchURL,
+		authenticated:   hasAuthenticatedSession(cookieStr),
 	}
 }
 
@@ -185,6 +195,7 @@ func newClient(cookieStr string, unsafe bool) *Client {
 		xfSearchURL:     xfSearchURL,
 		googleSearchURL: googleSearchURL,
 		unsafe:          unsafe,
+		authenticated:   hasAuthenticatedSession(cookieStr),
 	}
 }
 
@@ -721,6 +732,9 @@ func (c *Client) ScrapeThreadWithContext(ctx context.Context, threadURL string) 
 	if threadURL == "" {
 		return nil, fmt.Errorf("scraper: threadURL is empty")
 	}
+	if c.SessionExpired() {
+		return nil, &SessionError{HadCookie: c.authenticated}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, threadURL, nil)
 	if err != nil {
@@ -737,7 +751,37 @@ func (c *Client) ScrapeThreadWithContext(ctx context.Context, threadURL string) 
 		return nil, fmt.Errorf("scraper: failed to parse thread HTML: %w", err)
 	}
 
+	// Detect an expired F95 session: an authenticated client receiving a
+	// guest-rendered page means the imported cookies no longer log in.
+	if c.authenticated && pageSession(body) == SessionGuest {
+		td.LinksHidden = true
+		c.mu.Lock()
+		c.sessionExpired = true
+		c.mu.Unlock()
+		return td, &SessionError{HadCookie: true}
+	}
+
 	return td, nil
+}
+
+// SessionExpired reports whether this client has seen a guest-rendered page
+// while authenticated (i.e. the imported F95 session has expired).
+func (c *Client) SessionExpired() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sessionExpired
+}
+
+// IsSessionExpired is an alias for SessionExpired.
+func (c *Client) IsSessionExpired() bool {
+	return c.SessionExpired()
+}
+
+// MarkSessionExpired records that the session has expired.
+func (c *Client) MarkSessionExpired() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sessionExpired = true
 }
 
 // ---------------------------------------------------------------------------

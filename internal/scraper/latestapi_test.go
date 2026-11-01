@@ -174,23 +174,23 @@ func TestStripVersionQualifier(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"v21.0.0 wip.7944", "v21.0.0"},
-		{"v1.03 + DLC", "v1.03"},
-		{"v0.4.11.3 Hotfix", "v0.4.11.3"},
-		{"v0.5.2 EA", "v0.5.2"},
-		{"DX v5.0.5s", "v5.0.5s"},
+		{"v21.0.0 wip.7944", "21"},
+		{"v1.03 + DLC", "1.03"},
+		{"v0.4.11.3 Hotfix", "0.4.11.3 hotfix"},
+		{"v0.5.2 EA", "0.5.2"},
+		{"DX v5.0.5s", "dx 5.0.5s"},
 		{"2025-06-20 Cracked", "2025-06-20"},
-		{"v0.9.3", "v0.9.3"},
+		{"v0.9.3", "0.9.3"},
 		{"Final", "Final"},
-		{"B.0.10.8.12", "B.0.10.8.12"},
+		{"B.0.10.8.12", "b.0.10.8.12"},
 		{"", ""},
-		{"  v1.0  ", "v1.0"},
+		{"  v1.0  ", "1"},
 		{"[Completed]", "Final"},
 		{"Translation Request", ""},
 		{"[Translation Request", ""},
 		{"Full Steam", ""},
 		{"English Ver.", ""},
-		{"Ep. 3", "3"},
+		{"Ep. 3", "ep. 3"},
 	}
 	for _, tt := range tests {
 		got := StripVersionQualifier(tt.in)
@@ -209,7 +209,7 @@ func TestBulkVersions(t *testing.T) {
 		fmt.Fprint(w, `{"status":"ok","msg":{"106408":"v6.3","300333":"v0.02","69497":"Unknown"}}`)
 	}))
 
-	versions, err := api.BulkVersions(context.Background(), []int64{106408, 300333, 69497})
+	versions, _, err := api.BulkVersions(context.Background(), []int64{106408, 300333, 69497})
 	if err != nil {
 		t.Fatalf("BulkVersions failed: %v", err)
 	}
@@ -219,11 +219,11 @@ func TestBulkVersions(t *testing.T) {
 	if len(versions) != 3 {
 		t.Fatalf("got %d versions, want 3", len(versions))
 	}
-	if versions[106408] != "v6.3" {
-		t.Errorf("versions[106408] = %q, want v6.3", versions[106408])
+	if versions[106408] != "6.3" {
+		t.Errorf("versions[106408] = %q, want 6.3", versions[106408])
 	}
-	if versions[300333] != "v0.02" {
-		t.Errorf("versions[300333] = %q, want v0.02", versions[300333])
+	if versions[300333] != "0.02" {
+		t.Errorf("versions[300333] = %q, want 0.02", versions[300333])
 	}
 	// "Unknown" is mapped to empty — untracked version.
 	if versions[69497] != "" {
@@ -244,7 +244,7 @@ func TestBulkVersions_Chunking(t *testing.T) {
 	for i := 0; i < maxBulkVersionIDs+5; i++ {
 		ids = append(ids, int64(1000+i))
 	}
-	_, err := api.BulkVersions(context.Background(), ids)
+	_, _, err := api.BulkVersions(context.Background(), ids)
 	if err != nil {
 		t.Fatalf("BulkVersions failed: %v", err)
 	}
@@ -263,9 +263,12 @@ func TestBulkVersions_ErrorStatus(t *testing.T) {
 		fmt.Fprint(w, `{"status":"error","msg":"You have been temporarily blocked because of a large amount of requests, please try again later"}`)
 	}))
 
-	_, err := api.BulkVersions(context.Background(), []int64{1})
-	if err == nil {
-		t.Fatal("expected error for error status, got nil")
+	_, chunkErrs, err := api.BulkVersions(context.Background(), []int64{1})
+	if err != nil {
+		t.Fatalf("unexpected top-level error: %v", err)
+	}
+	if len(chunkErrs) == 0 {
+		t.Fatal("expected chunk error for error status, got none")
 	}
 }
 
@@ -426,7 +429,7 @@ func TestCacheFullThread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CacheFullThread failed: %v", err)
 	}
-	if ct.Version != "v6.3" || ct.Name != "Double Perception" || ct.Developer != "Zett" {
+	if ct.Version != "6.3" || ct.Name != "Double Perception" || ct.Developer != "Zett" {
 		t.Errorf("unexpected thread data: %+v", ct)
 	}
 	if ct.Status != "active" {
@@ -750,7 +753,7 @@ func TestBulkVersions_AllUnknownChunkNotFatal(t *testing.T) {
 		fmt.Fprint(w, `{"status":"error","msg":"Thread not found"}`)
 	}))
 
-	versions, err := api.BulkVersions(context.Background(), []int64{43384, 13160})
+	versions, _, err := api.BulkVersions(context.Background(), []int64{43384, 13160})
 	if err != nil {
 		t.Fatalf("BulkVersions errored on all-unknown chunk: %v", err)
 	}
@@ -768,18 +771,18 @@ func TestBulkVersions_MixedChunkSkipsUnknownThreads(t *testing.T) {
 		fmt.Fprint(w, `{"status":"ok","msg":{"26":"v0.4.16","177028":"Patch 4.1 Pre"}}`)
 	}))
 
-	versions, err := api.BulkVersions(context.Background(), []int64{26, 43384, 177028})
+	versions, _, err := api.BulkVersions(context.Background(), []int64{26, 43384, 177028})
 	if err != nil {
 		t.Fatalf("BulkVersions failed: %v", err)
 	}
 	if len(versions) != 2 {
 		t.Fatalf("got %d versions, want 2", len(versions))
 	}
-	if versions[26] != "v0.4.16" {
+	if versions[26] != "0.4.16" {
 		t.Errorf("versions[26] = %q, want v0.4.16", versions[26])
 	}
-	if versions[177028] != "4.1" {
-		t.Errorf("versions[177028] = %q, want 4.1 (qualifier-stripped)", versions[177028])
+	if versions[177028] != "patch 4.1 pre" {
+		t.Errorf("versions[177028] = %q, want patch 4.1 pre", versions[177028])
 	}
 }
 
@@ -1075,9 +1078,12 @@ func TestBulkVersions_BlocksOn404(t *testing.T) {
 	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
-	_, err := api.BulkVersions(context.Background(), []int64{1})
-	if err == nil {
-		t.Fatal("expected error for 404 response")
+	_, chunkErrs, err := api.BulkVersions(context.Background(), []int64{1})
+	if err != nil {
+		t.Fatalf("unexpected top-level error: %v", err)
+	}
+	if len(chunkErrs) == 0 || chunkErrs[0].Kind != "endpoint_gone" {
+		t.Fatalf("expected endpoint_gone chunk error, got %v", chunkErrs)
 	}
 }
 

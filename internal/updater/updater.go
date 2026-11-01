@@ -42,7 +42,8 @@ func Merge(ctx context.Context, gameDir, engine, extractedDir string, backup boo
 		return nil, fmt.Errorf("extracted directory does not exist: %s", srcDir)
 	}
 
-	preserve := patterns(engine)
+	userData := patterns(engine)
+	keepIfAbsent := keepIfAbsentPatterns(engine)
 	result := &MergeResult{}
 	committed := false
 
@@ -118,7 +119,7 @@ func Merge(ctx context.Context, gameDir, engine, extractedDir string, backup boo
 	}
 
 	// Copy new files
-	if err := copyNew(ctx, srcDir, gameDir, preserve, result); err != nil {
+	if err := copyNew(ctx, srcDir, gameDir, userData, result); err != nil {
 		return result, err
 	}
 
@@ -127,7 +128,11 @@ func Merge(ctx context.Context, gameDir, engine, extractedDir string, backup boo
 	// partially restored, so returning with committed=false triggers the
 	// deferred rollback rather than recording a half-restored merge as success.
 	if result.BackupPath != "" {
-		if err := restorePreserved(ctx, result.BackupPath, gameDir, preserve); err != nil {
+		if err := restorePreserved(ctx, result.BackupPath, gameDir, userData); err != nil {
+			return result, fmt.Errorf("restore preserved files: %w", err)
+		}
+		// keepIfAbsent: copy from backup only when new version didn't ship it.
+		if err := restoreKeepIfAbsent(ctx, result.BackupPath, gameDir, keepIfAbsent); err != nil {
 			return result, fmt.Errorf("restore preserved files: %w", err)
 		}
 	}
@@ -158,6 +163,36 @@ func copyNew(ctx context.Context, srcDir, destDir string, preserve []string, res
 
 		if info.IsDir() {
 			return os.MkdirAll(destPath, 0755)
+		}
+
+		// Dest-side check: refuse to traverse a parent symlink that leaves
+		// destDir.
+		if !destPathSafe(destPath, destDir) {
+			log.Warn("skipping entry: destination path traverses an escaping symlink", "path", relPath)
+			return nil
+		}
+
+		// Handle symlinks explicitly: never copy a target's contents.
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(srcPath)
+			if err != nil {
+				return err
+			}
+			if !linkWithinRoot(target, filepath.Dir(destPath), destDir) {
+				log.Warn("skipping symlink that escapes destination", "path", relPath, "target", target)
+				return nil
+			}
+			os.Remove(destPath)
+			if err := os.Symlink(target, destPath); err != nil {
+				return fmt.Errorf("symlink %s: %w", relPath, err)
+			}
+			result.FilesCopied++
+			return nil
+		}
+
+		// Skip non-regular files.
+		if !info.Mode().IsRegular() {
+			return nil
 		}
 
 		// Preserve existing user files that match engine-specific patterns
@@ -191,15 +226,72 @@ func restorePreserved(ctx context.Context, backupDir, gameDir string, preserve [
 			return nil
 		}
 		relPath, _ := filepath.Rel(backupDir, srcPath)
-		if shouldPreserve(relPath, "", preserve) {
+		if !shouldPreserve(relPath, "", preserve) {
+			return nil
+		}
+		destPath := filepath.Join(gameDir, relPath)
+		if !destPathSafe(destPath, gameDir) {
+			log.Warn("skipping restore: destination path traverses an escaping symlink", "path", relPath)
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(srcPath)
+			if err != nil {
+				return err
+			}
+			if !linkWithinRoot(target, filepath.Dir(destPath), gameDir) {
+				log.Warn("skipping symlink that escapes destination", "path", relPath, "target", target)
+				return nil
+			}
+			os.Remove(destPath)
+			if err := os.Symlink(target, destPath); err != nil {
+				return err
+			}
+			log.Debug("restored user symlink from backup", "path", relPath)
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return err
+		}
+		if err := copyFile(srcPath, destPath); err != nil {
+			return err
+		}
+		log.Debug("restored user file from backup", "path", relPath)
+		return nil
+	})
+}
+
+// restoreKeepIfAbsent copies files from backupDir to gameDir only when the
+// destination does not already exist (i.e. the new version did not ship
+// that file). Used for user-created config.
+func restoreKeepIfAbsent(ctx context.Context, backupDir, gameDir string, patterns []string) error {
+	return filepath.Walk(backupDir, func(srcPath string, info os.FileInfo, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		relPath, _ := filepath.Rel(backupDir, srcPath)
+		for _, pat := range patterns {
+			if !matchPath(pat, relPath) {
+				continue
+			}
 			destPath := filepath.Join(gameDir, relPath)
+			if _, err := os.Stat(destPath); err == nil {
+				return nil // new version shipped it; keep new
+			}
 			if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 				return err
 			}
 			if err := copyFile(srcPath, destPath); err != nil {
 				return err
 			}
-			log.Debug("restored user file from backup", "path", relPath)
+			log.Debug("restored keep-if-absent file from backup", "path", relPath)
+			return nil
 		}
 		return nil
 	})
@@ -243,6 +335,62 @@ func matchPath(pattern, relPath string) bool {
 		return strings.HasPrefix(relPath, prefix+"/") || relPath == prefix
 	}
 	return false
+}
+
+// destPathSafe reports whether no component of destPath under root is a
+// symlink that escapes root.
+func destPathSafe(destPath, root string) bool {
+	cur := root
+	rel, err := filepath.Rel(root, destPath)
+	if err != nil {
+		return false
+	}
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		cur = filepath.Join(cur, part)
+		fi, err := os.Lstat(cur)
+		if err != nil {
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			tgt, err := os.Readlink(cur)
+			if err != nil {
+				return false
+			}
+			resolved := tgt
+			if !filepath.IsAbs(tgt) {
+				resolved = filepath.Join(filepath.Dir(cur), tgt)
+			}
+			rr, err := filepath.Rel(root, filepath.Clean(resolved))
+			if err != nil || strings.HasPrefix(rr, "..") {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// linkWithinRoot reports whether a symlink target stays within root.
+func linkWithinRoot(target, linkDir, root string) bool {
+	resolved := target
+	if !filepath.IsAbs(target) {
+		resolved = filepath.Join(linkDir, target)
+	}
+	resolved = filepath.Clean(resolved)
+	rr, err := filepath.Rel(root, resolved)
+	if err != nil || strings.HasPrefix(rr, "..") || rr == ".." {
+		return false
+	}
+	// EvalSymlinks chain check.
+	if ev, err := filepath.EvalSymlinks(filepath.Join(linkDir, target)); err == nil {
+		rr2, err2 := filepath.Rel(root, ev)
+		if err2 != nil || strings.HasPrefix(rr2, "..") {
+			return false
+		}
+	}
+	return true
 }
 
 func copyFile(src, dst string) error {
@@ -327,13 +475,38 @@ func looksLikeGameRoot(entries []os.DirEntry) bool {
 	return false
 }
 
-// patterns returns the preserve glob patterns for a given engine.
+// patterns returns the user-data (overwrite-restore) preserve glob patterns
+// for a given engine. These files are restored from the backup OVER the new
+// version's copies, because they are genuine user data (saves, persistent
+// state, user-added mods). Everything else: the new version wins.
 func patterns(engine string) []string {
 	specific, ok := enginePatterns[engine]
 	if !ok {
 		specific = enginePatterns["default"]
 	}
-	return append(commonPatterns, specific...)
+	out := append([]string{}, commonPatterns...)
+	out = append(out, specific...)
+	return out
+}
+
+// keepIfAbsentPatterns returns patterns whose files are copied from the backup
+// ONLY when the new version does not ship that file. Used for user-created
+// config that a shipped default should override.
+func keepIfAbsentPatterns(engine string) []string {
+	specific, ok := keepIfAbsentEnginePatterns[engine]
+	if !ok {
+		specific = keepIfAbsentEnginePatterns["default"]
+	}
+	out := append([]string{}, specific...)
+	return out
+}
+
+// allEnginePatterns returns both sets combined (used by tests that want the
+// full preserve list for an engine).
+func allPreservePatterns(engine string) []string {
+	out := append([]string{}, patterns(engine)...)
+	out = append(out, keepIfAbsentPatterns(engine)...)
+	return out
 }
 
 var commonPatterns = []string{
@@ -341,49 +514,30 @@ var commonPatterns = []string{
 	"persistent",
 }
 
+// enginePatterns: user data restored over new files.
 var enginePatterns = map[string][]string{
-	"RPGM": {
-		"save/*",
-		"www/save/*",
-		"Game.ini",
-		"package.json",
-		"achievements.rpgsave",
-	},
-	"RenPy": {
-		"game/saves/*",
-		"game/save/*",
-		"game/options.rpy",
-		"game/screens.rpy",
-		"game/gui.rpy",
-		"game/persistent",
-	},
-	"Unity": {
-		"saves/*",
-		"*_Data/saves/*",
-	},
-	"HTML": {
-		"save/*",
-		"www/save/*",
-		"package.json",
-	},
-	"WolfRPG": {
-		"Save*/*",
-		"Game.ini",
-		"Data/BasicData/*",
-	},
-	"Flash": {
-		"save/*",
-	},
-	"Java": {
-		"saves/*",
-		"save/*",
-	},
-	"default": {
-		"saves/*", "save/*",
-		"Save*/*",
-		"mods/*", "mod/*", "game/mods/*",
-		"Game.ini",
-		"options.rpy", "options.*",
-		"*.cfg", "*.json",
-	},
+	"Others":       {"saves/*", "save/*", "mods/*", "mod/*"},
+	"ADRIFT":       {"saves/*", "save/*"},
+	"Flash":        {"save/*"},
+	"Godot":        {"saves/*", "save/*", "mods/*", "mod/*"},
+	"HTML":         {"save/*", "www/save/*"},
+	"Java":         {"saves/*", "save/*"},
+	"QSP":          {"saves/*", "save/*"},
+	"RAGS":         {"saves/*", "save/*"},
+	"RPGM":         {"save/*", "www/save/*", "achievements.rpgsave"},
+	"RenPy":        {"game/saves/*", "game/save/*", "game/persistent"},
+	"Tads":         {"saves/*", "save/*"},
+	"Unity":        {"saves/*", "*_Data/saves/*"},
+	"UnrealEngine": {"saves/*", "save/*", "mods/*", "mod/*"},
+	"WebGL":        {"saves/*", "save/*"},
+	"WolfRPG":      {"Save*/*", "Data/BasicData/*"},
+	"default":      {"saves/*", "save/*", "Save*/*", "mods/*", "mod/*", "game/mods/*"},
+}
+
+// keepIfAbsentEnginePatterns: copied from backup only if absent in new version.
+var keepIfAbsentEnginePatterns = map[string][]string{
+	"RPGM":    {"Game.ini", "package.json"},
+	"WolfRPG": {"Game.ini"},
+	"Godot":   {"override.cfg"},
+	"default": {},
 }

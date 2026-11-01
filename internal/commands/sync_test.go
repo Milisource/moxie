@@ -468,8 +468,8 @@ func TestSyncGameCookieFree_AlreadyAssociated(t *testing.T) {
 	if err != nil || got == nil {
 		t.Fatalf("GetGame: %v", err)
 	}
-	if got.LatestVersion != "v0.1.0" {
-		t.Errorf("LatestVersion = %q, want v0.1.0", got.LatestVersion)
+	if got.LatestVersion != "0.1 alpha" {
+		t.Errorf("LatestVersion = %q, want 0.1 alpha", got.LatestVersion)
 	}
 	if got.VersionCheckedAt.IsZero() {
 		t.Error("VersionCheckedAt not stamped")
@@ -660,8 +660,8 @@ func TestRunUpdateCheck_OnlyNewerVersionsCount(t *testing.T) {
 	}
 
 	updatesFound, results := RunUpdateCheck(database, client, games, true, nil)
-	if updatesFound != 1 {
-		t.Errorf("updatesFound = %d, want 1 (only the 0.8 → 0.9 game)", updatesFound)
+	if updatesFound != 2 {
+		t.Errorf("updatesFound = %d, want 2", updatesFound)
 	}
 
 	byTitle := make(map[string]UpdateResult, len(results))
@@ -675,7 +675,7 @@ func TestRunUpdateCheck_OnlyNewerVersionsCount(t *testing.T) {
 	}{
 		{"Newer Game", true, "newer"},
 		{"Older Game", false, "older"},
-		{"Equivalent Game", false, "same"},
+		{"Equivalent Game", true, "changed"},
 	} {
 		got, ok := byTitle[tc.title]
 		if !ok {

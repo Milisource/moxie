@@ -5,16 +5,14 @@ import (
 	"archive/zip"
 	"compress/bzip2"
 	"compress/gzip"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"strings"
 
 	"github.com/ulikunitz/xz"
 
 	"github.com/mili/moxie/internal/extractor"
+	"github.com/mili/moxie/internal/fsutil"
 )
 
 // precheckArchiveBudget rejects an archive that is already over opts' budget
@@ -163,20 +161,5 @@ func precheckToolBudget(archivePath string, opts Options) error {
 // extraction. filepath.Walk does not follow links, so a symlink is reported as
 // an entry rather than traversed.
 func verifyExtractedTree(root string) error {
-	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("archive entry %q is a symlink (symlinks are not allowed in save archives)", path)
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("archive entry %q escapes destination %q", path, root)
-		}
-		return nil
-	})
+	return fsutil.VerifyTree(root, fsutil.LinksForbidden)
 }

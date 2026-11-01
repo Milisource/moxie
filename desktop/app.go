@@ -4329,6 +4329,8 @@ func (a *App) syncPhase2CheckUpdates(ctx context.Context, trackable []db.Game, p
 	// sync skips them entirely and cookie-scrapes every thread instead —
 	// that's what refreshes the Downloads tab.
 	var versions map[int64]string
+	failedThreads := make(map[int64]bool)
+	endpointGone := false
 	if !force {
 		var bulkIDs []int64
 		for _, g := range active {
@@ -4338,11 +4340,9 @@ func (a *App) syncPhase2CheckUpdates(ctx context.Context, trackable []db.Game, p
 		}
 
 		var bulkErr error
-		versions, bulkErr = public.BulkVersions(ctx, bulkIDs)
+		var chunkErrs []scraper.BulkChunkError
+		versions, chunkErrs, bulkErr = public.BulkVersions(ctx, bulkIDs)
 		if bulkErr != nil {
-			// A Cloudflare challenge on the bulk endpoint is a block, not a
-			// transient outage: abort like every other phase instead of
-			// mislabelling it and burning a futile fallback scrape.
 			if isBlockedErr(bulkErr) {
 				*allErrors = append(*allErrors, fmt.Sprintf("bulk version API blocked: %v", bulkErr))
 				return updated, skipped, true
@@ -4353,6 +4353,37 @@ func (a *App) syncPhase2CheckUpdates(ctx context.Context, trackable []db.Game, p
 			blocked = a.syncPhase2Fallback(ctx, client, active, allErrors, &updated)
 			return updated, skipped, blocked
 		}
+		// Shared policy: blocked/rate_limited/transient chunks stop the pass
+		// (no per-game fallback); only endpoint_gone allows fallback (capped).
+		for _, ce := range chunkErrs {
+			for _, id := range ce.IDs {
+				failedThreads[id] = true
+			}
+			if ce.Kind == "blocked" || ce.Kind == "rate_limited" || ce.Kind == "transient" {
+				*allErrors = append(*allErrors, fmt.Sprintf("bulk version check %s: %v", ce.Kind, ce.Err))
+				// stop pass
+				return updated, skipped, true
+			}
+			if ce.Kind == "endpoint_gone" {
+				endpointGone = true
+			}
+		}
+		if len(chunkErrs) > 0 && endpointGone {
+			// capped fallback for endpoint_gone: handle via fallback for those games only
+			var fb []db.Game
+			for _, g := range active {
+				if failedThreads[g.F95ThreadID] {
+					fb = append(fb, g)
+				}
+			}
+			if len(fb) > 25 {
+				fb = fb[:25]
+			}
+			blocked = a.syncPhase2Fallback(ctx, client, fb, allErrors, &updated)
+			if blocked {
+				return updated, skipped, true
+			}
+		}
 	}
 
 	for i := range active {
@@ -4360,6 +4391,10 @@ func (a *App) syncPhase2CheckUpdates(ctx context.Context, trackable []db.Game, p
 			return updated, skipped, false
 		}
 		game := &active[i]
+		if !force && failedThreads[game.F95ThreadID] && !endpointGone {
+			// Failed chunk: do not scrape, do not stamp.
+			continue
+		}
 		runtime.EventsEmit(a.ctx, "sync:progress", SyncProgress{
 			Current: i + 1,
 			Total:   total,

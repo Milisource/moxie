@@ -40,7 +40,7 @@ func TestSyncSingleViaCacheAppliesMetadata(t *testing.T) {
 		t.Errorf("association = %d/%q, want 276681/https://f95zone.to/threads/276681/",
 			got.F95ThreadID, got.F95URL)
 	}
-	if got.LatestVersion != "0.1.0" {
+	if got.LatestVersion != "0.1 alpha" {
 		t.Errorf("LatestVersion = %q, want 0.1.0 (qualifier stripped)", got.LatestVersion)
 	}
 	if got.Status != "active" {

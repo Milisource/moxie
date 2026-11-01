@@ -449,8 +449,8 @@ func TestCheckGameVersion(t *testing.T) {
 		if cacheHits.Load() != 1 {
 			t.Errorf("cache hits = %d, want 1", cacheHits.Load())
 		}
-		if game.LatestVersion != "v2.0" {
-			t.Errorf("LatestVersion = %q, want v2.0", game.LatestVersion)
+		if game.LatestVersion != "2" {
+			t.Errorf("LatestVersion = %q, want 2", game.LatestVersion)
 		}
 	})
 
