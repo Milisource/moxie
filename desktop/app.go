@@ -45,6 +45,7 @@ import (
 	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/extractor"
+	"github.com/mili/moxie/internal/f95session"
 	"github.com/mili/moxie/internal/launcher"
 	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/scanner"
@@ -171,6 +172,11 @@ func (a *App) startup(ctx context.Context) {
 			}
 		},
 	)
+
+	// F95Zone session: send the UA that matches the borrowed cf_clearance
+	// and mint a fresh clearance (Camoufox/Firefox, headless) when
+	// Cloudflare challenges anyway.
+	f95session.Install()
 
 	// Browser fallback for challenge-graded download hosts: wired when a
 	// usable browser is installed (MOXIE_BROWSER=auto|chrome|firefox).
@@ -4969,6 +4975,57 @@ func (a *App) rankedDownloadLinks(gameID int64, opts rankOpts) ([]db.DownloadLin
 	return out, nil
 }
 
+// freshRankedDownloadLinks is rankedDownloadLinks after making sure the stored
+// links can still work: F95Zone /dl/ links expire a few hours after the
+// thread was scraped, so stale ones trigger a thread re-scrape first. A failed
+// re-scrape keeps the stored links (the download then reports the real
+// problem).
+func (a *App) freshRankedDownloadLinks(gameID int64, opts rankOpts) ([]db.DownloadLink, error) {
+	links, err := a.rankedDownloadLinks(gameID, opts)
+	if err != nil || !anyStaleF95Link(links) {
+		return links, err
+	}
+	slog.Info("stored F95Zone download links are stale; re-scraping the thread", "gameID", gameID)
+	if serr := a.syncSingleGame(gameID); serr != nil {
+		slog.Warn("re-scrape for fresh download links failed; using stored links", "gameID", gameID, "error", serr)
+		return links, nil
+	}
+	if fresh, ferr := a.rankedDownloadLinks(gameID, opts); ferr == nil {
+		return fresh, nil
+	}
+	return links, nil
+}
+
+// downloadWithFreshLinks runs downloadGameMultiPartOrSingle and, when F95Zone
+// reports the links expired, re-scrapes the thread once and retries with the
+// fresh links.
+func (a *App) downloadWithFreshLinks(ctx context.Context, evPrefix string, gameID int64, opts rankOpts, links []db.DownloadLink) (string, db.DownloadLink, error) {
+	archive, link, err := a.downloadGameMultiPartOrSingle(ctx, evPrefix, gameID, links)
+	if err == nil || !downloader.IsF95StaleLinkError(err) || ctx.Err() != nil {
+		return archive, link, err
+	}
+	slog.Info("F95Zone download links expired; re-scraping the thread and retrying", "gameID", gameID)
+	if serr := a.syncSingleGame(gameID); serr != nil {
+		return archive, link, err
+	}
+	fresh, ferr := a.rankedDownloadLinks(gameID, opts)
+	if ferr != nil || len(fresh) == 0 {
+		return archive, link, err
+	}
+	return a.downloadGameMultiPartOrSingle(ctx, evPrefix, gameID, fresh)
+}
+
+// anyStaleF95Link reports whether any link is an expired F95Zone /dl/ link.
+func anyStaleF95Link(links []db.DownloadLink) bool {
+	now := time.Now()
+	for _, l := range links {
+		if downloader.F95LinkStale(l.URL, now) {
+			return true
+		}
+	}
+	return false
+}
+
 // downloadGameMultiPartOrSingle attempts a multi-part archive set first — a
 // thread that splits one release across several links ("Part 1"/"Part 2",
 // Game.part1.rar, Game.7z.001) — then falls back to the ranked single-link
@@ -5078,7 +5135,12 @@ func tryDownloadLinks(ctx context.Context, links []db.DownloadLink,
 			return archive, link, nil
 		}
 		lastErr = err
-		if errors.Is(err, errNoF95Cookies) || ctx.Err() != nil {
+		// Session-level failures (F95Zone Cloudflare challenge, logged-out
+		// session) hit every mirror alike: stop instead of walking them all.
+		// Expired links: every mirror from the same scrape expires together;
+		// the caller re-scrapes instead (downloadWithFreshLinks).
+		if errors.Is(err, errNoF95Cookies) || downloader.IsF95SessionError(err) ||
+			downloader.IsF95StaleLinkError(err) || ctx.Err() != nil {
 			return "", link, err
 		}
 		if !last {
@@ -5193,7 +5255,7 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 		"phase":  "selecting-link",
 	})
 
-	links, err := a.rankedDownloadLinks(gameID, updateRankOpts(game))
+	links, err := a.freshRankedDownloadLinks(gameID, updateRankOpts(game))
 	if err != nil {
 		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
 			"gameID":  gameID,
@@ -5211,7 +5273,7 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 		"host":   links[0].Host,
 	})
 
-	archivePath, selectedLink, err := a.downloadGameMultiPartOrSingle(ctx, "game-update", gameID, links)
+	archivePath, selectedLink, err := a.downloadWithFreshLinks(ctx, "game-update", gameID, updateRankOpts(game), links)
 	if err != nil {
 		// downloadGameFile already emits its own error events. Automatic
 		// downloads are frequently blocked by Cloudflare-protected hosts
@@ -6002,13 +6064,13 @@ func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent strin
 	}()
 
 	phase("selecting-link")
-	links, err := a.rankedDownloadLinks(gameID, rankOpts{})
+	links, err := a.freshRankedDownloadLinks(gameID, rankOpts{})
 	if err != nil {
 		return emitErr("select-link", err)
 	}
 
 	phase("downloading")
-	archivePath, _, err := a.downloadGameMultiPartOrSingle(ctx, "game-install", gameID, links)
+	archivePath, _, err := a.downloadWithFreshLinks(ctx, "game-install", gameID, rankOpts{}, links)
 	if err != nil {
 		// downloadGameFile emits its own error events.
 		return fmt.Errorf("download game file: %w", err)

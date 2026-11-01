@@ -8,6 +8,7 @@ import (
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/commands"
 	"github.com/mili/moxie/internal/config"
+	"github.com/mili/moxie/internal/f95session"
 	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/tui"
@@ -48,6 +49,9 @@ func main() {
 	}
 
 	log.Info("moxie started", "version", version, "args", args)
+	// Match the F95Zone User-Agent to the borrowed cf_clearance and mint a
+	// fresh clearance when Cloudflare challenges (internal/f95session).
+	f95session.Install()
 
 	if len(args) < 1 {
 		// First-run welcome if no database exists yet

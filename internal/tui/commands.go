@@ -356,6 +356,11 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 			ad.stepMsg = fmt.Sprintf("✗ Failed: %s", link.Host)
 			ad.mu.Unlock()
 			log.Warn("tui download attempt failed", "game_id", gameID, "host", link.Host, "error", err)
+			if downloader.IsF95SessionError(err) || downloader.IsF95StaleLinkError(err) {
+				// Every mirror goes through the same F95Zone session, and
+				// links from one scrape expire together.
+				break
+			}
 		}
 
 		var summary string
@@ -543,7 +548,11 @@ func (m model) resolveLinksCmd(game *db.Game, destDir string) tea.Cmd {
 // resolveDownloadLinks finds all viable download links for a game, sorted by platform score.
 func (m model) resolveDownloadLinks(game *db.Game) ([]db.DownloadLink, error) {
 	links, listErr := m.db.ListDownloadLinks(game.ID, "", false)
-	if listErr == nil && len(links) > 0 {
+	// F95Zone /dl/ links expire a few hours after the thread was scraped:
+	// stale stored links go through the scrape below for fresh ones (and
+	// are still used if that scrape fails).
+	stale := m.scraperClient != nil && game.F95URL != "" && anyStaleLink(links)
+	if listErr == nil && len(links) > 0 && !stale {
 		targetPlatform := downloader.CurrentPlatform()
 		sorted := sortLinksByPlatform(links, targetPlatform)
 		if len(sorted) > 0 {
@@ -574,7 +583,23 @@ func (m model) resolveDownloadLinks(game *db.Game) ([]db.DownloadLink, error) {
 		}
 	}
 
+	if stale {
+		if sorted := sortLinksByPlatform(links, downloader.CurrentPlatform()); len(sorted) > 0 {
+			return sorted, nil
+		}
+	}
 	return nil, fmt.Errorf("no download links found")
+}
+
+// anyStaleLink reports whether any stored link is an expired F95Zone /dl/ link.
+func anyStaleLink(links []db.DownloadLink) bool {
+	now := time.Now()
+	for _, l := range links {
+		if downloader.F95LinkStale(l.URL, now) {
+			return true
+		}
+	}
+	return false
 }
 
 // sortLinksByPlatform returns all links sorted by platform + host reliability score (descending).

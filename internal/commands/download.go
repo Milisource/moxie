@@ -387,6 +387,15 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 			failures = append(failures, err.Error())
 			log.Warn("download attempt failed", "game_id", game.ID, "host", link.Host, "error", err)
 			fmt.Fprintf(os.Stderr, "  ✗ [%s] download failed: %v\n", link.Host, err)
+			if downloader.IsF95StaleLinkError(err) {
+				fmt.Fprintln(os.Stderr, "  ✗ F95Zone download links expired (they last a few hours) — run `moxie sync` for this game and retry")
+				break
+			}
+			if downloader.IsF95SessionError(err) {
+				// Every mirror goes through the same F95Zone session.
+				fmt.Fprintln(os.Stderr, "  ✗ F95Zone session problem — the other mirrors would fail the same way; open f95zone.to in your browser and retry")
+				break
+			}
 		}
 	} // end multiPartFinal == ""
 
