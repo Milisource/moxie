@@ -51,6 +51,11 @@ func hostTierScore(host string) int {
 		return -200
 	case "mega", "krakenfiles":
 		return -200
+	case "uploadhaven":
+		// No resolver: the link is a landing page (timer + button), so a
+		// passthrough fetch yields HTML, never the archive. Kept above the
+		// hard walls only as a last resort.
+		return -100
 	default:
 		return 0
 	}

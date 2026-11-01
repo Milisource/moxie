@@ -1905,47 +1905,9 @@ func TestResolve_MaskedURLUnwrapsThenResolves(t *testing.T) {
 	}
 }
 
-// TestResolve_F95DownloadLinkUsesBrowserSolver: /dl/ links are opaque
-// browser-check pages; the resolver must hand them to the browser solver and
-// continue with whatever destination it returns.
-func TestResolve_F95DownloadLinkUsesBrowserSolver(t *testing.T) {
-	t.Parallel()
-
-	var got string
-	r := NewHostResolver()
-	r.SetDLSolver(func(ctx context.Context, dlURL string) (string, error) {
-		got = dlURL
-		return "http://127.0.0.1:1/file.zip", nil
-	})
-
-	dl := "https://f95zone.to/dl/12120217/?u=1&k=abc&r=1&t=tok"
-	result, err := r.Resolve(dl, "mega")
-	if err != nil {
-		t.Fatalf("Resolve(/dl/): %v", err)
-	}
-	if got != dl {
-		t.Errorf("solver received %q, want %q", got, dl)
-	}
-	if result.URL != "http://127.0.0.1:1/file.zip" {
-		t.Errorf("Resolve = %q, want the solver destination", result.URL)
-	}
-}
-
-// TestResolve_F95DownloadLinkWithoutSolver: without the browser hook the
-// error must name the setting that enables it, instead of surfacing a
-// confusing host-resolver failure.
-func TestResolve_F95DownloadLinkWithoutSolver(t *testing.T) {
-	t.Parallel()
-
-	r := NewHostResolver()
-	_, err := r.Resolve("https://f95zone.to/dl/12120217/?u=1&k=abc&r=1&t=tok", "mega")
-	if err == nil {
-		t.Fatal("expected an error without the browser solver")
-	}
-	if !strings.Contains(err.Error(), "browser") {
-		t.Errorf("error = %v, want a browser-assisted-downloads hint", err)
-	}
-}
+// The /dl/ resolve paths (native solver, browser fallback, missing-browser
+// hint) are covered against a fake F95Zone in hosts_f95dl_test.go — these
+// tests must never reach the real site.
 
 // TestIsF95DownloadLink pins the /dl/ recognizer's host/path gating: only a
 // genuine F95Zone /dl/ path counts, never a lookalike.

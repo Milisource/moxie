@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mili/moxie/internal/archive"
+	"github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/log"
 )
 
@@ -122,7 +123,10 @@ func DownloadWithContext(ctx context.Context, urlStr, host, destDir string, expe
 		// The resolver stage hit a Cloudflare/captcha wall (vikingfile,
 		// datanodes, ...): the browser loads the page with its own
 		// fingerprint + clearance and performs the download itself.
-		if isChallengeFailure(resolveErr) && resolver.browserFallback != nil {
+		// F95Zone session failures (challenge the clearance refresh could
+		// not clear, logged-out session) are excluded: the browser would hit
+		// the same wall, and the caller should stop instead of retrying.
+		if isChallengeFailure(resolveErr) && !IsF95SessionError(resolveErr) && resolver.browserFallback != nil {
 			path, fbErr := resolver.browserFallback(ctx, urlStr, destDir)
 			if fbErr == nil {
 				log.Info("browser fallback download complete (resolve challenge)", "host", host, "file", path)
@@ -615,8 +619,12 @@ func IsValidGameFile(path string) bool {
 	}
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
-	case ".exe", ".sh", ".x86_64", ".bin", ".run", ".AppImage", ".html", ".htm":
+	case ".exe", ".sh", ".x86_64", ".bin", ".run", ".AppImage":
 		return true
+	case ".html", ".htm":
+		// A single-file HTML game, not a host's landing/interstitial page
+		// that a passthrough resolve saved under an .html name.
+		return engine.IsHTMLGameFile(path)
 	}
 	return false
 }

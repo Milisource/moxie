@@ -95,13 +95,29 @@ func TestDownloadWithHeaders_HTMLChallengeStillRejected(t *testing.T) {
 func TestIsValidGameFile_HTML(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	game := append([]byte(`<html><head><script src="js/rpg_core.js"></script></head>`), make([]byte, 5000)...)
 	for _, name := range []string{"game.html", "game.htm", "GAME.HTML"} {
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, make([]byte, 5000), 0o600); err != nil {
+		if err := os.WriteFile(path, game, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if !IsValidGameFile(path) {
 			t.Errorf("IsValidGameFile(%q) = false, want true", name)
 		}
+	}
+}
+
+// TestIsValidGameFile_HTMLLandingPageRejected: a file host's landing page
+// saved under an .html name (a passthrough resolve of a host without a
+// resolver) must not be accepted — and installed — as a single-file game.
+func TestIsValidGameFile_HTMLLandingPageRejected(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "download.html")
+	page := append([]byte(`<html><head><title>Download file | UploadHaven</title></head><body>Please wait 5 seconds`), make([]byte, 5000)...)
+	if err := os.WriteFile(path, page, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if IsValidGameFile(path) {
+		t.Error("IsValidGameFile(landing page) = true, want false")
 	}
 }

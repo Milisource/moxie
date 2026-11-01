@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -105,6 +106,9 @@ type HostResolver struct {
 	// only these opaque links, so this is the primary path for freshly
 	// scraped downloads.
 	dlSolver func(ctx context.Context, dlURL string) (string, error)
+	// clearanceRefreshed records that this resolver already asked the F95
+	// clearance refresher for a new cf_clearance (once per resolver).
+	clearanceRefreshed bool
 	// unwrapLimiter paces unwrap pacing state. F95Zone's masked endpoint is
 	// rate-budgeted (live A/B: ok, ok, wall, wall, wall, wall) — pacing
 	// unwraps keeps bursts under the budget, retries ride out transient
@@ -341,21 +345,28 @@ func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*Res
 	host = strings.ToLower(strings.ReplaceAll(host, " ", ""))
 	log.Debug("resolving host URL", "host", host, "url", rawURL)
 
-	// F95Zone /dl/ download-link pages are a browser-satisfied check
-	// (hCaptcha + script check): not resolvable over plain HTTP, so hand
-	// them to the browser solver and continue with the destination it
-	// returns (a host URL or an older /masked/ interstitial).
+	// F95Zone /dl/ download-link pages: solved natively over HTTP (the
+	// 2026-11 page is a timed script check, no captcha — hosts_f95dl.go).
+	// The browser solver is the fallback for sessions the site still puts
+	// behind a captcha. Link- and session-level errors are returned as-is:
+	// a browser cannot revive an expired link, and a Cloudflare challenge
+	// the clearance refresh could not clear would stop the browser too.
 	if u, err := url.Parse(rawURL); err == nil && isF95DownloadLinkURL(u) {
-		if r.dlSolver == nil {
-			return nil, fmt.Errorf("F95Zone download link %s needs the browser check; enable browser-assisted downloads with `moxie config set browser_fallback auto` or MOXIE_BROWSER=auto", rawURL)
+		dest, err := r.resolveF95DownloadLink(context.Background(), rawURL)
+		if errors.Is(err, errF95NeedsBrowser) {
+			if r.dlSolver == nil {
+				return nil, fmt.Errorf("F95Zone download link %s needs the browser check; enable browser-assisted downloads with `moxie config set browser_fallback auto` or MOXIE_BROWSER=auto", rawURL)
+			}
+			log.Info("F95Zone download link needs the browser check; handing it to the browser", "url", rawURL)
+			dest, err = r.dlSolver(context.Background(), rawURL)
 		}
-		dest, err := r.dlSolver(context.Background(), rawURL)
 		if err != nil {
 			return nil, fmt.Errorf("resolve F95Zone download link: %w", err)
 		}
 		if dest == "" || dest == rawURL {
-			return nil, fmt.Errorf("resolve F95Zone download link: browser returned no destination")
+			return nil, fmt.Errorf("resolve F95Zone download link: no destination")
 		}
+		log.Debug("F95Zone download link resolved", "url", rawURL, "dest", dest)
 		return r.resolveDepth(dest, IdentifyHostInURL(dest), depth+1)
 	}
 
@@ -519,7 +530,7 @@ func (r *HostResolver) unwrapOnce(rawURL string) (status, msg string, err error)
 	if err != nil {
 		return "", "", fmt.Errorf("create masked unwrap request: %w", err)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
+	req.Header.Set("User-Agent", f95UserAgent())
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
@@ -586,7 +597,7 @@ func (r *HostResolver) followRedirect(url string) (string, error) {
 	if err != nil {
 		return url, fmt.Errorf("create redirect-follow request: %w", err)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
+	req.Header.Set("User-Agent", f95UserAgent())
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 	req.Header.Set("Referer", "https://f95zone.to/")

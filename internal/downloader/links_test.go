@@ -30,11 +30,12 @@ func TestScoreLinkHost(t *testing.T) {
 		{"datanodes", 0},
 		{"mixdrop", 0},
 		{"hexload", 0},
-		{"uploadhaven", 0},
 		{"1cloudfile", 0},
 		{"bunkrr", 0},
 		{"unknown", 0},
 		{"", 0},
+		// No resolver: a landing page, never the archive — last resort.
+		{"uploadhaven", -100},
 		// Tier 5 — hard walls.
 		{"vikingfile", -200}, // Cloudflare Turnstile rejects browser automation (live 2026-10-04)
 		{"krakenfiles", -200},
@@ -60,7 +61,8 @@ func TestScoreLinkHost_TierOrdering(t *testing.T) {
 		{"tier1-plain-http", []string{"pixeldrain", "catbox", "mediafire"}, 25},
 		{"tier2-intermittent", []string{"buzzheavier", "workupload", "googledrive"}, 10},
 		{"tier3-fragile", []string{"gofile"}, 5},
-		{"tier4-browser-gated", []string{"datanodes", "mixdrop", "hexload", "uploadhaven", "1cloudfile", "bunkrr", "unknown"}, 0},
+		{"tier4-browser-gated", []string{"datanodes", "mixdrop", "hexload", "1cloudfile", "bunkrr", "unknown"}, 0},
+		{"tier4b-landing-page-only", []string{"uploadhaven"}, -100},
 		{"tier5-hard-walls", []string{"vikingfile", "krakenfiles", "mega"}, -200},
 	}
 	for i, tier := range tiers {
