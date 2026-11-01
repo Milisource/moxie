@@ -141,6 +141,12 @@ func GetF95Cookies() (string, error) {
 
 	f95 := selectF95Cookies(cookies)
 
+	// A minted clearance (f95session) that is newer than the browser's
+	// replaces it, so the header always pairs with F95UserAgent().
+	if _, minted := f95ClearanceChoice(cookies, time.Now()); minted != nil {
+		f95 = withClearance(f95, minted.Value)
+	}
+
 	if len(f95) > 0 {
 		sort.Slice(f95, func(i, j int) bool { return f95[i].Name < f95[j].Name })
 		return buildCookieHeader(f95), nil
@@ -193,6 +199,23 @@ func selectF95Cookies(cookies []*kooky.Cookie) []*kooky.Cookie {
 		chosen = append(chosen, c)
 	}
 	return chosen
+}
+
+// withClearance returns cookies with cf_clearance set to value (replacing
+// the browser's, or added when the browser holds none). The input slice is
+// not modified.
+func withClearance(cookies []*kooky.Cookie, value string) []*kooky.Cookie {
+	out := make([]*kooky.Cookie, 0, len(cookies)+1)
+	for _, c := range cookies {
+		if c != nil && c.Name != "cf_clearance" {
+			out = append(out, c)
+		}
+	}
+	cc := &kooky.Cookie{}
+	cc.Name = "cf_clearance"
+	cc.Value = value
+	cc.Domain = ".f95zone.to"
+	return append(out, cc)
 }
 
 // f95SessionCookie reports whether name is one of the F95Zone login cookies.

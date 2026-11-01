@@ -464,7 +464,7 @@ func identifyHost(rawURL, text string, hints ...string) string {
 		return "bowfile"
 	case hostMatch("bunkrr.su", "bunkr.ru", "bunkr.is", "bunkr.si") || textMatch("bunkrr", "bunkr"):
 		return "bunkrr"
-	case hostMatch("buzzheavier.com") || textMatch("buzzheavier"):
+	case hostMatch("buzzheavier.com", "bzzhr.to", "bzzhr.co") || textMatch("buzzheavier"):
 		return "buzzheavier"
 	case hostMatch("catbox.moe") || textMatch("catbox"):
 		return "catbox"
@@ -500,7 +500,7 @@ func identifyHost(rawURL, text string, hints ...string) string {
 		return "mediafire"
 	case hostMatch("mega.nz", "mega.co.nz") || textMatch("mega.nz", "mega.co"):
 		return "mega"
-	case hostMatch("mixdrop.co", "mixdrop.to", "m1xdrop.co") || textMatch("mixdrop", "m1xdrop"):
+	case hostMatch("mixdrop.co", "mixdrop.to", "mixdrop.ag", "mixdrop.ps", "m1xdrop.co", "m1xdrop.net") || textMatch("mixdrop", "m1xdrop"):
 		return "mixdrop"
 	case hostMatch("pixeldrain.com") || textMatch("pixeldrain"):
 		return "pixeldrain"

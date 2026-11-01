@@ -117,6 +117,10 @@ type Client struct {
 	// whole sync run failing one game at a time.
 	consecutiveBlocks int
 	blocked           bool
+
+	// clearanceRefreshed records that this client already asked the
+	// clearance refresher (session.go) for a new cf_clearance; it asks once.
+	clearanceRefreshed bool
 }
 
 // NewClient creates a scraper client with the given cookie string.
@@ -280,6 +284,13 @@ func (c *Client) do(req *http.Request, baseDelay time.Duration) (bodyStr string,
 			return body, nil
 		}
 		lastErr = err
+		// A Cloudflare challenge means the clearance no longer matches
+		// (expired, or the browser updated and changed its UA). Mint or
+		// re-read one and retry instead of burning the attempt budget.
+		if c.tryRefreshClearance(req.Context(), err) {
+			attempt--
+			continue
+		}
 
 		var blockedErr *BlockedError
 		retryAfter := time.Duration(0)
@@ -494,7 +505,7 @@ func (c *Client) doOnce(req *http.Request, baseDelay time.Duration) (bodyStr str
 // Cloudflare doesn't flag the request as a bot. Sec-Fetch-* headers are
 // checked by modern bot detection and were previously missing.
 func applyBrowserHeaders(req *http.Request) {
-	req.Header.Set("User-Agent", platformUserAgent())
+	req.Header.Set("User-Agent", UserAgent())
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
@@ -549,7 +560,8 @@ func (c *Client) checkBlocked(resp *http.Response) (bodyStr string, err error) {
 	}
 
 	bodyStr = string(body)
-	cf := strings.Contains(bodyStr, "cf-browser-verification") ||
+	cf := resp.Header.Get("cf-mitigated") == "challenge" ||
+		strings.Contains(bodyStr, "cf-browser-verification") ||
 		strings.Contains(bodyStr, "cf-challenge-running") ||
 		strings.Contains(bodyStr, "_cf_chl_opt")
 
@@ -841,6 +853,7 @@ func (c *Client) ScrapeThreadWithContext(ctx context.Context, threadURL string) 
 // hop).
 type cookieTransport struct {
 	inner       http.RoundTripper
+	mu          sync.RWMutex
 	cookieValue string
 	// unrestricted disables host scoping. Only set by NewClientWithHTTP,
 	// which exists for httptest-based tests that cannot use real
@@ -856,12 +869,22 @@ func f95ZoneHost(req *http.Request) bool {
 		host == "api.f95checker.dev"
 }
 
+// setCookie replaces the session cookie (after a clearance refresh).
+func (ct *cookieTransport) setCookie(v string) {
+	ct.mu.Lock()
+	ct.cookieValue = strings.TrimSpace(v)
+	ct.mu.Unlock()
+}
+
 func (ct *cookieTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if ct.cookieValue != "" && (ct.unrestricted || f95ZoneHost(req)) {
+	ct.mu.RLock()
+	cookieValue := ct.cookieValue
+	ct.mu.RUnlock()
+	if cookieValue != "" && (ct.unrestricted || f95ZoneHost(req)) {
 		if existing := req.Header.Get("Cookie"); existing != "" {
-			req.Header.Set("Cookie", existing+"; "+ct.cookieValue)
+			req.Header.Set("Cookie", existing+"; "+cookieValue)
 		} else {
-			req.Header.Set("Cookie", ct.cookieValue)
+			req.Header.Set("Cookie", cookieValue)
 		}
 	}
 	return ct.inner.RoundTrip(req)

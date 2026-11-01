@@ -95,3 +95,26 @@ func TestExtractLinkSize(t *testing.T) {
 		})
 	}
 }
+
+// TestIdentifyHost_FaviconDomains2026_11 pins the destination domains the
+// /dl/ rows advertised on 2026-11-01. The favicon is the only host signal
+// when the anchor text is generic ("Mirror"), so the domains themselves
+// must map — Buzzheavier now serves from bzzhr.to, Mixdrop from mixdrop.ag.
+func TestIdentifyHost_FaviconDomains2026_11(t *testing.T) {
+	t.Parallel()
+	const dl = "https://f95zone.to/dl/10717740/?u=1&k=abc&r=1793555292&t=tok"
+	for favicon, want := range map[string]string{
+		"bzzhr.to":        "buzzheavier",
+		"mixdrop.ag":      "mixdrop",
+		"mega.nz":         "mega",
+		"datanodes.to":    "datanodes",
+		"gofile.io":       "gofile",
+		"pixeldrain.com":  "pixeldrain",
+		"uploadhaven.com": "uploadhaven",
+		"workupload.com":  "workupload",
+	} {
+		if got := identifyHost(dl, "Mirror", favicon); got != want {
+			t.Errorf("identifyHost(favicon %s) = %q, want %q", favicon, got, want)
+		}
+	}
+}
