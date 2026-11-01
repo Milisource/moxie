@@ -47,7 +47,7 @@ func TestClient_ChallengeRefreshesClearance(t *testing.T) {
 	t.Cleanup(func() { SetUserAgentProvider(nil); SetClearanceRefresher(nil) })
 
 	c := NewClientWithHTTP("xf_user=1; cf_clearance=stale", srv.Client())
-	c.delay = 0
+	c.pacer.delay = 0
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/threads/1/", nil)
 	body, err := c.do(req, 0)
 	if err != nil {
@@ -73,7 +73,7 @@ func TestClient_ChallengeRefreshOnlyOnce(t *testing.T) {
 	t.Cleanup(func() { SetClearanceRefresher(nil) })
 
 	c := NewClientWithHTTP("xf_user=1", srv.Client())
-	c.delay = 0
+	c.pacer.delay = 0
 	for i := 0; i < 2; i++ {
 		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/threads/1/", nil)
 		if _, err := c.do(req, 0); !IsCloudflareChallenge(err) {

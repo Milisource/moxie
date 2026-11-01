@@ -159,6 +159,9 @@ func newTestPublicAPI(t *testing.T, handler http.Handler) (*PublicAPI, *httptest
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	api := NewPublicAPI()
+	// A private pacer: the shared f95zone.to one would serialise every
+	// parallel test in the package behind real 1.5s+ gaps.
+	api.Client.pacer = newHostPacer(minDelay)
 	api.Host = srv.URL
 	api.CacheHost = srv.URL
 	return api, srv

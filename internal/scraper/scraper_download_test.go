@@ -308,7 +308,7 @@ func TestDownloadToWriter_WaitsForMinimumDelay(t *testing.T) {
 	defer srv.Close()
 
 	client := NewUnsafeClient("test=1")
-	client.lastRequest = time.Now() // pretend a request just happened
+	client.pacer.last = time.Now() // pretend a request just happened
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()

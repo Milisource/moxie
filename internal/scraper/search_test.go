@@ -473,7 +473,7 @@ func newUnsafeTestClient(srv *httptest.Server) *Client {
 				unrestricted: true,
 			},
 		},
-		delay:           0,
+		pacer:           newHostPacer(0),
 		unsafe:          true,
 		csrfToken:       "legacy-cookie-token",
 		xfTokenPage:     srv.URL,

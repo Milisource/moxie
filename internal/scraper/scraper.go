@@ -89,12 +89,14 @@ func (e *BlockedError) Error() string {
 // Client handles authenticated HTTP requests to a XenForo forum with
 // built-in rate limiting and bot-detection awareness.
 type Client struct {
-	http        *http.Client
-	mu          sync.Mutex
-	lastRequest time.Time
-	delay       time.Duration // current delay between requests (adapts)
-	reqCount    int           // requests since last cooldown
-	csrfToken   string        // _xfToken extracted from xf_csrf cookie
+	http      *http.Client
+	mu        sync.Mutex
+	csrfToken string // _xfToken extracted from xf_csrf cookie
+
+	// pacer holds pacing, 429 backoff, cooldown and circuit-breaker state.
+	// Safe clients share the process-wide f95zone.to pacer (pacer.go);
+	// unsafe and test clients get a private one.
+	pacer *hostPacer
 
 	// Fresh _xfToken fetched from a page. XenForo 2.3+ embeds the current
 	// session token in page HTML and rejects the legacy xf_csrf cookie
@@ -111,12 +113,6 @@ type Client struct {
 
 	// unsafe skips rate limiting entirely (NewUnsafeClient).
 	unsafe bool
-
-	// Circuit breaker: after maxConsecutiveBlocks blocking responses the
-	// client refuses further requests so a dead session doesn't waste a
-	// whole sync run failing one game at a time.
-	consecutiveBlocks int
-	blocked           bool
 
 	// clearanceRefreshed records that this client already asked the
 	// clearance refresher (session.go) for a new cf_clearance; it asks once.
@@ -137,9 +133,10 @@ func NewUnsafeClient(cookieStr string) *Client {
 
 // NewClientWithHTTP creates a scraper client with the given cookie string
 // and a custom http.Client. The inner transport is wrapped with cookie
-// injection automatically. Useful for testing with httptest servers.
+// injection automatically. Useful for testing with httptest servers. The
+// client gets its own pacer rather than the shared f95zone.to one, so
+// parallel tests against different servers don't slow each other down.
 func NewClientWithHTTP(cookieStr string, httpClient *http.Client) *Client {
-	delay := minDelay
 	if httpClient.Timeout == 0 {
 		httpClient.Timeout = defaultTimeout
 	}
@@ -158,7 +155,7 @@ func NewClientWithHTTP(cookieStr string, httpClient *http.Client) *Client {
 			CheckRedirect: httpClient.CheckRedirect,
 			Jar:           httpClient.Jar,
 		},
-		delay:           delay,
+		pacer:           newHostPacer(minDelay),
 		csrfToken:       extractCSRFToken(cookieStr),
 		xfTokenPage:     xfTokenPageURL,
 		xfSearchURL:     xfSearchURL,
@@ -167,9 +164,11 @@ func NewClientWithHTTP(cookieStr string, httpClient *http.Client) *Client {
 }
 
 func newClient(cookieStr string, unsafe bool) *Client {
-	delay := minDelay
+	// Unsafe clients (--unsafe, the F95Checker cache client) keep a private,
+	// zero-delay pacer: they deliberately stay outside the F95Zone budget.
+	pacer := sharedPacer(f95PacerKey)
 	if unsafe {
-		delay = 0
+		pacer = newHostPacer(0)
 	}
 	log.Debug("scraper session", "authenticated", hasAuthenticatedSession(cookieStr))
 	return &Client{
@@ -180,7 +179,7 @@ func newClient(cookieStr string, unsafe bool) *Client {
 				cookieValue: strings.TrimSpace(cookieStr),
 			},
 		},
-		delay:           delay,
+		pacer:           pacer,
 		csrfToken:       extractCSRFToken(cookieStr),
 		xfTokenPage:     xfTokenPageURL,
 		xfSearchURL:     xfSearchURL,
@@ -258,11 +257,10 @@ func hasAuthenticatedSession(cookieStr string) bool {
 	return false
 }
 
-// Delay returns the current inter-request delay.
+// Delay returns the current inter-request delay (shared by every client of
+// the same host).
 func (c *Client) Delay() time.Duration {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.delay
+	return c.pacer.currentDelay()
 }
 
 // do sends an HTTP request with rate limiting, bot detection, retries, and
@@ -299,29 +297,9 @@ func (c *Client) do(req *http.Request, baseDelay time.Duration) (bodyStr string,
 			if retryAfter > maxBackoff {
 				retryAfter = maxBackoff
 			}
-			c.mu.Lock()
-			c.consecutiveBlocks++
-			if c.consecutiveBlocks >= maxConsecutiveBlocks {
-				c.blocked = true
-				log.Warn("circuit breaker tripped; refusing further requests until cookies are refreshed",
-					"status", blockedErr.StatusCode,
-					"url", req.URL.Redacted(),
-				)
-			}
-			if blockedErr.StatusCode == 429 {
-				// Prefer the server's own Retry-After guidance for the
-				// standing inter-request delay when it gave one; otherwise
-				// fall back to the fixed exponential schedule.
-				if retryAfter > 0 {
-					c.delay = retryAfter
-				} else {
-					c.delay = time.Duration(float64(c.delay) * backoffMultiplier)
-				}
-				if c.delay > maxBackoff {
-					c.delay = maxBackoff
-				}
-			}
-			c.mu.Unlock()
+			// Advances the shared breaker and, on 429, raises the shared
+			// delay (Retry-After when given, else doubling).
+			c.pacer.noteBlocked(blockedErr, req.URL.Redacted())
 		}
 
 		if attempt == maxAttempts || !retryable(err) {
@@ -346,9 +324,7 @@ func (c *Client) do(req *http.Request, baseDelay time.Duration) (bodyStr string,
 
 // isBlocked reports whether the circuit breaker has tripped.
 func (c *Client) isBlocked() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.blocked
+	return c.pacer.isBlocked()
 }
 
 // Blocked reports whether the client tripped its circuit breaker after
@@ -394,72 +370,21 @@ func retryable(err error) bool {
 }
 
 // paceRequest enforces the client's request pacing before an outgoing request:
-// the periodic human-like cooldown, then the minimum inter-request delay
-// (baseDelay, or the client's current adaptive delay when larger) plus random
-// jitter. On success it stamps lastRequest and increments the request counter.
+// the periodic cooldown, then the minimum inter-request delay (baseDelay, or
+// the adaptive delay when larger) plus random jitter. The slot is reserved in
+// the client's pacer, which is shared by every client of the host, so
+// concurrent callers are spaced out rather than released together.
 //
 // It returns ctx.Err() when the context is cancelled during a wait. doOnce and
 // DownloadToWriter share it so their pacing stays identical.
 func (c *Client) paceRequest(ctx context.Context, baseDelay time.Duration, urlStr string) error {
-	c.mu.Lock()
-
-	// Periodic cooldown — pause longer every N requests to look human.
-	if c.reqCount > 0 && c.reqCount%cooldownInterval == 0 {
-		log.Debug("cooldown pause",
-			"duration", cooldownDuration,
-			"req_count", c.reqCount,
-			"url", urlStr,
-		)
-		c.mu.Unlock()
-		select {
-		case <-time.After(cooldownDuration):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		c.mu.Lock()
-	}
-
-	// Enforce minimum delay since last request.
-	waitFor := baseDelay
-	if c.delay > waitFor {
-		waitFor = c.delay
-	}
-	elapsed := time.Since(c.lastRequest)
-	if elapsed < waitFor {
-		wait := waitFor - elapsed + time.Duration(rand.Int63n(int64(maxJitter)))
-		log.Debug("pacing wait",
-			"duration", wait,
-			"url", urlStr,
-		)
-		c.mu.Unlock()
-		select {
-		case <-time.After(wait):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		c.mu.Lock()
-	}
-	c.lastRequest = time.Now()
-	c.reqCount++
-	c.mu.Unlock()
-
-	return nil
+	return c.pacer.wait(ctx, baseDelay, urlStr)
 }
 
 // resetAfterSuccess clears the consecutive-block counter and gradually reduces
-// the adaptive delay after a successful request. Decay only happens above the
-// floor: a zero delay (unsafe/paced clients) must stay zero, not snap up to
-// minDelay after the first success.
+// the adaptive delay after a successful request.
 func (c *Client) resetAfterSuccess() {
-	c.mu.Lock()
-	c.consecutiveBlocks = 0
-	if c.delay > minDelay {
-		c.delay = time.Duration(float64(c.delay) * 0.95)
-		if c.delay < minDelay {
-			c.delay = minDelay
-		}
-	}
-	c.mu.Unlock()
+	c.pacer.noteSuccess()
 }
 
 // doOnce performs a single paced, rate-limited request attempt.
@@ -704,44 +629,16 @@ func blockErrorForStatus(resp *http.Response) *BlockedError {
 	return nil
 }
 
-// noteBlocked logs a blocked download and applies the same per-request
-// bookkeeping do() performs for blocked responses: the consecutive-block
-// circuit breaker, and the 429 adaptive-delay backoff (preferring the server's
-// Retry-After when it gave one, else doubling). It returns blockedErr so
-// callers can chain it.
+// noteBlocked logs a blocked download and applies the same bookkeeping do()
+// performs for blocked responses (shared circuit breaker, 429 backoff). It
+// returns blockedErr so callers can chain it.
 func (c *Client) noteBlocked(blockedErr *BlockedError, urlStr string) error {
 	log.Warn("request blocked",
 		"status", blockedErr.StatusCode,
 		"reason", blockedErr.Reason,
 		"url", urlStr,
 	)
-
-	retryAfter := blockedErr.RetryAfter
-	if retryAfter > maxBackoff {
-		retryAfter = maxBackoff
-	}
-
-	c.mu.Lock()
-	c.consecutiveBlocks++
-	if c.consecutiveBlocks >= maxConsecutiveBlocks {
-		c.blocked = true
-		log.Warn("circuit breaker tripped; refusing further requests until cookies are refreshed",
-			"status", blockedErr.StatusCode,
-			"url", urlStr,
-		)
-	}
-	if blockedErr.StatusCode == http.StatusTooManyRequests {
-		if retryAfter > 0 {
-			c.delay = retryAfter
-		} else {
-			c.delay = time.Duration(float64(c.delay) * backoffMultiplier)
-		}
-		if c.delay > maxBackoff {
-			c.delay = maxBackoff
-		}
-	}
-	c.mu.Unlock()
-
+	c.pacer.noteBlocked(blockedErr, urlStr)
 	return blockedErr
 }
 

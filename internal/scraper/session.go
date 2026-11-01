@@ -91,9 +91,8 @@ func (c *Client) tryRefreshClearance(ctx context.Context, err error) bool {
 	if ct, ok := c.http.Transport.(*cookieTransport); ok {
 		ct.setCookie(cookie)
 	}
+	c.pacer.resetBreaker()
 	c.mu.Lock()
-	c.consecutiveBlocks = 0
-	c.blocked = false
 	c.csrfToken = extractCSRFToken(cookie)
 	c.mu.Unlock()
 	log.Info("Cloudflare challenge: clearance refreshed; retrying")

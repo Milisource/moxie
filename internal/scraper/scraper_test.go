@@ -1241,7 +1241,7 @@ func TestClientDo_UnsafeDelayStaysZero(t *testing.T) {
 				cookieValue: "",
 			},
 		},
-		delay:     0, // unsafe/unpaced mode
+		pacer:     newHostPacer(0), // unsafe/unpaced mode
 		csrfToken: "",
 	}
 
@@ -1268,7 +1268,7 @@ func TestClientDo_Cooldown(t *testing.T) {
 	client := NewClientWithHTTP("test=1", srv.Client())
 	// Force reqCount to cooldownInterval so the check
 	// cooldownInterval % cooldownInterval == 0 triggers on first call.
-	client.reqCount = cooldownInterval
+	client.pacer.reqCount = cooldownInterval
 
 	req, _ := http.NewRequest("GET", srv.URL, nil)
 	req.Header.Set("User-Agent", "test")
