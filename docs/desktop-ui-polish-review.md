@@ -3,7 +3,7 @@
 **Date:** 2026-11-07 · **Scope:** desktop frontend (`desktop/frontend`), current `dev` redesign
 **Screenshots:** [`screenshots/polish-2026-11/`](screenshots/polish-2026-11/)
 **Prototype:** [`design/moxie-polish.figcraft`](../design/moxie-polish.figcraft) · [`design/renders/00-contact-sheet.png`](../design/renders/00-contact-sheet.png) · [`design/moxie-polish.pdf`](../design/moxie-polish.pdf) — nine screens implementing the P0/P1 direction.
-**Implementation status:** library P0-1/P0-2/P0-3 are in `desktop/frontend` (header + count/sync, 11px caption tokens, neutral engine tags with aligned dots, and a one-row toolbar with View/Filters popovers). P0-4 (Covers/Sync/Add game/Settings) remains.
+**Implementation status:** library P0-1/P0-2/P0-3 are in `desktop/frontend` (header + count/sync, 11px caption tokens, neutral engine tags with aligned dots, and a one-row toolbar with View/Filters popovers). Implemented-state captures: `screenshots/polish-2026-11/impl/`. P0-4 (Covers/Sync/Add game/Settings) remains.
 **Companion:** the original research and pre-redesign audit live in [`desktop-ui-research.md`](desktop-ui-research.md). This document reviews the *current* build and benchmarks it against 2026 launchers.
 
 ---
