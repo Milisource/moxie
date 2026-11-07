@@ -188,8 +188,21 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 
 	existing, _ := database.GetDownloadByGameID(game.ID)
 	if existing != nil && existing.Status == db.DownloadStatusDownloading {
-		fmt.Fprintf(os.Stderr, "  – Download already in progress.\n")
-		return nil
+		const staleDownloadAfter = 2 * time.Hour
+		if !existing.StartedAt.IsZero() && time.Since(existing.StartedAt) < staleDownloadAfter {
+			fmt.Fprintf(os.Stderr, "  – Download already in progress.\n")
+			return fmt.Errorf("a download for %q is already in progress", game.Title)
+		}
+		// A crashed run leaves status=downloading behind. Returning success
+		// here made auto-update print "✓ Updated" and skip the game on every
+		// later run; heal the row and continue with a real download.
+		fmt.Fprintf(os.Stderr, "  – Clearing an interrupted download record.\n")
+		existing.Status = db.DownloadStatusFailed
+		existing.Error = "interrupted"
+		existing.CompletedAt = time.Now()
+		if err := database.UpdateDownload(existing); err != nil {
+			log.Warn("could not clear stale download record", "game_id", game.ID, "error", err)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "  Looking for %s downloads...\n", targetPlatform)

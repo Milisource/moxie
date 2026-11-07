@@ -68,15 +68,23 @@ hands the page to the installed browser (`browserresolve`) and continues with
 the revealed URL. Multi-part archives are downloaded part by part with
 per-part host fallback.
 
+The plain-HTTP `/dl/` solver keeps the cookies the check page issues: XenForo
+answers the Continue POST with *"Cookies are required to use this site"* when
+the `xf_csrf` cookie from the GET is missing, so a static Cookie header is not
+enough. That 400 is classified as a session failure, which stops the mirror
+loop instead of retrying every host and reporting a captcha.
+
 ### 4. Merge
 
 `updater.Merge` never edits the live game in place:
 
 1. New files are assembled in a staging directory.
-2. Engine-specific user files (saves, `Game.ini`, `options.rpy`, mods, …) are
-   copied from the live install over the staged defaults.
-3. The live directory is renamed aside, staging is renamed into place, and any
-   failure rolls the previous directory back.
+2. The live directory is renamed aside, and a fresh directory is populated
+   from staging (the tree is copied, not renamed, so the staging cleanup that
+   follows cannot delete the live install).
+3. Engine-specific user files (saves, `Game.ini`, `options.rpy`, mods, …) are
+   copied from the backup over the staged defaults.
+4. Any failure rolls the previous directory back into place.
 
 Merge failures are now surfaced as errors instead of warnings, and the
 downloaded archive is kept for a retry.
@@ -140,7 +148,9 @@ with fresh cookies) retries it.
 ### Concurrency and retries
 
 - `<config>/auto-update.lock` prevents two runs installing into the same game
-  directory. A lock older than two hours is stale; SIGINT/SIGTERM release it.
+  directory. A lock whose recorded PID is no longer running is stale
+  immediately; one without a readable PID falls back to a two-hour age window.
+  SIGINT/SIGTERM release it.
 - A failed game waits 30 minutes before another automatic attempt. A new target
   version clears the backoff immediately. `--force` bypasses both the backoff
   and the 24 h check cooldown.

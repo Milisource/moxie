@@ -302,6 +302,20 @@ func runAutoUpdateIfEnabled(database *db.Database, cookie string, client *scrape
 // Lock
 // ---------------------------------------------------------------------------
 
+// lockStale decides whether an existing lock file may be broken. A lock
+// whose recorded PID no longer exists is stale immediately: that is the
+// common case (a killed process, or a run whose stdout pipe closed mid-way).
+// A lock without a readable PID falls back to the two-hour age window.
+func lockStale(path string) bool {
+	if data, err := os.ReadFile(path); err == nil {
+		if pid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil {
+			return !processAlive(pid)
+		}
+	}
+	fi, err := os.Stat(path)
+	return err == nil && time.Since(fi.ModTime()) > 2*time.Hour
+}
+
 func acquireAutoUpdateLock() (func(), error) {
 	path := autoUpdateLockPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -313,7 +327,7 @@ func acquireAutoUpdateLock() (func(), error) {
 	f, err := acquire()
 	if err != nil && os.IsExist(err) {
 		// A crash leaves the lock behind. Break a stale one, never a fresh one.
-		if fi, statErr := os.Stat(path); statErr == nil && time.Since(fi.ModTime()) > 2*time.Hour {
+		if lockStale(path) {
 			os.Remove(path)
 			f, err = acquire()
 		}
