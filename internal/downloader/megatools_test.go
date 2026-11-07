@@ -460,6 +460,15 @@ func TestResolveMega_DelegatesWhenMegatoolsPresent(t *testing.T) {
 	if !errors.Is(err, ErrMegaNeedsMegatools) {
 		t.Errorf("expected ErrMegaNeedsMegatools, got: %v", err)
 	}
+	// The typed error must carry the resolved mega.nz URL so a mirror reached
+	// through an F95Zone /dl/ page is not handed to megatools as a /dl/ URL.
+	var typed *MegaNeedsToolsError
+	if !errors.As(err, &typed) {
+		t.Fatalf("expected *MegaNeedsToolsError, got %T", err)
+	}
+	if typed.URL != "https://mega.nz/file/abc123#key" {
+		t.Errorf("typed URL = %q, want the mega.nz link", typed.URL)
+	}
 	if !strings.Contains(err.Error(), "megatools") {
 		t.Errorf("expected error to mention megatools, got: %v", err)
 	}

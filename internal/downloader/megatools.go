@@ -22,6 +22,22 @@ import (
 // encrypted protocol that plain HTTP cannot handle.
 var ErrMegaNeedsMegatools = errors.New("mega link requires megatools subprocess")
 
+// MegaNeedsToolsError is the typed form of ErrMegaNeedsMegatools. It carries
+// the resolved Mega URL because the link may have been reached through an
+// F95Zone /dl/ page: megatools must receive the mega.nz URL, not the /dl/
+// page it was resolved from.
+type MegaNeedsToolsError struct {
+	URL string
+}
+
+func (e *MegaNeedsToolsError) Error() string {
+	return fmt.Sprintf("%s: %s", ErrMegaNeedsMegatools.Error(), e.URL)
+}
+
+// Is keeps errors.Is(err, ErrMegaNeedsMegatools) working for callers that
+// only need the sentinel.
+func (e *MegaNeedsToolsError) Is(target error) bool { return target == ErrMegaNeedsMegatools }
+
 // findMegatools locates the megatools binary. Package-level var so tests can
 // substitute a fake binary without a real megatools installation.
 var findMegatools = func() (string, error) {

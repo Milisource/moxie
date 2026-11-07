@@ -23,8 +23,5 @@ func (r *HostResolver) resolveMega(url string) (*ResolveResult, error) {
 		)
 	}
 	log.Debug("mega link delegating to megatools subprocess", "url", redactedURL(url))
-	return nil, fmt.Errorf(
-		"%w: megatools installed — the download flow will run 'megatools dl --path <dest> '%s'",
-		ErrMegaNeedsMegatools, url,
-	)
+	return nil, &MegaNeedsToolsError{URL: url}
 }

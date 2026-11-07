@@ -116,6 +116,17 @@ func DownloadWithContext(ctx context.Context, urlStr, host, destDir string, expe
 		// encrypted protocol is not plain HTTP, so resolveMega returns
 		// ErrMegaNeedsMegatools when the binary is installed. Delegate the
 		// whole transfer to 'megatools dl' instead of resolving to a URL.
+		// The typed error carries the resolved mega.nz URL: the input may be
+		// an F95Zone /dl/ page, which megatools cannot parse.
+		var megaErr *MegaNeedsToolsError
+		if errors.As(resolveErr, &megaErr) {
+			megaURL := megaErr.URL
+			if megaURL == "" {
+				megaURL = urlStr
+			}
+			log.Info("mega download delegating to megatools", "url", redactedURL(megaURL), "dest", destDir)
+			return runMegatoolsDownload(ctx, megaURL, destDir, expectedTotal, onProgress)
+		}
 		if errors.Is(resolveErr, ErrMegaNeedsMegatools) {
 			log.Info("mega download delegating to megatools", "url", redactedURL(urlStr), "dest", destDir)
 			return runMegatoolsDownload(ctx, urlStr, destDir, expectedTotal, onProgress)
