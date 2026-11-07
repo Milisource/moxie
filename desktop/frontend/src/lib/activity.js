@@ -11,6 +11,7 @@ const SHORT_LABEL = {
   queued: 'Queued',
   syncing: 'Syncing',
   'selecting-link': 'Finding link',
+  'selecting-file': 'Pick file',
   downloading: 'Downloading',
   extracting: 'Extracting',
   merging: 'Merging',
@@ -20,7 +21,7 @@ const SHORT_LABEL = {
 
 const ACTIVE_PHASES = new Set([
   'queued', 'syncing', 'selecting-link', 'downloading',
-  'extracting', 'merging', 'updating-db', 'installing',
+  'extracting', 'merging', 'updating-db', 'installing', 'selecting-file',
 ])
 
 function clampPercent(value) {
@@ -52,7 +53,11 @@ export function activityFor(gameId, gameState, installState) {
 
   const phase = gameState?.phase || 'idle'
   if (gameState?.phase === 'error') {
-    return {label: 'Failed', tone: 'error', percent: null, detail: gameState.error || 'Update failed'}
+    // A batch cancel or a handled failure is reported in the Updates view.
+    // Only the one error the user must act on — a host that needs a manual
+    // file — earns a permanent red mark in the library.
+    if (!gameState.manualRequired) return null
+    return {label: 'Needs file', tone: 'error', percent: null, detail: gameState.error || 'Provide the update file'}
   }
   if (!ACTIVE_PHASES.has(phase)) return null
 

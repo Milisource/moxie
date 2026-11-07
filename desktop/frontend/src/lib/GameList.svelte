@@ -98,6 +98,17 @@
   let selectedGames = $derived(games.filter(g => selectedIds.has(g.id)))
   let selectedCount = $derived(selectedGames.length)
 
+  // A filtered-away selection must never be bulk-removed or bulk-added
+  // invisibly. Any change to the query clears it; the user re-selects what
+  // they can actually see.
+  $effect(() => {
+    library.search
+    library.quickView
+    library.engine
+    library.status
+    selectedIds = new Set()
+  })
+
   function toggleSelectMode() {
     selectMode = !selectMode
     if (!selectMode) selectedIds = new Set()
@@ -138,6 +149,19 @@
   function endDrag() {
     dragGameId = null
   }
+
+  $effect(() => {
+    if (dragGameId === null) return
+    const clear = () => { dragGameId = null }
+    document.addEventListener('dragend', clear)
+    document.addEventListener('drop', clear)
+    window.addEventListener('blur', clear)
+    return () => {
+      document.removeEventListener('dragend', clear)
+      document.removeEventListener('drop', clear)
+      window.removeEventListener('blur', clear)
+    }
+  })
 
   async function dropOnCollection(collectionId) {
     const id = dragGameId
@@ -1113,13 +1137,22 @@
     {#if dragGameId !== null}
       <!-- Drop tray: only exists while a card is being dragged, so it never
            competes with the toolbar. -->
-      <div class="collection-tray" role="group" aria-label="Add dragged game to a collection">
+      <div
+        class="collection-tray"
+        role="group"
+        aria-label="Add dragged game to a collection"
+        ondragover={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
+        ondrop={(e) => {
+          e.preventDefault()
+          const chip = e.target.closest?.('[data-collection-id]')
+          if (chip) dropOnCollection(Number(chip.dataset.collectionId))
+        }}
+      >
         <span class="tray-label">Add to</span>
         {#each collections as c (c.id)}
           <button
             class="tray-chip"
-            ondragover={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
-            ondrop={(e) => { e.preventDefault(); dropOnCollection(c.id) }}
+            data-collection-id={c.id}
             onclick={() => dropOnCollection(c.id)}
           >{c.name}</button>
         {/each}
@@ -1155,7 +1188,7 @@
           class="bulk-btn bulk-btn-danger"
           disabled={selectedCount === 0 || bulkBusy}
           onclick={bulkRemove}
-        >Remove</button>
+        >Remove{selectedCount > 0 ? ` (${selectedCount})` : ''}</button>
         <button class="bulk-link" onclick={toggleSelectMode}>Done</button>
       </div>
     {/if}

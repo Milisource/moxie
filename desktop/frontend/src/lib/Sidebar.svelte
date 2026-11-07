@@ -1,18 +1,12 @@
 <script>
-  import {GetUpdatableCount, GetCollections} from '../../wailsjs/go/main/App'
+  import {GetCollections} from '../../wailsjs/go/main/App'
   import NavIcon from './NavIcon.svelte'
 
-  let {activeView = $bindable('library'), onNavigate, onShortcuts = () => {}, lastUpdate = 0} = $props()
+  let {activeView = $bindable('library'), onNavigate, onShortcuts = () => {}, lastUpdate = 0, updateCount = 0} = $props()
 
-  let updateCount = $state(null)      // null = not loaded, 0+ = loaded
   let collectionCount = $state(null)
 
   async function loadCount() {
-    try {
-      updateCount = await GetUpdatableCount()
-    } catch (e) {
-      updateCount = 0
-    }
     try {
       collectionCount = ((await GetCollections()) || []).length
     } catch (e) {

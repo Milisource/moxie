@@ -808,7 +808,10 @@
 
   onMount(() => {
     init()
-    try { couchMode = localStorage.getItem('moxie.couch') === '1' } catch (e) { /* ignore */ }
+    try {
+      couchMode = localStorage.getItem('moxie.couch') === '1'
+      if (couchMode) WindowFullscreen()
+    } catch (e) { /* ignore */ }
     window.addEventListener('keydown', handleGlobalKeydown)
     document.addEventListener('click', handleExternalLinkClick)
     // Live library refresh when the directory watcher finishes an auto-scan.
@@ -1010,7 +1013,7 @@
 
 <div class="shell" class:shell-couch={couchMode}>
   {#if !couchMode}
-    <Sidebar bind:activeView onShortcuts={() => shortcutsOpen = true} onNavigate={(id) => activeView = id} {lastUpdate}/>
+    <Sidebar bind:activeView onShortcuts={() => shortcutsOpen = true} onNavigate={(id) => activeView = id} {lastUpdate} updateCount={upstreamUpdateCount}/>
   {/if}
 
   <main class="main">

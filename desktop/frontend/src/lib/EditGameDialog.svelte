@@ -236,7 +236,7 @@
 <Dialog.Root open={editGameState.open} {onOpenChange}>
   <Dialog.Portal>
     <Dialog.Overlay class="dialog-overlay" />
-    <Dialog.Content class="dialog-content edit-dialog" style="max-width: 800px; height: 88vh; max-height: 88vh; padding: 0; overflow: hidden; display: flex; flex-direction: column;">
+    <Dialog.Content class="dialog-content edit-dialog" style="max-width: 800px; max-height: 88vh; padding: 0; overflow: hidden; display: flex; flex-direction: column; {form ? 'height: 88vh;' : ''}">
       <div class="edit-head">
         <Dialog.Title class="dialog-title">Edit Game</Dialog.Title>
       </div>
