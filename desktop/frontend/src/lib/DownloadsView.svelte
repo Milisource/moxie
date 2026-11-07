@@ -165,18 +165,18 @@
     <div class="stats-bar">
       <span class="stat-item">
         <span class="stat-value">{games.length}</span>
-        <span class="stat-label">games with links</span>
+        <span class="stat-label">{games.length === 1 ? 'game' : 'games'} with links</span>
       </span>
       <span class="stat-divider"></span>
       <span class="stat-item">
         <span class="stat-value">{totalLinks}</span>
-        <span class="stat-label">total links</span>
+        <span class="stat-label">total {totalLinks === 1 ? 'link' : 'links'}</span>
       </span>
       {#if deadLinks > 0}
         <span class="stat-divider"></span>
         <span class="stat-item stat-dead">
           <span class="stat-value">{deadLinks}</span>
-          <span class="stat-label">dead links</span>
+          <span class="stat-label">{deadLinks === 1 ? 'dead link' : 'dead links'}</span>
         </span>
       {/if}
     </div>
@@ -227,7 +227,7 @@
             onclick={() => toggleGame(game.id)}
           >
             <span class="game-expand-icon">{downloads.expanded.has(game.id) ? '▾' : '▸'}</span>
-            <span class="game-title">{game.title}</span>
+            <span class="game-title">{game.title || 'Untitled game'}</span>
             <span class="game-link-count">{linkCount} link{linkCount !== 1 ? 's' : ''}</span>
             {#if deadCount > 0}
               <span class="dead-badge">{deadCount} dead</span>

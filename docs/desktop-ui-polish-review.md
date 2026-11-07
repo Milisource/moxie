@@ -3,7 +3,7 @@
 **Date:** 2026-11-07 · **Scope:** desktop frontend (`desktop/frontend`), current `dev` redesign
 **Screenshots:** [`screenshots/polish-2026-11/`](screenshots/polish-2026-11/)
 **Prototype:** [`design/moxie-polish.figcraft`](../design/moxie-polish.figcraft) · [`design/renders/00-contact-sheet.png`](../design/renders/00-contact-sheet.png) · [`design/moxie-polish.pdf`](../design/moxie-polish.pdf) — nine screens implementing the P0/P1 direction.
-**Implementation status:** P0-1–P0-4 are in `desktop/frontend`: library header + count/sync, 11px caption tokens, neutral engine tags with aligned dots, one-row toolbar with View/Filters popovers; Covers with coverage + missing grid + sources; Sync with status/plan; Add game with detected preview; Settings with section nav and a two-column form at ≥1280px. Implemented-state captures: `screenshots/polish-2026-11/impl/`.
+**Implementation status:** P0-1–P0-4 are in `desktop/frontend`: library header + count/sync, 11px caption tokens, neutral engine tags with aligned dots, one-row toolbar with View/Filters popovers; Covers with coverage + missing grid + sources; Sync with status/plan; Add game with detected preview; Settings with section nav and a two-column form at ≥1280px. The P1 pass adds the detail play bar (update controls in its secondary slot), Trash hierarchy, a sticky Edit dialog footer, sidebar line icons with pinned Settings, a clear-search action, and pluralized download stats. Implemented-state captures: `screenshots/polish-2026-11/impl/`.
 **Companion:** the original research and pre-redesign audit live in [`desktop-ui-research.md`](desktop-ui-research.md). This document reviews the *current* build and benchmarks it against 2026 launchers.
 
 ---

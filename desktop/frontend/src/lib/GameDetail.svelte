@@ -847,8 +847,60 @@
           </div>
         {/if}
 
-        <!-- Action Buttons -->
-        <div class="action-section">
+        <!-- Management: secondary actions under the cover -->
+        <div class="manage-section">
+          {#if detail.f95Url}
+            <button class="btn" onclick={handleSync} disabled={syncing}>
+              {syncing ? 'Syncing…' : 'Sync from F95Zone'}
+            </button>
+          {/if}
+          <button class="btn" onclick={handleEdit}>Edit</button>
+          <button class="btn" onclick={handleRenameStart}>Rename</button>
+          <button class="btn btn-danger" onclick={handleRemove}>Remove Game</button>
+        </div>      </aside>
+
+      <div class="detail-main">
+        {#if editError}
+          <div class="edit-notice">
+            <span class="edit-notice-icon">✕</span>
+            <span>{editError}</span>
+          </div>
+        {/if}
+
+        <!-- Title + Badges -->
+        <div class="title-section">
+          <div class="title-main">
+            {#if showRenameInput}
+              <!-- svelte-ignore a11y_autofocus -->
+              <input
+                class="rename-input"
+                type="text"
+                bind:value={renameTitle}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') handleRenameSave()
+                  if (e.key === 'Escape') showRenameInput = false
+                }}
+                autofocus
+              />
+              <button class="btn btn-sm btn-primary" onclick={handleRenameSave}>Save</button>
+              <button class="btn btn-sm" onclick={() => showRenameInput = false}>Cancel</button>
+            {:else}
+              <h1>{detail.title}</h1>
+
+            {/if}
+          </div>
+          <div class="badges">
+            {#if detail.engine}
+              <span class="engine-badge" style="--ec: {engineColor(detail.engine)}">
+                <span class="engine-dot" aria-hidden="true"></span>{detail.engine}
+              </span>
+            {/if}
+            <span class="status-badge status-{detail.status || 'unknown'}">{statusLabel(detail.status)}</span>
+          </div>
+        </div>
+
+        <!-- Play bar: the one primary action, directly under the title -->
+        <div class="play-bar">
           {#if launchStatus.msg}
             <div class="launch-notice launch-ok">{launchStatus.msg}</div>
           {/if}
@@ -903,44 +955,8 @@
           {:else}
             <button class="btn btn-primary btn-play" onclick={handlePlay}>▶︎ Play</button>
           {/if}
-          {#if detail.f95Url}
-            <button class="btn" onclick={handleSync} disabled={syncing}>
-              {syncing ? 'Syncing…' : 'Sync from F95Zone'}
-            </button>
-          {/if}
-          <button class="btn" onclick={handleEdit}>Edit</button>
-          <button class="btn" onclick={handleRenameStart}>Rename</button>
-          <button class="btn btn-danger" onclick={handleRemove}>Remove Game</button>
-        </div>
-      </aside>
 
-      <div class="detail-main">
-        {#if editError}
-          <div class="edit-notice">
-            <span class="edit-notice-icon">✕</span>
-            <span>{editError}</span>
-          </div>
-        {/if}
-
-        <!-- Title + Badges -->
-        <div class="title-section">
-          <div class="title-main">
-            {#if showRenameInput}
-              <!-- svelte-ignore a11y_autofocus -->
-              <input
-                class="rename-input"
-                type="text"
-                bind:value={renameTitle}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter') handleRenameSave()
-                  if (e.key === 'Escape') showRenameInput = false
-                }}
-                autofocus
-              />
-              <button class="btn btn-sm btn-primary" onclick={handleRenameSave}>Save</button>
-              <button class="btn btn-sm" onclick={() => showRenameInput = false}>Cancel</button>
-            {:else}
-              <h1>{detail.title}</h1>
+          <div class="play-bar-updates">
               {#if detail.updateState === 'available' || detail.updateState === 'unknown' || updateError || manualRequired}
                 {#if detail.updateState === 'unknown'}
                   <span class="update-badge update-badge-unknown" title="Installed version unknown; latest is {detail.latestVersion}">Installed: unknown</span>
@@ -992,15 +1008,6 @@
                   </div>
                 {/if}
               {/if}
-            {/if}
-          </div>
-          <div class="badges">
-            {#if detail.engine}
-              <span class="engine-badge" style="--ec: {engineColor(detail.engine)}">
-                <span class="engine-dot" aria-hidden="true"></span>{detail.engine}
-              </span>
-            {/if}
-            <span class="status-badge status-{detail.status || 'unknown'}">{statusLabel(detail.status)}</span>
           </div>
         </div>
 
@@ -2367,15 +2374,40 @@
     margin-left: auto;
   }
 
-  /* ── Action Section ────────────────────────── */
-  /* Actions stack under the cover; Play is the full-width primary. */
-  .action-section {
+  /* ── Play bar + management ─────────────────── */
+  /* Play is the one primary action and sits directly under the title; the
+     management verbs stay under the cover, visually secondary. */
+  .play-bar {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    margin-bottom: 24px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+  }
+  .play-bar .btn-play {
+    width: 100%;
+    justify-content: center;
+    padding-block: 12px;
+    font-size: var(--text-lg);
+  }
+  .play-bar-updates {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .play-bar-updates:empty { display: none; }
+  .manage-section {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
     align-items: stretch;
   }
-  .action-section > .btn { width: 100%; justify-content: center; }
+  .manage-section > .btn { width: 100%; justify-content: center; }
 
   .btn-play {
     padding-block: 10px;

@@ -1091,13 +1091,25 @@
             <DedupDialog onDedupDone={refreshGames}/>
           {:else if activeView === 'trash'}
             <div class="trash-view">
-              <h2>Trash</h2>
-              {#if deletedGames.length === 0}
-                <p class="text-muted">No deleted games.</p>
-              {:else}
-                <div class="trash-actions">
-                  <button class="btn btn-danger" onclick={handlePurge}>Purge All ({deletedGames.length})</button>
+              <div class="trash-header">
+                <div>
+                  <h2>Trash</h2>
+                  <p class="trash-sub">
+                    {deletedGames.length} game{deletedGames.length === 1 ? '' : 's'} · deleted games keep saves and metadata until purged.
+                  </p>
                 </div>
+                {#if deletedGames.length > 0}
+                  <button class="btn btn-sm btn-danger-ghost" onclick={handlePurge}>
+                    Empty trash ({deletedGames.length})
+                  </button>
+                {/if}
+              </div>
+              {#if deletedGames.length === 0}
+                <div class="trash-empty">
+                  <p class="trash-empty-title">Trash is empty</p>
+                  <p class="trash-empty-hint">Games you remove appear here before they are purged.</p>
+                </div>
+              {:else}
                 <div class="table-header">
                   <span>Title</span><span>Engine</span><span>Actions</span>
                 </div>
@@ -1106,7 +1118,7 @@
                     <span>{game.title}</span>
                     <span>{game.engine || '—'}</span>
                     <span>
-                      <button class="btn btn-sm" onclick={() => handleRestore(game.id)}>Restore</button>
+                      <button class="btn btn-sm btn-primary" onclick={() => handleRestore(game.id)}>Restore</button>
                     </span>
                   </div>
                 {/each}
@@ -1208,9 +1220,13 @@
     margin: 0;
   }
 
-  .trash-view { flex: 1; overflow: auto; padding: var(--space-8) var(--gutter); width: 100%; }
-  .trash-view h2 { font-size: var(--text-3xl); font-weight: 600; line-height: 1.15; letter-spacing: -0.01em; margin: 0 0 16px; }
-  .trash-actions { margin-bottom: 16px; }
+  .trash-view { flex: 1; overflow: auto; padding: var(--space-7) var(--gutter); width: 100%; }
+  .trash-view h2 { font-size: var(--text-3xl); font-weight: 600; line-height: 1.15; letter-spacing: -0.01em; margin: 0; }
+  .trash-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+  .trash-sub { margin: 4px 0 0; font-size: var(--text-sm); color: var(--text-muted); }
+  .trash-empty { padding: 42px 24px; border: 1px dashed var(--rule-strong); text-align: center; }
+  .trash-empty-title { margin: 0; font-size: var(--text-lg); font-weight: 600; color: var(--text-secondary); }
+  .trash-empty-hint { margin: 4px 0 0; font-size: var(--text-sm); color: var(--text-muted); }
   .trash-view .table-header {
     display: grid;
     grid-template-columns: 1fr 110px 100px;
@@ -1236,7 +1252,11 @@
   .trash-view .table-row:hover { background: var(--bg-hover); }
   .btn-sm { padding: 4px 10px; font-size: var(--text-sm); cursor: pointer; border: 1px solid var(--border); border-radius: var(--radius-1); background: transparent; color: var(--text-primary); }
   .btn-sm:hover { background: var(--bg-hover); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .btn-primary:hover { background: var(--accent-hover); }
   .btn-danger { background: var(--danger); color: #fff; border: none; padding: 7px 16px; border-radius: var(--radius-1); font-size: var(--text-base); cursor: pointer; }
   .btn-danger:hover { opacity: 0.9; }
+  .btn-danger-ghost { background: transparent; color: var(--danger); border-color: var(--danger); }
+  .btn-danger-ghost:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
   .text-muted { color: var(--text-muted); font-size: var(--text-md); }
 </style>

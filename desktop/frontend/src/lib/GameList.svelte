@@ -60,6 +60,15 @@
     library.status = ''
   }
 
+  function clearAllFilters() {
+    library.search = ''
+    library.engine = 'All'
+    library.status = ''
+    library.quickView = 'all'
+    doSearch('')
+    searchInputEl?.focus()
+  }
+
   // ── Play-state model (P0-3) ─────────────────────────────────
   // The library renders a play affordance per card/row that switches state
   // while a launch is happening/most recent — Steam's play-bar pattern. We
@@ -756,6 +765,9 @@
       <div class="empty small">
         <p class="empty-title">{emptyTitle}</p>
         <p class="empty-desc">{emptyHint}</p>
+        {#if hasActiveFilter}
+          <button class="empty-clear" onclick={clearAllFilters}>Clear search and filters</button>
+        {/if}
       </div>
     {:else if library.viewMode === 'grid'}
       <!-- ── Cover grid (default library presentation, P0-1) ── -->
@@ -933,6 +945,18 @@
   .empty-icon { font-size: var(--text-4xl); opacity: 0.5; }
   .empty-title { font-size: var(--text-lg); font-weight: 600; color: var(--text-secondary); }
   .empty-desc { font-size: var(--text-base); }
+  .empty-clear {
+    margin-top: 4px;
+    padding: 6px 12px;
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius-1);
+    background: transparent;
+    color: var(--accent);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .empty-clear:hover { background: var(--bg-hover); }
 
   /* ── Page header ────────────────────────────────────── */
   .view-header {

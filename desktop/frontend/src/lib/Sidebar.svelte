@@ -1,5 +1,6 @@
 <script>
   import {GetUpdatableCount, GetCollections} from '../../wailsjs/go/main/App'
+  import NavIcon from './NavIcon.svelte'
 
   let {version = '', activeView = $bindable('library'), onNavigate, lastUpdate = 0} = $props()
 
@@ -29,30 +30,27 @@
   // user lives in day-to-day. Everything else is either a regular daily
   // action (still always visible) or an occasional management action
   // (demoted, collapsed behind a disclosure toggle by default).
-  // Icons used to live here (a mix of emoji and Unicode symbols that never
-  // rendered consistently across platforms/fonts). Nav rows are text-only —
-  // hover/active background is the affordance instead (docs/desktop-ui-
-  // research.md §7, icon-consistency cleanup).
+  // One consistent line-icon set (NavIcon.svelte) replaces the old mix of
+  // emoji and Unicode symbols; the archive type treatment stays.
   const primaryItems = [
-    {id: 'library', label: 'Library'},
-    {id: 'browser', label: 'Browse'},
+    {id: 'library', label: 'Library', icon: 'library'},
+    {id: 'browser', label: 'Browse', icon: 'browse'},
   ]
 
   let regularItems = $derived.by(() => [
-    {id: 'add', label: 'Add Game'},
-    {id: 'updates', label: 'Updates', badge: updateCount},
-    {id: 'downloads', label: 'Downloads'},
-    {id: 'collections', label: 'Collections', badge: collectionCount},
-    {id: 'saves', label: 'Saves'},
+    {id: 'add', label: 'Add Game', icon: 'add'},
+    {id: 'updates', label: 'Updates', icon: 'updates', badge: updateCount},
+    {id: 'downloads', label: 'Downloads', icon: 'downloads'},
+    {id: 'collections', label: 'Collections', icon: 'collections', badge: collectionCount},
+    {id: 'saves', label: 'Saves', icon: 'saves'},
   ])
 
   const manageItems = [
-    {id: 'scan', label: 'Scan'},
-    {id: 'sync', label: 'Sync'},
-    {id: 'covers', label: 'Covers'},
-    {id: 'duplicates', label: 'Duplicates'},
-    {id: 'trash', label: 'Trash'},
-    {id: 'settings', label: 'Settings'},
+    {id: 'scan', label: 'Scan', icon: 'scan'},
+    {id: 'sync', label: 'Sync', icon: 'sync'},
+    {id: 'covers', label: 'Covers', icon: 'covers'},
+    {id: 'duplicates', label: 'Duplicates', icon: 'duplicates'},
+    {id: 'trash', label: 'Trash', icon: 'trash'},
   ]
 
   const MANAGE_STORAGE_KEY = 'sidebar-manage-expanded'
@@ -83,6 +81,7 @@
         class:active={activeView === item.id}
         onclick={() => onNavigate?.(item.id)}
       >
+        <span class="nav-icon"><NavIcon name={item.icon} /></span>
         <span class="nav-label">{item.label}</span>
       </button>
     {/each}
@@ -95,6 +94,7 @@
         class:active={activeView === item.id}
         onclick={() => onNavigate?.(item.id)}
       >
+        <span class="nav-icon"><NavIcon name={item.icon} /></span>
         <span class="nav-label">{item.label}</span>
         {#if item.badge !== null && item.badge !== undefined && item.badge > 0}
           <span class="nav-badge">{item.badge}</span>
@@ -114,6 +114,7 @@
           class:active={activeView === item.id}
           onclick={() => onNavigate?.(item.id)}
         >
+          <span class="nav-icon"><NavIcon name={item.icon} /></span>
           <span class="nav-label">{item.label}</span>
         </button>
       {/each}
@@ -121,6 +122,14 @@
   </nav>
 
   <div class="sidebar-footer">
+    <button
+      class="nav-item nav-settings"
+      class:active={activeView === 'settings'}
+      onclick={() => onNavigate?.('settings')}
+    >
+      <span class="nav-icon"><NavIcon name="settings" /></span>
+      <span class="nav-label">Settings</span>
+    </button>
     {#if version}
       <span class="version">v{version}</span>
     {/if}
@@ -256,6 +265,17 @@
   }
   .nav-manage-chevron.expanded { transform: rotate(90deg); }
 
+  .nav-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    color: var(--text-muted);
+  }
+  .nav-item:hover .nav-icon { color: var(--text-secondary); }
+  .nav-item.active .nav-icon { color: var(--accent); }
   .nav-label { font-weight: inherit; }
 
   .nav-badge {
@@ -273,10 +293,23 @@
   }
 
   .sidebar-footer {
-    padding: 12px 20px;
+    margin-top: auto;
+    padding: 4px 0 12px;
     border-top: 1px solid var(--border);
   }
+  .nav-settings {
+    width: 100%;
+    border-bottom: none;
+    padding: 9px 20px;
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--text-secondary);
+  }
   .version {
+    display: block;
+    padding: 6px 20px 0;
     font-size: var(--text-xs);
     color: var(--text-muted);
     font-family: var(--font-mono);

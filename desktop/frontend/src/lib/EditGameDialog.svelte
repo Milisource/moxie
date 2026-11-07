@@ -604,9 +604,16 @@
   }
 
   .edit-actions {
+    position: sticky;
+    bottom: -20px;
+    z-index: 1;
     display: flex;
     justify-content: flex-end;
     gap: 8px;
+    margin: 20px -20px -20px;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-secondary);
   }
   .btn {
     padding: 7px 16px;
