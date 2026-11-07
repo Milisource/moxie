@@ -79,12 +79,19 @@ loop instead of retrying every host and reporting a captcha.
 `updater.Merge` never edits the live game in place:
 
 1. New files are assembled in a staging directory.
-2. The live directory is renamed aside, and a fresh directory is populated
-   from staging (the tree is copied, not renamed, so the staging cleanup that
-   follows cannot delete the live install).
+2. The live directory is renamed aside, and the staged root is moved into
+   place with a single rename when it is on the same filesystem (a cross-device
+   rename falls back to a file-by-file copy). Update payloads are dominated by
+   file data, so the rename turns a multi-GB copy into metadata work.
 3. Engine-specific user files (saves, `Game.ini`, `options.rpy`, mods, …) are
-   copied from the backup over the staged defaults.
-4. Any failure rolls the previous directory back into place.
+   copied from the backup over the new tree.
+4. Any failure rolls the previous directory back into place; an adopted tree
+   is discarded and the update re-downloaded.
+
+A staging root is only adopted when it is disjoint from the live install and
+contains nothing the copy path would sanitise (escaping symlinks, special
+files). A flat archive that extracts into the shared downloads directory keeps
+using the copy path.
 
 Merge failures are now surfaced as errors instead of warnings, and the
 downloaded archive is kept for a retry.
@@ -106,9 +113,16 @@ moxie auto-update --check-only     # only report
 moxie auto-update --no-check       # act on updates already detected
 moxie auto-update --dry-run        # show what would happen
 moxie auto-update --max 3          # cap this run
+moxie auto-update --concurrency 4  # games in flight at once (1-4)
 moxie sync --auto                  # check, then update immediately
 moxie check-updates --auto
 ```
+
+Games run in parallel up to the `update-concurrency` config key (default 2,
+clamped to 1-4), matching the desktop's batch. `--concurrency` overrides it for
+one run. Parallel runs suppress the `\r` progress bar so per-game pipeline
+lines do not interleave with frames; `--concurrency 1` keeps the single-game
+output.
 
 Unattended mode is opt-in:
 
@@ -163,9 +177,13 @@ with fresh cookies) retries it.
 | Left | Right | Result | Queued? |
 |---|---|---|---|
 | `1.10` | `1.9` | Newer (numeric) | yes |
-| `1.0.0` | `1` | Same | no |
+| `1.0.0` | `1` | Same (missing segment counts as zero) | no |
+| `1.13` | `1.13.0` | Same | no |
+| `0.8.1` | `0.8` | Newer (added segment) | yes |
+| `0.8` | `0.8.1` | Older | no |
 | `0.9.5a` | `0.9.5b` | Newer (build letter) | yes |
 | `Ch. 2` | `Ch. 1` | Newer | yes |
+| `Ch.4 Free` | `0.12.0` | Changed (chapter vs numeric) | yes, manual only |
 | `2026-10-01` | `2026-09-20` | Newer (ISO date) | yes |
 | `1.1` | `1.2` | Older | no |
 | `2026-10-01` | `1.0` | Changed (unorderable) | yes, manual only |
@@ -194,8 +212,9 @@ working install.
 - A browser is required for challenge-graded downloads. Without one, moxie
   reports the gate; it never attempts to solve it.
 - MEGA links require `megatools` (the downloader reports this explicitly).
-- Backups are kept: `<gameDir>.old` and timestamped `.old` siblings can be
-  deleted once an update proves stable.
-- The atomic swap requires the staging directory on the same filesystem as the
+- Backups are kept: `<gameDir>.old` siblings can be deleted once an update
+  proves stable with `moxie cleanup --backups` (add `--older-than` to keep
+  recent ones); `moxie cleanup --archives` prunes leftover downloads.
+- The fast path requires the staging directory on the same filesystem as the
   game (it is a sibling, so this holds unless the game directory is a mount
-  point).
+  point); a cross-device staging directory falls back to copying.

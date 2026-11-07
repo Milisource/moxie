@@ -240,7 +240,7 @@ STEAM
   steam fix-artwork <id>      Re-download Steam artwork
 
 ADMIN
-  cleanup [flags]             Detect and fix wrong F95Zone thread associations
+  cleanup [flags]             Fix F95Zone associations, or prune .old/archives
   config <set|get|show>       Manage configuration settings
   update                      Check for and install moxie updates
 
@@ -276,6 +276,7 @@ COMMON FLAGS
     --no-check                Skip the check; act on updates already in the DB
     --dry-run                 Show what would be updated
     --max <n>                 Update at most n games this run
+    --concurrency <n>         Games to update at once, 1-4 (default: config or 2)
     --no-extract              Download only; do not extract/merge
     --force                   Ignore the 24h cooldown and the retry backoff
     --platform <p>            linux, windows or macos (default: auto)
@@ -283,6 +284,13 @@ COMMON FLAGS
   config keys for unattended updates:
     auto_update               true to update after sync/check-updates/scan --sync
     auto_update_max           cap the number of games per automatic run
+    update-concurrency        games updated in parallel (1-4, default 2)
+
+  cleanup:
+    --backups                 Remove <gameDir>.old backup trees left by updates
+    --archives                Remove leftover archives in each game's downloads dir
+    --older-than <duration>   Only prune entries older than this (default 168h)
+    --dry-run                 Show what would be removed without deleting
 
   scrape:
     --cookie <str>            Cookie header from browser DevTools
