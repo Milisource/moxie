@@ -210,7 +210,7 @@
     gap: 24px;
   }
   .covers-heading { min-width: 0; }
-  .covers-header h2 { margin: 0 0 6px; font-size: var(--text-2xl); font-weight: 600; }
+  .covers-header h2 { margin: 0 0 6px; font-size: var(--text-3xl); font-weight: 600; line-height: 1.15; letter-spacing: -0.01em; }
   .covers-subtitle {
     margin: 0;
     max-width: 66ch;

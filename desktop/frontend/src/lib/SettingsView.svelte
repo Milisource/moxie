@@ -371,7 +371,7 @@
   }
 
   .settings-header { margin-bottom: 20px; }
-  .settings-header h2 { font-size: var(--text-2xl); font-weight: 700; margin: 0 0 4px; }
+  .settings-header h2 { font-size: var(--text-3xl); font-weight: 600; line-height: 1.15; letter-spacing: -0.01em; margin: 0 0 4px; }
   .settings-subtitle { font-size: var(--text-base); color: var(--text-secondary); margin: 0; }
 
   .settings-section {
