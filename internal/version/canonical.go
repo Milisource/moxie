@@ -24,7 +24,11 @@ type Version struct {
 }
 
 var (
-	trackReC = regexp.MustCompile(`(?i)(season|chapter|episode|ch|ep|s|e)\.?\s*(\d+)`)
+	// trackReC matches a season/chapter/episode prefix and its number. The
+	// leading \b matters: matching inside a word turned "patch 4.1" into
+	// chapter 4 and "update 27fix2" into episode 27, which made unrelated
+	// versions unorderable and hid real updates.
+	trackReC = regexp.MustCompile(`(?i)\b(season|chapter|episode|ch|ep|s|e)\.?\s*(\d+)`)
 )
 
 func isNoiseToken(tok string) bool {
@@ -172,6 +176,12 @@ func Parse(raw string) Version {
 				continue
 			}
 		}
+	}
+	// A version that is only a chapter/season/episode number stays
+	// incomparable with plain numeric versions ("Ch.4 Free" must never beat
+	// "0.12.0"); chapter forms still order among themselves.
+	if len(v.Track) > 0 && len(v.Core) == 0 && v.Kind == "numeric" {
+		v.Kind = "chapter"
 	}
 	if strings.Contains(low, "final") || strings.Contains(low, "complete") {
 		v.Kind = "final"

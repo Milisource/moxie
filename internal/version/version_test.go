@@ -66,6 +66,10 @@ func TestCompare(t *testing.T) {
 		{"chapter bump", "Ch.5 Free", "Ch.4 Free", Newer},
 		{"reached final", "Final", "0.9", Newer},
 		{"newer date", "2019-01-02", "2018-07-18", Newer},
+		// "patch" contains "ch" and "update 27fix2" contains "e 27"; neither
+		// is a chapter marker. The word boundary keeps them numeric.
+		{"word containing chapter prefix", "patch 4.1 pre", "2.6.2", Newer},
+		{"update with fix marker", "p2 update 27fix2", "P2", Newer},
 
 		// Regressions — the case the old equality check reported as updates.
 		{"older minor", "0.8", "0.9", Older},

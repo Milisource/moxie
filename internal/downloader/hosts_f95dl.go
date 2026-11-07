@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strconv"
 	"strings"
@@ -53,6 +54,9 @@ var (
 	ErrF95Challenge = errors.New("F95Zone Cloudflare challenge")
 	// ErrF95LoginRequired: the session is logged out. Session-level.
 	ErrF95LoginRequired = errors.New("F95Zone session expired — log in to f95zone.to in your browser")
+	// ErrF95CookiesRequired: XenForo refused the request because the session
+	// cookies it issued for the check page were not sent back. Session-level.
+	ErrF95CookiesRequired = errors.New("F95Zone rejected the request (cookies are required) — reload f95zone.to in your browser and retry")
 	// ErrF95LinkGone: the link expired or no longer exists in the post — a
 	// fresh scrape of the thread yields a working one. Link-level.
 	ErrF95LinkGone = errors.New("F95Zone download link expired or removed")
@@ -91,7 +95,8 @@ func IsF95StaleLinkError(err error) bool {
 // trying the next mirror would hit the same wall, so callers should stop and
 // surface it (or refresh the session) instead of walking every link.
 func IsF95SessionError(err error) bool {
-	return errors.Is(err, ErrF95Challenge) || errors.Is(err, ErrF95LoginRequired)
+	return errors.Is(err, ErrF95Challenge) || errors.Is(err, ErrF95LoginRequired) ||
+		errors.Is(err, ErrF95CookiesRequired)
 }
 
 // F95 session hooks, wired by internal/f95session at startup and left nil
@@ -223,13 +228,21 @@ func (r *HostResolver) solveF95DownloadLink(ctx context.Context, dlURL string) (
 // f95Client is an HTTP client for F95Zone pages that stops at the first
 // redirect leaving F95Zone (the destination) instead of following it with
 // the session cookie.
+//
+// The client carries a cookie jar because the check page answers with
+// `Set-Cookie: xf_csrf=…` and its POST is rejected (HTTP 400, "Cookies are
+// required to use this site") unless that cookie comes back. A static
+// Cookie header alone is not enough: XenForo binds the form token to the
+// cookie it just issued.
 func (r *HostResolver) f95Client() *http.Client {
 	var transport http.RoundTripper
 	if r.client != nil {
 		transport = r.client.Transport
 	}
+	jar, _ := cookiejar.New(nil)
 	return &http.Client{
 		Transport: transport,
+		Jar:       jar,
 		Timeout:   30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
@@ -315,6 +328,9 @@ func (r *HostResolver) doF95(client *http.Client, req *http.Request) (*f95Page, 
 	}
 	if doc.Find(`form[action*="login"] input[name="login"]`).Length() > 0 || strings.Contains(strings.ToLower(page.snippet), "you must be logged-in") {
 		return nil, ErrF95LoginRequired
+	}
+	if strings.Contains(strings.ToLower(page.snippet), "cookies are required") {
+		return nil, fmt.Errorf("%w (HTTP %d)", ErrF95CookiesRequired, resp.StatusCode)
 	}
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone || isDeadLinkMessage(page.snippet) {
 		return nil, fmt.Errorf("%w: %s", ErrF95LinkGone, page.snippet)

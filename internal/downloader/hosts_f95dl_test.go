@@ -55,6 +55,13 @@ const f95dlExpiredPage = `<!DOCTYPE html>
 
 const cfChallengePage = `<!DOCTYPE html><html lang="en-US"><head><title>Just a moment...</title></head><body>Performing security verification</body></html>`
 
+// f95dlCookiesRequiredPage is XenForo's answer when the POST drops the
+// session cookies the check page issued.
+const f95dlCookiesRequiredPage = `<!DOCTYPE html><html id="XF" data-template="message_page"><head><title>F95zone</title></head><body>
+<div class="p-body-pageContent">
+	<div class="blockMessage">Cookies are required to use this site. You must accept them to continue using the site.</div>
+</div></body></html>`
+
 // encodeF95DLCode is the server side of decodeF95DLCode.
 func encodeF95DLCode(code string) string {
 	r := []rune(code)
@@ -83,6 +90,10 @@ type fakeF95 struct {
 	challengeUnless string
 	// getStatus overrides the GET response.
 	getBody string
+	// emitCsrf makes the GET answer with the xf_csrf cookie XenForo issues
+	// for the check form; requireCsrf rejects a POST that does not return it.
+	emitCsrf    bool
+	requireCsrf bool
 }
 
 func (f *fakeF95) handler(w http.ResponseWriter, r *http.Request) {
@@ -103,12 +114,20 @@ func (f *fakeF95) handler(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, f.getBody)
 			return
 		}
+		if f.emitCsrf {
+			http.SetCookie(w, &http.Cookie{Name: "xf_csrf", Value: "csrf-token", Path: "/"})
+		}
 		f.mu.Lock()
 		f.servedAt = time.Now()
 		f.mu.Unlock()
 		fmt.Fprintf(w, f95dlCheckPage, encodeF95DLCode(f.code), time.Now().Unix(), f.extra)
 	case http.MethodPost:
 		f.posts.Add(1)
+		if f.requireCsrf && !strings.Contains(r.Header.Get("Cookie"), "xf_csrf=csrf-token") {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, f95dlCookiesRequiredPage)
+			return
+		}
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "bad form", http.StatusBadRequest)
 			return
@@ -170,6 +189,39 @@ func TestF95DL_NativeSolveReachesHost(t *testing.T) {
 	}
 	if fake.gets.Load() != 1 || fake.posts.Load() != 1 {
 		t.Errorf("requests: %d GET / %d POST, want 1 / 1", fake.gets.Load(), fake.posts.Load())
+	}
+}
+
+// The check page answers with xf_csrf; XenForo rejects the POST with HTTP 400
+// "Cookies are required" unless that cookie is sent back. A static Cookie
+// header cannot carry it — the solver must keep the response cookies.
+func TestF95DL_PostsCookiesIssuedByCheckPage(t *testing.T) {
+	shortCodeDelay(t, 20*time.Millisecond)
+	fake := &fakeF95{t: t, code: "x.y", dest: "https://gofile.io/d/abc", emitCsrf: true, requireCsrf: true}
+	r := newF95Resolver(t, fake)
+
+	got, err := r.resolveF95DownloadLink(context.Background(), testDL)
+	if err != nil {
+		t.Fatalf("resolveF95DownloadLink: %v", err)
+	}
+	if got != fake.dest {
+		t.Errorf("destination = %q, want %q", got, fake.dest)
+	}
+}
+
+// A session that still loses its cookies is a session-level failure: the
+// mirror loop must stop instead of trying every link and blaming a captcha.
+func TestF95DL_CookiesRequiredIsSessionError(t *testing.T) {
+	shortCodeDelay(t, 20*time.Millisecond)
+	fake := &fakeF95{t: t, code: "x.y", dest: "https://gofile.io/d/abc", requireCsrf: true}
+	r := newF95Resolver(t, fake)
+
+	_, err := r.resolveF95DownloadLink(context.Background(), testDL)
+	if !errors.Is(err, ErrF95CookiesRequired) {
+		t.Fatalf("error = %v, want ErrF95CookiesRequired", err)
+	}
+	if !IsF95SessionError(err) {
+		t.Error("IsF95SessionError = false, want true so callers stop the mirror loop")
 	}
 }
 
