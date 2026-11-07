@@ -115,9 +115,12 @@ func throttleAllowed() bool { return os.Getenv("MOXIE_ALLOW_THROTTLED") == "1" }
 // falls through to the next link. Probe failures are non-fatal: an unknown
 // state must not block a download.
 func (r *HostResolver) checkHostThrottle(ctx context.Context, host, resolvedURL string) error {
-	label := normalizeHostLabel(host)
+	// The probe cares about where the bytes come from, so the resolved URL
+	// wins over the caller's label: mirrors are reached through an F95Zone
+	// /dl/ page, whose host is not the download host.
+	label := normalizeHostLabel(IdentifyHostInURL(resolvedURL))
 	if label == "" {
-		label = normalizeHostLabel(IdentifyHostInURL(resolvedURL))
+		label = normalizeHostLabel(host)
 	}
 	switch label {
 	case "pixeldrain":

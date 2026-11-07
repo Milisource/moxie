@@ -196,3 +196,21 @@ func TestHostThrottle_Expiry(t *testing.T) {
 		t.Fatal("host throttle must expire")
 	}
 }
+
+// Mirrors are reached through an F95Zone /dl/ page, so the caller's host label
+// is the F95 host. The probe must use the resolved destination instead, or a
+// capped pixeldrain mirror is never detected (observed live: two 12.4 GB
+// updates ground at 1 MiB/s with the probe silently skipping them).
+func TestCheckHostThrottle_UsesResolvedHostNotCallerLabel(t *testing.T) {
+	stubPixeldrainInfo(t, http.StatusOK, `{"download_speed_limit":1048576}`)
+	ClearHostThrottle("pixeldrain")
+	t.Cleanup(func() { ClearHostThrottle("pixeldrain") })
+
+	err := NewHostResolver().checkHostThrottle(context.Background(), "f95zone", pixeldrainTestURL)
+	if !errors.Is(err, ErrHostThrottled) {
+		t.Fatalf("checkHostThrottle err = %v, want ErrHostThrottled", err)
+	}
+	if !HostThrottled("pixeldrain") {
+		t.Fatal("expected pixeldrain to be marked throttled")
+	}
+}

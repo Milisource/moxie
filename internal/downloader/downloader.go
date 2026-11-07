@@ -165,9 +165,10 @@ func DownloadWithContext(ctx context.Context, urlStr, host, destDir string, expe
 	}
 	// A capped host can start throttling mid-transfer. Give the download loop
 	// a probe for hosts whose cap is observable, so it aborts into the link
-	// fallback instead of finishing a multi-hour capped transfer.
+	// fallback instead of finishing a multi-hour capped transfer. The resolved
+	// URL identifies the host: the input may be an F95Zone /dl/ page.
 	var throttleProbe func(context.Context) (*ThrottledError, bool)
-	if normalizeHostLabel(host) == "pixeldrain" && !IsBrowserFileURL(resolved.URL) {
+	if normalizeHostLabel(IdentifyHostInURL(resolved.URL)) == "pixeldrain" && !IsBrowserFileURL(resolved.URL) {
 		throttleProbe = func(pctx context.Context) (*ThrottledError, bool) {
 			limit, limited, err := resolver.probePixeldrainLimit(pctx, resolved.URL)
 			if err != nil || !limited {
