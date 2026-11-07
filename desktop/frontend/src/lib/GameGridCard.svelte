@@ -90,7 +90,9 @@
 
   <div class="card-meta">
     {#if game.engine}
-      <span class="card-engine" style="--ec: {engineColor(game.engine)}">{game.engine}</span>
+      <span class="card-engine" style="--ec: {engineColor(game.engine)}">
+        <span class="engine-dot" aria-hidden="true"></span>{game.engine}
+      </span>
     {/if}
     {#if hasUpdate(game)}
       <span class="card-version card-version-update" title="Update available">
@@ -301,21 +303,32 @@
     overflow: hidden;
   }
   .card-engine {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     flex-shrink: 0;
-    padding: 0 5px;
-    border: 1px solid color-mix(in srgb, var(--ec) 55%, transparent);
+    padding: 0;
+    border: none;
     font-family: var(--font-mono);
     font-size: var(--text-2xs);
     line-height: 16px;
     text-transform: uppercase;
-    color: var(--ec);
+    letter-spacing: 0.03em;
+    color: var(--text-secondary);
+  }
+  .engine-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ec);
+    flex-shrink: 0;
   }
   .card-version {
     min-width: 0;
     margin-left: auto;
     font-family: var(--font-mono);
     font-size: var(--text-2xs);
-    color: var(--text-muted);
+    color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

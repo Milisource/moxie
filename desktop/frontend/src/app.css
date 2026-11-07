@@ -20,8 +20,8 @@
   --bg-tertiary: #22222e;
   --bg-hover: #2a2a38;
   --text-primary: #e0e0e8;
-  --text-secondary: #9090a0;
-  --text-muted: #606070;
+  --text-secondary: #b0b0c0;
+  --text-muted: #9494a8;
   --accent: #7c5cfc;
   --accent-hover: #9b7cff;
   --accent-dim: #5a3ec8;
@@ -40,7 +40,7 @@
   --font-display: 'IBM Plex Sans Condensed', 'IBM Plex Sans', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 
-  --text-2xs: 10px;
+  --text-2xs: 11px;
   --text-xs: 11px;
   --text-sm: 12px;
   --text-base: 13px;
@@ -88,8 +88,8 @@
     --bg-tertiary: #eef0f6;
     --bg-hover: #e4e6f0;
     --text-primary: #1a1a2e;
-    --text-secondary: #5a5a70;
-    --text-muted: #9090a8;
+    --text-secondary: #4a4a60;
+    --text-muted: #6a6a80;
     --accent: #6a48f0;
     --accent-hover: #7c5cfc;
     --accent-dim: #5a3ec8;

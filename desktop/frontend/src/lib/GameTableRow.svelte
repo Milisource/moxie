@@ -63,7 +63,7 @@
   <span class="col-engine">
     {#if game.engine}
       <span class="engine-badge" style="--ec: {engineColor(game.engine)}">
-        {game.engine}
+        <span class="engine-dot" aria-hidden="true"></span>{game.engine}
       </span>
     {:else}
       <span class="text-muted">—</span>
@@ -152,14 +152,24 @@
   }
 
   .engine-badge {
-    display: inline-block;
-    padding: 0 5px;
-    border: 1px solid color-mix(in srgb, var(--ec) 55%, transparent);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0;
+    border: none;
     font-family: var(--font-mono);
     font-size: var(--text-2xs);
     line-height: 16px;
     text-transform: uppercase;
-    color: var(--ec);
+    letter-spacing: 0.03em;
+    color: var(--text-secondary);
+  }
+  .engine-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ec);
+    flex-shrink: 0;
   }
 
   .col-version, .col-size, .col-played, .col-added {

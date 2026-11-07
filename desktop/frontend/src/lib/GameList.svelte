@@ -1,6 +1,6 @@
 <script>
   import {onMount, onDestroy, tick} from 'svelte'
-  import {DropdownMenu} from 'bits-ui'
+  import {DropdownMenu, Popover} from 'bits-ui'
   import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCoverBaseURL, PlayGame} from '../../wailsjs/go/main/App'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
   import {library, setViewMode, setDensity, setCardScale, CARD_SCALE_MIN, CARD_SCALE_MAX} from './viewState.svelte.js'
@@ -22,10 +22,43 @@
     games = [],
     loading = false,
     gameStates = {},
+    lastSyncAt = '',
     onOpenDetail = (id) => {},
     onUpdate = () => {},
     onLaunched = (msg) => {},
+    onScan = () => {},
   } = $props()
+
+  let filtersOpen = $state(false)
+  let viewOpen = $state(false)
+
+  // Header summary: count + recency, and the filtered subset when a filter is
+  // active. The clock is only read at render; a minute-stale "2h ago" is fine.
+  function relativeSync(iso) {
+    if (!iso) return null
+    const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
+    if (mins < 1) return 'just now'
+    if (mins < 60) return `${mins}m ago`
+    const hours = Math.floor(mins / 60)
+    if (hours < 24) return `${hours}h ago`
+    return `${Math.floor(hours / 24)}d ago`
+  }
+  let syncLabel = $derived(relativeSync(lastSyncAt))
+
+  let activeFilterCount = $derived(
+    (library.engine && library.engine !== 'All' ? 1 : 0) + (library.status ? 1 : 0)
+  )
+  let viewLabel = $derived(
+    library.viewMode === 'grid' ? 'Grid' : library.viewMode === 'wide' ? 'Wide' : 'List'
+  )
+  let viewIcon = $derived(
+    library.viewMode === 'grid' ? '▦' : library.viewMode === 'wide' ? '▭' : '☰'
+  )
+
+  function clearFilters() {
+    library.engine = 'All'
+    library.status = ''
+  }
 
   // ── Play-state model (P0-3) ─────────────────────────────────
   // The library renders a play affordance per card/row that switches state
@@ -168,8 +201,10 @@
     return arr
   })
 
-  // Available statuses (shared with the context menu via lib/statuses.js)
-  const statuses = ['All', ...GAME_STATUSES]
+  // Available statuses (shared with the context menu via lib/statuses.js).
+  // No "All" chip: an empty selection is the all state, and clicking the
+  // active chip clears it.
+  const statuses = GAME_STATUSES
 
   // ── Derived: quick-view-filtered + sorted list ───────────────
   // Sort options/comparator/quick-view predicates live in
@@ -554,9 +589,24 @@
     (library.engine && library.engine !== 'All') ||
     (library.status && library.status !== 'All')
   )
+
+  function summaryText() {
+    if (loading && games.length === 0) return 'Loading library…'
+    const count = hasActiveFilter
+      ? `${displayed.length} of ${games.length} games`
+      : `${games.length} game${games.length === 1 ? '' : 's'}`
+    return syncLabel ? `${count} · synced ${syncLabel}` : count
+  }
 </script>
 
 <div class="game-list" class:density-compact={library.density === 'compact'}>
+  <header class="view-header">
+    <div class="view-heading">
+      <h1 class="view-title">Library</h1>
+      <p class="view-summary">{summaryText()}</p>
+    </div>
+    <button class="ghost-btn" onclick={onScan} title="Scan a folder for games">+ Scan folder</button>
+  </header>
   {#if games.length === 0 && !isSearching && !loading}
     <div class="empty">
       <div class="empty-icon">▦</div>
@@ -570,9 +620,10 @@
       <div class="searching-indicator">Loading library…</div>
     {/if}
 
-    <!-- Quick view tabs (primary play-state axis, P0-4) + grid/list toggle -->
-    <div class="quick-bar">
-      <div class="quick-tabs">
+    <!-- One toolbar row: quick views · search · Filters · View.
+         Layout/density/size live in View; status/engine/sort live in Filters. -->
+    <div class="toolbar">
+      <div class="quick-tabs" role="group" aria-label="Play state">
         {#each QUICK_VIEWS as qv}
           <button
             class="quick-tab"
@@ -585,110 +636,120 @@
         {/each}
       </div>
 
-      <div class="toggle-group">
-        <div class="view-toggle" role="group" aria-label="Library layout">
-          <button
-            class="vbtn"
-            class:active={library.viewMode === 'grid'}
-            aria-pressed={library.viewMode === 'grid'}
-            title="Grid view"
-            onclick={() => setViewMode('grid')}
-          ><span class="vbtn-icon">▦</span>Grid</button>
-          <button
-            class="vbtn"
-            class:active={library.viewMode === 'wide'}
-            aria-pressed={library.viewMode === 'wide'}
-            title="Wide card view — F95Zone-style landscape tiles"
-            onclick={() => setViewMode('wide')}
-          ><span class="vbtn-icon">▭</span>Wide</button>
-          <button
-            class="vbtn"
-            class:active={library.viewMode === 'list'}
-            aria-pressed={library.viewMode === 'list'}
-            title="List view"
-            onclick={() => setViewMode('list')}
-          ><span class="vbtn-icon">☰</span>List</button>
+      <div class="toolbar-right">
+        <div class="search-wrapper">
+          <span class="search-icon">⌕</span>
+          <input
+            type="text"
+            class="search-input"
+            placeholder="Search titles, tags, developers…"
+            bind:this={searchInputEl}
+            value={library.search}
+            oninput={onSearchInput}
+          />
         </div>
 
-        <div class="view-toggle" role="group" aria-label="Library density">
-          <button
-            class="vbtn"
-            class:active={library.density === 'comfortable'}
-            aria-pressed={library.density === 'comfortable'}
-            title="Comfortable density"
-            onclick={() => setDensity('comfortable')}
-          ><span class="vbtn-icon">⊟</span>Comfortable</button>
-          <button
-            class="vbtn"
-            class:active={library.density === 'compact'}
-            aria-pressed={library.density === 'compact'}
-            title="Compact density"
-            onclick={() => setDensity('compact')}
-          ><span class="vbtn-icon">≡</span>Compact</button>
-        </div>
+        <Popover.Root bind:open={filtersOpen}>
+          <Popover.Trigger class="tb-btn" aria-label="Filters">
+            Filters
+            {#if activeFilterCount}<span class="tb-count">{activeFilterCount}</span>{/if}
+            <span class="tb-caret">▾</span>
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Content sideOffset={6} align="end">
+              <div class="tb-popover">
+              <div class="pop-section">
+                <span class="label">Status</span>
+                <div class="pop-chips">
+                  {#each statuses as s}
+                    <button
+                      class="chip"
+                      class:chip-active={library.status === s}
+                      onclick={() => library.status = library.status === s ? '' : s}
+                    >
+                      {statusLabel(s)}
+                    </button>
+                  {/each}
+                </div>
+              </div>
 
-        {#if library.viewMode === 'grid' || library.viewMode === 'wide'}
-          <label class="size-slider" title="Cover size">
-            <span class="label">Size</span>
-            <input
-              type="range"
-              min={CARD_SCALE_MIN}
-              max={CARD_SCALE_MAX}
-              step="0.05"
-              value={library.cardScale}
-              oninput={(e) => setCardScale(e.currentTarget.value)}
-              ondblclick={() => setCardScale(1)}
-            />
-          </label>
-        {/if}
+              <div class="pop-section">
+                <span class="label">Engine</span>
+                <span class="select-arrow">
+                  <select class="pop-select" bind:value={library.engine}>
+                    {#each engines as eng}
+                      <option value={eng}>{eng}</option>
+                    {/each}
+                  </select>
+                </span>
+              </div>
+
+              <div class="pop-section">
+                <span class="label">Sort</span>
+                <span class="select-arrow">
+                  <select class="pop-select" aria-label="Arrangement" value={library.sortColumn} onchange={onSortSelect}>
+                    {#each SORT_OPTIONS as o}
+                      <option value={o.value}>{o.label}</option>
+                    {/each}
+                  </select>
+                </span>
+              </div>
+
+              {#if activeFilterCount}
+                <button class="pop-clear" onclick={clearFilters}>Clear filters</button>
+              {/if}
+              </div>
+            </Popover.Content>
+          </Popover.Portal>
+        </Popover.Root>
+
+        <Popover.Root bind:open={viewOpen}>
+          <Popover.Trigger class="tb-btn" aria-label="Library layout">
+            <span class="tb-view-icon">{viewIcon}</span>{viewLabel}
+            <span class="tb-caret">▾</span>
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Content sideOffset={6} align="end">
+              <div class="tb-popover">
+              <div class="pop-section">
+                <span class="label">Layout</span>
+                <div class="pop-seg" role="group" aria-label="Library layout">
+                  <button class="pop-seg-btn" class:active={library.viewMode === 'grid'} aria-pressed={library.viewMode === 'grid'} onclick={() => setViewMode('grid')}>▦ Grid</button>
+                  <button class="pop-seg-btn" class:active={library.viewMode === 'wide'} aria-pressed={library.viewMode === 'wide'} onclick={() => setViewMode('wide')}>▭ Wide</button>
+                  <button class="pop-seg-btn" class:active={library.viewMode === 'list'} aria-pressed={library.viewMode === 'list'} onclick={() => setViewMode('list')}>☰ List</button>
+                </div>
+              </div>
+
+              <div class="pop-section">
+                <span class="label">Density</span>
+                <div class="pop-seg two" role="group" aria-label="Library density">
+                  <button class="pop-seg-btn" class:active={library.density === 'comfortable'} aria-pressed={library.density === 'comfortable'} onclick={() => setDensity('comfortable')}>Comfortable</button>
+                  <button class="pop-seg-btn" class:active={library.density === 'compact'} aria-pressed={library.density === 'compact'} onclick={() => setDensity('compact')}>Compact</button>
+                </div>
+              </div>
+
+              {#if library.viewMode !== 'list'}
+                <div class="pop-section">
+                  <span class="label">Card size</span>
+                  <div class="pop-size">
+                    <input
+                      type="range"
+                      min={CARD_SCALE_MIN}
+                      max={CARD_SCALE_MAX}
+                      step="0.05"
+                      value={library.cardScale}
+                      oninput={(e) => setCardScale(e.currentTarget.value)}
+                      ondblclick={() => setCardScale(1)}
+                    />
+                    <span class="pop-value">{Math.round(library.cardScale * 100)}%</span>
+                  </div>
+                </div>
+              {/if}
+              </div>
+            </Popover.Content>
+          </Popover.Portal>
+        </Popover.Root>
       </div>
-    </div>
-
-    <!-- Secondary filters: search · engine · arrangement · status chips -->
-    <div class="filter-bar">
-      <div class="search-wrapper">
-        <span class="search-icon">⌕</span>
-        <input
-          type="text"
-          class="search-input"
-          placeholder="Search titles, tags, developers…"
-          bind:this={searchInputEl}
-          value={library.search}
-          oninput={onSearchInput}
-        />
-      </div>
-
-      <span class="select-arrow">
-        <select class="filter-select" bind:value={library.engine}>
-          {#each engines as eng}
-            <option value={eng}>{eng}</option>
-          {/each}
-        </select>
-      </span>
-
-      <span class="select-arrow">
-        <select class="filter-select sort-select" aria-label="Arrangement" value={library.sortColumn} onchange={onSortSelect}>
-          {#each SORT_OPTIONS as o}
-            <option value={o.value}>{o.label}</option>
-          {/each}
-        </select>
-      </span>
-
-      <div class="status-chips">
-        {#each statuses as s}
-          <button
-            class="chip"
-            class:chip-active={library.status === s}
-            onclick={() => library.status = library.status === s ? '' : s}
-          >
-            {statusLabel(s)}
-          </button>
-        {/each}
-      </div>
-
-      {#if hasActiveFilter && displayed.length > 0}
-        <span class="result-count">{displayed.length} of {games.length}</span>
-      {/if}
     </div>
 
     {#if displayed.length === 0}
@@ -860,112 +921,207 @@
   /* ── Empty State ───────────────────────────────────── */
   .empty {
     display: flex;
+    flex: 1;
+    min-height: 0;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    height: 100%;
     gap: 8px;
     color: var(--text-muted);
   }
-  .empty.small { height: 100%; padding: 24px; }
+  .empty.small { flex: 1; padding: 24px; }
   .empty-icon { font-size: var(--text-4xl); opacity: 0.5; }
   .empty-title { font-size: var(--text-lg); font-weight: 600; color: var(--text-secondary); }
   .empty-desc { font-size: var(--text-base); }
 
-  /* ── Quick view tabs + layout toggle (P0-4 / P0-1) ── */
-  .quick-bar {
+  /* ── Page header ────────────────────────────────────── */
+  .view-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px var(--gutter) 12px;
+    background: var(--bg-primary);
+    flex-shrink: 0;
+  }
+  .view-heading { min-width: 0; }
+  .view-title {
+    font-family: var(--font-display);
+    font-size: var(--text-3xl);
+    font-weight: 600;
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+  }
+  .view-summary {
+    margin-top: 3px;
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+  }
+  .ghost-btn {
+    flex-shrink: 0;
+    padding: 7px 12px;
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius-1);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .ghost-btn:hover { background: var(--bg-hover); }
+
+  /* ── Toolbar: quick views · search · Filters · View ─── */
+  .toolbar {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 12px;
-    padding: 8px 12px 0;
-    background: var(--bg-secondary);
+    padding: 0 var(--gutter) 10px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-primary);
     flex-shrink: 0;
-    /* Three layout buttons + density + size slider no longer fit beside the
-       quick-view tabs on narrow windows; wrap instead of clipping the slider. */
     flex-wrap: wrap;
   }
-
+  .toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+  }
   .quick-tabs {
     display: flex;
+    align-items: center;
     gap: 2px;
-    background: var(--bg-tertiary);
-    padding: 3px;
-    border-radius: var(--radius-1);
   }
-
   .quick-tab {
-    padding: 5px 14px;
+    padding: 7px 10px;
     border: none;
-    border-radius: var(--radius-1);
+    border-radius: 0;
     background: transparent;
     color: var(--text-secondary);
     font-size: var(--text-sm);
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.12s;
+    box-shadow: inset 0 -2px 0 transparent;
     white-space: nowrap;
   }
+  .quick-tab:first-child { padding-left: 0; }
   .quick-tab:hover { color: var(--text-primary); }
   .quick-tab.active {
-    background: var(--accent);
-    color: var(--on-accent);
+    color: var(--text-primary);
     font-weight: 600;
+    box-shadow: inset 0 -2px 0 var(--accent);
   }
 
-  .toggle-group {
-    display: flex;
-    align-items: center;
-    gap: var(--space-4);
-    flex-wrap: wrap;
-  }
-
-  .view-toggle {
-    display: flex;
-    gap: 2px;
-  }
-  .vbtn {
+  :global(.tb-btn) {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 5px 10px;
-    border: 1px solid var(--border);
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--rule-strong);
     border-radius: var(--radius-1);
     background: transparent;
-    color: var(--text-muted);
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  :global(.tb-btn):hover { background: var(--bg-hover); }
+  :global(.tb-btn)[data-state="open"] { border-color: var(--accent); }
+  .tb-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+  }
+  .tb-caret { color: var(--text-secondary); font-size: 10px; }
+  .tb-view-icon { font-size: var(--text-sm); line-height: 1; }
+
+  /* ── Floating filter / layout panels ────────────────── */
+  .tb-popover {
+    z-index: var(--z-dropdown);
+    width: 280px;
+    max-width: calc(100vw - 24px);
+    padding: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius-1);
+    box-shadow: var(--shadow-pop);
+  }
+  .pop-section + .pop-section { margin-top: 12px; }
+  .pop-section .label { display: block; margin-bottom: 6px; }
+  .pop-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .pop-section .select-arrow { display: block; }
+  .pop-select {
+    width: 100%;
+    padding: 6px 22px 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    outline: none;
+  }
+  .pop-select:focus { border-color: var(--accent); }
+  .pop-seg {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2px;
+    padding: 2px;
+    background: var(--bg-tertiary);
+  }
+  .pop-seg.two { grid-template-columns: repeat(2, 1fr); }
+  .pop-seg-btn {
+    padding: 5px 8px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
     font-size: var(--text-xs);
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.12s;
+    text-align: center;
   }
-  .vbtn + .vbtn { border-left: none; border-radius: var(--radius-1) 0 0 var(--radius-1); }
-  .vbtn:first-of-type { border-radius: var(--radius-1) 0 0 var(--radius-1); }
-  .vbtn:last-of-type { border-radius: 0 var(--radius-1) var(--radius-1) 0; }
-  .vbtn:hover { color: var(--text-primary); background: var(--bg-hover); }
-  .vbtn.active {
+  .pop-seg-btn:hover { color: var(--text-primary); }
+  .pop-seg-btn.active {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
     color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    border-color: var(--accent-dim);
+    font-weight: 600;
   }
-  .vbtn-icon { font-size: var(--text-sm); line-height: 1; }
-
-  /* ── Filter / secondary filter bar ──────────────────── */
-  .filter-bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-secondary);
-    flex-shrink: 0;
-    flex-wrap: wrap;
+  .pop-size { display: flex; align-items: center; gap: 10px; }
+  .pop-size input { flex: 1; accent-color: var(--accent); }
+  .pop-value {
+    min-width: 36px;
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+  }
+  .pop-clear {
+    margin-top: 12px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--accent);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    cursor: pointer;
   }
 
   .search-wrapper {
     position: relative;
-    flex: 1;
+    flex: 0 0 380px;
     min-width: 180px;
-    max-width: 320px;
+    max-width: 380px;
   }
 
   .search-icon {
@@ -1007,40 +1163,6 @@
     border-top: 5px solid var(--text-muted);
     pointer-events: none;
   }
-  .filter-select {
-    padding: 5px 22px 5px 8px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-1);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    font-size: var(--text-sm);
-    outline: none;
-    cursor: pointer;
-    -webkit-appearance: none;
-    -moz-appearance: none;
-    appearance: none;
-  }
-  .filter-select option {
-    background: var(--bg-primary);
-    color: var(--text-primary);
-  }
-  .sort-select { min-width: 132px; }
-
-  .status-chips {
-    display: flex;
-    gap: 4px;
-    flex-wrap: wrap;
-  }
-
-  .result-count {
-    margin-left: auto;
-    padding-left: 8px;
-    font-size: var(--text-xs);
-    color: var(--text-muted);
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
   .chip {
     padding: 3px 8px;
     border: 1px solid var(--border);
@@ -1053,9 +1175,9 @@
   }
   .chip:hover { background: var(--bg-hover); color: var(--text-primary); }
   .chip-active {
-    background: var(--accent);
-    color: var(--on-accent);
-    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+    border-color: var(--accent-dim);
   }
 
   .searching-indicator {
@@ -1108,16 +1230,6 @@
     gap: 0 16px;
     padding: 0 var(--gutter);
     box-sizing: border-box;
-  }
-
-  .size-slider {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .size-slider input {
-    width: 120px;
-    accent-color: var(--accent);
   }
 
   /* ── Density: compact (P1 item 7) ──────────────────────

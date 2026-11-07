@@ -996,7 +996,9 @@
           </div>
           <div class="badges">
             {#if detail.engine}
-              <span class="engine-badge" style="--ec: {engineColor(detail.engine)}">{detail.engine}</span>
+              <span class="engine-badge" style="--ec: {engineColor(detail.engine)}">
+                <span class="engine-dot" aria-hidden="true"></span>{detail.engine}
+              </span>
             {/if}
             <span class="status-badge status-{detail.status || 'unknown'}">{statusLabel(detail.status)}</span>
           </div>
@@ -1625,7 +1627,20 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
-  .engine-badge { color: var(--ec); }
+  .engine-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-secondary);
+    border-color: var(--rule-strong);
+  }
+  .engine-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ec);
+    flex-shrink: 0;
+  }
   .status-active { color: var(--success); }
   .status-completed { color: var(--accent); }
   .status-abandoned { color: var(--text-muted); }

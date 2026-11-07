@@ -1009,9 +1009,11 @@
               {games}
               {loading}
               {gameStates}
+              lastSyncAt={appMeta.lastSyncAt}
               onOpenDetail={openDetail}
               onUpdate={refreshGames}
               onLaunched={(msg) => statusMsg = msg}
+              onScan={() => activeView = 'scan'}
             />
           {:else if activeView === 'scan'}
             <ScanDialog

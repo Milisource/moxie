@@ -63,7 +63,9 @@
     <!-- Overlaid classification: engine (left) + status (left), version (right). -->
     <div class="wide-tags">
       {#if game.engine}
-        <span class="tag-engine" style="--ec: {engineColor(game.engine)}">{game.engine}</span>
+        <span class="tag-engine" style="--ec: {engineColor(game.engine)}">
+          <span class="tag-dot" aria-hidden="true"></span>{game.engine}
+        </span>
       {/if}
       <span class="tag-status status-{game.status || 'unknown'}">{statusLabel(game.status)}</span>
     </div>
@@ -221,8 +223,18 @@
     white-space: nowrap;
   }
   .tag-engine {
-    color: var(--ec);
-    border: 1px solid color-mix(in srgb, var(--ec) 60%, transparent);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-primary);
+    border: 1px solid var(--rule-strong);
+  }
+  .tag-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ec);
+    flex-shrink: 0;
   }
   .tag-status {
     color: var(--text-secondary);
