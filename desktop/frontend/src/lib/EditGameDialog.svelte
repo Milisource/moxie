@@ -236,13 +236,16 @@
 <Dialog.Root open={editGameState.open} {onOpenChange}>
   <Dialog.Portal>
     <Dialog.Overlay class="dialog-overlay" />
-    <Dialog.Content class="dialog-content" style="max-width: 660px; max-height: 88vh; overflow-y: auto;">
-      <Dialog.Title class="dialog-title">Edit Game</Dialog.Title>
+    <Dialog.Content class="dialog-content edit-dialog" style="max-width: 800px; height: 88vh; max-height: 88vh; padding: 0; overflow: hidden; display: flex; flex-direction: column;">
+      <div class="edit-head">
+        <Dialog.Title class="dialog-title">Edit Game</Dialog.Title>
+      </div>
 
       {#if loading}
         <p class="edit-loading">Loading…</p>
       {:else if form}
         <form class="edit-form" onsubmit={save}>
+          <div class="edit-body">
           <div class="field-grid">
             <label class="field span-2">
               <span class="field-label">Title</span>
@@ -356,26 +359,6 @@
             </label>
 
             <label class="field span-2">
-              <span class="field-label">Executable</span>
-              <input class="field-input mono" type="text" placeholder="/path/to/game.exe" bind:value={form.exePath} />
-            </label>
-
-            <label class="field span-2">
-              <span class="field-label">Wine prefix</span>
-              <input class="field-input mono" type="text" placeholder="Leave empty for the system default" bind:value={form.winePrefix} />
-            </label>
-
-            <label class="field span-2">
-              <span class="field-label">Tags <span class="hint">comma-separated</span></span>
-              <input class="field-input" type="text" placeholder="romance, sandbox, 2d" bind:value={form.tags} />
-            </label>
-
-            <label class="field span-2">
-              <span class="field-label">Notes</span>
-              <textarea class="field-input" rows="3" bind:value={form.notes}></textarea>
-            </label>
-
-            <label class="field span-2">
               <span class="field-label">F95Zone URL</span>
               <input class="field-input mono" type="text" placeholder="https://f95zone.to/threads/…" bind:value={form.f95Url} />
             </label>
@@ -393,10 +376,38 @@
             </div>
           </div>
 
+          <details class="advanced">
+            <summary>
+              <span class="advanced-label">Advanced</span>
+              <span class="advanced-note">executable, Wine prefix, tags, notes</span>
+            </summary>
+            <div class="field-grid advanced-grid">
+              <label class="field span-2">
+                <span class="field-label">Executable</span>
+                <input class="field-input mono" type="text" placeholder="/path/to/game.exe" bind:value={form.exePath} />
+              </label>
+
+              <label class="field span-2">
+                <span class="field-label">Wine prefix</span>
+                <input class="field-input mono" type="text" placeholder="Leave empty for the system default" bind:value={form.winePrefix} />
+              </label>
+
+              <label class="field span-2">
+                <span class="field-label">Tags <span class="hint">comma-separated</span></span>
+                <input class="field-input" type="text" placeholder="romance, sandbox, 2d" bind:value={form.tags} />
+              </label>
+
+              <label class="field span-2">
+                <span class="field-label">Notes</span>
+                <textarea class="field-input" rows="3" bind:value={form.notes}></textarea>
+              </label>
+            </div>
+          </details>
+          </div>
+
           {#if error}
             <p class="edit-error">{error}</p>
           {/if}
-
           <div class="edit-actions">
             <button type="button" class="btn" onclick={() => settleEditGame(false)}>Cancel</button>
             <button type="submit" class="btn btn-primary" disabled={saving}>
@@ -415,17 +426,49 @@
 </Dialog.Root>
 
 <style>
+  /* Fixed header, scrolling body, fixed footer. The dialog never grows past
+     88vh, so Save/Cancel stay reachable on a 900px window without scrolling
+     the whole panel. */
+  /* The shell's display/height are set inline: this is a `class` passed to a
+     bits-ui component, so the scoped selector cannot reach the rendered
+     element (Svelte does not add its scope hash through component props). */
+  .edit-head {
+    flex-shrink: 0;
+    padding: 18px 20px 10px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+  }
+  :global(.edit-head .dialog-title) { margin: 0; }
+  .edit-form {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
+  }
+  .edit-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 20px 18px;
+    container-type: inline-size;
+  }
   .edit-loading {
-    margin: 8px 0 16px;
+    margin: 8px 20px 16px;
     color: var(--text-secondary);
   }
 
   .field-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
     gap: 12px;
     margin-bottom: 16px;
   }
+  /* Two columns once the body is wide enough to read comfortably; below that
+     the form falls back to one field per row rather than squeezing inputs. */
+  @container (min-width: 640px) {
+    .field-grid { grid-template-columns: 1fr 1fr; }
+  }
+  .advanced-grid { margin: 12px 0 0; }
   .field {
     display: flex;
     flex-direction: column;
@@ -594,7 +637,8 @@
   }
 
   .edit-error {
-    margin: 0 0 12px;
+    flex-shrink: 0;
+    margin: 0 20px 12px;
     padding: 8px 10px;
     border: 1px solid var(--danger);
     border-radius: var(--radius-1);
@@ -604,17 +648,47 @@
   }
 
   .edit-actions {
-    position: sticky;
-    bottom: -20px;
-    z-index: 1;
+    flex-shrink: 0;
     display: flex;
     justify-content: flex-end;
     gap: 8px;
-    margin: 20px -20px -20px;
     padding: 12px 20px;
     border-top: 1px solid var(--border);
     background: var(--bg-secondary);
   }
+
+  .advanced {
+    margin-bottom: 18px;
+    border: 1px solid var(--border);
+    background: var(--bg-tertiary);
+  }
+  .advanced > summary {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 9px 12px;
+    cursor: pointer;
+    list-style: none;
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    user-select: none;
+  }
+  .advanced > summary::-webkit-details-marker { display: none; }
+  .advanced > summary::before {
+    content: '▸';
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+  }
+  .advanced[open] > summary::before { content: '▾'; }
+  .advanced > summary:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .advanced-label {
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: var(--text-xs);
+  }
+  .advanced-note { color: var(--text-muted); font-size: var(--text-xs); }
+  .advanced-grid { padding: 12px; background: var(--bg-secondary); }
   .btn {
     padding: 7px 16px;
     border: 1px solid var(--border);

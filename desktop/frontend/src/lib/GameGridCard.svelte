@@ -11,6 +11,9 @@
   let {
     game,
     playControl,
+    activity = null,
+    selectable = false,
+    selected = false,
     isRoving = false,
     coverBase,
     coverSrc,
@@ -19,6 +22,8 @@
     onFocus = () => {},
     onContextMenu = () => {},
     onPlay = () => {},
+    onDragStart = () => {},
+    onDragEnd = () => {},
   } = $props()
 
   let ctl = $derived(playControl(game))
@@ -28,7 +33,13 @@
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_tabindex -->
 <div
   class="card"
+  class:card-selected={selected}
+  class:card-selecting={selectable}
   role="button"
+  aria-pressed={selectable ? selected : undefined}
+  draggable={selectable ? 'false' : 'true'}
+  ondragstart={onDragStart}
+  ondragend={onDragEnd}
   tabindex={isRoving ? 0 : -1}
   data-game-id={game.id}
   onclick={onOpenDetail}
@@ -60,7 +71,19 @@
       </span>
     {/if}
 
-    {#if hasUpdate(game)}
+    {#if selectable}
+      <span class="select-check" class:checked={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
+    {/if}
+
+    {#if activity}
+      <span class="activity-edge" class:edge-error={activity.tone === 'error'} class:edge-queued={activity.tone === 'queued'}></span>
+      <span class="activity-badge" class:badge-error={activity.tone === 'error'} title={activity.detail}>
+        {activity.label}{#if activity.percent !== null}{' '}{activity.percent}%{/if}
+      </span>
+      {#if activity.percent !== null}
+        <span class="activity-progress"><span style="width: {activity.percent}%"></span></span>
+      {/if}
+    {:else if hasUpdate(game)}
       <span class="update-edge" title="Update available: {game.version} → {game.latestVersion}"></span>
     {/if}
     {#if isVirtual(game)}
@@ -124,6 +147,26 @@
     outline: 1px solid var(--accent);
     outline-offset: 0;
   }
+  .card-selected { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .card-selected .cover-frame { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  .select-check {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 4;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--rule-strong);
+    background: var(--bg-primary);
+    color: var(--on-accent);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+  }
+  .select-check.checked { background: var(--accent); border-color: var(--accent); }
 
   .cover-frame {
     position: relative;
@@ -201,6 +244,53 @@
     z-index: 2;
   }
 
+  /* Pipeline state (downloading / queued / installing) mirrors the update
+     edge: a coloured left rule, a compact badge, and a progress hairline. */
+  .activity-edge {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 4px;
+    background: var(--accent);
+    z-index: 2;
+  }
+  .activity-edge.edge-queued { background: var(--text-muted); }
+  .activity-edge.edge-error { background: var(--danger); }
+  .activity-badge {
+    position: absolute;
+    left: 8px;
+    bottom: 8px;
+    z-index: 3;
+    padding: 2px 6px;
+    background: var(--bg-primary);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: var(--font-display);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+  }
+  .activity-badge.badge-error { border-color: var(--danger); color: var(--danger); }
+  .activity-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
+    z-index: 3;
+  }
+  .activity-progress > span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.25s linear;
+  }
+
   .card-badge {
     position: absolute;
     top: 8px;
@@ -253,6 +343,7 @@
     visibility: visible;
   }
   .card-play:hover { background: var(--accent-hover); }
+  .card-selecting .card-play { display: none; }
   .card-play:disabled { opacity: 0.85; cursor: default; }
   .card-play.state-launching { background: var(--accent-dim); }
   .card-play.state-playing {

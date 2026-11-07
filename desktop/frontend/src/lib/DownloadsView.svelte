@@ -7,6 +7,8 @@
   } from '../../wailsjs/go/main/App'
   import {downloads} from './viewState.svelte.js'
 
+  let {onGoToSync = () => {}} = $props()
+
   // ── State ──────────────────────────────────────────────────
   let games = $state([])        // games with download links
   let allLinks = $state([])     // all download links with game info
@@ -161,7 +163,7 @@
   {/if}
 
   <!-- ── Summary Stats ────────────────────────────────────── -->
-  {#if !loading && !error}
+  {#if !loading && !error && games.length > 0}
     <div class="stats-bar">
       <span class="stat-item">
         <span class="stat-value">{games.length}</span>
@@ -301,7 +303,7 @@
           <p class="status-detail">
             No games match "{downloads.search}". Try a different search term.
           </p>
-          <button class="btn btn-sm btn-outline" onclick={() => downloads.search = ''}>Clear Search</button>
+          <button class="btn btn-sm btn-outline" onclick={() => downloads.search = ''}>Clear search</button>
         </div>
       {:else}
         <span class="status-icon">↓</span>
@@ -312,7 +314,10 @@
             Go to <strong>Sync</strong> in the sidebar to auto-associate games
             and scrape their download links.
           </p>
-          <button class="btn btn-sm btn-accent" onclick={loadData}>Refresh</button>
+          <div class="empty-actions">
+            <button class="btn btn-sm btn-accent" onclick={onGoToSync}>Open Sync</button>
+            <button class="btn btn-sm btn-outline" onclick={loadData}>Refresh</button>
+          </div>
         </div>
       {/if}
     </div>
@@ -476,6 +481,19 @@
   }
   .status-empty .status-title {
     color: var(--text-primary);
+  }
+  .status-empty {
+    padding: 40px 24px;
+    border-style: dashed;
+    border-color: var(--rule-strong);
+    justify-content: center;
+  }
+  .status-empty .status-icon { font-size: 24px; }
+  .empty-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
   }
 
   /* ── Spinner ────────────────────────── */

@@ -2,7 +2,7 @@
   import {GetUpdatableCount, GetCollections} from '../../wailsjs/go/main/App'
   import NavIcon from './NavIcon.svelte'
 
-  let {version = '', activeView = $bindable('library'), onNavigate, lastUpdate = 0} = $props()
+  let {activeView = $bindable('library'), onNavigate, onShortcuts = () => {}, lastUpdate = 0} = $props()
 
   let updateCount = $state(null)      // null = not loaded, 0+ = loaded
   let collectionCount = $state(null)
@@ -130,9 +130,10 @@
       <span class="nav-icon"><NavIcon name="settings" /></span>
       <span class="nav-label">Settings</span>
     </button>
-    {#if version}
-      <span class="version">v{version}</span>
-    {/if}
+    <button class="shortcut-hint" onclick={onShortcuts} title="Keyboard shortcuts">
+      <kbd>?</kbd>
+      <span>Keyboard shortcuts</span>
+    </button>
   </div>
 </aside>
 
@@ -265,6 +266,30 @@
   }
   .nav-manage-chevron.expanded { transform: rotate(90deg); }
 
+  .shortcut-hint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 5px 20px 0;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    cursor: pointer;
+    text-align: left;
+  }
+  .shortcut-hint:hover { color: var(--text-secondary); }
+  .shortcut-hint kbd {
+    min-width: 16px;
+    padding: 1px 4px;
+    border: 1px solid var(--rule-strong);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    text-align: center;
+    color: var(--text-secondary);
+  }
+
   .nav-icon {
     display: inline-flex;
     align-items: center;
@@ -306,12 +331,5 @@
     text-transform: none;
     letter-spacing: 0;
     color: var(--text-secondary);
-  }
-  .version {
-    display: block;
-    padding: 6px 20px 0;
-    font-size: var(--text-xs);
-    color: var(--text-muted);
-    font-family: var(--font-mono);
   }
 </style>

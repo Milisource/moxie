@@ -13,6 +13,9 @@
   let {
     game,
     playControl,
+    activity = null,
+    selectable = false,
+    selected = false,
     isRoving = false,
     coverBase,
     coverSrc,
@@ -21,6 +24,8 @@
     onFocus = () => {},
     onContextMenu = () => {},
     onPlay = () => {},
+    onDragStart = () => {},
+    onDragEnd = () => {},
   } = $props()
 
   let ctl = $derived(playControl(game))
@@ -29,7 +34,13 @@
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_tabindex -->
 <div
   class="wide-card"
+  class:card-selected={selected}
+  class:card-selecting={selectable}
   role="button"
+  aria-pressed={selectable ? selected : undefined}
+  draggable={selectable ? 'false' : 'true'}
+  ondragstart={onDragStart}
+  ondragend={onDragEnd}
   tabindex={isRoving ? 0 : -1}
   data-game-id={game.id}
   onclick={onOpenDetail}
@@ -80,7 +91,19 @@
       <span class="wide-version">{game.version}</span>
     {/if}
 
-    {#if hasUpdate(game)}
+    {#if selectable}
+      <span class="select-check" class:checked={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
+    {/if}
+
+    {#if activity}
+      <span class="activity-edge" class:edge-error={activity.tone === 'error'} class:edge-queued={activity.tone === 'queued'}></span>
+      <span class="activity-badge" class:badge-error={activity.tone === 'error'} title={activity.detail}>
+        {activity.label}{#if activity.percent !== null}{' '}{activity.percent}%{/if}
+      </span>
+      {#if activity.percent !== null}
+        <span class="activity-progress"><span style="width: {activity.percent}%"></span></span>
+      {/if}
+    {:else if hasUpdate(game)}
       <span class="update-edge" title="Update available"></span>
     {/if}
     {#if isVirtual(game)}
@@ -133,6 +156,26 @@
     outline: 1px solid var(--accent);
     outline-offset: 0;
   }
+  .card-selected { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .card-selected .wide-media { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  .select-check {
+    position: absolute;
+    top: 8px;
+    left: 10px;
+    z-index: 5;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--rule-strong);
+    background: var(--bg-primary);
+    color: var(--on-accent);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+  }
+  .select-check.checked { background: var(--accent); border-color: var(--accent); }
 
   .wide-media {
     position: relative;
@@ -222,12 +265,14 @@
     background: rgba(12, 10, 16, 0.72);
     white-space: nowrap;
   }
+  /* Overlay chips sit on a fixed dark scrim above cover art in both themes,
+     so their text must not follow the theme's text tokens. */
   .tag-engine {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    color: var(--text-primary);
-    border: 1px solid var(--rule-strong);
+    color: #f2f2f8;
+    border: 1px solid rgba(255, 255, 255, 0.24);
   }
   .tag-dot {
     width: 6px;
@@ -237,14 +282,14 @@
     flex-shrink: 0;
   }
   .tag-status {
-    color: var(--text-secondary);
-    border: 1px solid var(--rule-strong);
+    color: #d2d2de;
+    border: 1px solid rgba(255, 255, 255, 0.24);
   }
-  .tag-status.status-active { color: var(--success); border-color: color-mix(in srgb, var(--success) 55%, transparent); }
-  .tag-status.status-completed { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
-  .tag-status.status-on_hold { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 55%, transparent); }
-  .tag-status.status-abandoned { color: var(--text-muted); }
-  .tag-status.status-unknown { color: var(--text-muted); }
+  .tag-status.status-active { color: #7ee2a3; border-color: rgba(126, 226, 163, 0.5); }
+  .tag-status.status-completed { color: #c4b5fd; border-color: rgba(196, 181, 253, 0.5); }
+  .tag-status.status-on_hold { color: #fcd34d; border-color: rgba(252, 211, 77, 0.5); }
+  .tag-status.status-abandoned { color: #b8b8c8; }
+  .tag-status.status-unknown { color: #b8b8c8; }
 
   .wide-version {
     position: absolute;
@@ -253,20 +298,20 @@
     max-width: calc(100% - 16px);
     padding: 1px 6px;
     background: rgba(12, 10, 16, 0.72);
-    border: 1px solid var(--rule-strong);
+    border: 1px solid rgba(255, 255, 255, 0.24);
     font-family: var(--font-mono);
     font-size: var(--text-2xs);
     line-height: 15px;
-    color: var(--text-secondary);
+    color: #d2d2de;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     z-index: 2;
     pointer-events: none;
   }
-  .wide-version.version-update { color: var(--accent); border-color: var(--accent-dim); }
+  .wide-version.version-update { color: #c4b5fd; border-color: rgba(196, 181, 253, 0.5); }
   .version-arrow { opacity: 0.7; }
-  .wide-version.version-unknown { color: var(--text-muted); }
+  .wide-version.version-unknown { color: #b8b8c8; }
 
   /* Update marker: an accent edge down the media's left side. */
   .update-edge {
@@ -277,6 +322,51 @@
     width: 4px;
     background: var(--accent);
     z-index: 2;
+  }
+
+  .activity-edge {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 4px;
+    background: var(--accent);
+    z-index: 3;
+  }
+  .activity-edge.edge-queued { background: var(--text-muted); }
+  .activity-edge.edge-error { background: var(--danger); }
+  .activity-badge {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    z-index: 4;
+    padding: 2px 7px;
+    background: var(--bg-primary);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: var(--font-display);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+  }
+  .activity-badge.badge-error { border-color: var(--danger); color: var(--danger); }
+  .activity-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
+    z-index: 4;
+  }
+  .activity-progress > span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.25s linear;
   }
 
   .wide-badge {
@@ -331,6 +421,7 @@
     opacity: 1;
     visibility: visible;
   }
+  .card-selecting .wide-play { display: none; }
   .wide-play:hover { background: var(--accent-hover); }
   .wide-play:disabled { opacity: 0.85; cursor: default; }
   .wide-play.state-launching { background: var(--accent-dim); }

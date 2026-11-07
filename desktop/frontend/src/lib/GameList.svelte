@@ -1,10 +1,10 @@
 <script>
   import {onMount, onDestroy, tick} from 'svelte'
   import {DropdownMenu, Popover} from 'bits-ui'
-  import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCoverBaseURL, PlayGame} from '../../wailsjs/go/main/App'
+  import {SearchGames, RemoveGame, SetGameStatus, RenameGame, GetCoverBaseURL, PlayGame, GetCollections, AddGameToCollection} from '../../wailsjs/go/main/App'
   import {GAME_STATUSES, statusLabel} from './statuses.js'
   import {library, setViewMode, setDensity, setCardScale, CARD_SCALE_MIN, CARD_SCALE_MAX} from './viewState.svelte.js'
-  import {makeCoverHelpers} from './cover.js'
+  import {makeCoverHelpers, coverRev} from './cover.js'
   import {createVirtualList} from './virtualList.svelte.js'
   import {createLibraryNav} from './useLibraryNav.svelte.js'
   import {confirmAction} from './confirmDialog.svelte.js'
@@ -13,20 +13,25 @@
   import {
     QUICK_VIEWS, SORT_OPTIONS,
     quickViewMatches, sortCompare, toggleSort, sortIcon, onSortSelect,
+    lastPlayedDate, relativePlayed,
   } from './useLibrarySort.svelte.js'
   import GameGridCard from './GameGridCard.svelte'
   import GameWideCard from './GameWideCard.svelte'
   import GameTableRow from './GameTableRow.svelte'
+  import {activityFor} from './activity.js'
+  import {engineColor} from './engineColors.js'
 
   let {
     games = [],
     loading = false,
     gameStates = {},
+    installState = null,
     lastSyncAt = '',
     onOpenDetail = (id) => {},
     onUpdate = () => {},
     onLaunched = (msg) => {},
     onScan = () => {},
+    onCollectionsChanged = () => {},
   } = $props()
 
   let filtersOpen = $state(false)
@@ -69,6 +74,129 @@
     searchInputEl?.focus()
   }
 
+  // ── Collections, drag-to-collection, bulk select (P2-3) ─────
+  // Collections are fetched when the library mounts so the drop tray can open
+  // instantly on dragstart (a network/IPC round-trip mid-drag would miss the
+  // drop). Failure is silent: drag-to-collection is an accelerator, and the
+  // Collections tab remains the authoritative surface.
+  let collections = $state([])
+  let selectMode = $state(false)
+  let selectedIds = $state(new Set())
+  let dragGameId = $state(null)
+  let bulkBusy = $state(false)
+  let bulkCollectionId = $state('')
+
+  async function loadCollections() {
+    try {
+      collections = (await GetCollections()) || []
+    } catch (e) {
+      collections = []
+    }
+  }
+  loadCollections()
+
+  let selectedGames = $derived(games.filter(g => selectedIds.has(g.id)))
+  let selectedCount = $derived(selectedGames.length)
+
+  function toggleSelectMode() {
+    selectMode = !selectMode
+    if (!selectMode) selectedIds = new Set()
+  }
+
+  function toggleSelected(id) {
+    const next = new Set(selectedIds)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    selectedIds = next
+  }
+
+  function selectAllDisplayed() {
+    selectedIds = new Set(displayed.map(g => g.id))
+  }
+
+  function clearSelection() {
+    selectedIds = new Set()
+  }
+
+  // Cards stay single-purpose: in select mode the whole card toggles the
+  // selection instead of navigating, so there is no invisible mode-dependent
+  // second affordance.
+  function handleOpen(game) {
+    if (selectMode) toggleSelected(game.id)
+    else onOpenDetail(game.id)
+  }
+
+  function beginDrag(e, game) {
+    if (selectMode) return
+    dragGameId = game.id
+    try {
+      e.dataTransfer.effectAllowed = 'copy'
+      e.dataTransfer.setData('text/plain', String(game.id))
+    } catch (err) { /* some environments restrict setData */ }
+  }
+
+  function endDrag() {
+    dragGameId = null
+  }
+
+  async function dropOnCollection(collectionId) {
+    const id = dragGameId
+    dragGameId = null
+    if (id == null) return
+    try {
+      await AddGameToCollection(id, collectionId)
+      const c = collections.find(x => x.id === collectionId)
+      onLaunched(`Added to ${c?.name || 'collection'}`)
+      onCollectionsChanged()
+    } catch (e) {
+      onLaunched(`Couldn't add to collection — ${String(e).replace(/^Error:\s*/, '')}`)
+    }
+  }
+
+  async function bulkAddToCollection() {
+    if (!bulkCollectionId || selectedCount === 0 || bulkBusy) return
+    bulkBusy = true
+    let added = 0
+    try {
+      for (const g of selectedGames) {
+        try {
+          await AddGameToCollection(g.id, Number(bulkCollectionId))
+          added++
+        } catch (e) { /* count what actually landed */ }
+      }
+      const c = collections.find(x => x.id === Number(bulkCollectionId))
+      onLaunched(`Added ${added} game${added === 1 ? '' : 's'} to ${c?.name || 'collection'}`)
+      onCollectionsChanged()
+    } finally {
+      bulkBusy = false
+    }
+    clearSelection()
+  }
+
+  async function bulkRemove() {
+    if (selectedCount === 0 || bulkBusy) return
+    const n = selectedCount
+    const ok = await confirmAction({
+      title: `Remove ${n} game${n === 1 ? '' : 's'}?`,
+      description: 'They move to Trash and keep their saves and metadata until purged.',
+      confirmLabel: 'Remove',
+      danger: true,
+    })
+    if (!ok) return
+    bulkBusy = true
+    try {
+      for (const g of selectedGames) {
+        try { await RemoveGame(g.id, false) } catch (e) { /* keep going */ }
+      }
+      onLaunched(`Removed ${n} game${n === 1 ? '' : 's'} — restore from Trash`)
+      clearSelection()
+      selectMode = false
+      await onUpdate()
+    } finally {
+      bulkBusy = false
+    }
+  }
+
   // ── Play-state model (P0-3) ─────────────────────────────────
   // The library renders a play affordance per card/row that switches state
   // while a launch is happening/most recent — Steam's play-bar pattern. We
@@ -79,6 +207,12 @@
   const PLAY_REVERT_MS = 6000
   const PLAY_ERROR_REVERT_MS = 3500
   let playState = $state({})   // gameId → {state:'launching'|'playing'|'error', msg}
+
+  // Per-tile pipeline badge. Reads the same App-level state the Updates view
+  // uses, so a card, a row, and the status bar never disagree.
+  function tileActivity(game) {
+    return activityFor(game.id, gameStates[game.id], installState)
+  }
 
   function playControl(g) {
     return playState[g.id] ?? {state: 'idle', msg: ''}
@@ -599,6 +733,22 @@
     (library.status && library.status !== 'All')
   )
 
+  // ── Continue playing (P2-1) ─────────────────────────────────
+  // A single shelf above the grid, built from the same lastPlayed data the
+  // Recently played arrangement uses. It disappears whenever the user is
+  // searching or filtering so the shelf never competes with a deliberate
+  // query.
+  let continuePlaying = $derived.by(() => {
+    if (library.quickView !== 'all') return []
+    if (library.search.trim().length > 0) return []
+    if (library.engine && library.engine !== 'All') return []
+    if (library.status) return []
+    return games
+      .filter(g => g.lastPlayed)
+      .sort((a, b) => new Date(b.lastPlayed) - new Date(a.lastPlayed))
+      .slice(0, 5)
+  })
+
   function summaryText() {
     if (loading && games.length === 0) return 'Loading library…'
     const count = hasActiveFilter
@@ -616,6 +766,53 @@
     </div>
     <button class="ghost-btn" onclick={onScan} title="Scan a folder for games">+ Scan folder</button>
   </header>
+
+  {#if continuePlaying.length > 0}
+    <section class="continue" aria-label="Continue playing">
+      <div class="continue-head">
+        <h2 class="continue-title">Continue playing</h2>
+        <button class="continue-all" onclick={() => library.quickView = 'recent'}>Recently played →</button>
+      </div>
+      <div class="continue-row">
+        {#each continuePlaying as game (game.id)}
+          <div class="continue-card">
+            <button class="continue-open" onclick={() => onOpenDetail(game.id)} title="Open {game.title}">
+              <span class="continue-cover">
+                {#if game.hasCover && coverBase}
+                  <img
+                    src={coverSrc(game.id, 'thumb', coverRev(game))}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                    onerror={() => markFailed(game.id)}
+                  />
+                {:else}
+                  <span class="continue-ph">{game.title.slice(0, 2).toUpperCase()}</span>
+                {/if}
+              </span>
+              <span class="continue-meta">
+                <span class="continue-name" title={game.title}>{game.title}</span>
+                <span class="continue-sub">
+                  {#if game.engine}
+                    <span class="continue-dot" style="--ec: {engineColor(game.engine)}"></span>
+                    <span class="continue-engine">{game.engine}</span>
+                    <span class="continue-sep">·</span>
+                  {/if}
+                  {lastPlayedDate(game) ? relativePlayed(lastPlayedDate(game)) : 'recently'}
+                </span>
+              </span>
+            </button>
+            <button
+              class="continue-play"
+              title="Play {game.title}"
+              onclick={(e) => handlePlay(e, game)}
+            >▶︎</button>
+          </div>
+        {/each}
+      </div>
+    </section>
+  {/if}
+
   {#if games.length === 0 && !isSearching && !loading}
     <div class="empty">
       <div class="empty-icon">▦</div>
@@ -657,6 +854,14 @@
             oninput={onSearchInput}
           />
         </div>
+
+        <button
+          class="tb-btn"
+          class:tb-active={selectMode}
+          aria-pressed={selectMode}
+          onclick={toggleSelectMode}
+          title="Select multiple games"
+        >Select</button>
 
         <Popover.Root bind:open={filtersOpen}>
           <Popover.Trigger class="tb-btn" aria-label="Filters">
@@ -788,11 +993,16 @@
                 <GameGridCard
                   {game}
                   {playControl}
+                  activity={tileActivity(game)}
                   isRoving={nav.rovingId === game.id}
+                  selectable={selectMode}
+                  selected={selectedIds.has(game.id)}
+                  onDragStart={(e) => beginDrag(e, game)}
+                onDragEnd={endDrag}
                   {coverBase}
                   {coverSrc}
                   {markFailed}
-                  onOpenDetail={() => onOpenDetail(game.id)}
+                  onOpenDetail={() => handleOpen(game)}
                   onFocus={() => nav.setFocused(game.id)}
                   onContextMenu={(e) => onRowContextMenu(e, game)}
                   onPlay={(e) => handlePlay(e, game)}
@@ -821,11 +1031,16 @@
                 <GameWideCard
                   {game}
                   {playControl}
+                  activity={tileActivity(game)}
                   isRoving={nav.rovingId === game.id}
+                  selectable={selectMode}
+                  selected={selectedIds.has(game.id)}
+                  onDragStart={(e) => beginDrag(e, game)}
+                onDragEnd={endDrag}
                   {coverBase}
                   {coverSrc}
                   {markFailed}
-                  onOpenDetail={() => onOpenDetail(game.id)}
+                  onOpenDetail={() => handleOpen(game)}
                   onFocus={() => nav.setFocused(game.id)}
                   onContextMenu={(e) => onRowContextMenu(e, game)}
                   onPlay={(e) => handlePlay(e, game)}
@@ -873,13 +1088,18 @@
               <GameTableRow
                 {game}
                 {playControl}
+                activity={tileActivity(game)}
                 isRoving={nav.rovingId === game.id}
                 top={vItem.start}
                 height={tableRowHeight}
+                selectable={selectMode}
+                selected={selectedIds.has(game.id)}
+                onDragStart={(e) => beginDrag(e, game)}
+                onDragEnd={endDrag}
                 {coverBase}
                 {coverSrc}
                 {markFailed}
-                onOpenDetail={() => onOpenDetail(game.id)}
+                onOpenDetail={() => handleOpen(game)}
                 onFocus={() => nav.setFocused(game.id)}
                 onContextMenu={(e) => onRowContextMenu(e, game)}
                 onPlay={(e) => handlePlay(e, game)}
@@ -887,6 +1107,56 @@
             {/if}
           {/each}
         </div>
+      </div>
+    {/if}
+
+    {#if dragGameId !== null}
+      <!-- Drop tray: only exists while a card is being dragged, so it never
+           competes with the toolbar. -->
+      <div class="collection-tray" role="group" aria-label="Add dragged game to a collection">
+        <span class="tray-label">Add to</span>
+        {#each collections as c (c.id)}
+          <button
+            class="tray-chip"
+            ondragover={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
+            ondrop={(e) => { e.preventDefault(); dropOnCollection(c.id) }}
+            onclick={() => dropOnCollection(c.id)}
+          >{c.name}</button>
+        {/each}
+        {#if collections.length === 0}
+          <span class="tray-empty">No collections yet — create one in Collections.</span>
+        {/if}
+        <button class="tray-cancel" onclick={endDrag} aria-label="Cancel drag">✕</button>
+      </div>
+    {/if}
+
+    {#if selectMode}
+      <div class="bulk-bar" role="region" aria-label="Bulk actions">
+        <span class="bulk-count">{selectedCount} selected</span>
+        <button class="bulk-link" onclick={selectAllDisplayed}>Select all {displayed.length}</button>
+        {#if selectedCount > 0}
+          <button class="bulk-link" onclick={clearSelection}>Clear</button>
+        {/if}
+        <span class="bulk-spacer"></span>
+        <span class="select-arrow">
+          <select class="bulk-select" bind:value={bulkCollectionId} aria-label="Collection">
+            <option value="">Choose collection…</option>
+            {#each collections as c (c.id)}
+              <option value={String(c.id)}>{c.name}</option>
+            {/each}
+          </select>
+        </span>
+        <button
+          class="bulk-btn bulk-btn-primary"
+          disabled={!bulkCollectionId || selectedCount === 0 || bulkBusy}
+          onclick={bulkAddToCollection}
+        >Add to collection</button>
+        <button
+          class="bulk-btn bulk-btn-danger"
+          disabled={selectedCount === 0 || bulkBusy}
+          onclick={bulkRemove}
+        >Remove</button>
+        <button class="bulk-link" onclick={toggleSelectMode}>Done</button>
       </div>
     {/if}
 
@@ -995,6 +1265,243 @@
   }
   .ghost-btn:hover { background: var(--bg-hover); }
 
+  /* ── Drag tray + bulk bar (P2-3) ────────────────────── */
+  .collection-tray {
+    position: fixed;
+    left: 50%;
+    bottom: 40px;
+    transform: translateX(-50%);
+    z-index: 900;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-width: min(760px, 92vw);
+    max-height: 40vh;
+    overflow-y: auto;
+    padding: 10px 12px;
+    border: 1px solid var(--accent);
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-pop);
+  }
+  .tray-label {
+    font-family: var(--font-display);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    color: var(--text-muted);
+  }
+  .tray-chip {
+    padding: 5px 10px;
+    border: 1px solid var(--rule-strong);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+  .tray-chip:hover, .tray-chip:focus-visible {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--on-accent);
+    outline: none;
+  }
+  .tray-empty { font-size: var(--text-sm); color: var(--text-muted); }
+  .tray-cancel {
+    margin-left: 4px;
+    padding: 4px 7px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+  .tray-cancel:hover { color: var(--text-primary); background: var(--bg-hover); }
+
+  .bulk-bar {
+    position: fixed;
+    left: 50%;
+    bottom: 40px;
+    transform: translateX(-50%);
+    z-index: 880;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    width: min(860px, 94vw);
+    padding: 9px 12px;
+    border: 1px solid var(--rule-strong);
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-pop);
+  }
+  .bulk-count {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+  }
+  .bulk-link {
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .bulk-link:hover { color: var(--accent); }
+  .bulk-spacer { flex: 1; }
+  .bulk-select {
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+  }
+  .bulk-btn {
+    padding: 5px 11px;
+    border: 1px solid var(--rule-strong);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .bulk-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .bulk-btn-primary:not(:disabled) { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .bulk-btn-danger:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+  .bulk-btn-danger:not(:disabled):hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+
+  /* ── Continue playing shelf (P2-1) ─────────────────── */
+  .continue {
+    flex-shrink: 0;
+    padding: 2px var(--gutter) 14px;
+    background: var(--bg-primary);
+  }
+  .continue-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .continue-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    color: var(--text-muted);
+  }
+  .continue-all {
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+  .continue-all:hover { color: var(--accent); }
+  .continue-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 8px;
+  }
+  .continue-card {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 7px 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+  }
+  .continue-card:hover { border-color: var(--rule-strong); background: var(--bg-hover); }
+  .continue-open {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .continue-open:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+  .continue-cover {
+    flex: 0 0 34px;
+    width: 34px;
+    aspect-ratio: 3 / 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: var(--bg-tertiary);
+    outline: 1px solid var(--border);
+    outline-offset: -1px;
+  }
+  .continue-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .continue-ph {
+    font-family: var(--font-display);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    color: var(--text-muted);
+  }
+  .continue-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .continue-name {
+    font-size: var(--text-base);
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .continue-sub {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+  .continue-dot {
+    width: 6px;
+    height: 6px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--ec, var(--text-muted));
+  }
+  .continue-engine {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-secondary);
+  }
+  .continue-sep { color: var(--rule-strong); }
+  .continue-play {
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid var(--accent-dim);
+    background: transparent;
+    color: var(--accent);
+    font-size: var(--text-2xs);
+    cursor: pointer;
+  }
+  .continue-play:hover { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  @media (max-width: 900px) {
+    .continue-row { grid-template-columns: 1fr; }
+  }
+
   /* ── Toolbar: quick views · search · Filters · View ─── */
   .toolbar {
     display: flex;
@@ -1055,7 +1562,8 @@
     white-space: nowrap;
   }
   :global(.tb-btn):hover { background: var(--bg-hover); }
-  :global(.tb-btn)[data-state="open"] { border-color: var(--accent); }
+  :global(.tb-btn[data-state="open"]) { border-color: var(--accent); }
+  :global(.tb-btn).tb-active { border-color: var(--accent); color: var(--accent); }
   .tb-count {
     display: inline-flex;
     align-items: center;

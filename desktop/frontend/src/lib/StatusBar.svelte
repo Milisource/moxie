@@ -4,6 +4,8 @@
   let {
     statusMsg = 'Ready',
     gameCount = 0,
+    updateCount = 0,
+    onGoToUpdates = () => {},
     pipelineBusy = false,
     pipelineLabel = '',
     appUpdateDownloading = false,
@@ -14,6 +16,8 @@
     lastSyncAt = '',       // ISO timestamp or '' (never synced this session/install)
     updateAvailable = null, // UpdateInfo-shaped ({latestVersion, ...}) or null
     onGoToUpdate = () => {},
+    couchMode = false,
+    onToggleCouch = () => {},
   } = $props()
 
   // Ticks once a minute so "Xm ago" keeps advancing without a reload — the
@@ -61,10 +65,21 @@
         {pipelineLabel}
       </span>
     {/if}
+    {#if updateCount > 0}
+      <button class="status-update" onclick={onGoToUpdates} title="Updates waiting in the queue">
+        {updateCount} update{updateCount === 1 ? '' : 's'}
+      </button>
+    {/if}
     {#if syncLabel}
       <span class="status-sync" title="Last full library sync">Synced {syncLabel}</span>
     {/if}
     <span class="status-count">{gameCount} game{gameCount !== 1 ? 's' : ''}</span>
+    <button
+      class="status-couch"
+      class:active={couchMode}
+      onclick={onToggleCouch}
+      title={couchMode ? 'Exit couch mode (F11)' : 'Couch mode: fullscreen library (F11)'}
+    >{couchMode ? 'Exit couch' : 'Couch'}</button>
   </span>
 </footer>
 
@@ -139,6 +154,16 @@
     flex-shrink: 0;
   }
 
+  .status-couch {
+    padding: 0 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+  .status-couch:hover { color: var(--text-primary); border-color: var(--rule-strong); }
+  .status-couch.active { color: var(--accent); border-color: var(--accent-dim); }
   .status-count {
     font-family: var(--font-mono);
     white-space: nowrap;

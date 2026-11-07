@@ -12,6 +12,9 @@
   let {
     game,
     playControl,
+    activity = null,
+    selectable = false,
+    selected = false,
     isRoving = false,
     top = 0,
     height = 49,
@@ -22,6 +25,8 @@
     onFocus = () => {},
     onContextMenu = () => {},
     onPlay = () => {},
+    onDragStart = () => {},
+    onDragEnd = () => {},
   } = $props()
 
   let ctl = $derived(playControl(game))
@@ -30,16 +35,25 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
   class="table-row"
+  class:row-selected={selected}
+  class:row-selecting={selectable}
   style="height: {height}px; transform: translateY({top}px)"
   data-game-id={game.id}
+  draggable={selectable ? 'false' : 'true'}
+  ondragstart={onDragStart}
+  ondragend={onDragEnd}
   onclick={onOpenDetail}
   onfocus={onFocus}
   oncontextmenu={onContextMenu}
   onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenDetail(); } }}
   role="button"
+  aria-pressed={selectable ? selected : undefined}
   tabindex={isRoving ? 0 : -1}
 >
   <span class="col-cover">
+    {#if selectable}
+      <span class="select-check" class:checked={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
+    {/if}
     {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
       <img
         class="cover-thumb"
@@ -58,7 +72,12 @@
     {/if}
   </span>
   <span class="col-title game-title">
-    {game.title}
+    <span class="title-text">{game.title}</span>
+    {#if activity}
+      <span class="row-activity" class:row-activity-error={activity.tone === 'error'} title={activity.detail}>
+        {activity.label}{#if activity.percent !== null}{' '}{activity.percent}%{/if}
+      </span>
+    {/if}
   </span>
   <span class="col-engine">
     {#if game.engine}
@@ -145,11 +164,50 @@
   :global(.density-compact) .cover-icon { font-size: var(--text-2xs); }
 
   .game-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
     font-weight: 500;
+  }
+  .row-selected { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .col-cover { position: relative; }
+  .select-check {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    z-index: 3;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--rule-strong);
+    background: var(--bg-primary);
+    color: var(--on-accent);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+  }
+  .select-check.checked { background: var(--accent); border-color: var(--accent); }
+
+  .title-text {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .row-activity {
+    flex-shrink: 0;
+    padding: 1px 5px;
+    border: 1px solid var(--accent-dim);
+    color: var(--accent);
+    font-family: var(--font-display);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    font-variant-numeric: tabular-nums;
+  }
+  .row-activity-error { border-color: var(--danger); color: var(--danger); }
 
   .engine-badge {
     display: inline-flex;
@@ -216,6 +274,7 @@
     transition: all 0.12s;
     white-space: nowrap;
   }
+  .row-selecting .row-play { display: none; }
   .row-play:hover { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   .row-play:disabled { opacity: 0.7; cursor: default; }
   .row-play.state-playing { background: var(--success); color: #07140b; border-color: var(--success); }

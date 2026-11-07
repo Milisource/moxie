@@ -3,7 +3,7 @@
 **Date:** 2026-11-07 · **Scope:** desktop frontend (`desktop/frontend`), current `dev` redesign
 **Screenshots:** [`screenshots/polish-2026-11/`](screenshots/polish-2026-11/)
 **Prototype:** [`design/moxie-polish.figcraft`](../design/moxie-polish.figcraft) · [`design/renders/00-contact-sheet.png`](../design/renders/00-contact-sheet.png) · [`design/moxie-polish.pdf`](../design/moxie-polish.pdf) — nine screens implementing the P0/P1 direction.
-**Implementation status:** P0-1–P0-4 are in `desktop/frontend`: library header + count/sync, 11px caption tokens, neutral engine tags with aligned dots, one-row toolbar with View/Filters popovers; Covers with coverage + missing grid + sources; Sync with status/plan; Add game with detected preview; Settings with section nav and a two-column form at ≥1280px. The P1 pass adds the detail play bar (update controls in its secondary slot), Trash hierarchy, a sticky Edit dialog footer, sidebar line icons with pinned Settings, a clear-search action, and pluralized download stats. Implemented-state captures: `screenshots/polish-2026-11/impl/`.
+**Implementation status:** P0, P1 and P2 are implemented in `desktop/frontend`. P0: library header + count/sync, 11px caption tokens, neutral engine tags with aligned dots, one-row toolbar with View/Filters popovers; Covers with coverage + missing grid + sources; Sync with status/plan; Add game with detected preview; Settings with section nav and a two-column form at ≥1280px. P1: detail play bar (update controls in its secondary slot), Trash hierarchy, sidebar line icons with pinned Settings, clear-search, pluralized download stats, and a fully restructured Edit dialog (fixed header, scrolling body, pinned footer, two-column fields, Advanced disclosure). P2: Continue-playing shelf, per-tile pipeline badges, drag-to-collection, bulk selection, shortcut sheet, couch mode, and an audited light theme. Implemented-state captures: `screenshots/polish-2026-11/impl/`.
 **Companion:** the original research and pre-redesign audit live in [`desktop-ui-research.md`](desktop-ui-research.md). This document reviews the *current* build and benchmarks it against 2026 launchers.
 
 ---
@@ -335,12 +335,31 @@ Each item names the files to touch and an acceptance test.
 
 ### P2 — Polish and expansion
 
-- **P2-1 Continue playing.** A one-row "Continue playing" strip above the grid (or a pinned first row in Recently played). Data already exists in play history.
-- **P2-2 Per-tile play-state badges.** Extend the update edge to downloading/queued/installing, matching Heroic's per-tile progress.
-- **P2-3 Drag to collection + bulk select.** Playnite/Steam pattern; Moxie has the collections model.
-- **P2-4 Fullscreen/couch mode.** Playnite and Steam Big Picture prove the demand; a later differentiator, not a polish task.
-- **P2-5 Shortcut sheet.** `?` opens a sheet listing `/`, `Ctrl/⌘+F`, arrows, Enter, Esc, context menu.
-- **P2-6 Light-theme audit.** The token set exists; verify the same contrast thresholds on `#f8f8fc`.
+**P2-1 · Continue playing — shipped.** A one-row shelf above the toolbar shows the five most recently played games (cover, engine dot, relative time, Play). It hides whenever a search or filter is active, and `Recently played →` switches to the full recency arrangement. Files: `GameList.svelte`.
+
+**P2-2 · Per-tile play-state badges — shipped.** `activity.js` maps the App-level update/install phases to one shared vocabulary (`Queued`, `Downloading 42%`, `Extracting`, `Installing`, `Failed`). Grid, wide, and list tiles render a coloured edge, a compact badge, and a download progress hairline, so the library, Updates view, and status bar never disagree. Files: `activity.js`, `GameGridCard.svelte`, `GameWideCard.svelte`, `GameTableRow.svelte`, `GameList.svelte`.
+
+**P2-3 · Drag to collection + bulk select — shipped.** Dragging a tile opens a drop tray of collections; dropping (or clicking a chip) adds the game. The toolbar `Select` mode turns card clicks into selection toggles, shows aligned checkboxes, hides the Play overlay, and exposes a bulk bar with select-all, add-to-collection, and remove. Files: `GameList.svelte`, card components, `App.svelte`.
+
+**P2-4 · Fullscreen/couch mode — shipped.** `F11` or the status-bar `Couch` toggle hides the sidebar, goes fullscreen, and keeps the toggle visible to return. The preference persists. Files: `App.svelte`, `StatusBar.svelte`.
+
+**P2-5 · Shortcut sheet — shipped.** `?` opens a focus-trapped sheet listing the bindings that actually exist (`/`, `Ctrl/⌘+F`, `?`, `F11`, arrows, Enter, `Shift+F10`, `Tab`, `Esc`). A `? Keyboard shortcuts` hint sits under Settings in the sidebar. Files: `ShortcutsDialog.svelte`, `Sidebar.svelte`, `App.svelte`.
+
+**P2-6 · Light-theme audit — shipped.** The light tokens now pass 4.5:1 against every surface, including muted captions on hover rows.
+
+#### Light-theme contrast (WCAG 2.1, after the P2 pass)
+
+| Token | on `#f8f8fc` | on `#ffffff` | on `#eef0f6` | on `#e4e6f0` |
+|---|---|---|---|---|
+| `--text-primary` `#1a1a2e` | 16.10 | 17.06 | 14.97 | 13.71 |
+| `--text-secondary` `#4a4a60` | 8.13 | 8.61 | 7.55 | 6.92 |
+| `--text-muted` `#60607a` | 5.74 | 6.08 | 5.34 | 4.89 |
+| `--accent` `#5b39e0` | 6.38 | 6.76 | 5.93 | 5.43 |
+| `--danger` `#b91c1c` | 6.11 | 6.47 | 5.68 | 5.20 |
+| `--success` `#15703a` | 5.81 | 6.16 | 5.40 | 4.95 |
+| `--warning` `#92400e` | 6.69 | 7.09 | 6.22 | 5.70 |
+
+White on `--accent` is 6.76:1; white on `--accent-hover` (`#4f2fd0`) is 7.92:1. The previous muted (`#6a6a80`), accent, danger, success, and warning values failed on at least one surface.
 
 ---
 
@@ -385,6 +404,28 @@ Each item names the files to touch and an acceptance test.
 | `22-add-game.png` | Add Game with path filled |
 | `23-context-menu.png` | Right-click context menu |
 | `24-keyboard-focus.png` | Roving focus + Play |
+
+### Implementation captures (`impl/`)
+
+| File | State |
+|---|---|
+| `library-sidebar.png` | P1 library with line-icon sidebar |
+| `detail-playbar.png` | P1 detail play bar |
+| `trash.png` | P1 Trash hierarchy |
+| `edit-dialog.png` | P1 sticky Edit footer |
+| `p1-contact.png` | P1 four-up contact sheet |
+| `library-continue.png` | P2 continue-playing shelf |
+| `bulk-select.png` | P2 selection mode + bulk bar |
+| `drag-tray.png` | P2 collection drop tray |
+| `shortcuts.png` | P2 shortcut sheet |
+| `couch.png` | P2 couch mode (no sidebar) |
+| `tile-activity.png` | P2 downloading badge + progress hairline |
+| `edit-advanced.png` | P1/P2 Advanced disclosure open, Footer still pinned |
+| `downloads-empty.png` | P1/P2 Downloads empty state with Open Sync |
+| `light-library.png` | P2 light theme, library |
+| `light-detail.png` | P2 light theme, detail |
+| `light-wide.png` | P2 light theme, wide cards + overlay chips |
+| `p2-contact.png` | P2 six-up contact sheet |
 
 **Mock limitation:** `Saves` is not stubbed in `mock/mock-runtime.js` (`GetSavesOverview` is missing), so it renders an error in the standalone harness. That is a fixture gap, not an app defect.
 

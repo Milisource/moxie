@@ -1,8 +1,8 @@
 <script>
   import {onMount, tick} from 'svelte'
   import {fly} from 'svelte/transition'
-  import {EventsOn, BrowserOpenURL} from '../wailsjs/runtime/runtime'
-  import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted, GetCookieStatus, SyncAllGames, DownloadGameUpdate, DownloadAllUpdates, CancelGameUpdate, CancelGameUpdateFor, CancelSync, ProvideUpdateFile, ScanDirectory, FetchCovers, UpgradeCovers, GetGameCount, CheckForUpdate, DownloadUpdate, ApplyUpdate, InstallGame} from '../wailsjs/go/main/App'
+  import {EventsOn, BrowserOpenURL, WindowFullscreen, WindowUnfullscreen} from '../wailsjs/runtime/runtime'
+  import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted, GetCookieStatus, SyncAllGames, DownloadGameUpdate, DownloadAllUpdates, CancelGameUpdate, CancelGameUpdateFor, CancelSync, ProvideUpdateFile, ScanDirectory, FetchCovers, UpgradeCovers, GetGameCount, GetUpdatableCount, CheckForUpdate, DownloadUpdate, ApplyUpdate, InstallGame} from '../wailsjs/go/main/App'
   import Sidebar from './lib/Sidebar.svelte'
   import GameList from './lib/GameList.svelte'
   import GameDetail from './lib/GameDetail.svelte'
@@ -18,6 +18,7 @@
   import SavesView from './lib/SavesView.svelte'
   import SettingsView from './lib/SettingsView.svelte'
   import StatusBar from './lib/StatusBar.svelte'
+  import ShortcutsDialog from './lib/ShortcutsDialog.svelte'
   import ConfirmDialog from './lib/ConfirmDialog.svelte'
   import PromptDialog from './lib/PromptDialog.svelte'
   import EditGameDialog from './lib/EditGameDialog.svelte'
@@ -27,11 +28,19 @@
 
   let version = $state('')
   let games = $state([])
-  let statusMsg = $state('Ready')
+  // Idle is silent: the status-bar summary (games · updates · last sync) is
+  // the resting state, and this only carries transient action feedback.
+  let statusMsg = $state('')
   let activeView = $state('library')
   let lastUpdate = $state(0)
+  let upstreamUpdateCount = $state(0)
   let selectedGameId = $state(null)
   let loading = $state(true)
+  let shortcutsOpen = $state(false)
+  // Couch mode: fullscreen + no sidebar, so the grid is the whole window on a
+  // TV or a controller-and-keyboard setup. Persisted because it is a room
+  // preference, not a per-session one.
+  let couchMode = $state(false)
   let gameListRef = $state.raw()   // bound to GameList; exposes focusSearch() for the global shortcut below
   let deletedGames = $state([])
   // Non-empty when the backend failed to start (usually the database). Without
@@ -624,10 +633,10 @@
     loading = true
     try {
       games = await GetGames()
-      // No count here — the status bar's own game-count span (StatusBar.svelte)
-      // already shows it persistently; repeating it in the transient message
-      // was both redundant and read like a console log line ("N games loaded").
-      statusMsg = 'Library ready'
+      // No transient message on a plain load: the status bar's summary
+      // (games · updates · last sync) is the resting state.
+      statusMsg = ''
+      try { upstreamUpdateCount = await GetUpdatableCount() } catch (e) { upstreamUpdateCount = 0 }
     } catch (e) {
       statusMsg = `Couldn't load your library — ${e}`
     }
@@ -679,6 +688,7 @@
     loading = true
     try {
       games = await GetGames()
+      try { upstreamUpdateCount = await GetUpdatableCount() } catch (e) { /* keep the last value */ }
     } catch (e) {
       // Callers own their status message — setting a generic "N games loaded"
       // here would clobber meaningful results (scan/sync/cover summaries).
@@ -745,7 +755,31 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable
   }
 
+  function toggleCouch() {
+    couchMode = !couchMode
+    try { localStorage.setItem('moxie.couch', couchMode ? '1' : '0') } catch (e) { /* private mode */ }
+    try {
+      if (couchMode) WindowFullscreen()
+      else WindowUnfullscreen()
+    } catch (e) { /* browser mock / restricted runtime */ }
+  }
+
   function handleGlobalKeydown(e) {
+    if (e.key === 'F11') {
+      e.preventDefault()
+      toggleCouch()
+      return
+    }
+    // "?" is the conventional shortcut-sheet key (GitHub, Linear, Steam).
+    // Shift+/ produces "?" on US layouts; e.key is layout-aware, so match the
+    // character rather than the key code.
+    if (e.key === '?' && !isTypingTarget(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault()
+      // Never stack the sheet on top of another dialog; ? still closes its own.
+      if (!shortcutsOpen && document.querySelector('[role="dialog"][data-state="open"]')) return
+      shortcutsOpen = !shortcutsOpen
+      return
+    }
     const isSlash = e.key === '/' && !isTypingTarget(e.target)
     const isFindCombo = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f'
     if (!isSlash && !isFindCombo) return
@@ -774,6 +808,7 @@
 
   onMount(() => {
     init()
+    try { couchMode = localStorage.getItem('moxie.couch') === '1' } catch (e) { /* ignore */ }
     window.addEventListener('keydown', handleGlobalKeydown)
     document.addEventListener('click', handleExternalLinkClick)
     // Live library refresh when the directory watcher finishes an auto-scan.
@@ -973,8 +1008,10 @@
   })
 </script>
 
-<div class="shell">
-  <Sidebar {version} bind:activeView onNavigate={(id) => activeView = id} {lastUpdate}/>
+<div class="shell" class:shell-couch={couchMode}>
+  {#if !couchMode}
+    <Sidebar bind:activeView onShortcuts={() => shortcutsOpen = true} onNavigate={(id) => activeView = id} {lastUpdate}/>
+  {/if}
 
   <main class="main">
     {#if startupError}
@@ -1009,11 +1046,13 @@
               {games}
               {loading}
               {gameStates}
+              {installState}
               lastSyncAt={appMeta.lastSyncAt}
               onOpenDetail={openDetail}
               onUpdate={refreshGames}
               onLaunched={(msg) => statusMsg = msg}
               onScan={() => activeView = 'scan'}
+              onCollectionsChanged={() => lastUpdate++}
             />
           {:else if activeView === 'scan'}
             <ScanDialog
@@ -1048,7 +1087,8 @@
               onCancelGame={cancelUpdateFor}
             />
           {:else if activeView === 'downloads'}
-            <DownloadsView />
+            <DownloadsView
+              onGoToSync={() => activeView = 'sync'} />
           {:else if activeView === 'covers'}
             <CoversView
               gameCount={coverState.gameCount}
@@ -1137,17 +1177,22 @@
     <StatusBar
       {statusMsg}
       gameCount={games.length}
+      updateCount={upstreamUpdateCount}
+      onGoToUpdates={() => activeView = 'updates'}
       {pipelineBusy}
       {pipelineLabel}
       appUpdateDownloading={appUpdateState.downloading}
       lastSyncAt={appMeta.lastSyncAt}
       {updateAvailable}
       onGoToUpdate={() => activeView = 'settings'}
+      {couchMode}
+      onToggleCouch={toggleCouch}
     />
   </main>
 </div>
 
 <ConfirmDialog />
+<ShortcutsDialog bind:open={shortcutsOpen} />
 <PromptDialog />
 <EditGameDialog />
 
@@ -1157,6 +1202,10 @@
     height: 100vh;
     width: 100vw;
   }
+
+  /* Couch mode drops the sidebar; the status bar remains so the exit control
+     is always on screen. */
+  .shell-couch .main { max-width: 1800px; margin: 0 auto; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
 
   .main {
     flex: 1;
@@ -1254,9 +1303,6 @@
   .btn-sm:hover { background: var(--bg-hover); }
   .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
   .btn-primary:hover { background: var(--accent-hover); }
-  .btn-danger { background: var(--danger); color: #fff; border: none; padding: 7px 16px; border-radius: var(--radius-1); font-size: var(--text-base); cursor: pointer; }
-  .btn-danger:hover { opacity: 0.9; }
   .btn-danger-ghost { background: transparent; color: var(--danger); border-color: var(--danger); }
   .btn-danger-ghost:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
-  .text-muted { color: var(--text-muted); font-size: var(--text-md); }
 </style>
