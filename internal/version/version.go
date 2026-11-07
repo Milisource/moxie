@@ -128,6 +128,11 @@ func classify(v string) kind {
 
 // Compare reports how the remote version relates to the known one.
 //
+// A missing trailing numeric segment counts as zero, so formatting-only
+// differences — "1" vs "1.0", "1.13" vs "1.13.0", "v0.17.0" vs "0.17" —
+// compare Same rather than Changed. Chapter-style versions remain
+// incomparable with plain numerics.
+//
 // Only a Newer result should be treated as an update available without
 // qualification. Callers that surface Changed to users should mark it as
 // uncertain, and Older is a signal that something upstream went wrong.
@@ -170,8 +175,10 @@ func IsNewer(remote, known string) bool {
 // NeedsUpdate reports whether latest should replace current in the download
 // queue. Only Newer and Changed qualify: Changed means the two strings differ
 // in a way that cannot be ordered, so surfacing it lets a person decide, while
-// Same and Older are never updates. A thread that reverts to an earlier
-// version therefore stops re-queuing the game.
+// Same and Older are never updates. Formatting-only differences (a missing
+// trailing segment, a leading "v") are Same, so they do not queue a game. A
+// thread that reverts to an earlier version therefore stops re-queuing the
+// game.
 //
 // Automatic installation must be stricter: it should call IsNewer, because a
 // Changed comparison is not evidence of a newer build.

@@ -660,8 +660,11 @@ func TestRunUpdateCheck_OnlyNewerVersionsCount(t *testing.T) {
 	}
 
 	updatesFound, results := RunUpdateCheck(database, client, games, true, nil)
-	if updatesFound != 2 {
-		t.Errorf("updatesFound = %d, want 2", updatesFound)
+	// Only "Newer Game" is ahead. "Equivalent Game" reports v1.0.0 against
+	// local 1.0; the missing segment is zero padding, so it is Same, not
+	// Changed, and is no longer counted as an update.
+	if updatesFound != 1 {
+		t.Errorf("updatesFound = %d, want 1", updatesFound)
 	}
 
 	byTitle := make(map[string]UpdateResult, len(results))
@@ -675,7 +678,9 @@ func TestRunUpdateCheck_OnlyNewerVersionsCount(t *testing.T) {
 	}{
 		{"Newer Game", true, "newer"},
 		{"Older Game", false, "older"},
-		{"Equivalent Game", true, "changed"},
+		// v1.0.0 vs 1.0 differ only by formatting now that missing
+		// trailing segments pad with zero.
+		{"Equivalent Game", false, "same"},
 	} {
 		got, ok := byTitle[tc.title]
 		if !ok {

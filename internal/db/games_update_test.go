@@ -24,8 +24,10 @@ func TestGamesNeedingUpdate_ExcludesSameAndOlderVersions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GamesNeedingUpdate: %v", err)
 	}
-	if len(pending) != 2 {
-		t.Fatalf("expected exactly 2 pending updates, got %d: %+v", len(pending), pending)
+	// "Reformatted same" (1.0 vs 1.0.0) is Same once missing trailing
+	// segments pad with zero, so only the genuine update is queued.
+	if len(pending) != 1 {
+		t.Fatalf("expected exactly 1 pending update, got %d: %+v", len(pending), pending)
 	}
 
 	count, err := database.CountGamesNeedingUpdate()

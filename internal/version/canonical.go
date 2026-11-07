@@ -29,6 +29,12 @@ var (
 	// chapter 4 and "update 27fix2" into episode 27, which made unrelated
 	// versions unorderable and hid real updates.
 	trackReC = regexp.MustCompile(`(?i)\b(season|chapter|episode|ch|ep|s|e)\.?\s*(\d+)`)
+
+	// trailingZeroSegRe matches zero-valued trailing segments, so the
+	// canonical form drops "1.0.0", "1.00" and "1.0" alike to "1". The
+	// comparator pads missing segments with zero, so these spellings must
+	// canonicalize together or Compare would downgrade a Same to Changed.
+	trailingZeroSegRe = regexp.MustCompile(`(?:\.0+)+$`)
 )
 
 func isNoiseToken(tok string) bool {
@@ -187,7 +193,8 @@ func Parse(raw string) Version {
 		v.Kind = "final"
 	}
 	// Keep trailing zeros so "1.0" stays [1,0] and compares correctly
-	// against "1.2"; missing components are handled in Compare.
+	// against "1.2"; CompareStructured pads a missing trailing segment
+	// with zero, so "1.13" and "1.13.0" are the same release.
 	if len(v.Track) == 0 && len(v.Core) == 0 && v.Kind != "final" {
 		v.Kind = "other"
 	}
@@ -223,11 +230,10 @@ func Canonical(raw string) string {
 				tl = nl
 			}
 		}
-		// trim trailing zeros
+		// trim trailing zero-valued segments: "1.0.0" and "1.00" both
+		// canonicalize to "1"
 		if looksLikeVersion(tl) {
-			for strings.HasSuffix(tl, ".0") {
-				tl = strings.TrimSuffix(tl, ".0")
-			}
+			tl = trailingZeroSegRe.ReplaceAllString(tl, "")
 		}
 		out = append(out, tl)
 	}
@@ -283,55 +289,12 @@ func CompareStructured(a, b Version) Diff {
 		return Changed
 	}
 	// track
-	if len(a.Track) != len(b.Track) {
-		minN := len(a.Track)
-		if len(b.Track) < minN {
-			minN = len(b.Track)
-		}
-		for i := 0; i < minN; i++ {
-			if a.Track[i] != b.Track[i] {
-				if a.Track[i] > b.Track[i] {
-					return Newer
-				}
-				return Older
-			}
-		}
-		if len(a.Track) != len(b.Track) {
-			return Changed
-		}
-	} else {
-		for i := range a.Track {
-			if a.Track[i] != b.Track[i] {
-				if a.Track[i] > b.Track[i] {
-					return Newer
-				}
-				return Older
-			}
-		}
+	if d := compareSegments(a.Track, b.Track); d != Same {
+		return d
 	}
 	// core
-	if len(a.Core) != len(b.Core) {
-		minN := len(a.Core)
-		if len(b.Core) < minN {
-			minN = len(b.Core)
-		}
-		for i := 0; i < minN; i++ {
-			if a.Core[i] != b.Core[i] {
-				if a.Core[i] > b.Core[i] {
-					return Newer
-				}
-				return Older
-			}
-		}
-		return Changed
-	}
-	for i := range a.Core {
-		if a.Core[i] != b.Core[i] {
-			if a.Core[i] > b.Core[i] {
-				return Newer
-			}
-			return Older
-		}
+	if d := compareSegments(a.Core, b.Core); d != Same {
+		return d
 	}
 	// pre
 	ar := 3
@@ -389,19 +352,39 @@ func CompareStructured(a, b Version) Diff {
 	return Changed
 }
 
+// compareSegments orders two numeric component slices element-wise, treating
+// a missing trailing segment as zero. Compiled versions written as "1", "1.0"
+// and "1.0.0" therefore denote the same release, while "0.8" vs "0.8.1"
+// stays an ordering question ("0.8" is Older).
+func compareSegments(a, b []int) Diff {
+	n := len(a)
+	if len(b) > n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		x, y := 0, 0
+		if i < len(a) {
+			x = a[i]
+		}
+		if i < len(b) {
+			y = b[i]
+		}
+		if x != y {
+			if x > y {
+				return Newer
+			}
+			return Older
+		}
+	}
+	return Same
+}
+
 func versionsEqualC(a, b Version) bool {
-	if len(a.Track) != len(b.Track) || len(a.Core) != len(b.Core) {
+	// Same padding as CompareStructured: "1" and "1.0" are the same release,
+	// and a Same verdict must not be downgraded to Changed just because the
+	// component lists differ in length.
+	if compareSegments(a.Track, b.Track) != Same || compareSegments(a.Core, b.Core) != Same {
 		return false
-	}
-	for i := range a.Track {
-		if a.Track[i] != b.Track[i] {
-			return false
-		}
-	}
-	for i := range a.Core {
-		if a.Core[i] != b.Core[i] {
-			return false
-		}
 	}
 	if a.HasPre != b.HasPre {
 		return false

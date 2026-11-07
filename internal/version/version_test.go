@@ -52,14 +52,20 @@ func TestCompare(t *testing.T) {
 		// Equivalence across formatting differences.
 		{"identical", "0.8.1", "0.8.1", Same},
 		{"v prefix", "v0.8.1", "0.8.1", Same},
-		{"trailing zeros", "1.0.0", "1", Changed},
+		// A missing trailing segment is zero padding, not content.
+		{"trailing zeros", "1.0.0", "1", Same},
+		{"missing patch segment", "1.13", "1.13.0", Same},
+		{"missing minor zero", "24.0", "24", Same},
+		{"padded minor", "1.00", "1", Same},
+		{"v prefix and padding", "v0.17.0", "0.17", Same},
 		{"underscores from dir name", "0.8.1", "0_8_1", Same},
 		{"case", "V1.5B", "v1.5b", Same},
 
 		// Real updates.
 		{"minor bump", "0.9", "0.8", Newer},
 		{"patch bump", "0.8.2", "0.8.1", Newer},
-		{"added patch segment", "0.8.1", "0.8", Changed},
+		// The added segment is non-zero, so it orders above the padded zero.
+		{"added patch segment", "0.8.1", "0.8", Newer},
 		{"major bump", "2.0", "1.9.9", Newer},
 		{"double digit", "0.12.0", "0.9", Newer},
 		{"build letter", "1.5b", "1.5a", Newer},
@@ -73,7 +79,11 @@ func TestCompare(t *testing.T) {
 
 		// Regressions — the case the old equality check reported as updates.
 		{"older minor", "0.8", "0.9", Older},
-		{"dropped patch segment", "0.8", "0.8.1", Changed},
+		// The missing segment is the low-order zero, so the padded version
+		// is behind the one that spells it out.
+		{"dropped patch segment", "0.8", "0.8.1", Older},
+		// Core numbers match once padded; alpha ranks below the release.
+		{"prerelease loses to padded release", "0.1 alpha", "0.1.0", Older},
 		{"older date", "2018-07-18", "2019-01-02", Older},
 		{"older build letter", "1.5a", "1.5b", Older},
 
