@@ -1551,8 +1551,15 @@
     align-items: center;
     gap: 8px;
     margin-left: auto;
-    flex: 0 0 auto;
-    flex-wrap: nowrap;
+    /* Grow into the row's remaining space instead of asking WebKitGTK for the
+       group's intrinsic width. WebKit computes that width wrong for this
+       nested flex row (~430px for 604px of controls), so the controls were
+       painted past the window edge at every window size. flex-end keeps them
+       right-aligned; the toolbar still wraps this whole group onto its own
+       row when the window is narrow. */
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: flex-end;
   }
   .quick-tabs {
     display: flex;
@@ -1684,7 +1691,7 @@
 
   .search-wrapper {
     position: relative;
-    flex: 0 0 380px;
+    flex: 1 1 380px;
     min-width: 180px;
     max-width: 380px;
   }
