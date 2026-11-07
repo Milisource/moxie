@@ -477,10 +477,18 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 				return fmt.Errorf("extract %s: %w", filepath.Base(downloadedFile), err)
 			}
 			fmt.Fprintf(os.Stderr, "\n    Extracted %d files\n", result.FilesExtracted)
-			defer os.RemoveAll(result.Destination)
+			// The extraction tree is scratch space — unless Merge adopts it.
+			// An adopted merge renames the tree into the game dir, so it is
+			// the live install, and deleting result.Destination here would
+			// delete the game.
+			extractionAdopted := false
+			defer func() { removeExtractionIfUnused(result.Destination, extractionAdopted) }()
 
 			fmt.Fprintf(os.Stderr, "  Merging update into %s...\n", game.Path)
 			mergeResult, mergeErr := updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
+			if mergeErr == nil && mergeResult != nil && mergeResult.Adopted {
+				extractionAdopted = true
+			}
 			if mergeErr != nil {
 				dlRecord.Status = db.DownloadStatusFailed
 				dlRecord.Error = mergeErr.Error()
@@ -524,4 +532,15 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 
 	fmt.Fprintf(os.Stderr, "  ✓ Ready: %s\n", destDir)
 	return nil
+}
+
+// removeExtractionIfUnused deletes the extraction tree created for a merge.
+// When updater.Merge adopted that tree it renamed it into the game directory,
+// so the staging path is the live install now (or an emptied shell Merge has
+// already removed) and must not be deleted from here.
+func removeExtractionIfUnused(destination string, adopted bool) {
+	if destination == "" || adopted {
+		return
+	}
+	os.RemoveAll(destination)
 }

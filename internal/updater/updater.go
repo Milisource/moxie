@@ -4,12 +4,15 @@ package updater
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/mili/moxie/internal/log"
 )
@@ -19,16 +22,43 @@ type MergeResult struct {
 	FilesCopied    int
 	FilesPreserved int
 	BackupPath     string // empty if backup was not requested or failed
+	// Adopted reports that the extracted game tree was moved into the game
+	// directory with a single rename instead of being copied file by file.
+	// When true, the extracted root no longer exists under extractedDir (or
+	// that parent was removed once emptied), and the install lives in gameDir.
+	// Callers must NOT delete the extraction destination after an adopted
+	// merge: the staging tree is part of the install now, and the destination
+	// may be its parent, so the usual `defer os.RemoveAll(destination)` could
+	// delete the game.
+	Adopted bool
 }
+
+// renameAdopt performs the single rename that adopts an extracted tree. It is
+// a package variable so tests can simulate the cross-device (EXDEV) failure
+// that a same-machine temp-dir setup cannot reproduce.
+var renameAdopt = os.Rename
 
 // Merge copies new game files from extractedDir into gameDir, preserving
 // user data (saves, mods, configs) based on the detected game engine.
 // If backup is true, the existing gameDir is renamed to gameDir.old first
-// and preserved files are restored from the backup after copying new files.
+// and preserved files are restored from the backup after the new files are in
+// place.
+//
+// When backup is true and the extracted tree is on the same filesystem as the
+// game dir, Merge adopts the extracted root with a single os.Rename instead of
+// copying every file. Update sizes are dominated by file data, so this turns a
+// multi-GB copy into metadata-only renames. A cross-device rename (EXDEV) falls
+// back to the copy path with the backup still in place. Trees the copy path
+// would sanitise (escaping symlinks, special files) and trees that overlap the
+// game dir are never adopted.
+//
 // A failed merge is rolled back from the backup, so the live game dir is
 // never left half-updated and a previous backup is never destroyed before
 // the new merge has completed. The context can abort the copy/restore
 // walks mid-merge; a cancelled merge is rolled back like any other failure.
+//
+// On an adopted merge the staging tree has been consumed: callers must skip
+// deleting the extraction destination (see MergeResult.Adopted).
 func Merge(ctx context.Context, gameDir, engine, extractedDir string, backup bool) (*MergeResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -46,6 +76,7 @@ func Merge(ctx context.Context, gameDir, engine, extractedDir string, backup boo
 	keepIfAbsent := keepIfAbsentPatterns(engine)
 	result := &MergeResult{}
 	committed := false
+	adopted := false
 
 	// Optional backup. The backup is the rollback safety net — if it
 	// cannot be created, proceeding would overwrite the live game dir
@@ -79,20 +110,9 @@ func Merge(ctx context.Context, gameDir, engine, extractedDir string, backup boo
 		}
 		result.BackupPath = backupPath
 
-		if err := os.MkdirAll(gameDir, 0755); err != nil {
-			// gameDir may be partially created; remove it and restore the
-			// live dir plus any stale backup before returning.
-			os.RemoveAll(gameDir)
-			os.Rename(backupPath, gameDir)
-			if stalePath != "" {
-				os.Rename(stalePath, backupPath)
-			}
-			return nil, fmt.Errorf("recreate game dir: %w", err)
-		}
-
-		// From here on the live game dir is a fresh, half-populated copy.
-		// If the copy below fails (or panics), roll the live dir back from
-		// the backup and put the stale backup back in place.
+		// From here on the live game dir is gone (moved to backupPath) and
+		// this merge owns it. If anything below fails (or panics), roll the
+		// live dir back from the backup and put the stale backup back.
 		defer func() {
 			if committed {
 				// Success: backupPath holds the pre-merge game version;
@@ -102,7 +122,9 @@ func Merge(ctx context.Context, gameDir, engine, extractedDir string, backup boo
 				}
 				return
 			}
-			// Failure: undo the rename dance.
+			// Failure: undo the rename dance. This also discards an adopted
+			// tree, which is fine: it is the update payload and the caller
+			// would have deleted the staging copy anyway.
 			if err := os.RemoveAll(gameDir); err != nil {
 				log.Warn("merge rollback: remove partial game dir", "dir", gameDir, "error", err)
 			}
@@ -115,12 +137,42 @@ func Merge(ctx context.Context, gameDir, engine, extractedDir string, backup boo
 				}
 			}
 			result.BackupPath = ""
+			result.Adopted = false
 		}()
+
+		// Adopt the extracted tree with one rename when that is equivalent to
+		// the copy path. A cross-device (EXDEV) rename is the only failure
+		// that degrades to copying: everything else aborts and rolls back.
+		if adoptable(ctx, gameDir, srcDir) {
+			if err := renameAdopt(srcDir, gameDir); err != nil {
+				if !isCrossDevice(err) {
+					return result, fmt.Errorf("adopt extracted game dir: %w", err)
+				}
+				log.Debug("extracted tree is on another filesystem; copying instead", "src", srcDir)
+			} else {
+				adopted = true
+				result.Adopted = true
+				result.FilesCopied = countFiles(gameDir)
+				// The staged tree may have sat one level inside a wrapper
+				// directory (findGameRoot unwraps it). That wrapper is now
+				// empty, so drop it rather than accumulating shells in the
+				// download directory.
+				cleanupAdoptedStaging(extractedDir, srcDir, gameDir)
+				log.Info("merge adopted extracted tree", "game_dir", gameDir, "src", srcDir, "files", result.FilesCopied)
+			}
+		}
+		if !adopted {
+			if err := os.MkdirAll(gameDir, 0755); err != nil {
+				return result, fmt.Errorf("recreate game dir: %w", err)
+			}
+		}
 	}
 
-	// Copy new files
-	if err := copyNew(ctx, srcDir, gameDir, userData, result); err != nil {
-		return result, err
+	// Copy new files, unless an adopted tree is already in place.
+	if !adopted {
+		if err := copyNew(ctx, srcDir, gameDir, userData, result); err != nil {
+			return result, err
+		}
 	}
 
 	// If we have a backup, restore preserved files from it. A failure here
@@ -139,9 +191,169 @@ func Merge(ctx context.Context, gameDir, engine, extractedDir string, backup boo
 
 	committed = true
 
-	log.Info("merge complete", "game_dir", gameDir, "engine", engine,
+	log.Info("merge complete", "game_dir", gameDir, "engine", engine, "adopted", adopted,
 		"copied", result.FilesCopied, "preserved", result.FilesPreserved)
 	return result, nil
+}
+
+// adoptable reports whether srcDir can replace gameDir with one rename without
+// changing merge semantics. The trees must be disjoint (renaming an extracted
+// tree that sits inside the game dir would move it along with the backup), and
+// srcDir must be a real directory whose contents the copy path would copy
+// verbatim — no escaping symlinks or special files, which copyNew skips.
+func adoptable(ctx context.Context, gameDir, srcDir string) bool {
+	gameAbs, err := filepath.Abs(gameDir)
+	if err != nil {
+		return false
+	}
+	srcAbs, err := filepath.Abs(srcDir)
+	if err != nil {
+		return false
+	}
+	// Equal, ancestor, or descendant: abort the shortcut and copy.
+	if pathWithin(gameAbs, srcAbs) || pathWithin(srcAbs, gameAbs) {
+		return false
+	}
+	fi, err := os.Lstat(srcAbs)
+	if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	// A flat archive is extracted straight into the caller's download
+	// directory, so the "extracted root" is that shared container — the same
+	// directory that still holds the archive and may serve other games.
+	// Renaming it into the game would move the container; keep the copy path,
+	// which is what that layout got before adoption existed.
+	if containsArchiveAtTop(srcAbs) {
+		return false
+	}
+	return treeAdoptable(ctx, srcAbs)
+}
+
+// containsArchiveAtTop reports whether dir holds a downloaded archive. The
+// extractor only leaves one there when the archive had no wrapper directory,
+// which makes dir the caller's download container rather than a staging tree.
+func containsArchiveAtTop(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return true // cannot inspect: do not adopt
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".bz2", ".xz":
+			return true
+		}
+	}
+	return false
+}
+
+// treeAdoptable reports whether every entry under root is something copyNew
+// would install unchanged: directories, regular files, and symlinks that stay
+// inside root. Anything else (escaping links, FIFOs, sockets) keeps the merge
+// on the copy path, where the existing per-entry checks apply.
+func treeAdoptable(ctx context.Context, root string) bool {
+	ok := true
+	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if ctx.Err() != nil {
+			ok = false
+			return filepath.SkipAll
+		}
+		if err != nil {
+			// Unreadable entry: let the copy path surface the failure with
+			// its usual error instead of adopting a tree we cannot inspect.
+			ok = false
+			return filepath.SkipAll
+		}
+		if p == root {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, rerr := os.Readlink(p)
+			if rerr != nil || !linkWithinRoot(target, filepath.Dir(p), root) {
+				ok = false
+				return filepath.SkipAll
+			}
+			return nil
+		}
+		if info.IsDir() || info.Mode().IsRegular() {
+			return nil
+		}
+		ok = false
+		return filepath.SkipAll
+	})
+	return ok
+}
+
+// countFiles counts regular files and symlinks under dir. Used to report how
+// many files an adopted merge installed.
+func countFiles(dir string) int {
+	n := 0
+	filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			n++
+		}
+		return nil
+	})
+	return n
+}
+
+// cleanupAdoptedStaging removes the staging parent that held an adopted tree,
+// provided it is empty and does not contain the live game dir or its backup.
+// Best effort: a non-empty parent (e.g. the downloads dir still holding the
+// archive) is left alone.
+func cleanupAdoptedStaging(extractedDir, srcDir, gameDir string) {
+	if extractedDir == "" {
+		return
+	}
+	extractedAbs, err := filepath.Abs(extractedDir)
+	if err != nil {
+		return
+	}
+	srcAbs, err := filepath.Abs(srcDir)
+	if err != nil || extractedAbs == srcAbs {
+		return
+	}
+	if pathWithin(extractedAbs, gameDir) || pathWithin(extractedAbs, gameDir+".old") {
+		return
+	}
+	if err := os.Remove(extractedAbs); err != nil && !os.IsNotExist(err) {
+		log.Debug("adopted staging parent not removed", "dir", extractedDir, "error", err)
+	}
+}
+
+// pathWithin reports whether p is root itself or lies below root. Both paths
+// are made absolute and cleaned first; the check is lexical, matching the
+// path-safety checks used by the copy path.
+func pathWithin(root, p string) bool {
+	r, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	x, err := filepath.Abs(p)
+	if err != nil {
+		return false
+	}
+	if r == x {
+		return true
+	}
+	return strings.HasPrefix(x, r+string(filepath.Separator))
+}
+
+// isCrossDevice reports whether err from a rename means the two paths live on
+// different filesystems (EXDEV), the one rename failure that falls back to the
+// copy path instead of aborting the merge. Windows reports
+// ERROR_NOT_SAME_DEVICE (17) and Go's syscall package has no named constant for
+// it, so check the raw errno there as well.
+func isCrossDevice(err error) bool {
+	if errors.Is(err, syscall.EXDEV) {
+		return true
+	}
+	return runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(17))
 }
 
 // copyNew walks srcDir and copies files to destDir, skipping any that match
