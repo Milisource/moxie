@@ -133,8 +133,9 @@ func Download(args []string) {
 
 	if *open {
 		downloadSingleOpen(database, game, cookie, string(targetPlatform), dlWatchDir, *extract, *watch)
-	} else {
-		downloadSingle(database, game, cookie, *downloadDir, string(targetPlatform), *extract, nil, parseHostExclusions(*excludeHost))
+	} else if err := downloadSingle(database, game, cookie, *downloadDir, string(targetPlatform), *extract, nil, parseHostExclusions(*excludeHost)); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+		os.Exit(1)
 	}
 }
 
