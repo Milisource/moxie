@@ -390,6 +390,13 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 
 	log.Debug("download response", "url", redactedURL(urlStr), "status", resp.StatusCode, "content_length", resp.ContentLength, "content_type", resp.Header.Get("Content-Type"))
 
+	// Terminal statuses before the HTML heuristics: a 404/410 page is usually
+	// text/html, and treating it as a browser-gated landing page sends a human
+	// into a browser window for a file that no longer exists.
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return fmt.Errorf("download link is dead: HTTP %d", resp.StatusCode)
+	}
+
 	// Content-Type validation: reject HTML pages that indicate redirect/login pages.
 	// Missing Content-Type is allowed (some hosts omit it).
 	//
