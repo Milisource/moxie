@@ -1,6 +1,7 @@
 package scraper
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -82,6 +83,39 @@ func TestSanitizeTitle_VariousInputs(t *testing.T) {
 // ---------------------------------------------------------------------------
 // ComputeMatchScore
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// ScoreCandidate — the shared CLI/desktop association rule
+// ---------------------------------------------------------------------------
+
+func TestScoreCandidate_VersionBonusOnlyAboveThreshold(t *testing.T) {
+	t.Parallel()
+	// A sequel title ("SiNiSistar" vs "SiNiSistar 2") scores 0.25 by design.
+	// Version alignment must NOT lift it over the auto-accept threshold.
+	score, ok := ScoreCandidate("SiNiSistar", "1.3.0", "SiNiSistar 2 [v1.3.1]", "1.3.1", nil)
+	if !ok {
+		t.Fatal("sequel candidate should not be classified as a non-game")
+	}
+	if score >= MinMatchScore {
+		t.Errorf("score = %.2f, want < %.2f: version bonus must not rescue a weak title match", score, MinMatchScore)
+	}
+}
+
+func TestScoreCandidate_ExactMatchGetsClamped(t *testing.T) {
+	t.Parallel()
+	score, ok := ScoreCandidate("My Game", "1.0", "My Game [v1.0]", "1.0", []string{"renpy"})
+	if !ok || score != 1.0 {
+		t.Errorf("score = %.2f ok=%v, want 1.0 true", score, ok)
+	}
+}
+
+func TestScoreCandidate_RejectsNonGame(t *testing.T) {
+	t.Parallel()
+	_, ok := ScoreCandidate("My Game", "", "Request My Game", "", nil)
+	if ok {
+		t.Error("non-game thread was accepted")
+	}
+}
 
 func TestComputeMatchScore_Exact(t *testing.T) {
 	t.Parallel()
@@ -479,6 +513,48 @@ func newUnsafeTestClient(srv *httptest.Server) *Client {
 		xfTokenPage:     srv.URL,
 		xfSearchURL:     srv.URL + "/search/search",
 		googleSearchURL: srv.URL + "/google",
+	}
+}
+
+// TestXFToken_SharedAcrossClients: two clients built from the same session
+// share one GET / for the token; different sessions do not collide.
+func TestXFToken_SharedAcrossClients(t *testing.T) {
+	t.Parallel()
+	srv, fetches := searchTestServer(t,
+		func(int) string { return "page-token-1" },
+		func(string) (int, string) { return http.StatusOK, "" },
+	)
+	const key = "shared-token-cache-test"
+	t.Cleanup(func() {
+		xfTokenCache.mu.Lock()
+		delete(xfTokenCache.m, key)
+		xfTokenCache.mu.Unlock()
+	})
+
+	a := newUnsafeTestClient(srv)
+	b := newUnsafeTestClient(srv)
+	a.cookieKey, b.cookieKey = key, key
+
+	if got := a.xfToken(context.Background()); got != "page-token-1" {
+		t.Fatalf("a token = %q", got)
+	}
+	if got := b.xfToken(context.Background()); got != "page-token-1" {
+		t.Fatalf("b token = %q", got)
+	}
+	if n := fetches.Load(); n != 1 {
+		t.Errorf("token page fetches = %d, want 1 shared across clients", n)
+	}
+
+	other := newUnsafeTestClient(srv)
+	other.cookieKey = key + "-other"
+	t.Cleanup(func() {
+		xfTokenCache.mu.Lock()
+		delete(xfTokenCache.m, key+"-other")
+		xfTokenCache.mu.Unlock()
+	})
+	other.xfToken(context.Background())
+	if n := fetches.Load(); n != 2 {
+		t.Errorf("token page fetches = %d, want 2 for a different session", n)
 	}
 }
 

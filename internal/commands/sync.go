@@ -481,6 +481,23 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 					}
 				}
 				if len(searchRes) == 0 {
+					// The XenForo POST search requires a session; without one
+					// it costs a token GET + a POST and cannot succeed.
+					if client == nil || !client.Authenticated() {
+						saveMu.Lock()
+						game.VersionCheckedAt = time.Now()
+						if err := database.UpdateGame(&game); err != nil {
+							fmt.Fprintf(os.Stderr, "  ! Failed to update cooldown for %q: %v\n", game.Title, err)
+						}
+						saveMu.Unlock()
+						resultCh <- workResult{
+							game: game, query: query,
+							skipped: true,
+							msg:     "  ✗ No match (search needs an F95Zone session)\n\n",
+						}
+						atomic.AddInt64(&completedCount, 1)
+						continue
+					}
 					var err error
 					searchRes, err = client.SearchF95ZoneWithContext(ctx, query)
 					if err != nil {
@@ -521,52 +538,33 @@ func RunScrapeAuto(database *db.Database, client *scraper.Client, force bool, wo
 
 				// Score and select best match.
 				detEngine := engine.Detect(game.Path)
-				engVariants, hasEngVariants := engine.EngineTagVariants[string(detEngine.Engine)]
+				engVariants, _ := engine.EngineTagVariants[string(detEngine.Engine)]
 
 				var best *scraper.SearchResult
 				bestIdx := -1
 				var bestScore float64
 				for j, r := range searchRes {
-					score := scraper.ComputeMatchScore(game.Title, r.Title)
-					// Version alignment breaks sequel ties: "SiNiSistar2"
-					// (local v1.3.0) must beat the original "SiNiSistar"
-					// (v3.0.1) with "SiNiSistar 2" (v1.3.1).
+					candidateVersion := ""
 					if j < len(searchMeta) {
-						score += scraper.VersionMatchBonus(game.Version, searchMeta[j].Version)
+						candidateVersion = searchMeta[j].Version
 					}
-					if hasEngVariants {
-						titleLower := strings.ToLower(r.Title)
-						for _, variant := range engVariants {
-							if strings.Contains(titleLower, variant) {
-								score += 0.15
-								if score > 1.0 {
-									score = 1.0
-								}
-								break
-							}
-						}
-					}
-					// Non-game rejection is title-based only: latest_data.php
-					// prefix numbering is not the F95Checker Type enum, so
-					// prefix IDs cannot distinguish games from mods/tools
-					// (a real RenPy game returned [7]).
-					isNonGame := scraper.IsNonGameThread(r.Title)
+					score, ok := scraper.ScoreCandidate(game.Title, game.Version, r.Title, candidateVersion, engVariants)
 					marker := "  "
-					if !isNonGame && score > bestScore {
+					if ok && score > bestScore {
 						bestScore = score
 						best = &searchRes[j]
 						bestIdx = j
 						marker = "→ "
 					}
 					skipLabel := ""
-					if isNonGame {
+					if !ok {
 						skipLabel = " [non-game]"
 					}
 					fmt.Fprintf(os.Stderr, "  %s[%.0f%%] %s%s\n", marker, score*100,
 						util.Truncate(r.Title, 55), skipLabel)
 				}
 
-				if best == nil || bestScore < 0.3 {
+				if best == nil || bestScore < scraper.MinMatchScore {
 					saveMu.Lock()
 					game.VersionCheckedAt = time.Now()
 					if err := database.UpdateGame(&game); err != nil {

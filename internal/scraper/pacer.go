@@ -187,13 +187,37 @@ func (p *hostPacer) noteSuccess() {
 	p.mu.Unlock()
 }
 
-// noteBlocked records a blocking response: it advances the circuit breaker
-// and, for 429, raises the shared delay (to Retry-After when the server gave
-// one, else doubling), capped at maxBackoff.
-func (p *hostPacer) noteBlocked(b *BlockedError, urlStr string) {
+// noteThrottled raises the shared adaptive delay after a 429, to the
+// server's Retry-After when given, else doubling. It does not touch the
+// circuit breaker: that is counted once per logical request by noteBlocked.
+func (p *hostPacer) noteThrottled(b *BlockedError) {
+	if b.StatusCode != http.StatusTooManyRequests {
+		return
+	}
 	retryAfter := b.RetryAfter
 	if retryAfter > maxBackoff {
 		retryAfter = maxBackoff
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if retryAfter > 0 {
+		p.delay = retryAfter
+	} else {
+		p.delay = time.Duration(float64(p.delay) * backoffMultiplier)
+	}
+	if p.delay > maxBackoff {
+		p.delay = maxBackoff
+	}
+}
+
+// noteBlocked records one blocked logical request (call it once per request,
+// after the retry loop — not once per attempt). A response carrying
+// Retry-After is a cooperative "wait this long" signal: it is honoured by the
+// caller and deliberately does not count toward tripping the breaker, so a
+// single rate-limit response cannot abort a whole sync run.
+func (p *hostPacer) noteBlocked(b *BlockedError, urlStr string) {
+	if b.RetryAfter > 0 {
+		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -205,16 +229,6 @@ func (p *hostPacer) noteBlocked(b *BlockedError, urlStr string) {
 			"url", urlStr,
 			"cooldown", breakerCooldown,
 		)
-	}
-	if b.StatusCode == http.StatusTooManyRequests {
-		if retryAfter > 0 {
-			p.delay = retryAfter
-		} else {
-			p.delay = time.Duration(float64(p.delay) * backoffMultiplier)
-		}
-		if p.delay > maxBackoff {
-			p.delay = maxBackoff
-		}
 	}
 }
 

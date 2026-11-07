@@ -128,6 +128,10 @@ func RunUpdateCheck(database *db.Database, client *scraper.Client, games []db.Ga
 type bulkGameEntry struct {
 	game        db.Game
 	prevChecked time.Time
+	// cacheFresh marks entries whose full cache-API record was already
+	// fetched and applied in this run (pass 2), so the status-refresh pass
+	// must not ask for it again.
+	cacheFresh bool
 }
 
 // runBulkVersionCheck performs the cookie-free bulk version pass. It returns
@@ -238,6 +242,7 @@ func runBulkVersionCheck(database *db.Database, games []db.Game, public *scraper
 		if isNew {
 			updatesFound++
 		}
+		entry.cacheFresh = true
 		entries = append(entries, entry)
 		results = append(results, res)
 		printBulkResult(index, len(games), g.Title, res.Current, res.Latest, res.Diff)
@@ -330,8 +335,17 @@ func refreshStatusViaCache(database *db.Database, entries []bulkGameEntry, publi
 	ctx := context.Background()
 
 	var ids []int64
+	seen := make(map[int64]bool, len(entries))
 	for _, e := range entries {
-		ids = append(ids, e.game.F95ThreadID)
+		id := e.game.F95ThreadID
+		if e.cacheFresh || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return
 	}
 	lastChanged, err := public.CacheFastCheck(ctx, ids)
 	if err != nil {
@@ -340,6 +354,9 @@ func refreshStatusViaCache(database *db.Database, entries []bulkGameEntry, publi
 	}
 
 	for _, e := range entries {
+		if e.cacheFresh {
+			continue // pass 2 already fetched and applied this thread
+		}
 		g := e.game
 		ts, ok := lastChanged[g.F95ThreadID]
 		// Refresh when the thread changed since the previous check — or

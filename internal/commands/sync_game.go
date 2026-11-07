@@ -28,6 +28,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 	scraper.LoadAssociationCache()
 
 	// Phase 1: Associate if needed.
+	var assocData *scraper.ThreadData
 	if game.F95URL == "" {
 		if client == nil {
 			return nil, fmt.Errorf("cannot search F95Zone: no scraper client available")
@@ -56,16 +57,21 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 			if interactive {
 				fmt.Fprintf(os.Stderr, "  Searching F95Zone for %q...\n", game.Title)
 			}
-			searchResults, err := client.SearchF95Zone(query)
-			if err != nil {
-				return nil, fmt.Errorf("search failed: %w", err)
+			// XenForo POST search needs a session; anonymously it costs a
+			// token GET + POST and cannot succeed, so skip it.
+			var searchResults []scraper.SearchResult
+			if client.Authenticated() {
+				res, err := client.SearchF95Zone(query)
+				if err != nil {
+					return nil, fmt.Errorf("search failed: %w", err)
+				}
+				searchResults = res
 			}
 			result.SearchResults = searchResults
 
 			if len(searchResults) == 0 {
 				return nil, fmt.Errorf("no F95Zone results found for %q", game.Title)
 			}
-
 			// Pre-detect engine so we can boost candidates whose titles
 			// contain matching engine keywords (e.g., "RPGM Completed
 			// Demons Roots" over "[Translation Request] Demons Roots").
@@ -117,6 +123,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 			return nil, fmt.Errorf("scrape failed: %w", err)
 		}
 		result.ThreadData = data
+		assocData = data
 
 		// Check engine consistency before associating (skip when
 		// using cached association — already verified previously).
@@ -176,16 +183,23 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 	}
 
 	if game.F95URL != "" {
-		if client == nil {
+		if client == nil && assocData == nil {
 			return result, fmt.Errorf("scrape failed: no scraper client available")
 		}
 
-		// Use slug-agnostic URL from thread ID when available so version
-		// changes in the URL slug don't break future scrapes.
-		scrapeURL := scraper.ResolveScrapeURL(game.F95URL, game.F95ThreadID)
-		data, err := client.ScrapeThread(scrapeURL)
-		if err != nil {
-			return result, fmt.Errorf("scrape failed: %w", err)
+		// Reuse the scrape phase 1 just performed: the thread data is the
+		// same, and ApplyThreadData already copied LatestVersion/status.
+		// Avoids a second paced thread GET on every unassociated sync.
+		data := assocData
+		if data == nil {
+			// Use slug-agnostic URL from thread ID when available so version
+			// changes in the URL slug don't break future scrapes.
+			scrapeURL := scraper.ResolveScrapeURL(game.F95URL, game.F95ThreadID)
+			var err error
+			data, err = client.ScrapeThread(scrapeURL)
+			if err != nil {
+				return result, fmt.Errorf("scrape failed: %w", err)
+			}
 		}
 		result.ThreadData = data
 

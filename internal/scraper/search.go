@@ -2,6 +2,8 @@ package scraper
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -137,12 +140,27 @@ func isXFTokenRejected(err error) bool {
 // falling back to the legacy xf_csrf cookie value only when the page
 // fetch fails — that value is rejected by current XenForo, so the caller
 // will fall through to the Google fallback.
+//
+// The cache is process-wide, keyed by a hash of the cookie string, so every
+// Client built from the same session shares one GET / per TTL window (the
+// desktop constructs a new Client per binding call).
 func (c *Client) xfToken(ctx context.Context) string {
-	c.mu.Lock()
-	fresh := c.xfTokenValue != "" && time.Since(c.xfTokenAt) < xfTokenTTL
-	c.mu.Unlock()
-	if fresh {
-		return c.xfTokenValue
+	if c.cookieKey != "" {
+		xfTokenCache.mu.Lock()
+		if e, ok := xfTokenCache.m[c.cookieKey]; ok && time.Since(e.at) < xfTokenTTL {
+			xfTokenCache.mu.Unlock()
+			return e.value
+		}
+		xfTokenCache.mu.Unlock()
+	} else {
+		c.mu.Lock()
+		fresh := c.xfTokenValue != "" && time.Since(c.xfTokenAt) < xfTokenTTL
+		if fresh {
+			value := c.xfTokenValue
+			c.mu.Unlock()
+			return value
+		}
+		c.mu.Unlock()
 	}
 
 	token := c.fetchXFToken(ctx)
@@ -151,9 +169,38 @@ func (c *Client) xfToken(ctx context.Context) string {
 		c.xfTokenValue = token
 		c.xfTokenAt = time.Now()
 		c.mu.Unlock()
+		if c.cookieKey != "" {
+			xfTokenCache.mu.Lock()
+			xfTokenCache.m[c.cookieKey] = xfTokenEntry{value: token, at: time.Now()}
+			xfTokenCache.mu.Unlock()
+		}
 		return token
 	}
 	return c.csrfToken
+}
+
+// xfTokenEntry is one cached session token.
+type xfTokenEntry struct {
+	value string
+	at    time.Time
+}
+
+// xfTokenCache shares _xfToken values across Clients built from the same
+// cookie string. Keyed by cookieCacheKey, never by the raw cookie.
+var xfTokenCache = struct {
+	mu sync.Mutex
+	m  map[string]xfTokenEntry
+}{m: map[string]xfTokenEntry{}}
+
+// cookieCacheKey derives a short, non-reversible key from a cookie string so
+// token entries can be shared without holding credentials in a map key.
+func cookieCacheKey(cookieStr string) string {
+	s := strings.TrimSpace(cookieStr)
+	if s == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:8])
 }
 
 // fetchXFToken GETs a page and extracts the embedded _xfToken.
@@ -183,6 +230,11 @@ func (c *Client) invalidateXFToken() {
 	c.xfTokenValue = ""
 	c.xfTokenAt = time.Time{}
 	c.mu.Unlock()
+	if c.cookieKey != "" {
+		xfTokenCache.mu.Lock()
+		delete(xfTokenCache.m, c.cookieKey)
+		xfTokenCache.mu.Unlock()
+	}
 }
 
 // xfSearchPOST performs a XenForo search via POST /search/search with

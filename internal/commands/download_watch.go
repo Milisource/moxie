@@ -55,6 +55,7 @@ func resolveBestLink(database *db.Database, game db.Game, cookie, targetPlatform
 					URL:      dl.URL,
 					Host:     dl.Host,
 					Name:     dl.Name,
+					Size:     dl.Size,
 					Platform: db.Platform(linkPlatform),
 				}
 				database.CreateDownloadLink(link)

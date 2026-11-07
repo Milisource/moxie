@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -146,10 +147,59 @@ func TestPacer_RateLimitRaisesSharedDelay(t *testing.T) {
 	if !errors.As(err, &be) {
 		t.Fatalf("err = %v, want BlockedError", err)
 	}
-	a.pacer.noteBlocked(be, srv.URL)
+	a.pacer.noteThrottled(be)
 
 	if d := b.Delay(); d != 7*time.Second {
 		t.Errorf("other client's delay after 429 = %v, want 7s", d)
+	}
+}
+
+// A single 429 carrying Retry-After must not trip the breaker; three distinct
+// uncooperative blocks still must.
+func TestPacer_RetryAfterDoesNotTripBreaker(t *testing.T) {
+	t.Parallel()
+	p := fastPacer()
+
+	throttled := &BlockedError{StatusCode: http.StatusTooManyRequests, RetryAfter: 7 * time.Second}
+	for i := 0; i < maxConsecutiveBlocks*2; i++ {
+		p.noteBlocked(throttled, "x")
+	}
+	if (&Client{pacer: p}).Blocked() {
+		t.Fatal("breaker tripped on Retry-After blocks")
+	}
+
+	for i := 0; i < maxConsecutiveBlocks; i++ {
+		p.noteBlocked(&BlockedError{StatusCode: http.StatusForbidden}, "x")
+	}
+	if !(&Client{pacer: p}).Blocked() {
+		t.Fatal("breaker did not trip after three distinct 403s")
+	}
+}
+
+// do() counts one blocked logical request once, even though it retried.
+func TestClient_BlockedRetriesCountOnce(t *testing.T) {
+	t.Parallel()
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClientWithHTTP("", srv.Client())
+	c.pacer = fastPacer()
+	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+	if _, err := c.do(req, 0); err == nil {
+		t.Fatal("expected a blocked error")
+	}
+	if got := atomic.LoadInt32(&hits); got < 2 {
+		t.Fatalf("hits = %d, want retries", got)
+	}
+	c.pacer.mu.Lock()
+	blocks := c.pacer.consecutiveBlocks
+	c.pacer.mu.Unlock()
+	if blocks > 1 {
+		t.Errorf("consecutiveBlocks = %d, want 1 for one logical request", blocks)
 	}
 }
 

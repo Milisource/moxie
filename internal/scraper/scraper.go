@@ -105,6 +105,10 @@ type Client struct {
 	xfTokenValue string
 	xfTokenAt    time.Time
 
+	// cookieKey identifies the session for the process-wide token cache.
+	// Empty for anonymous/cookieless clients, which keep a private cache.
+	cookieKey string
+
 	// Search endpoints — default to f95zone.to; tests override with
 	// httptest servers.
 	xfTokenPage     string // page fetched to obtain a fresh _xfToken
@@ -166,6 +170,7 @@ func NewClientWithHTTP(cookieStr string, httpClient *http.Client) *Client {
 		},
 		pacer:           newHostPacer(minDelay),
 		csrfToken:       extractCSRFToken(cookieStr),
+		cookieKey:       cookieCacheKey(cookieStr),
 		xfTokenPage:     xfTokenPageURL,
 		xfSearchURL:     xfSearchURL,
 		googleSearchURL: googleSearchURL,
@@ -191,6 +196,7 @@ func newClient(cookieStr string, unsafe bool) *Client {
 		},
 		pacer:           pacer,
 		csrfToken:       extractCSRFToken(cookieStr),
+		cookieKey:       cookieCacheKey(cookieStr),
 		xfTokenPage:     xfTokenPageURL,
 		xfSearchURL:     xfSearchURL,
 		googleSearchURL: googleSearchURL,
@@ -233,6 +239,13 @@ func extractCSRFToken(cookieStr string) string {
 	}
 
 	return ""
+}
+
+// Authenticated reports whether this client carries a logged-in session.
+// Callers use it to skip the XenForo search path, which cannot succeed
+// anonymously and costs a token GET plus a POST.
+func (c *Client) Authenticated() bool {
+	return c.authenticated
 }
 
 // hasAuthenticatedSession reports whether the cookie string carries a
@@ -308,12 +321,16 @@ func (c *Client) do(req *http.Request, baseDelay time.Duration) (bodyStr string,
 			if retryAfter > maxBackoff {
 				retryAfter = maxBackoff
 			}
-			// Advances the shared breaker and, on 429, raises the shared
-			// delay (Retry-After when given, else doubling).
-			c.pacer.noteBlocked(blockedErr, req.URL.Redacted())
+			// Raise the shared delay immediately, but count the block toward
+			// the breaker only once this logical request finally fails, so a
+			// retried 403 cannot trip the breaker three times over.
+			c.pacer.noteThrottled(blockedErr)
 		}
 
 		if attempt == maxAttempts || !retryable(err) {
+			if blockedErr != nil {
+				c.pacer.noteBlocked(blockedErr, req.URL.Redacted())
+			}
 			return "", err
 		}
 		// Pause between attempts. Prefer the server's Retry-After value
@@ -649,6 +666,7 @@ func (c *Client) noteBlocked(blockedErr *BlockedError, urlStr string) error {
 		"reason", blockedErr.Reason,
 		"url", urlStr,
 	)
+	c.pacer.noteThrottled(blockedErr)
 	c.pacer.noteBlocked(blockedErr, urlStr)
 	return blockedErr
 }

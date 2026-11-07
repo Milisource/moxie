@@ -172,6 +172,46 @@ var (
 	multiSpace         = regexp.MustCompile(`\s{2,}`)
 )
 
+// MinMatchScore is the auto-association threshold shared by the CLI and the
+// desktop app. Candidates below it are reported, never accepted.
+const MinMatchScore = 0.3
+
+// ScoreCandidate scores one search candidate against a local game using the
+// rules every frontend must agree on:
+//
+//   - title similarity via ComputeMatchScore;
+//   - version-alignment bonus only when the base title score already clears
+//     MinMatchScore. An unconditional bonus lifts a meaningful-diff candidate
+//     (ComputeMatchScore returns 0.25 for a sequel/remaster) to 0.55 and
+//     auto-associates the wrong thread;
+//   - +0.15 engine-keyword boost when the candidate title carries a variant of
+//     the detected engine;
+//   - non-game threads are rejected outright (ok=false).
+//
+// score is meaningful even when ok=false, so callers can print rejected rows.
+func ScoreCandidate(gameTitle, gameVersion, candidateTitle, candidateVersion string, engineVariants []string) (score float64, ok bool) {
+	score = ComputeMatchScore(gameTitle, candidateTitle)
+	if score >= MinMatchScore {
+		score += VersionMatchBonus(gameVersion, candidateVersion)
+	}
+	if len(engineVariants) > 0 {
+		titleLower := strings.ToLower(candidateTitle)
+		for _, variant := range engineVariants {
+			if strings.Contains(titleLower, variant) {
+				score += 0.15
+				break
+			}
+		}
+	}
+	if score > 1.0 {
+		score = 1.0
+	}
+	if IsNonGameThread(candidateTitle) {
+		return score, false
+	}
+	return score, true
+}
+
 // ComputeMatchScore returns a confidence score (0.0-1.0) for how well a
 // search result title matches a game title.
 func ComputeMatchScore(gameTitle, resultTitle string) float64 {

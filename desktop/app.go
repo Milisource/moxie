@@ -128,6 +128,22 @@ type App struct {
 	// sfCover dedupes concurrent cover downloads for the same game (sync
 	// and cover backfill may overlap).
 	sfCover singleflight.Group
+
+	// threadCache is a short-lived scrape cache shared by the preview, add
+	// and sync bindings, so a preview→add sequence does not fetch the same
+	// thread twice. Guarded by threadCacheMu; entries expire after
+	// threadCacheTTL.
+	threadCacheMu sync.Mutex
+	threadCache   map[string]threadCacheEntry
+}
+
+// threadCacheTTL bounds reuse of a scraped thread across bindings. Long
+// enough for a preview→add click, short enough that version data is fresh.
+const threadCacheTTL = 60 * time.Second
+
+type threadCacheEntry struct {
+	data *scraper.ThreadData
+	at   time.Time
 }
 
 // NewApp creates a new App instance.
@@ -2380,6 +2396,31 @@ func buildBrowsePage(lp *scraper.LatestPage) *F95BrowsePage {
 	return out
 }
 
+// scrapeThreadCached returns thread data from the short-lived cross-binding
+// cache when the same URL was scraped within threadCacheTTL, otherwise it
+// scrapes and stores. The desktop preview→add flow calls two bindings for the
+// same URL back to back; without this the second pays a full paced GET.
+func (a *App) scrapeThreadCached(client *scraper.Client, url string) (*scraper.ThreadData, error) {
+	a.threadCacheMu.Lock()
+	if e, ok := a.threadCache[url]; ok && time.Since(e.at) < threadCacheTTL {
+		a.threadCacheMu.Unlock()
+		return e.data, nil
+	}
+	a.threadCacheMu.Unlock()
+
+	data, err := client.ScrapeThread(url)
+	if err != nil {
+		return nil, err
+	}
+	a.threadCacheMu.Lock()
+	if a.threadCache == nil {
+		a.threadCache = make(map[string]threadCacheEntry)
+	}
+	a.threadCache[url] = threadCacheEntry{data: data, at: time.Now()}
+	a.threadCacheMu.Unlock()
+	return data, nil
+}
+
 // GetThreadPreview scrapes an F95Zone thread and returns preview data.
 func (a *App) GetThreadPreview(url string) (*ThreadPreview, error) {
 	// Blocking network binding — serialized like the other F95Zone calls.
@@ -2398,7 +2439,7 @@ func (a *App) GetThreadPreview(url string) (*ThreadPreview, error) {
 	}
 
 	client := scraper.NewClient(cookie)
-	data, err := client.ScrapeThread(url)
+	data, err := a.scrapeThreadCached(client, url)
 	if err != nil {
 		return nil, fmt.Errorf("scraping thread failed: %w", err)
 	}
@@ -2458,7 +2499,7 @@ func (a *App) AddGameFromF95Zone(url, title, engineName string) (int64, error) {
 	}
 
 	client := scraper.NewClient(cookie)
-	data, err := client.ScrapeThread(url)
+	data, err := a.scrapeThreadCached(client, url)
 	if err != nil {
 		return 0, fmt.Errorf("scraping thread failed: %w", err)
 	}
@@ -2557,6 +2598,7 @@ func (a *App) AddGameFromF95Zone(url, title, engineName string) (int64, error) {
 			URL:      dl.URL,
 			Host:     dl.Host,
 			Name:     dl.Name,
+			Size:     dl.Size,
 			Platform: db.Platform(p),
 			IsDead:   false,
 		}
@@ -2714,7 +2756,14 @@ func (a *App) fetchCoversRun(ctx context.Context) {
 		if have[g.ID] {
 			continue
 		}
-		jobs = append(jobs, job{game: g})
+		j := job{game: g}
+		// A stored cover URL means no metadata request is needed: resolve
+		// only when the database has nothing. (This is what the doc comment
+		// above promised; resolveCoverURL cannot see scraped_meta.)
+		if meta, err := a.db.GetScrapedMeta(g.ID); err == nil && meta != nil {
+			j.cover = meta.CoverURL
+		}
+		jobs = append(jobs, j)
 	}
 	total := len(jobs)
 	if total == 0 {
@@ -4136,6 +4185,12 @@ func (a *App) associateGame(ctx context.Context, game *db.Game, query string, de
 	if searchErr == nil && len(latestRes) == 0 {
 		useCookiePath = true
 	}
+	// The XenForo POST search cannot succeed without a session; skip the
+	// token GET + POST entirely rather than burning two requests.
+	if useCookiePath && !client.Authenticated() {
+		a.markSearchDone(game, saveMu)
+		return false, true, false
+	}
 
 	if useCookiePath {
 		results, searchErr := client.SearchF95Zone(query)
@@ -4330,11 +4385,16 @@ func (a *App) syncPhase2CheckUpdates(ctx context.Context, trackable []db.Game, p
 	// that's what refreshes the Downloads tab.
 	var versions map[int64]string
 	failedThreads := make(map[int64]bool)
+	// cacheFetched records threads whose full cache record this run already
+	// fetched (checkGameVersion), so the metadata refresh does not ask twice.
+	cacheFetched := make(map[int64]bool, len(active))
 	endpointGone := false
 	if !force {
 		var bulkIDs []int64
+		seenBulk := make(map[int64]bool, len(active))
 		for _, g := range active {
-			if g.F95ThreadID > 0 {
+			if g.F95ThreadID > 0 && !seenBulk[g.F95ThreadID] {
+				seenBulk[g.F95ThreadID] = true
 				bulkIDs = append(bulkIDs, g.F95ThreadID)
 			}
 		}
@@ -4406,7 +4466,7 @@ func (a *App) syncPhase2CheckUpdates(ctx context.Context, trackable []db.Game, p
 		if force {
 			isUpdate, block = a.syncPhase2ScrapeOne(ctx, game, client, allErrors)
 		} else {
-			isUpdate, block = a.checkGameVersion(ctx, game, public, client, cookie, versions, allErrors)
+			isUpdate, block = a.checkGameVersion(ctx, game, public, client, cookie, versions, allErrors, cacheFetched)
 		}
 		if block {
 			return updated, skipped, true
@@ -4426,7 +4486,7 @@ func (a *App) syncPhase2CheckUpdates(ctx context.Context, trackable []db.Game, p
 	// the previous check. Best effort. Forced runs already scraped the full
 	// thread, so this would be redundant.
 	if !force {
-		a.syncPhase2MetadataRefresh(ctx, active, prevChecks, public, allErrors)
+		a.syncPhase2MetadataRefresh(ctx, active, prevChecks, public, allErrors, cacheFetched)
 	}
 	return updated, skipped, false
 }
@@ -4437,7 +4497,7 @@ func (a *App) syncPhase2CheckUpdates(ctx context.Context, trackable []db.Game, p
 // updates game fields in place (the caller applies the cooldown stamp and
 // persists). Returns whether the version counts as an update and whether
 // the requests were blocked.
-func (a *App) checkGameVersion(ctx context.Context, game *db.Game, public *scraper.PublicAPI, client *scraper.Client, cookie string, versions map[int64]string, allErrors *[]string) (isUpdate, blocked bool) {
+func (a *App) checkGameVersion(ctx context.Context, game *db.Game, public *scraper.PublicAPI, client *scraper.Client, cookie string, versions map[int64]string, allErrors *[]string, cacheFetched ...map[int64]bool) (isUpdate, blocked bool) {
 	var latest string
 
 	if v, tracked := versions[game.F95ThreadID]; tracked {
@@ -4463,6 +4523,9 @@ func (a *App) checkGameVersion(ctx context.Context, game *db.Game, public *scrap
 		latest = ct.Version
 		game.Status = scraper.ResolveStatus(ct.Status, game.Status)
 		a.saveScrapedMeta(*game, ct.Developer, ct.Description, ct.ImageURL)
+		if len(cacheFetched) > 0 && cacheFetched[0] != nil {
+			cacheFetched[0][game.F95ThreadID] = true
+		}
 	} else {
 		// Thread-ID-less (legacy association) — cookie scrape.
 		if cookie == "" {
@@ -4552,25 +4615,13 @@ func (a *App) syncPhase2ScrapeOne(ctx context.Context, game *db.Game, client *sc
 // non-game match above the 0.3 threshold. Engine compatibility is enforced
 // separately by associateByScrape, which has the scraped thread tags.
 func (a *App) pickBestSearchResult(game db.Game, detEngine engine.Result, results []scraper.SearchResult) *scraper.SearchResult {
-	engVariants, hasEngVariants := engine.EngineTagVariants[string(detEngine.Engine)]
+	engVariants, _ := engine.EngineTagVariants[string(detEngine.Engine)]
 
 	var best *scraper.SearchResult
 	bestScore := 0.0
 	for i, r := range results {
-		score := scraper.ComputeMatchScore(game.Title, r.Title)
-		if hasEngVariants {
-			titleLower := strings.ToLower(r.Title)
-			for _, variant := range engVariants {
-				if strings.Contains(titleLower, variant) {
-					score += 0.15
-					if score > 1.0 {
-						score = 1.0
-					}
-					break
-				}
-			}
-		}
-		if scraper.IsNonGameThread(r.Title) {
+		score, ok := scraper.ScoreCandidate(game.Title, game.Version, r.Title, "", engVariants)
+		if !ok {
 			continue
 		}
 		if score > bestScore {
@@ -4578,7 +4629,7 @@ func (a *App) pickBestSearchResult(game db.Game, detEngine engine.Result, result
 			best = &results[i]
 		}
 	}
-	if best == nil || bestScore < 0.3 {
+	if best == nil || bestScore < scraper.MinMatchScore {
 		return nil
 	}
 	return best
@@ -4593,38 +4644,13 @@ func (a *App) pickBestSearchResult(game db.Game, detEngine engine.Result, result
 // Engine compatibility is enforced separately by the caller via the cache
 // API type field.
 func (a *App) pickBestLatestResult(game db.Game, detEngine engine.Result, results []scraper.LatestSearchResult) (*scraper.LatestSearchResult, float64) {
-	engVariants, hasEngVariants := engine.EngineTagVariants[string(detEngine.Engine)]
+	engVariants, _ := engine.EngineTagVariants[string(detEngine.Engine)]
 
 	var best *scraper.LatestSearchResult
 	bestScore := 0.0
 	for i, r := range results {
-		base := scraper.ComputeMatchScore(game.Title, r.Title)
-		score := base
-		// Version alignment breaks sequel ties ("SiNiSistar2" local v1.3.0
-		// vs "SiNiSistar 2" v1.3.1 over the original "SiNiSistar" v3.0.1) —
-		// but only for candidates that already clear the title-match
-		// threshold. Adding it unconditionally lifts a meaningful-diff
-		// candidate (ComputeMatchScore returns 0.25 for a sequel/remaster)
-		// to 0.55 and auto-associates the game with the wrong thread.
-		if base >= 0.3 {
-			score += scraper.VersionMatchBonus(game.Version, r.Version)
-		}
-		if score > 1.0 {
-			score = 1.0
-		}
-		if hasEngVariants {
-			titleLower := strings.ToLower(r.Title)
-			for _, variant := range engVariants {
-				if strings.Contains(titleLower, variant) {
-					score += 0.15
-					if score > 1.0 {
-						score = 1.0
-					}
-					break
-				}
-			}
-		}
-		if scraper.IsNonGameThread(r.Title) {
+		score, ok := scraper.ScoreCandidate(game.Title, game.Version, r.Title, r.Version, engVariants)
+		if !ok {
 			continue
 		}
 		if score > bestScore {
@@ -4632,7 +4658,7 @@ func (a *App) pickBestLatestResult(game db.Game, detEngine engine.Result, result
 			best = &results[i]
 		}
 	}
-	if best == nil || bestScore < 0.3 {
+	if best == nil || bestScore < scraper.MinMatchScore {
 		return nil, 0
 	}
 	return best, bestScore
@@ -4704,12 +4730,18 @@ func (a *App) syncPhase2Fallback(ctx context.Context, client *scraper.Client, tr
 
 // syncPhase2MetadataRefresh refreshes status/metadata via the cache API for
 // threads that changed since the previous check. Best effort.
-func (a *App) syncPhase2MetadataRefresh(ctx context.Context, trackable []db.Game, prevChecks map[int64]time.Time, public *scraper.PublicAPI, allErrors *[]string) {
+func (a *App) syncPhase2MetadataRefresh(ctx context.Context, trackable []db.Game, prevChecks map[int64]time.Time, public *scraper.PublicAPI, allErrors *[]string, cacheFetched map[int64]bool) {
 	var ids []int64
+	seen := make(map[int64]bool, len(trackable))
 	for _, g := range trackable {
-		if g.F95ThreadID > 0 {
-			ids = append(ids, g.F95ThreadID)
+		if g.F95ThreadID <= 0 || cacheFetched[g.F95ThreadID] || seen[g.F95ThreadID] {
+			continue
 		}
+		seen[g.F95ThreadID] = true
+		ids = append(ids, g.F95ThreadID)
+	}
+	if len(ids) == 0 {
+		return
 	}
 	lastChanged, err := public.CacheFastCheck(ctx, ids)
 	if err != nil {
@@ -4718,6 +4750,9 @@ func (a *App) syncPhase2MetadataRefresh(ctx context.Context, trackable []db.Game
 	}
 
 	for _, g := range trackable {
+		if cacheFetched[g.F95ThreadID] {
+			continue // checkGameVersion already fetched and applied it
+		}
 		ts, ok := lastChanged[g.F95ThreadID]
 		prev := prevChecks[g.ID]
 		// Refresh when the thread changed since the previous check — or
@@ -4921,9 +4956,13 @@ func (a *App) syncDownloadLinks(gameID int64, links []scraper.DownloadLink) {
 		if existing, ok := byURL[dl.URL]; ok {
 			// Unchanged URL — keep ID and IsDead state, but refresh the name
 			// so section/platform labels from a newer parser flow through.
-			if p := db.Platform(downloader.DetectPlatform(dl.Name, dl.URL)); existing.Name != dl.Name || existing.Platform != p {
+			p := db.Platform(downloader.DetectPlatform(dl.Name, dl.URL))
+			if existing.Name != dl.Name || existing.Platform != p || (dl.Size > 0 && existing.Size != dl.Size) {
 				existing.Name = dl.Name
 				existing.Platform = p
+				if dl.Size > 0 {
+					existing.Size = dl.Size
+				}
 				if err := a.db.UpdateDownloadLink(&existing); err != nil {
 					slog.Warn("failed to refresh download link name", "game_id", gameID, "error", err)
 				}
@@ -4936,6 +4975,7 @@ func (a *App) syncDownloadLinks(gameID int64, links []scraper.DownloadLink) {
 			URL:      dl.URL,
 			Host:     dl.Host,
 			Name:     dl.Name,
+			Size:     dl.Size,
 			Platform: db.Platform(p),
 			IsDead:   false,
 		}

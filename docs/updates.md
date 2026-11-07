@@ -44,6 +44,12 @@ check ──► queue ──► refresh links ──► pick mirror ──► re
 thread scraping. Results are compared with `version.Compare`; only `Newer` and
 `Changed` (different but unorderable) are reported as updates.
 
+Bulk ids are deduplicated by thread ID before every `/fast` or `checker.php`
+batch (platform copies of one game share a thread), and a thread whose full
+cache record was already fetched in the version pass is skipped by the
+status/metadata refresh — one `CacheFullThread` per changed thread per run, not
+two. Both the CLI and the desktop take this path.
+
 ### 2. Queue
 
 `db.GamesNeedingUpdate` filters candidates through `version.NeedsUpdate` in Go.

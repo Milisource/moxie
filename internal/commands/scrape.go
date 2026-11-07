@@ -125,6 +125,7 @@ func Scrape(args []string) {
 				URL:      dl.URL,
 				Host:     dl.Host,
 				Name:     dl.Name,
+				Size:     dl.Size,
 				Platform: db.Platform(linkPlatform),
 			}
 			if _, err := database.CreateDownloadLink(link); err != nil {
