@@ -148,6 +148,41 @@ func TestRunUpdateCheck_BulkUntrackedViaCache(t *testing.T) {
 	}
 }
 
+// TestRunUpdateCheck_BulkStatusRefreshPreservesCooldownStamp: the status
+// refresh writes the game back from a copy taken before the bulk pass stamped
+// VersionCheckedAt. If that pre-stamp copy is persisted, the 24h cooldown
+// never applies and every run re-checks the whole library.
+func TestRunUpdateCheck_BulkStatusRefreshPreservesCooldownStamp(t *testing.T) {
+	t.Parallel()
+	database := setupTestDB(t)
+	defer database.Close()
+
+	api, state := newBulkTestAPI(t)
+	state.bulkResponse = `{"status":"ok","msg":{"100":"v2.0"}}`
+	state.fastResponse = `{"100": 1}`
+	state.fullResponse = `{"name":"Cooldown Game","version":"v2.0","status":2,"developer":"DevCo"}`
+
+	g := &db.Game{Title: "Cooldown Game", Engine: "RenPy", Path: "/cooldown",
+		F95URL: "https://f95zone.to/threads/x.100/", F95ThreadID: 100,
+		Version: "v1.0", LatestVersion: "v1.0", Status: "unknown"}
+	if _, err := database.InsertGame(g); err != nil {
+		t.Fatal(err)
+	}
+
+	RunUpdateCheck(database, nil, []db.Game{*g}, true, api)
+
+	if state.fullCalls.Load() == 0 {
+		t.Fatal("status refresh did not run; test does not exercise the bug")
+	}
+	got, err := database.GetGame(g.ID)
+	if err != nil || got == nil {
+		t.Fatalf("failed to reload game: %v", err)
+	}
+	if got.VersionCheckedAt.IsZero() {
+		t.Error("VersionCheckedAt reset to zero by the status refresh; cooldown would never apply")
+	}
+}
+
 // TestRunUpdateCheck_BulkUntrackedFallsBack: when the cache API has no data
 // for an untracked thread, the game falls back to direct scraping.
 func TestRunUpdateCheck_BulkUntrackedFallsBack(t *testing.T) {

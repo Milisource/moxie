@@ -289,12 +289,16 @@ func processBulkGame(database *db.Database, g db.Game, latest string) (UpdateRes
 	}
 	isNew := diff == version.Newer || diff == version.Changed
 
-	entry := bulkGameEntry{game: g, prevChecked: g.VersionCheckedAt}
+	entry := bulkGameEntry{prevChecked: g.VersionCheckedAt}
 	// Never wipe a stored version with an empty bulk value ("Unknown").
 	if latest != "" {
 		g.LatestVersion = latest
 	}
 	g.VersionCheckedAt = time.Now()
+	// Record the stamped copy in the entry: the status/metadata refresh
+	// writes entry.game back with UpdateGame, and a pre-stamp copy would
+	// reset VersionCheckedAt and defeat the 24h cooldown.
+	entry.game = g
 	if err := database.UpdateGame(&g); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! Failed to save version data for %q: %v\n", g.Title, err)
 	}
