@@ -5,13 +5,30 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mili/moxie/internal/downloader"
 )
 
-// renderProgressBar renders a terminal progress bar.
+// progressBarEnabled is the package-level switch for \r progress bars. A batch
+// with more than one game in flight turns it off: frames from different
+// downloads would otherwise interleave on the same terminal.
+var progressBarEnabled atomic.Bool
+
+func init() { progressBarEnabled.Store(true) }
+
+// renderProgressBar renders a terminal progress bar, or nothing when the
+// switch is off or stderr is not a character device. Redirected logs must not
+// fill up with \r frames.
 func renderProgressBar(p downloader.Progress) {
+	if !progressBarEnabled.Load() {
+		return
+	}
+	if fi, err := os.Stderr.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return
+	}
+
 	width := 40
 	filled := int(p.Percent / 100.0 * float64(width))
 	if filled > width {

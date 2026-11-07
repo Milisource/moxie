@@ -2,9 +2,15 @@ package commands
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/db"
 )
 
@@ -107,15 +113,293 @@ func TestRunAutoUpdate_SelectionAndAmbiguity(t *testing.T) {
 		}
 	}
 
-	summary := runAutoUpdate(database, games, autoUpdateOptions{DryRun: true, Extract: true})
-	if summary.Candidates != 2 {
-		t.Errorf("Candidates = %d, want 2 (newer + ambiguous)", summary.Candidates)
+	summary := runAutoUpdate(database, games, autoUpdateOptions{DryRun: true, Extract: true, Concurrency: 1})
+	if summary.Candidates != 1 {
+		t.Errorf("Candidates = %d, want 1 (only the installable game)", summary.Candidates)
 	}
 	if summary.Ambiguous != 1 {
 		t.Errorf("Ambiguous = %d, want 1", summary.Ambiguous)
 	}
 	if summary.Installed != 0 {
 		t.Errorf("dry run installed %d games", summary.Installed)
+	}
+}
+
+func TestClampAutoUpdateConcurrency(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"", 2},       // unset
+		{"banana", 2}, // invalid
+		{"0", 2},      // zero means unset
+		{"-3", 1},     // below range
+		{"1", 1},      // minimum
+		{"3", 3},      // in range
+		{"4", 4},      // maximum
+		{"99", 4},     // above range
+	}
+	for _, c := range cases {
+		if got := clampAutoUpdateConcurrency(c.in); got != c.want {
+			t.Errorf("clampAutoUpdateConcurrency(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestAutoUpdateConcurrencyConfigAndFlag(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// No config file: the desktop default.
+	if got := autoUpdateConcurrencyOption(0); got != defaultAutoUpdateConcurrency {
+		t.Errorf("default concurrency = %d, want %d", got, defaultAutoUpdateConcurrency)
+	}
+
+	writeCommandConfig(t, `{"update-concurrency":"3"}`)
+	if got := autoUpdateConcurrency(); got != 3 {
+		t.Errorf("configured concurrency = %d, want 3", got)
+	}
+	if got := autoUpdateConcurrencyOption(0); got != 3 {
+		t.Errorf("flag 0 should use config: got %d, want 3", got)
+	}
+
+	// The flag overrides the config for one run, clamped like the config value.
+	if got := autoUpdateConcurrencyOption(1); got != 1 {
+		t.Errorf("--concurrency 1 = %d, want 1", got)
+	}
+	if got := autoUpdateConcurrencyOption(9); got != maxAutoUpdateConcurrency {
+		t.Errorf("--concurrency 9 = %d, want %d", got, maxAutoUpdateConcurrency)
+	}
+	if got := autoUpdateConcurrencyOption(-2); got != 1 {
+		t.Errorf("--concurrency -2 = %d, want 1", got)
+	}
+}
+
+func TestAutoUpdateDenominatorCountsInstallable(t *testing.T) {
+	t.Parallel()
+	games := []db.Game{
+		{Version: "1.0", LatestVersion: "1.1"},        // installable
+		{Version: "1.0", LatestVersion: "2026-10-01"}, // ambiguous
+		{Version: "1.2", LatestVersion: "1.1"},        // reverted: not a candidate
+		{Version: "", LatestVersion: "9.9"},           // unknown current: not a candidate
+		{Version: "2.0", LatestVersion: "2.1"},        // installable
+	}
+
+	got, limited := autoUpdateDenominator(games, 0)
+	if got != 2 || limited {
+		t.Errorf("unlimited denominator = (%d, %v), want (2, false)", got, limited)
+	}
+	got, limited = autoUpdateDenominator(games, 1)
+	if got != 1 || !limited {
+		t.Errorf("--max 1 denominator = (%d, %v), want (1, true)", got, limited)
+	}
+	got, limited = autoUpdateDenominator(games, 5)
+	if got != 2 || limited {
+		t.Errorf("--max above count denominator = (%d, %v), want (2, false)", got, limited)
+	}
+}
+
+func TestRunAutoUpdateMaxCountsInstallableOnly(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database := setupTestDB(t)
+	defer database.Close()
+
+	// The ambiguous game comes first so it is still reported; it must not
+	// consume the single install slot.
+	games := []db.Game{
+		{Title: "Ambiguous", Engine: "RenPy", Path: "/games/ambiguous", Status: "active",
+			Version: "1.0", LatestVersion: "2026-10-01"},
+		{Title: "First", Engine: "RenPy", Path: "/games/first", Status: "active",
+			Version: "1.0", LatestVersion: "1.1"},
+		{Title: "Second", Engine: "RenPy", Path: "/games/second", Status: "active",
+			Version: "1.0", LatestVersion: "1.1"},
+	}
+	for i := range games {
+		if _, err := database.InsertGame(&games[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var calls atomic.Int32
+	var installedTitle string
+	summary := runAutoUpdate(database, games, autoUpdateOptions{
+		Extract:     true,
+		Max:         1,
+		Concurrency: 1,
+		install: func(game *db.Game) error {
+			calls.Add(1)
+			installedTitle = game.Title
+			return nil
+		},
+	})
+
+	if calls.Load() != 1 {
+		t.Errorf("installed %d games, want 1", calls.Load())
+	}
+	if installedTitle != "First" {
+		t.Errorf("installed %q, want the first installable game", installedTitle)
+	}
+	if summary.Candidates != 1 {
+		t.Errorf("Candidates = %d, want 1", summary.Candidates)
+	}
+	if summary.Ambiguous != 1 {
+		t.Errorf("Ambiguous = %d, want 1 (reported without consuming --max)", summary.Ambiguous)
+	}
+	if summary.Installed != 1 {
+		t.Errorf("Installed = %d, want 1", summary.Installed)
+	}
+}
+
+func TestRunAutoUpdateParallelSummary(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database := setupTestDB(t)
+	defer database.Close()
+
+	const n = 8
+	games := make([]db.Game, n)
+	for i := range games {
+		games[i] = db.Game{
+			Title:         fmt.Sprintf("Game %d", i),
+			Engine:        "RenPy",
+			Path:          fmt.Sprintf("/games/%d", i),
+			Status:        "active",
+			Version:       "1.0",
+			LatestVersion: "1.1",
+		}
+		if _, err := database.InsertGame(&games[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var (
+		mu       sync.Mutex
+		seen     = make(map[int64]int, n)
+		inFlight atomic.Int32
+		peak     atomic.Int32
+	)
+	install := func(game *db.Game) error {
+		cur := inFlight.Add(1)
+		for {
+			old := peak.Load()
+			if cur <= old || peak.CompareAndSwap(old, cur) {
+				break
+			}
+		}
+		time.Sleep(2 * time.Millisecond)
+		inFlight.Add(-1)
+
+		mu.Lock()
+		seen[game.ID]++
+		mu.Unlock()
+
+		if game.ID%2 == 0 {
+			return errors.New("mirror down")
+		}
+		return nil
+	}
+
+	summary := runAutoUpdate(database, games, autoUpdateOptions{
+		Extract:     true,
+		Concurrency: 3,
+		install:     install,
+	})
+
+	if summary.Installed+summary.Failed != n {
+		t.Errorf("counters = %d installed + %d failed, want %d total",
+			summary.Installed, summary.Failed, n)
+	}
+	if summary.Installed != n/2 || summary.Failed != n/2 {
+		t.Errorf("Installed = %d, Failed = %d, want %d each",
+			summary.Installed, summary.Failed, n/2)
+	}
+	if got := peak.Load(); got > 3 {
+		t.Errorf("peak in-flight downloads = %d, want <= 3", got)
+	}
+
+	mu.Lock()
+	if len(seen) != n {
+		t.Errorf("worked on %d distinct games, want %d", len(seen), n)
+	}
+	for id, count := range seen {
+		if count != 1 {
+			t.Errorf("game %d worked on %d times, want once", id, count)
+		}
+	}
+	mu.Unlock()
+
+	state := loadAutoUpdateState()
+	if len(state.Games) != n {
+		t.Fatalf("retry state has %d games, want %d", len(state.Games), n)
+	}
+	for i := range games {
+		attempt, ok := state.Games[strconv.FormatInt(games[i].ID, 10)]
+		if !ok {
+			t.Errorf("game %d missing from retry state", games[i].ID)
+			continue
+		}
+		want := updateInstalled
+		if games[i].ID%2 == 0 {
+			want = updateFailed
+		}
+		if attempt.Status != want {
+			t.Errorf("game %d status = %q, want %q", games[i].ID, attempt.Status, want)
+		}
+	}
+}
+
+func TestRunAutoUpdateJobsBounded(t *testing.T) {
+	t.Parallel()
+	const (
+		total       = 12
+		concurrency = 3
+	)
+	jobs := make([]autoUpdateJob, total)
+	for i := range jobs {
+		jobs[i] = autoUpdateJob{game: &db.Game{ID: int64(i + 1)}, index: i + 1}
+	}
+
+	// Every worker blocks until `concurrency` of them are in flight, so a
+	// pool that ran the batch serially would deadlock into the timeout.
+	full := make(chan struct{})
+	var closeOnce sync.Once
+	var inFlight, peak, done atomic.Int32
+
+	runAutoUpdateJobs(jobs, concurrency, func(autoUpdateJob) {
+		cur := inFlight.Add(1)
+		for {
+			old := peak.Load()
+			if cur <= old || peak.CompareAndSwap(old, cur) {
+				break
+			}
+		}
+		if cur == concurrency {
+			closeOnce.Do(func() { close(full) })
+		}
+		select {
+		case <-full:
+		case <-time.After(5 * time.Second):
+			t.Error("worker slots never filled in parallel")
+			return
+		}
+		inFlight.Add(-1)
+		done.Add(1)
+	})
+
+	if done.Load() != total {
+		t.Errorf("completed %d jobs, want %d", done.Load(), total)
+	}
+	if got := peak.Load(); got != concurrency {
+		t.Errorf("peak in-flight jobs = %d, want %d", got, concurrency)
+	}
+}
+
+func writeCommandConfig(t *testing.T, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(config.ConfigDir(), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.ConfigPath(), []byte(contents), 0600); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,18 +23,23 @@ import (
 
 // autoUpdateOptions controls one auto-update run.
 type autoUpdateOptions struct {
-	Cookie   string
-	Platform string
-	Extract  bool
-	Max      int // 0 = no limit
-	DryRun   bool
-	Force    bool // ignore the per-game retry backoff
-	Client   *scraper.Client
+	Cookie      string
+	Platform    string
+	Extract     bool
+	Max         int // 0 = no limit
+	DryRun      bool
+	Force       bool // ignore the per-game retry backoff
+	Concurrency int  // 0 = read the update-concurrency config key
+	Client      *scraper.Client
+
+	// install overrides the download+install step in tests. Production leaves
+	// it nil and downloadSingle runs.
+	install func(game *db.Game) error
 }
 
 // autoUpdateSummary reports what a run did.
 type autoUpdateSummary struct {
-	Candidates int
+	Candidates int // installable games considered (ambiguous ones excluded)
 	Installed  int
 	NeedsHuman int
 	Failed     int
@@ -45,6 +51,18 @@ type autoUpdateSummary struct {
 // autoUpdateRetryAfter is how long a game waits before another automatic
 // attempt after a failure, so a permanently broken mirror is not hammered.
 const autoUpdateRetryAfter = 30 * time.Minute
+
+// autoUpdateParseFlags is autoUpdateValueFlags plus --concurrency, which this
+// file adds; hoistFlags needs to know the flag takes a value so the value
+// stays next to it when flags and positionals are reordered.
+var autoUpdateParseFlags = func() map[string]bool {
+	m := make(map[string]bool, len(autoUpdateValueFlags)+1)
+	for k, v := range autoUpdateValueFlags {
+		m[k] = v
+	}
+	m["--concurrency"] = true
+	return m
+}()
 
 func autoUpdateLockPath() string {
 	return filepath.Join(config.ConfigDir(), "auto-update.lock")
@@ -85,7 +103,8 @@ func AutoUpdate(args []string) {
 	unsafe := fs.Bool("unsafe", false, "Skip rate limiting when re-checking versions")
 	checkOnly := fs.Bool("check-only", false, "Only check for updates; do not download")
 	noCheck := fs.Bool("no-check", false, "Skip the version check; use pending updates already in the DB")
-	fs.Parse(hoistFlags(args, autoUpdateValueFlags))
+	concurrencyFlag := fs.Int("concurrency", 0, "Maximum games to update at once (1-4; 0 = update-concurrency config)")
+	fs.Parse(hoistFlags(args, autoUpdateParseFlags))
 
 	cookie := ResolveCookie(*cookieStr, *cookieFile)
 
@@ -156,65 +175,123 @@ func AutoUpdate(args []string) {
 		maxPerRun = autoUpdateMaxPerRun()
 	}
 	summary := runAutoUpdate(database, pending, autoUpdateOptions{
-		Cookie:   cookie,
-		Client:   client,
-		Platform: targetPlatform,
-		Extract:  !*noExtract,
-		Max:      maxPerRun,
-		DryRun:   *dryRun,
-		Force:    *force,
+		Cookie:      cookie,
+		Client:      client,
+		Platform:    targetPlatform,
+		Extract:     !*noExtract,
+		Max:         maxPerRun,
+		DryRun:      *dryRun,
+		Force:       *force,
+		Concurrency: autoUpdateConcurrencyOption(*concurrencyFlag),
 	})
 	printAutoUpdateSummary(summary)
 }
 
+// autoUpdateJob is one installable game and its 1-based position in the run.
+type autoUpdateJob struct {
+	game  *db.Game
+	index int
+}
+
+// autoUpdateStep is one line of a run's plan: either a note printed as the
+// batch is classified (ambiguous version, retry backoff, dry run) or an
+// install job. A single-game run executes steps in order, which keeps its
+// output identical to the pre-parallel loop.
+type autoUpdateStep struct {
+	note string
+	job  *autoUpdateJob
+}
+
 // runAutoUpdate installs updates for games already known to have one. It
 // returns a summary and never calls os.Exit, so sync/check-updates can embed
-// it.
+// it. Games run in parallel up to opts.Concurrency (the update-concurrency
+// config key when unset).
 func runAutoUpdate(database *db.Database, games []db.Game, opts autoUpdateOptions) autoUpdateSummary {
 	summary := autoUpdateSummary{}
 	state := loadAutoUpdateState()
 
-	max := opts.Max
-	if max <= 0 || max > len(games) {
-		max = len(games)
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = autoUpdateConcurrency()
+	} else {
+		concurrency = clampAutoUpdateConcurrency(strconv.Itoa(concurrency))
 	}
 
+	// Only an unambiguously newer version can be installed, so only those
+	// games count toward the progress denominator and --max. Ambiguous
+	// ("changed") versions are reported, never budgeted.
+	denominator, limited := autoUpdateDenominator(games, opts.Max)
+
+	// Parallel downloads would write \r frames from several games into the
+	// same terminal; keep the per-line pipeline output instead.
+	prevProgress := progressBarEnabled.Load()
+	progressBarEnabled.Store(prevProgress && concurrency <= 1)
+	defer progressBarEnabled.Store(prevProgress)
+
+	steps := make([]autoUpdateStep, 0, len(games))
+	index := 0
 	for i := range games {
-		if summary.Candidates >= max {
+		if limited && index >= denominator {
 			break
 		}
 		game := &games[i]
 		if !version.NeedsUpdate(game.LatestVersion, game.Version) {
 			continue
 		}
-		summary.Candidates++
 
 		// Only an unambiguously newer version is installed automatically. A
 		// "changed" ordering means the two strings cannot be compared, which
 		// is a person's decision, not a reason to replace a working install.
 		if !version.IsNewer(game.LatestVersion, game.Version) {
 			summary.Ambiguous++
-			fmt.Fprintf(os.Stderr, "  – %s: %s → %s (ordering unclear; install manually)\n",
-				game.Title, game.Version, game.LatestVersion)
+			steps = append(steps, autoUpdateStep{note: fmt.Sprintf(
+				"  – %s: %s → %s (ordering unclear; install manually)\n",
+				game.Title, game.Version, game.LatestVersion)})
 			continue
 		}
 
+		index++
 		if !opts.Force && recentlyAttempted(state, game.ID, game.LatestVersion) {
 			summary.Skipped++
-			fmt.Fprintf(os.Stderr, "  – %s: %s → %s (retried recently; use --force)\n",
-				game.Title, game.Version, game.LatestVersion)
+			steps = append(steps, autoUpdateStep{note: fmt.Sprintf(
+				"  – %s: %s → %s (retried recently; use --force)\n",
+				game.Title, game.Version, game.LatestVersion)})
 			continue
 		}
 
 		if opts.DryRun {
-			fmt.Fprintf(os.Stderr, "  → would update %s: %s → %s\n", game.Title, game.Version, game.LatestVersion)
+			steps = append(steps, autoUpdateStep{note: fmt.Sprintf(
+				"  → would update %s: %s → %s\n",
+				game.Title, game.Version, game.LatestVersion)})
 			continue
 		}
 
-		fmt.Fprintf(os.Stderr, "\n[%d/%d] %s: %s → %s\n",
-			summary.Candidates, max, game.Title, game.Version, game.LatestVersion)
+		steps = append(steps, autoUpdateStep{job: &autoUpdateJob{game: game, index: index}})
+	}
+	summary.Candidates = index
 
-		err := downloadSingle(database, game, opts.Cookie, "", opts.Platform, opts.Extract, opts.Client)
+	install := opts.install
+	if install == nil {
+		install = func(game *db.Game) error {
+			return downloadSingle(database, game, opts.Cookie, "", opts.Platform, opts.Extract, opts.Client)
+		}
+	}
+
+	// Summary counters, retry-state mutations and console lines are shared by
+	// every worker, so they are serialised. The download itself runs outside
+	// the lock.
+	var mu sync.Mutex
+	runJob := func(job autoUpdateJob) {
+		game := job.game
+		mu.Lock()
+		fmt.Fprintf(os.Stderr, "\n[%d/%d] %s: %s → %s\n",
+			job.index, denominator, game.Title, game.Version, game.LatestVersion)
+		mu.Unlock()
+
+		err := install(game)
+
+		mu.Lock()
+		defer mu.Unlock()
 		status := updateInstalled
 		switch {
 		case err == nil:
@@ -232,8 +309,83 @@ func runAutoUpdate(database *db.Database, games []db.Game, opts autoUpdateOption
 		recordAutoUpdateAttempt(state, game, status, err)
 	}
 
+	if concurrency <= 1 {
+		for _, step := range steps {
+			if step.job == nil {
+				fmt.Fprint(os.Stderr, step.note)
+				continue
+			}
+			runJob(*step.job)
+		}
+	} else {
+		jobs := make([]autoUpdateJob, 0, len(steps))
+		for _, step := range steps {
+			if step.job == nil {
+				fmt.Fprint(os.Stderr, step.note)
+				continue
+			}
+			jobs = append(jobs, *step.job)
+		}
+		runAutoUpdateJobs(jobs, concurrency, runJob)
+	}
+
 	saveAutoUpdateState(state)
 	return summary
+}
+
+// autoUpdateDenominator returns the progress denominator: the number of
+// installable games in the batch, capped by max. limited reports whether max
+// actually cuts the run short, so an uncapped run still reports every
+// ambiguous version note.
+func autoUpdateDenominator(games []db.Game, max int) (denominator int, limited bool) {
+	installable := 0
+	for i := range games {
+		if isInstallableUpdate(&games[i]) {
+			installable++
+		}
+	}
+	if max > 0 && max < installable {
+		return max, true
+	}
+	return installable, false
+}
+
+// isInstallableUpdate reports whether a game may be installed without human
+// judgement: the thread has a newer version and the two versions compare
+// unambiguously.
+func isInstallableUpdate(game *db.Game) bool {
+	return version.NeedsUpdate(game.LatestVersion, game.Version) &&
+		version.IsNewer(game.LatestVersion, game.Version)
+}
+
+// runAutoUpdateJobs calls work for every job with at most concurrency in
+// flight, then returns once all of them finish. work must be safe to call
+// concurrently.
+func runAutoUpdateJobs(jobs []autoUpdateJob, concurrency int, work func(autoUpdateJob)) {
+	if len(jobs) == 0 {
+		return
+	}
+	if concurrency > len(jobs) {
+		concurrency = len(jobs)
+	}
+	if concurrency <= 1 {
+		for _, job := range jobs {
+			work(job)
+		}
+		return
+	}
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for _, job := range jobs {
+		wg.Add(1)
+		go func(job autoUpdateJob) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			work(job)
+		}(job)
+	}
+	wg.Wait()
 }
 
 // updateOutcome labels recorded in the retry state.
@@ -443,6 +595,49 @@ func autoUpdateMaxPerRun() int {
 		return 0
 	}
 	return n
+}
+
+// Update concurrency bounds, mirroring the desktop's "update-concurrency"
+// key (desktop/update_runs.go). The CLI re-declares the tiny clamp rather
+// than importing package main; keep the two in step.
+const (
+	defaultAutoUpdateConcurrency = 2
+	maxAutoUpdateConcurrency     = 4
+	autoUpdateConcurrencyKey     = "update-concurrency"
+)
+
+// clampAutoUpdateConcurrency parses the config value, falling back to the
+// default for empty/invalid input and clamping to 1..maxAutoUpdateConcurrency.
+func clampAutoUpdateConcurrency(v string) int {
+	n, err := strconv.Atoi(v)
+	if err != nil || n == 0 {
+		return defaultAutoUpdateConcurrency
+	}
+	if n < 1 {
+		return 1
+	}
+	if n > maxAutoUpdateConcurrency {
+		return maxAutoUpdateConcurrency
+	}
+	return n
+}
+
+// autoUpdateConcurrency reads the configured parallelism for game updates.
+func autoUpdateConcurrency() int {
+	cfg, err := config.ReadConfig()
+	if err != nil {
+		return defaultAutoUpdateConcurrency
+	}
+	return clampAutoUpdateConcurrency(cfg.Get(autoUpdateConcurrencyKey))
+}
+
+// autoUpdateConcurrencyOption resolves the --concurrency flag for one run:
+// 0 means "use the configured value".
+func autoUpdateConcurrencyOption(flagValue int) int {
+	if flagValue == 0 {
+		return autoUpdateConcurrency()
+	}
+	return clampAutoUpdateConcurrency(strconv.Itoa(flagValue))
 }
 
 func parseConfigBool(v string) bool {
