@@ -1052,6 +1052,7 @@
           {:else if activeView === 'covers'}
             <CoversView
               gameCount={coverState.gameCount}
+              {games}
               fetching={coverState.fetching}
               progress={coverState.progress}
               result={coverState.result}
@@ -1063,7 +1064,7 @@
               onNavigate={(id) => activeView = id}
             />
           {:else if activeView === 'add'}
-            <AddGameDialog onGameAdded={refreshGames}/>
+            <AddGameDialog onGameAdded={refreshGames} onNavigate={(id) => activeView = id}/>
           {:else if activeView === 'sync'}
             <SyncDialog
               cookieStatus={syncState.cookieStatus}
@@ -1072,6 +1073,8 @@
               gameResults={syncState.gameResults}
               result={syncState.result}
               syncError={syncState.syncError}
+              gameCount={games.length}
+              lastSyncAt={appMeta.lastSyncAt}
               onSync={startSync}
               onCancel={cancelSync}
             />

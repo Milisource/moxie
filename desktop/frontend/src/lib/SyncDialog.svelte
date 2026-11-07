@@ -1,8 +1,10 @@
 <script>
   // Presentational only — sync state and event subscriptions live in
   // App.svelte so they survive tab switches. This view just renders them.
+  import {onMount} from 'svelte'
   import Button from './Button.svelte'
   import Spinner from './Spinner.svelte'
+  import {GetUpdatableCount} from '../../wailsjs/go/main/App'
 
   let {
     cookieStatus = '',        // 'available' | 'not_found' | ''
@@ -11,6 +13,8 @@
     gameResults = [],         // {id, title, status, version}
     result = null,            // {associated, updated, skipped, errors} or null
     syncError = '',
+    gameCount = 0,
+    lastSyncAt = '',
     onSync = () => {},
     onCancel = () => {},
   } = $props()
@@ -23,7 +27,21 @@
   // scraped, which also refreshes download links for the Downloads tab.
   let force = $state(false)
 
-  // ── Derived ─────────────────────────────────────────────────
+  let updateCount = $state(null)
+  onMount(async () => {
+    try { updateCount = await GetUpdatableCount() } catch (e) { /* keep unknown */ }
+  })
+
+  function relativeSync(iso) {
+    if (!iso) return null
+    const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
+    if (mins < 1) return 'just now'
+    if (mins < 60) return `${mins}m ago`
+    const hours = Math.floor(mins / 60)
+    if (hours < 24) return `${hours}h ago`
+    return `${Math.floor(hours / 24)}d ago`
+  }
+
   let progressPct = $derived.by(() => {
     if (!progress.total) return 0
     return Math.round((progress.current / progress.total) * 100)
@@ -40,73 +58,103 @@
     return 'Synchronizing…'
   })
 
-  // Sync is cookie-free via F95Zone's public endpoints — cookies only add
-  // the direct-scrape fallback layer. The button is never gated on them.
   let canSync = $derived(!syncing)
+  let cookieValue = $derived(
+    cookieStatus === 'available' ? 'OK' : cookieStatus === 'not_found' ? 'Missing' : 'Checking…'
+  )
+  let cookieTone = $derived(
+    cookieStatus === 'available' ? 'good' : cookieStatus === 'not_found' ? 'warn' : 'muted'
+  )
+  let syncLabel = $derived(relativeSync(lastSyncAt))
+  let updatesTone = $derived(updateCount === null ? 'muted' : updateCount > 0 ? 'warn' : 'good')
 </script>
 
 <div class="sync-dialog">
   <div class="sync-header">
-    <h2>F95Zone Sync</h2>
-    <p class="sync-subtitle">
-      Auto-associate games with their F95Zone entries and check for updates.
-    </p>
+    <div class="sync-heading">
+      <h2>F95Zone sync</h2>
+      <p class="sync-subtitle">Auto-associate games with their F95Zone entries and check for updates.</p>
+    </div>
+    <div class="header-actions">
+      <label class="sync-force" title="Bypasses the 24h cooldown and scrapes every game thread — also refreshes download links for the Downloads tab.">
+        <input type="checkbox" bind:checked={force} disabled={!canSync} />
+        Full sync
+      </label>
+      <Button variant="primary" onclick={() => onSync(force)} disabled={!canSync}>
+        {syncing ? 'Syncing…' : 'Start sync'}
+      </Button>
+      {#if syncing}
+        <Button variant="danger" onclick={onCancel} title="Stop the running sync">Cancel</Button>
+      {/if}
+    </div>
   </div>
 
-  <!-- ── Cookie Status ─────────────────────────────────────── -->
-  {#if cookieStatus === 'available'}
-    <div class="cookie-status cookie-ok">
-      <span class="cookie-icon">✓</span>
-      <div class="cookie-body">
-        <p class="cookie-title">F95Zone cookies available</p>
-        <p class="cookie-detail">Sync can connect to F95Zone to look up games.</p>
-      </div>
+  <!-- Status -->
+  <div class="status-strip">
+    <div class="stat">
+      <span class="stat-label">Cookies</span>
+      <span class="stat-value {cookieTone}">{cookieValue}</span>
+      <span class="stat-sub">{cookieStatus === 'not_found' ? 'Cookie-free fallback is active' : 'F95Zone session'}</span>
     </div>
-  {:else if cookieStatus === 'not_found'}
-    <div class="cookie-status cookie-missing">
-      <span class="cookie-icon">!</span>
-      <div class="cookie-body">
-        <p class="cookie-title">No F95Zone cookies found</p>
-        <p class="cookie-detail">
-          Sync runs cookie-free through F95Zone's public endpoints, so it works
-          without a browser session. Logging in at <strong>f95zone.to</strong>
-          and restarting adds the cookie fallback for games the public
-          endpoints can't resolve.
-        </p>
-      </div>
+    <div class="stat">
+      <span class="stat-label">Last sync</span>
+      <span class="stat-value">{syncLabel || 'Never'}</span>
+      <span class="stat-sub">{result ? 'Completed this session' : 'From this install'}</span>
     </div>
-  {:else}
-    <div class="cookie-status cookie-loading">
-      <Spinner size={16} duration={0.6} />
-      <p class="status-text">Checking cookie status…</p>
+    <div class="stat">
+      <span class="stat-label">Updates</span>
+      <span class="stat-value {updatesTone}">{updateCount === null ? '—' : updateCount}</span>
+      <span class="stat-sub">{updateCount === null ? 'Checking…' : 'Ready to download'}</span>
     </div>
-  {/if}
+  </div>
 
-  <!-- ── Start Sync Button ─────────────────────────────────── -->
-  <div class="action-bar">
-    <label class="sync-force" title="Bypasses the 24h cooldown and scrapes every game thread — also refreshes download links for the Downloads tab.">
-      <input type="checkbox" bind:checked={force} disabled={!canSync} />
-      Full sync (ignore 24h cooldown)
-    </label>
-    <Button
-      variant="primary"
-      onclick={() => onSync(force)}
-      disabled={!canSync}
-    >
-      {#if syncing}
-        Syncing…
-      {:else}
-        Start Sync
-      {/if}
-    </Button>
-    {#if syncing}
-      <Button variant="danger" onclick={onCancel} title="Stop the running sync">
-        Cancel
-      </Button>
+  <!-- Plan -->
+  <div class="plan-card">
+    <div class="plan-head">
+      <h3>What will run</h3>
+      <span class="plan-sub">Cookie-free first; browser fallback only when needed.</span>
+    </div>
+    <div class="plan-row">
+      <span class="plan-icon good">✓</span>
+      <span class="plan-text">{gameCount} game{gameCount === 1 ? '' : 's'} checked for new versions</span>
+      <span class="plan-count">{gameCount}</span>
+    </div>
+    <div class="plan-row">
+      <span class="plan-icon good">✓</span>
+      <span class="plan-text">{updateCount === null ? 'Updates checked' : `${updateCount} update${updateCount === 1 ? '' : 's'} ready to download`}</span>
+      <span class="plan-count">{updateCount === null ? '—' : updateCount}</span>
+    </div>
+    <div class="plan-row">
+      <span class="plan-icon good">✓</span>
+      <span class="plan-text">Unlinked games matched to F95Zone threads</span>
+      <span class="plan-count">—</span>
+    </div>
+    {#if cookieStatus === 'not_found'}
+      <p class="cookie-note">
+        No F95Zone cookies found. Sync still works through the public endpoints;
+        logging in at f95zone.to and restarting adds the fallback.
+      </p>
+    {:else if cookieStatus === ''}
+      <p class="cookie-note"><Spinner size={12} duration={0.6} /> Checking cookie status…</p>
     {/if}
   </div>
 
-  <!-- ── Sync Progress ─────────────────────────────────────── -->
+  <div class="info-grid">
+    <section class="info-card">
+      <h3>How sync stays polite</h3>
+      <p><span class="info-icon">✓</span>One request at a time</p>
+      <p><span class="info-icon">✓</span>24h cooldown between full syncs</p>
+      <p><span class="info-icon">✓</span>Browser only for security checks</p>
+    </section>
+    <section class="info-card">
+      <h3>What sync changes</h3>
+      <p><span class="info-icon">✓</span>F95Zone associations and versions</p>
+      <p><span class="info-icon">✓</span>Download links for new releases</p>
+      <p><span class="info-icon muted">—</span>Never launches games or moves installs</p>
+    </section>
+  </div>
+
+  <!-- Progress -->
   {#if syncing}
     <div class="progress-section">
       <div class="progress-bar-bg">
@@ -115,7 +163,6 @@
       <p class="progress-label">{phaseLabel}</p>
     </div>
 
-    <!-- Per-game progress list (capped — see visibleGameResults) -->
     {#if visibleGameResults.length > 0}
       <div class="games-progress">
         {#each visibleGameResults as game}
@@ -127,11 +174,7 @@
             {/if}
             <span class="game-title">{game.title}</span>
             <span class="game-status">
-              {#if game.version}
-                {game.status} — {game.version}
-              {:else}
-                {game.status}
-              {/if}
+              {#if game.version}{game.status} — {game.version}{:else}{game.status}{/if}
             </span>
           </div>
         {/each}
@@ -139,24 +182,18 @@
     {/if}
   {/if}
 
-  <!-- ── Completion Result ─────────────────────────────────── -->
+  <!-- Result -->
   {#if result}
     <div class="result-section">
       <div class="result-header">
         <span class="result-icon">✓</span>
         <div class="result-body">
-          <p class="result-title">Sync Complete</p>
+          <p class="result-title">Sync complete</p>
           <p class="result-summary">
             {result.associated} associated, {result.updated} updated
-            {#if result.skipped > 0}
-              , {result.skipped} skipped (checked recently)
-            {/if}
-            {#if result.noMatch > 0}
-              , {result.noMatch} no match found
-            {/if}
-            {#if result.errors?.length > 0}
-              , {result.errors.length} error{result.errors.length !== 1 ? 's' : ''}
-            {/if}
+            {#if result.skipped > 0}, {result.skipped} skipped (checked recently){/if}
+            {#if result.noMatch > 0}, {result.noMatch} no match found{/if}
+            {#if result.errors?.length > 0}, {result.errors.length} error{result.errors.length !== 1 ? 's' : ''}{/if}
           </p>
         </div>
       </div>
@@ -171,7 +208,6 @@
     </div>
   {/if}
 
-  <!-- ── Sync Error ────────────────────────────────────────── -->
   {#if syncError}
     <div class="error-section">
       <p class="error-title">Sync failed:</p>
@@ -184,243 +220,110 @@
   .sync-dialog {
     flex: 1;
     overflow: auto;
-    padding: var(--space-8) var(--gutter);
+    padding: var(--space-7) var(--gutter);
     width: 100%;
-    max-width: 1280px;
   }
 
   .sync-header {
-    margin-bottom: 24px;
-  }
-  .sync-header h2 {
-    font-size: var(--text-2xl);
-    font-weight: 700;
-    margin: 0 0 4px;
-  }
-  .sync-subtitle {
-    font-size: var(--text-base);
-    color: var(--text-secondary);
-    margin: 0;
-  }
-
-  /* ── Action Bar ────────────────────── */
-  .action-bar {
-    margin-bottom: 16px;
     display: flex;
-    align-items: center;
-    gap: 16px;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    margin-bottom: 18px;
   }
+  .sync-heading { min-width: 0; }
+  .sync-header h2 { font-size: var(--text-2xl); font-weight: 600; margin: 0 0 4px; }
+  .sync-subtitle { font-size: var(--text-sm); color: var(--text-secondary); margin: 0; }
+  .header-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 
   .sync-force {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: var(--text-base);
-    color: var(--text-secondary);
-    cursor: pointer;
-    user-select: none;
+    display: flex; align-items: center; gap: 8px;
+    font-size: var(--text-sm); color: var(--text-secondary);
+    cursor: pointer; user-select: none;
   }
-  .sync-force input {
-    accent-color: var(--accent);
-  }
+  .sync-force input { accent-color: var(--accent); }
 
-  /* ── Cookie Status ─────────────────── */
-  .cookie-status {
-    margin: 16px 0;
-    padding: 16px;
-    border-radius: var(--radius-1);
-    display: flex;
+  .status-strip {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px;
-    align-items: flex-start;
+    margin-bottom: 16px;
   }
-  .cookie-icon {
-    font-size: var(--text-xl);
-    font-weight: 700;
-    flex-shrink: 0;
-    line-height: 1.4;
-  }
-  .cookie-body {
-    flex: 1;
-    min-width: 0;
-  }
-  .cookie-title {
-    font-size: var(--text-lg);
-    font-weight: 600;
-    margin: 0 0 4px;
-  }
-  .cookie-detail {
-    font-size: var(--text-base);
-    color: var(--text-secondary);
-    margin: 0;
-    line-height: 1.5;
-  }
-  .cookie-detail strong {
-    color: var(--text-primary);
-  }
-
-  .cookie-ok {
-    border: 1px solid var(--success);
-    background: color-mix(in srgb, var(--success) 10%, transparent);
-  }
-  .cookie-ok .cookie-icon,
-  .cookie-ok .cookie-title {
-    color: var(--success);
-  }
-
-  .cookie-missing {
-    border: 1px solid var(--warning);
-    background: color-mix(in srgb, var(--warning) 10%, transparent);
-  }
-  .cookie-missing .cookie-icon,
-  .cookie-missing .cookie-title {
-    color: var(--warning);
-  }
-
-  .cookie-loading {
-    border: 1px solid var(--border);
-    background: var(--bg-secondary);
-    align-items: center;
-  }
-  .cookie-loading .status-text {
-    font-size: var(--text-base);
-    color: var(--text-secondary);
-    margin: 0;
-  }
-
-  /* ── Progress ──────────────────────── */
-  .progress-section {
-    margin: 16px 0;
-    padding: 16px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-1);
-    background: var(--bg-secondary);
-  }
-  .progress-bar-bg {
-    height: 6px;
-    border-radius: var(--radius-1);
-    background: var(--bg-tertiary);
-    overflow: hidden;
-    margin-bottom: 8px;
-  }
-  .progress-bar-fill {
-    height: 100%;
-    border-radius: var(--radius-1);
-    background: var(--accent);
-    transition: width 0.3s ease;
-  }
-  .progress-label {
-    font-size: var(--text-sm);
-    color: var(--text-secondary);
-    margin: 0;
-  }
-
-  /* ── Game Progress List ────────────── */
-  .games-progress {
+  .stat {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    margin: 12px 0 0;
-    max-height: 320px;
-    overflow-y: auto;
-    padding-right: 4px;
-  }
-  .game-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 10px;
+    gap: 2px;
+    padding: 14px 16px;
     border: 1px solid var(--border);
-    border-radius: var(--radius-1);
-    background: var(--bg-primary);
+    background: var(--bg-secondary);
   }
-  .game-icon {
-    font-size: var(--text-base);
-    font-weight: 700;
-    flex-shrink: 0;
-    width: 18px;
-    text-align: center;
-  }
-  .game-icon-done {
-    color: var(--success);
-  }
-  .game-icon-error {
-    color: var(--danger);
-  }
-  .game-title {
-    flex: 1;
-    font-size: var(--text-base);
-    color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .game-status {
-    font-size: var(--text-xs);
-    color: var(--text-muted);
-    flex-shrink: 0;
-    font-family: var(--font-mono);
-  }
+  .stat-label { font-size: var(--text-xs); color: var(--text-muted); text-transform: uppercase; letter-spacing: var(--tracking-label); }
+  .stat-value { font-family: var(--font-mono); font-size: var(--text-2xl); font-weight: 600; color: var(--text-primary); line-height: 1.2; }
+  .stat-value.good { color: var(--success); }
+  .stat-value.warn { color: var(--warning); }
+  .stat-value.muted { color: var(--text-muted); }
+  .stat-sub { font-size: var(--text-xs); color: var(--text-muted); }
 
-  /* ── Result ──────────────────────────── */
-  .result-section {
-    margin: 16px 0;
-    padding: 16px;
-    border: 1px solid var(--success);
-    border-radius: var(--radius-1);
-    background: color-mix(in srgb, var(--success) 8%, transparent);
+  .plan-card {
+    padding: 16px 18px;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    margin-bottom: 16px;
   }
-  .result-header {
-    display: flex;
-    gap: 12px;
-    align-items: flex-start;
-  }
-  .result-icon {
-    font-size: var(--text-xl);
-    font-weight: 700;
-    color: var(--success);
-    flex-shrink: 0;
-    line-height: 1.4;
-  }
-  .result-body {
-    flex: 1;
-    min-width: 0;
-  }
-  .result-title {
-    font-size: var(--text-lg);
-    font-weight: 600;
-    color: var(--success);
-    margin: 0 0 4px;
-  }
-  .result-summary {
-    font-size: var(--text-base);
-    color: var(--text-secondary);
-    margin: 0;
-  }
-  .result-errors {
-    margin-top: 12px;
-    padding-top: 12px;
+  .plan-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+  .plan-head h3 { margin: 0; font-size: var(--text-lg); font-weight: 600; }
+  .plan-sub { font-size: var(--text-xs); color: var(--text-muted); }
+  .plan-row {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 0;
     border-top: 1px solid var(--border);
-  }
-
-  /* ── Errors ───────────────────────────── */
-  .error-section {
-    margin: 16px 0;
-    padding: 16px;
-    border: 1px solid var(--danger);
-    border-radius: var(--radius-1);
-    background: color-mix(in srgb, var(--danger) 8%, transparent);
-  }
-  .error-title {
-    font-size: var(--text-sm);
-    font-weight: 600;
-    color: var(--danger);
-    margin: 0 0 4px;
-  }
-  .error-line {
     font-size: var(--text-sm);
     color: var(--text-secondary);
-    margin: 0 0 2px;
-    font-family: var(--font-mono);
   }
+  .plan-icon { font-size: var(--text-xs); text-align: center; }
+  .plan-icon.good { color: var(--success); }
+  .plan-count { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); }
+  .cookie-note { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--border); font-size: var(--text-xs); color: var(--text-muted); }
 
+  .info-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .info-card { padding: 16px 18px; border: 1px solid var(--border); background: var(--bg-secondary); }
+  .info-card h3 { margin: 0 0 10px; font-size: var(--text-base); font-weight: 600; }
+  .info-card p { display: flex; gap: 8px; align-items: baseline; margin: 0 0 6px; font-size: var(--text-xs); color: var(--text-muted); }
+  .info-card p:last-child { margin-bottom: 0; }
+  .info-icon { color: var(--success); font-weight: 600; }
+  .info-icon.muted { color: var(--text-muted); }
+
+  .progress-section { padding: 14px 16px; border: 1px solid var(--border); background: var(--bg-secondary); margin-bottom: 12px; }
+  .progress-bar-bg { height: 6px; background: var(--bg-tertiary); overflow: hidden; margin-bottom: 8px; }
+  .progress-bar-fill { height: 100%; background: var(--accent); transition: width 0.3s ease; }
+  .progress-label { margin: 0; font-size: var(--text-sm); color: var(--text-secondary); }
+
+  .games-progress { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; margin-bottom: 12px; }
+  .game-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--border); background: var(--bg-primary); }
+  .game-icon { width: 18px; text-align: center; font-weight: 700; flex-shrink: 0; }
+  .game-icon-done { color: var(--success); }
+  .game-icon-error { color: var(--danger); }
+  .game-title { flex: 1; font-size: var(--text-sm); color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .game-status { font-size: var(--text-xs); color: var(--text-muted); font-family: var(--font-mono); flex-shrink: 0; }
+
+  .result-section { padding: 14px 16px; border: 1px solid var(--success); background: color-mix(in srgb, var(--success) 8%, transparent); margin-bottom: 12px; }
+  .result-header { display: flex; gap: 12px; align-items: flex-start; }
+  .result-icon { color: var(--success); font-weight: 700; font-size: var(--text-lg); line-height: 1.3; }
+  .result-body { flex: 1; min-width: 0; }
+  .result-title { margin: 0 0 4px; font-size: var(--text-base); font-weight: 600; color: var(--success); }
+  .result-summary { margin: 0; font-size: var(--text-sm); color: var(--text-secondary); }
+  .result-errors { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+
+  .error-section { padding: 14px 16px; border: 1px solid var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+  .error-title { margin: 0 0 4px; font-size: var(--text-sm); font-weight: 600; color: var(--danger); }
+  .error-line { margin: 0 0 2px; font-size: var(--text-xs); color: var(--text-secondary); font-family: var(--font-mono); }
+
+  @media (max-width: 1000px) {
+    .sync-header { flex-direction: column; }
+    .status-strip { grid-template-columns: minmax(0, 1fr); }
+    .plan-head { flex-direction: column; gap: 2px; }
+  }
 </style>

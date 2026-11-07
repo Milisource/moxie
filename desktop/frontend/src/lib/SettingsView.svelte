@@ -146,8 +146,20 @@
     <div class="error-box"><p>{error}</p></div>
   {/if}
 
+  <div class="settings-body">
+    <nav class="settings-nav" aria-label="Settings sections">
+      <a href="#settings-scan">Scan paths</a>
+      <a href="#settings-install">Install</a>
+      <a href="#settings-deps">Dependencies</a>
+      <a href="#settings-updates">Updates</a>
+      <a href="#settings-cover">Cover art</a>
+      <a href="#settings-storage">Storage</a>
+      <a href="#settings-app-update">App update</a>
+    </nav>
+    <div class="settings-content">
+
   <!-- ── Scan Paths ─────────────────────────────────────── -->
-  <section class="settings-section">
+  <section class="settings-section" id="settings-scan">
     <h3 class="section-title">Scan Paths</h3>
     <p class="section-hint">
       Directories watched for new and removed games. Changes take effect immediately.
@@ -156,7 +168,7 @@
   </section>
 
   <!-- ── Install Location ───────────────────────────────── -->
-  <section class="settings-section">
+  <section class="settings-section" id="settings-install">
     <h3 class="section-title">Install Location</h3>
     <p class="section-hint">
       Where games downloaded from the F95Zone Browser are installed. Scan paths
@@ -175,7 +187,7 @@
   </section>
 
   <!-- ── Dependencies ───────────────────────────────────── -->
-  <section class="settings-section">
+  <section class="settings-section" id="settings-deps">
     <div class="section-head">
       <h3 class="section-title">Dependencies</h3>
       <button class="btn btn-outline" onclick={loadAll} disabled={checking}>
@@ -201,7 +213,7 @@
   </section>
 
   <!-- ── Game Updates ───────────────────────────────────── -->
-  <section class="settings-section">
+  <section class="settings-section" id="settings-updates">
     <h3 class="section-title">Game Updates</h3>
     <p class="section-hint">
       How many game updates download and install at once. Extra updates wait
@@ -226,7 +238,7 @@
   </section>
 
   <!-- ── Cover Art ──────────────────────────────────────── -->
-  <section class="settings-section">
+  <section class="settings-section" id="settings-cover">
     <h3 class="section-title">Cover Art</h3>
     <p class="section-hint">
       Where Covers → Upgrade to Portrait Art and a game's "Choose cover…" look
@@ -273,7 +285,7 @@
   </section>
 
   <!-- ── Storage ────────────────────────────────────────── -->
-  <section class="settings-section">
+  <section class="settings-section" id="settings-storage">
     <h3 class="section-title">Storage</h3>
     <div class="kv-list">
       <div class="kv-row">
@@ -295,7 +307,7 @@
   <!-- Full staged self-update flow (CheckForUpdate → DownloadUpdate with
        update:progress events → ApplyUpdate → restart). Previously imported
        in App.svelte but never mounted — this is its home. -->
-  <section class="settings-section">
+  <section class="settings-section" id="settings-app-update">
     <h3 class="section-title">Application Update</h3>
     <p class="section-hint">
       Download and install a new version of the Moxie desktop app.
@@ -313,31 +325,65 @@
       onApply={onApplyAppUpdate}
     />
   </section>
+    </div>
+  </div>
 </div>
 
 <style>
   .settings-view {
     flex: 1;
     overflow: auto;
-    padding: var(--space-8) var(--gutter);
+    padding: var(--space-7) var(--gutter);
     width: 100%;
-    max-width: none;
+  }
+
+  .settings-body {
+    display: grid;
+    grid-template-columns: 190px minmax(0, 1fr);
+    gap: 32px;
+    align-items: start;
+  }
+  .settings-nav {
+    position: sticky;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    border-left: 1px solid var(--border);
+  }
+  .settings-nav a {
+    padding: 7px 10px;
+    margin-left: -1px;
+    border-left: 1px solid transparent;
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    text-decoration: none;
+  }
+  .settings-nav a:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+    border-left-color: var(--accent);
+  }
+  .settings-content {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     align-content: start;
-    column-gap: var(--space-8);
   }
 
-  .settings-header { margin-bottom: 24px; }
+  .settings-header { margin-bottom: 20px; }
   .settings-header h2 { font-size: var(--text-2xl); font-weight: 700; margin: 0 0 4px; }
   .settings-subtitle { font-size: var(--text-base); color: var(--text-secondary); margin: 0; }
 
   .settings-section {
-    margin-bottom: 32px;
-    padding-bottom: 24px;
+    margin-bottom: 28px;
+    padding-bottom: 22px;
     border-bottom: 1px solid var(--border);
+    scroll-margin-top: 12px;
   }
   .settings-section:last-child { border-bottom: none; }
+  /* Scan paths owns the full width: its input + Browse + Add path row is
+     wider than one of the two form columns. */
+  .settings-content > #settings-scan { grid-column: 1 / -1; }
 
   .section-head {
     display: flex;
@@ -458,9 +504,13 @@
     background: color-mix(in srgb, var(--danger) 8%, transparent);
   }
   .error-box p { margin: 0; font-size: var(--text-base); color: var(--danger); }
-  /* Two columns of sections on wide screens; header/errors span both. */
-  @media (min-width: 1600px) {
-    .settings-view { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .settings-header, .settings-view > .error-box { grid-column: 1 / -1; }
+  /* Two columns of sections once the content column can hold them;
+     the section index stays visible beside the form. */
+  @media (min-width: 1280px) {
+    .settings-content { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 28px; }
+  }
+  @media (max-width: 1099px) {
+    .settings-body { grid-template-columns: minmax(0, 1fr); }
+    .settings-nav { display: none; }
   }
 </style>

@@ -128,6 +128,7 @@
 
   .path-input {
     flex: 1;
+    min-width: 0;
     padding: 8px 12px;
     font-size: var(--text-base);
     font-family: var(--font-mono);
@@ -142,6 +143,7 @@
   }
 
   .btn {
+    flex-shrink: 0;
     padding: 8px 14px;
     font-size: var(--text-base);
     border-radius: var(--radius-1);
