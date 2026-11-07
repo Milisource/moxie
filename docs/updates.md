@@ -114,9 +114,15 @@ moxie auto-update --no-check       # act on updates already detected
 moxie auto-update --dry-run        # show what would happen
 moxie auto-update --max 3          # cap this run
 moxie auto-update --concurrency 4  # games in flight at once (1-4)
+moxie auto-update --exclude-host pixeldrain  # skip a rate-limited mirror
 moxie sync --auto                  # check, then update immediately
 moxie check-updates --auto
 ```
+
+A rate-limited host is not a failure — the transfer just crawls — so
+`--exclude-host <hosts>` (comma-separated, on `download` and `auto-update`)
+removes it from the ranking before the mirror is picked. The thread is
+re-scraped first, so the remaining hosts are always freshly signed links.
 
 Games run in parallel up to the `update-concurrency` config key (default 2,
 clamped to 1-4), matching the desktop's batch. `--concurrency` overrides it for

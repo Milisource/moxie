@@ -277,6 +277,7 @@ COMMON FLAGS
     --dry-run                 Show what would be updated
     --max <n>                 Update at most n games this run
     --concurrency <n>         Games to update at once, 1-4 (default: config or 2)
+    --exclude-host <hosts>    Skip mirrors by host, comma-separated (e.g. pixeldrain)
     --no-extract              Download only; do not extract/merge
     --force                   Ignore the 24h cooldown and the retry backoff
     --platform <p>            linux, windows or macos (default: auto)

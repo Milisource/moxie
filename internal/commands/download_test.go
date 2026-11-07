@@ -318,3 +318,47 @@ func TestSelectBestLinkByPlatform_AllWithHostBonus(t *testing.T) {
 		t.Errorf("expected 'All on pixeldrain' (50+15 > 25+0), got %q", got.Name)
 	}
 }
+
+func TestParseHostExclusions(t *testing.T) {
+	t.Parallel()
+	got := parseHostExclusions(" Pixeldrain, gofile ,, MEGA ")
+	for _, want := range []string{"pixeldrain", "gofile", "mega"} {
+		if !got[want] {
+			t.Errorf("missing %q in %v", want, got)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("got %d hosts, want 3: %v", len(got), got)
+	}
+	if len(parseHostExclusions("")) != 0 {
+		t.Error("empty input should exclude nothing")
+	}
+}
+
+func TestScoreDownloadLinksSkipsExcludedHosts(t *testing.T) {
+	t.Parallel()
+	links := []db.DownloadLink{
+		{Host: "pixeldrain", Name: "DOWNLOAD · Win", Platform: db.PlatformWindows, URL: "https://f95zone.to/dl/1/"},
+		{Host: "gofile", Name: "DOWNLOAD · Win", Platform: db.PlatformWindows, URL: "https://f95zone.to/dl/2/"},
+		{Host: "mega", Name: "DOWNLOAD · Win", Platform: db.PlatformWindows, URL: "https://f95zone.to/dl/3/"},
+	}
+
+	scored, skipped := scoreDownloadLinks(links, downloader.PlatformWindows, parseHostExclusions("pixeldrain"))
+	if skipped != 1 {
+		t.Errorf("skipped = %d, want 1", skipped)
+	}
+	if len(scored) != 2 {
+		t.Fatalf("scored %d links, want 2", len(scored))
+	}
+	for _, s := range scored {
+		if s.link.Host == "pixeldrain" {
+			t.Error("excluded host survived scoring")
+		}
+	}
+
+	// No exclusions keeps every link.
+	all, none := scoreDownloadLinks(links, downloader.PlatformWindows, nil)
+	if none != 0 || len(all) != len(links) {
+		t.Errorf("nil exclusions: %d scored, %d skipped; want %d, 0", len(all), none, len(links))
+	}
+}

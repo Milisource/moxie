@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/mili/moxie/internal/archive"
@@ -47,6 +48,7 @@ func Download(args []string) {
 	cookieStr := fs.String("cookie", "", "Cookie header from browser")
 	cookieFile := fs.String("cookie-file", "", "File containing cookie header")
 	platform := fs.String("platform", "", "Platform preference (linux/windows/macos/all, default: auto-detect)")
+	excludeHost := fs.String("exclude-host", "", "Comma-separated hosts to skip (e.g. pixeldrain when rate-limited)")
 	all := fs.Bool("all", false, "Download all games with pending updates")
 	open := fs.Bool("open", false, "Open download links in browser instead of direct download (bypasses bot detection)")
 	extBridge := fs.Bool("extension", false, "Resolve /dl/ check pages in your browser via the moxie-bridge extension, then download automatically (implies browser-assisted flow)")
@@ -109,7 +111,7 @@ func Download(args []string) {
 		if *open {
 			downloadAllOpen(database, cookie, string(targetPlatform), dlWatchDir, *extract, *watch)
 		} else {
-			downloadAll(database, cookie, *downloadDir, string(targetPlatform), *extract)
+			downloadAll(database, cookie, *downloadDir, string(targetPlatform), *extract, parseHostExclusions(*excludeHost))
 		}
 		return
 	}
@@ -132,12 +134,12 @@ func Download(args []string) {
 	if *open {
 		downloadSingleOpen(database, game, cookie, string(targetPlatform), dlWatchDir, *extract, *watch)
 	} else {
-		downloadSingle(database, game, cookie, *downloadDir, string(targetPlatform), *extract, nil)
+		downloadSingle(database, game, cookie, *downloadDir, string(targetPlatform), *extract, nil, parseHostExclusions(*excludeHost))
 	}
 }
 
 // downloadAll downloads all games with pending version updates.
-func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform string, extract bool) {
+func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform string, extract bool, excludedHosts map[string]bool) {
 	queue, err := database.GamesNeedingUpdate()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error listing games: %v\n", err)
@@ -158,7 +160,7 @@ func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform stri
 	for i := range queue {
 		g := &queue[i]
 		fmt.Fprintf(os.Stderr, "[%d/%d] %s: %s → %s\n", i+1, len(queue), g.Title, g.Version, g.LatestVersion)
-		if err := downloadSingle(database, g, cookie, downloadDir, targetPlatform, extract, client); err != nil {
+		if err := downloadSingle(database, g, cookie, downloadDir, targetPlatform, extract, client, excludedHosts); err != nil {
 			failed++
 			fmt.Fprintf(os.Stderr, "  ✗ %v\n", err)
 		} else {
@@ -172,10 +174,46 @@ func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform stri
 	}
 }
 
+// scoredDL pairs a download link with its host/platform score.
+type scoredDL struct {
+	link  db.DownloadLink
+	score int
+}
+
+// scoreDownloadLinks ranks the usable links for a platform, dropping
+// online-only entries and any host the caller excluded (a rate-limited mirror
+// is not a failure, so the downloader would otherwise keep choosing it).
+// skippedExcluded counts the links removed by the exclusion so the caller can
+// explain an empty result.
+func scoreDownloadLinks(links []db.DownloadLink, platform downloader.Platform, excluded map[string]bool) (scored []scoredDL, skippedExcluded int) {
+	for _, link := range links {
+		if downloader.IsOnlineOnly(link.Name, link.URL) {
+			continue
+		}
+		if excluded[strings.ToLower(strings.TrimSpace(link.Host))] {
+			skippedExcluded++
+			continue
+		}
+		scored = append(scored, scoredDL{link, downloader.ScoreDownloadLink(link, platform)})
+	}
+	return scored, skippedExcluded
+}
+
+// parseHostExclusions turns a comma-separated host list into a lookup set.
+func parseHostExclusions(v string) map[string]bool {
+	set := make(map[string]bool)
+	for _, part := range strings.Split(v, ",") {
+		if h := strings.ToLower(strings.TrimSpace(part)); h != "" {
+			set[h] = true
+		}
+	}
+	return set
+}
+
 // downloadSingle handles the full download flow for one game.
 // Returns an error when the download did not complete; nil on success or
 // when skipped (e.g. download already in progress).
-func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, targetPlatform string, extract bool, client *scraper.Client) error {
+func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, targetPlatform string, extract bool, client *scraper.Client, excludedHosts map[string]bool) error {
 	destDir := downloadDir
 	if destDir == "" {
 		destDir = filepath.Join(filepath.Dir(game.Path), "downloads")
@@ -274,21 +312,17 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 		return fmt.Errorf("no download links found")
 	}
 
-	type scoredLink struct {
-		link  db.DownloadLink
-		score int
-	}
-	var scored []scoredLink
-	for _, link := range links {
-		if downloader.IsOnlineOnly(link.Name, link.URL) {
-			continue
-		}
-		score := downloader.ScoreDownloadLink(link, platform)
-		scored = append(scored, scoredLink{link, score})
-	}
+	scored, skippedExcluded := scoreDownloadLinks(links, platform, excludedHosts)
 	if len(scored) == 0 {
+		if skippedExcluded > 0 {
+			fmt.Fprintf(os.Stderr, "  – No downloadable links (all %d hosts excluded).\n", skippedExcluded)
+			return fmt.Errorf("every download host was excluded")
+		}
 		fmt.Fprintf(os.Stderr, "  – No downloadable links (all online-only).\n")
 		return fmt.Errorf("no downloadable links (all online-only)")
+	}
+	if skippedExcluded > 0 {
+		fmt.Fprintf(os.Stderr, "  Skipped %d link(s) from excluded hosts.\n", skippedExcluded)
 	}
 	sort.SliceStable(scored, func(i, j int) bool {
 		return scored[i].score > scored[j].score

@@ -32,6 +32,10 @@ type autoUpdateOptions struct {
 	Concurrency int  // 0 = read the update-concurrency config key
 	Client      *scraper.Client
 
+	// ExcludeHosts are skipped when ranking mirrors, for a rate-limited host
+	// nothing else can detect (a slow transfer is not an error).
+	ExcludeHosts map[string]bool
+
 	// install overrides the download+install step in tests. Production leaves
 	// it nil and downloadSingle runs.
 	install func(game *db.Game) error
@@ -104,6 +108,7 @@ func AutoUpdate(args []string) {
 	checkOnly := fs.Bool("check-only", false, "Only check for updates; do not download")
 	noCheck := fs.Bool("no-check", false, "Skip the version check; use pending updates already in the DB")
 	concurrencyFlag := fs.Int("concurrency", 0, "Maximum games to update at once (1-4; 0 = update-concurrency config)")
+	excludeHost := fs.String("exclude-host", "", "Comma-separated hosts to skip (e.g. pixeldrain when rate-limited)")
 	fs.Parse(hoistFlags(args, autoUpdateParseFlags))
 
 	cookie := ResolveCookie(*cookieStr, *cookieFile)
@@ -175,14 +180,15 @@ func AutoUpdate(args []string) {
 		maxPerRun = autoUpdateMaxPerRun()
 	}
 	summary := runAutoUpdate(database, pending, autoUpdateOptions{
-		Cookie:      cookie,
-		Client:      client,
-		Platform:    targetPlatform,
-		Extract:     !*noExtract,
-		Max:         maxPerRun,
-		DryRun:      *dryRun,
-		Force:       *force,
-		Concurrency: autoUpdateConcurrencyOption(*concurrencyFlag),
+		Cookie:       cookie,
+		Client:       client,
+		Platform:     targetPlatform,
+		Extract:      !*noExtract,
+		Max:          maxPerRun,
+		DryRun:       *dryRun,
+		Force:        *force,
+		Concurrency:  autoUpdateConcurrencyOption(*concurrencyFlag),
+		ExcludeHosts: parseHostExclusions(*excludeHost),
 	})
 	printAutoUpdateSummary(summary)
 }
@@ -273,7 +279,7 @@ func runAutoUpdate(database *db.Database, games []db.Game, opts autoUpdateOption
 	install := opts.install
 	if install == nil {
 		install = func(game *db.Game) error {
-			return downloadSingle(database, game, opts.Cookie, "", opts.Platform, opts.Extract, opts.Client)
+			return downloadSingle(database, game, opts.Cookie, "", opts.Platform, opts.Extract, opts.Client, opts.ExcludeHosts)
 		}
 	}
 
