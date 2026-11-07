@@ -441,14 +441,25 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 		if downloadedFile == "" {
 			downloadedFile = findDownloadedFile(destDir, dlRecord.Filename)
 		}
-		if downloadedFile != "" && !archive.IsArchiveFile(downloadedFile) {
-			// A plain executable/patch cannot be merged automatically. Report
-			// it so auto-update does not claim success and re-queue forever.
-			fmt.Fprintf(os.Stderr, "  Downloaded file is not an archive: %s\n", downloadedFile)
-			fmt.Fprintf(os.Stderr, "  Install it manually: moxie install %d %s\n", game.ID, downloadedFile)
-			return fmt.Errorf("downloaded file is not an archive; install manually")
+		if downloadedFile == "" {
+			// Reporting success without a file leaves the game queued while
+			// auto-update claims it was installed.
+			fmt.Fprintf(os.Stderr, "  ✗ Could not locate the downloaded file in %s\n", destDir)
+			return fmt.Errorf("downloaded file not found in %s", destDir)
 		}
-		if downloadedFile != "" && archive.IsArchiveFile(downloadedFile) {
+		if !archive.IsArchiveFile(downloadedFile) {
+			// Single-file HTML games ship the game itself, not an archive.
+			// Try that before calling the payload unmergeable; a plain
+			// executable/patch still gets the manual-install message.
+			if !applyHTMLGameInstall(database, game, downloadedFile) {
+				fmt.Fprintf(os.Stderr, "  Downloaded file is not an archive or HTML game: %s\n", downloadedFile)
+				fmt.Fprintf(os.Stderr, "  Install it manually: moxie install %d %s\n", game.ID, downloadedFile)
+				return fmt.Errorf("downloaded file is not an archive or HTML game; install manually")
+			}
+			fmt.Fprintf(os.Stderr, "  ✓ Ready: %s\n", destDir)
+			return nil
+		}
+		if archive.IsArchiveFile(downloadedFile) {
 			fmt.Fprintf(os.Stderr, "  Extracting archive...\n")
 			dlRecord.Status = db.DownloadStatusExtracting
 			database.UpdateDownload(dlRecord)
@@ -518,15 +529,6 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 			dlRecord.PercentComplete = 100
 			dlRecord.CompletedAt = time.Now()
 			database.UpdateDownload(dlRecord)
-		} else if downloadedFile != "" {
-			// Single-file HTML games: the payload is the game, not an archive.
-			if !applyHTMLGameInstall(database, game, downloadedFile) {
-				// A plain executable/patch cannot be merged automatically.
-				// Report it so auto-update does not claim success and requeue.
-				fmt.Fprintf(os.Stderr, "  Downloaded file is not an archive or HTML game: %s\n", downloadedFile)
-				fmt.Fprintf(os.Stderr, "  Install it manually: moxie install %d %s\n", game.ID, downloadedFile)
-				return fmt.Errorf("downloaded file is not an archive or HTML game; install manually")
-			}
 		}
 	}
 
