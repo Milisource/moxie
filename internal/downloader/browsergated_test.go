@@ -117,7 +117,7 @@ func TestDownloadWithHeaders_GatedHostHTML_Fallback(t *testing.T) {
 	destDir := t.TempDir()
 	url := "https://mixdrop.ag/f/abc123"
 
-	err := downloadWithHeaders(context.Background(), url, nil, url, "mixdrop", destDir, 0, nil, nil, fb)
+	err := downloadWithHeaders(context.Background(), url, nil, url, "mixdrop", destDir, 0, nil, nil, fb, nil)
 	if err != nil {
 		t.Fatalf("downloadWithHeaders: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestDownloadWithHeaders_UnknownHostHTML_NoFallback(t *testing.T) {
 	fb, calls := recordingFallback(t, true)
 	url := "https://cdn.example.com/file.zip"
 
-	err := downloadWithHeaders(context.Background(), url, nil, url, "unknown", t.TempDir(), 0, nil, nil, fb)
+	err := downloadWithHeaders(context.Background(), url, nil, url, "unknown", t.TempDir(), 0, nil, nil, fb, nil)
 	if err == nil {
 		t.Fatal("expected the hard reject for an unknown host")
 	}
@@ -164,7 +164,7 @@ func TestDownloadWithHeaders_GatedURLUnknownLabel_Fallback(t *testing.T) {
 	fb, calls := recordingFallback(t, true)
 	url := "https://uploadnow.io/f/x"
 
-	if err := downloadWithHeaders(context.Background(), url, nil, url, "unknown", t.TempDir(), 0, nil, nil, fb); err != nil {
+	if err := downloadWithHeaders(context.Background(), url, nil, url, "unknown", t.TempDir(), 0, nil, nil, fb, nil); err != nil {
 		t.Fatalf("downloadWithHeaders: %v", err)
 	}
 	if len(*calls) != 1 {
@@ -181,7 +181,7 @@ func TestDownloadWithHeaders_GatedHostFallbackFails(t *testing.T) {
 	fb, calls := recordingFallback(t, false)
 	url := "https://hexload.com/abc"
 
-	err := downloadWithHeaders(context.Background(), url, nil, url, "hexload", t.TempDir(), 0, nil, nil, fb)
+	err := downloadWithHeaders(context.Background(), url, nil, url, "hexload", t.TempDir(), 0, nil, nil, fb, nil)
 	if err == nil {
 		t.Fatal("expected error when the browser fallback fails")
 	}
@@ -210,7 +210,7 @@ func TestDownloadWithHeaders_GatedHost404_NoFallback(t *testing.T) {
 	fb, calls := recordingFallback(t, true)
 	url := "https://dropmefiles.com/dead"
 
-	err := downloadWithHeaders(context.Background(), url, nil, url, "dropmefiles", t.TempDir(), 0, nil, nil, fb)
+	err := downloadWithHeaders(context.Background(), url, nil, url, "dropmefiles", t.TempDir(), 0, nil, nil, fb, nil)
 	if err == nil {
 		t.Fatal("expected an error for a 404 page")
 	}
@@ -226,7 +226,7 @@ func TestDownloadWithHeaders_GatedHostNoFallback(t *testing.T) {
 	rewriteTestHost(t, "mixdrop.ag", srv)
 
 	url := "https://mixdrop.ag/f/abc123"
-	err := downloadWithHeaders(context.Background(), url, nil, url, "mixdrop", t.TempDir(), 0, nil, nil, nil)
+	err := downloadWithHeaders(context.Background(), url, nil, url, "mixdrop", t.TempDir(), 0, nil, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "server returned HTML instead of file") {
 		t.Fatalf("expected the hard reject without a fallback, got %v", err)
 	}

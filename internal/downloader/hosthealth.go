@@ -64,6 +64,10 @@ const (
 	throttleTTL = 30 * time.Minute
 )
 
+// throttleProbeInterval is how often an in-flight transfer re-checks a host
+// known to cap downloads. A var so tests can shorten it.
+var throttleProbeInterval = 45 * time.Second
+
 var throttledHosts sync.Map // normalized host label -> time.Time (expiry)
 
 // MarkHostThrottled records that host is currently serving capped downloads.

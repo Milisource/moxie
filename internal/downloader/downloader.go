@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/mili/moxie/internal/archive"
@@ -162,7 +163,23 @@ func DownloadWithContext(ctx context.Context, urlStr, host, destDir string, expe
 			return err
 		}
 	}
-	return downloadWithHeaders(ctx, resolved.URL, resolved.Headers, urlStr, host, destDir, expectedTotal, onProgress, resolver.cookieSource, resolver.browserFallback)
+	// A capped host can start throttling mid-transfer. Give the download loop
+	// a probe for hosts whose cap is observable, so it aborts into the link
+	// fallback instead of finishing a multi-hour capped transfer.
+	var throttleProbe func(context.Context) (*ThrottledError, bool)
+	if normalizeHostLabel(host) == "pixeldrain" && !IsBrowserFileURL(resolved.URL) {
+		throttleProbe = func(pctx context.Context) (*ThrottledError, bool) {
+			limit, limited, err := resolver.probePixeldrainLimit(pctx, resolved.URL)
+			if err != nil || !limited {
+				return nil, false
+			}
+			MarkHostThrottled("pixeldrain", throttleTTL)
+			log.Warn("host started throttling mid-transfer; switching links",
+				"host", "pixeldrain", "limit_bytes_per_sec", limit)
+			return &ThrottledError{Host: "pixeldrain", Limit: limit}, true
+		}
+	}
+	return downloadWithHeaders(ctx, resolved.URL, resolved.Headers, urlStr, host, destDir, expectedTotal, onProgress, resolver.cookieSource, resolver.browserFallback, throttleProbe)
 }
 
 // challengeMarkers are error substrings that identify a Cloudflare/captcha
@@ -259,7 +276,7 @@ var sharedDownloadTransport = &http.Transport{
 	IdleConnTimeout:       90 * time.Second,
 }
 
-func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]string, originalURL, host, destDir string, expectedTotal int64, onProgress func(Progress), cookieSource func(hostname string) string, browserFallback func(ctx context.Context, url, destDir string) (string, error)) error {
+func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]string, originalURL, host, destDir string, expectedTotal int64, onProgress func(Progress), cookieSource func(hostname string) string, browserFallback func(ctx context.Context, url, destDir string) (string, error), throttleProbe func(context.Context) (*ThrottledError, bool)) error {
 	// A file the browser already downloaded (human-assisted session) is
 	// adopted directly — fetching its URL again would double the transfer or
 	// fail on one-time links.
@@ -297,12 +314,18 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 	partPath := filepath.Join(destDir, base+".part")
 	finalPath := filepath.Join(destDir, base)
 
+	// The transfer runs on a cancellable child so a mid-transfer throttle
+	// probe can abort a capped download without cancelling the caller's work.
+	dlCtx, cancelDownload := context.WithCancel(ctx)
+	defer cancelDownload()
+	var throttleErr atomic.Pointer[ThrottledError]
+
 	existingSize := int64(0)
 	if fi, err := os.Stat(partPath); err == nil {
 		existingSize = fi.Size()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
+	req, err := http.NewRequestWithContext(dlCtx, "GET", urlStr, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -495,6 +518,34 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 		},
 	}
 
+	// A host's speed cap can appear mid-transfer: pixeldrain starts
+	// throttling the moment the 24h quota is crossed, after the pre-download
+	// probe already saw a clean file-info response. Re-probe while the bytes
+	// move and abort into the caller's link fallback instead of grinding at
+	// 1 MiB/s for hours.
+	if throttleProbe != nil {
+		probeCtx, stopProbe := context.WithCancel(ctx)
+		defer stopProbe()
+		go func() {
+			ticker := time.NewTicker(throttleProbeInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-probeCtx.Done():
+					return
+				case <-ticker.C:
+					te, ok := throttleProbe(probeCtx)
+					if !ok || te == nil {
+						continue
+					}
+					throttleErr.Store(te)
+					cancelDownload()
+					return
+				}
+			}
+		}()
+	}
+
 	buf := make([]byte, 32768)
 	var finalErr error
 	for {
@@ -525,6 +576,12 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 	}
 	if finalErr != nil {
 		f.Close()
+		if te := throttleErr.Load(); te != nil {
+			// The partial belongs to the capped host; the next mirror writes
+			// a different filename, so keeping it would only leak disk.
+			os.Remove(partPath)
+			return te
+		}
 		return finalErr
 	}
 

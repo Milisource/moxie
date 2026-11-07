@@ -32,7 +32,7 @@ func TestDownloadWithHeaders_AdoptsBrowserFile(t *testing.T) {
 	var last Progress
 	err = downloadWithHeaders(context.Background(), token, nil,
 		"https://f95zone.to/dl/16943574/", "pixeldrain", destDir, 0,
-		func(p Progress) { last = p }, nil, nil)
+		func(p Progress) { last = p }, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("downloadWithHeaders: %v", err)
 	}
@@ -52,14 +52,14 @@ func TestDownloadWithHeaders_AdoptsBrowserFile(t *testing.T) {
 	}
 
 	// Tokens are single use: replaying one must not read anything.
-	err = downloadWithHeaders(context.Background(), token, nil, "", "pixeldrain", destDir, 0, nil, nil, nil)
+	err = downloadWithHeaders(context.Background(), token, nil, "", "pixeldrain", destDir, 0, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("replayed browser-file token was accepted")
 	}
 }
 
 func TestDownloadWithHeaders_UnknownBrowserFileToken(t *testing.T) {
-	err := downloadWithHeaders(context.Background(), browserFileScheme+"deadbeef", nil, "", "pixeldrain", t.TempDir(), 0, nil, nil, nil)
+	err := downloadWithHeaders(context.Background(), browserFileScheme+"deadbeef", nil, "", "pixeldrain", t.TempDir(), 0, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("unknown browser-file token was accepted")
 	}

@@ -1446,6 +1446,9 @@ func rewriteToServer(hostname, serverURL string) roundTripFunc {
 			if err != nil {
 				return nil, err
 			}
+			// Preserve the caller's context so cancellation (and deadlines)
+			// reach the rewritten request, exactly as the real transport does.
+			newReq = newReq.WithContext(req.Context())
 			newReq.Header = req.Header.Clone()
 			return orig.RoundTrip(newReq)
 		}
