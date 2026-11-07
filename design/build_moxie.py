@@ -207,14 +207,16 @@ def nav_row(k, s, y, label, icon, active=False, badge=None):
     if active:
         rect(k, s, 12, y - 8, 224, 40, fill="nav-active", radius=2, name=f"NavActive/{label}")
         rect(k, s, 0, y - 8, 2, 40, fill="brand", radius=0, name="AccentBar")
-    col = "brand-text" if active else ("text-2" if badge is None else "text-2")
-    k.icon(s, icon, 16, "brand-text" if active else "text-3", 1.6, x=24, y=y + 4)
-    txt(k, s, label, 52, y, size=13, color="text" if active else col, weight="SemiBold" if active else "Regular", lh="100%")
+    row = k.frame(s, f"NavLabel/{label}", 180, 40, x=24, y=y - 8, fill=None,
+                  layout="horizontal", gap=12, crossAlign="center", sx="fixed", sy="fixed")
+    k.icon(row, icon, 16, "brand-text" if active else "text-3", 1.6)
+    txt(k, row, label, 0, 0, size=13, color="text" if active else "text-2",
+        weight="SemiBold" if active else "Regular", lh="100%")
     if badge:
         w = 24 if len(badge) < 3 else 30
         f = k.frame(s, f"Badge/{label}", w, 18, x=224 - w, y=y - 1, fill="brand-tint", radius=2,
                     layout="horizontal", mainAlign="center", crossAlign="center", sx="fixed", sy="fixed")
-        txt(k, f, badge, 0, 0, size=10, color="brand-text", weight="SemiBold", mono=True, lh="100%")
+        txt(k, f, badge, 0, 0, size=11, color="brand-text", weight="SemiBold", mono=True, lh="100%")
 
 
 def sidebar(k, scr, active="Library"):
@@ -238,8 +240,11 @@ def sidebar(k, scr, active="Library"):
 
     # Pinned settings + honest version.
     rect(k, s, 24, 792, 200, 1, fill="border", name="Divider/C")
-    k.icon(s, "settings", 16, "brand-text" if active == "Settings" else "text-3", 1.6, x=24, y=820)
-    txt(k, s, "Settings", 52, 816, size=13, color="brand-text" if active == "Settings" else "text-2", weight="SemiBold" if active == "Settings" else "Regular")
+    srow = k.frame(s, "NavLabel/Settings", 180, 40, x=24, y=808, fill=None,
+                   layout="horizontal", gap=12, crossAlign="center", sx="fixed", sy="fixed")
+    k.icon(srow, "settings", 16, "brand-text" if active == "Settings" else "text-3", 1.6)
+    txt(k, srow, "Settings", 0, 0, size=13, color="brand-text" if active == "Settings" else "text-2",
+        weight="SemiBold" if active == "Settings" else "Regular", lh="100%")
     txt(k, s, "0.4.0-alpha", 24, 862, size=11, color="text-3", mono=True, lh="100%")
     return s
 
@@ -288,8 +293,10 @@ def card(k, scr, x, y, title, engine, meta, c1, c2, initials, wordmark,
         rect(k, scr, x, y + 261, 208, 3, fill="surface-3", name="ProgressTrack")
         rect(k, scr, x, y + 261, int(208 * progress), 3, fill="brand", name="ProgressFill")
     # Meta line: colour dot + engine, mono version/recency right-aligned.
-    k.shape(scr, "ellipse", f"Dot/{engine}", 6, 6, x=x, y=y + 280, fill=ENGINE.get(engine, "#9A9AAE"))
-    txt(k, scr, engine, x + 12, y + 272, size=11, color="text-2", weight="Regular", lh="100%", ls="3%")
+    eng = k.frame(scr, f"Meta/{title}", 100, 16, x=x, y=y + 270, fill=None,
+                  layout="horizontal", gap=6, crossAlign="center", sx="fixed", sy="fixed")
+    k.shape(eng, "ellipse", f"Dot/{engine}", 6, 6, fill=ENGINE.get(engine, "#9A9AAE"))
+    txt(k, eng, engine, 0, 0, size=11, color="text-2", weight="Regular", lh="100%", ls="3%")
     meta_color = "brand-text" if update or progress is not None else "text-3"
     txt(k, scr, meta, x, y + 272, size=11, color=meta_color, mono=True, align="right", w=208, lh="100%")
     txt(k, scr, title, x, y + 292, size=13, color="text", weight="Medium", w=208, max_lines=1, lh="120%")
@@ -338,8 +345,10 @@ def toolbar(k, scr):
 
 def statusbar(k, scr, left="F95Zone connected", right="17 updates ready"):
     rect(k, scr, 248, 871, 1192, 1, fill="border", name="StatusRule")
-    k.shape(scr, "ellipse", "StatusDot", 6, 6, x=280, y=882, fill="good")
-    txt(k, scr, left, 292, 879, size=11, color="text-3", lh="100%")
+    row = k.frame(scr, "StatusLeft", 300, 20, x=280, y=875, fill=None,
+                  layout="horizontal", gap=6, crossAlign="center", sx="fixed", sy="fixed")
+    k.shape(row, "ellipse", "StatusDot", 6, 6, fill="good")
+    txt(k, row, left, 0, 0, size=11, color="text-3", lh="100%")
     txt(k, scr, right, 1250, 879, size=11, color="brand-text", align="right", w=162, lh="100%")
 
 
@@ -587,10 +596,10 @@ def covers(k, name="05 Cover art", x=0):
     ]
     for j, (src, note, state, tone) in enumerate(sources):
         yy = 44 + j * 42
-        k.shape(p, "ellipse", f"SourceDot/{src}", 6, 6, x=20, y=yy + 7, fill="good" if tone == "good" else ("warn" if tone == "warn" else "text-3"))
+        k.shape(p, "ellipse", f"SourceDot/{src}", 6, 6, x=20, y=yy + 3, fill="good" if tone == "good" else ("warn" if tone == "warn" else "text-3"))
         txt(k, p, src, 34, yy, size=12, color="text", weight="Medium", lh="100%")
-        txt(k, p, note, 34, yy + 16, size=10, color="text-3", lh="100%")
-        txt(k, p, state, 312, yy + 4, size=11, color="good-text" if tone == "good" else ("warn-text" if tone == "warn" else "text-3"),
+        txt(k, p, note, 34, yy + 16, size=11, color="text-3", lh="100%")
+        txt(k, p, state, 312, yy + 1, size=11, color="good-text" if tone == "good" else ("warn-text" if tone == "warn" else "text-3"),
             align="right", w=80, lh="100%")
     rect(k, p, 20, 216, 372, 1, fill="border", name="SourcesRule")
     txt(k, p, "Exact title match · portrait ≥ 600px · locked covers are skipped", 20, 228, size=10, color="text-3", lh="100%")
@@ -656,7 +665,7 @@ def sync_screen(k, name="06 Sync", x=0):
         yy = 78 + j * 36
         if j:
             rect(k, plan, 20, yy - 6, 1092, 1, fill="border", name=f"PlanRule/{j}")
-        k.icon(plan, "check", 14, "good", 1.8, x=20, y=yy + 2)
+        k.icon(plan, "check", 14, "good", 1.8, x=20, y=yy + 1)
         txt(k, plan, text, 44, yy, size=13, color="text-2", lh="120%")
         txt(k, plan, count, 1040, yy, size=12, color=tone, mono=True, align="right", w=72, lh="120%")
 
@@ -684,8 +693,10 @@ def sync_screen(k, name="06 Sync", x=0):
     txt(k, polite, "How sync stays polite", 20, 16, size=16, color="text", weight="SemiBold", lh="120%")
     for j, text in enumerate(["One request at a time", "24h cooldown between full syncs", "Browser only for security checks"]):
         x0 = 20 + j * 360
-        k.icon(polite, "check", 12, "good", 1.8, x=x0, y=56)
-        txt(k, polite, text, x0 + 20, 52, size=11, color="text-2", lh="100%")
+        row = k.frame(polite, f"Polite/{j}", 330, 20, x=x0, y=48, fill=None,
+                      layout="horizontal", gap=8, crossAlign="center", sx="fixed", sy="fixed")
+        k.icon(row, "check", 12, "good", 1.8)
+        txt(k, row, text, 0, 0, size=11, color="text-2", lh="100%")
 
     txt(k, scr, "Sync runs in the background; you can keep browsing and launching games.", 280, 820, size=11, color="text-3", lh="100%")
     return scr
@@ -710,9 +721,11 @@ def add_game(k, name="07 Add game", x=0):
     txt(k, card, "DETECTED", 20, 180, size=11, color="text-3", weight="SemiBold", ls="10%", lh="100%")
     cover(k, card, 20, 204, 80, 104, "#3B2A6E", "#171326", "SA", "Signal", update=True, name="AddCover")
     txt(k, card, "Signal Academy", 118, 204, size=16, color="text", weight="SemiBold", lh="120%")
-    k.shape(card, "ellipse", "AddEngineDot", 5, 5, x=119, y=235, fill=ENGINE["RPGM"])
-    txt(k, card, "RPGM", 130, 230, size=11, color="text-2", lh="100%")
-    tag(k, card, 178, 227, "Detected", "good")
+    eng = k.frame(card, "AddEngine", 70, 18, x=118, y=226, fill=None,
+                  layout="horizontal", gap=6, crossAlign="center", sx="fixed", sy="fixed")
+    k.shape(eng, "ellipse", "AddEngineDot", 5, 5, fill=ENGINE["RPGM"])
+    txt(k, eng, "RPGM", 0, 0, size=11, color="text-2", lh="100%")
+    tag(k, card, 194, 225, "Detected", "good")
     txt(k, card, "/home/mili/Games/Signal_Academy", 118, 250, size=11, color="text-3", mono=True, lh="100%")
     txt(k, card, "1.4.2 · 2.6 GB", 118, 272, size=11, color="text-3", mono=True, lh="100%")
     btn(k, card, 20, 330, 600, 42, "Add to library", "primary", name="AddToLibrary")
@@ -737,10 +750,12 @@ def add_game(k, name="07 Add game", x=0):
     ]
     for j, (num, text) in enumerate(steps):
         yy = 174 + j * 48
-        c = k.frame(rail, f"Step/{num}", 24, 24, x=20, y=yy, fill="brand-tint", radius=12,
+        row = k.frame(rail, f"StepRow/{num}", 412, 44, x=20, y=yy - 6, fill=None,
+                      layout="horizontal", gap=12, crossAlign="center", sx="fixed", sy="fixed")
+        c = k.frame(row, f"Step/{num}", 24, 24, fill="brand-tint", radius=12,
                     layout="horizontal", mainAlign="center", crossAlign="center", sx="fixed", sy="fixed")
         txt(k, c, num, 0, 0, size=11, color="brand-text", weight="SemiBold", mono=True, lh="100%")
-        txt(k, rail, text, 56, yy, size=12, color="text-2", w=360, lh="140%")
+        txt(k, row, text, 0, 0, size=12, color="text-2", w=376, lh="140%")
     txt(k, rail, "The folder must contain the game executable or a recognizable engine signature.", 20, 334, size=11, color="text-3", w=412, lh="140%")
 
     # Bulk path below the form.
@@ -750,7 +765,7 @@ def add_game(k, name="07 Add game", x=0):
     btn(k, bulk, 992, 22, 120, 36, "Open Scan", "secondary", icon="scan", name="OpenScan")
     for j, (name_, count) in enumerate([("RPGM", "24 games"), ("Ren'Py", "31 games"), ("Unity", "9 games"), ("Other", "17 games")]):
         x0 = 20 + j * 272
-        k.shape(bulk, "ellipse", f"BulkDot/{name_}", 6, 6, x=x0, y=96, fill=ENGINE.get(name_, "#9A9AAE"))
+        k.shape(bulk, "ellipse", f"BulkDot/{name_}", 6, 6, x=x0, y=93, fill=ENGINE.get(name_, "#9A9AAE"))
         txt(k, bulk, name_, x0 + 12, 90, size=12, color="text-2", weight="Medium", lh="100%")
         txt(k, bulk, count, x0 + 12, 108, size=11, color="text-3", mono=True, lh="100%")
     txt(k, scr, "You can also drag a folder onto the window.", 280, 720, size=11, color="text-3", lh="100%")
@@ -797,7 +812,7 @@ def settings(k, name="08 Settings", x=0):
     for j, path in enumerate(["/home/mili/Games", "/mnt/games/archive"]):
         yy = 248 + j * 44
         row = k.frame(scr, f"PathRow/{j}", 830, 38, x=544, y=yy, fill="surface", stroke="border", radius=2)
-        k.icon(row, "folder", 14, "text-3", 1.6, x=12, y=12)
+        k.icon(row, "folder", 14, "text-3", 1.6, x=12, y=10)
         txt(k, row, path, 36, 12, size=11, color="text-2", mono=True, lh="100%")
         btn(k, row, 676, 5, 64, 28, "Scan", "secondary", name=f"ScanPath/{j}")
         k.icon(row, "x", 12, "text-3", 1.6, x=760, y=13)
@@ -863,8 +878,10 @@ def trash(k, name="09 Trash", x=0):
     cover(k, scr, 292, 178, 40, 52, "#23324D", "#10151F", "OP", "Old", name="TrashCover")
     txt(k, scr, "Old Project X", 344, 180, size=13, color="text", weight="SemiBold", lh="100%")
     txt(k, scr, "/games/Old_Project_X", 344, 200, size=11, color="text-3", mono=True, lh="100%")
-    k.shape(scr, "ellipse", "TrashEngineDot", 5, 5, x=721, y=194, fill=ENGINE["Unity"])
-    txt(k, scr, "Unity", 732, 189, size=12, color="text-2", lh="100%")
+    teng = k.frame(scr, "TrashEngine", 80, 24, x=720, y=184, fill=None,
+                   layout="horizontal", gap=6, crossAlign="center", sx="fixed", sy="fixed")
+    k.shape(teng, "ellipse", "TrashEngineDot", 5, 5, fill=ENGINE["Unity"])
+    txt(k, teng, "Unity", 0, 0, size=12, color="text-2", lh="100%")
     txt(k, scr, "2 days ago", 900, 191, size=12, color="text-3", lh="100%")
     btn(k, scr, 1178, 184, 92, 32, "Restore", "primary", name="RestoreGame")
     icon_btn(k, scr, 1286, 184, "more", 32)
@@ -878,7 +895,7 @@ def trash(k, name="09 Trash", x=0):
     ]
     for j, (text, tone) in enumerate(bullets):
         yy = 56 + j * 26
-        k.icon(help_card, "check" if tone == "good" else "x", 12, "good" if tone == "good" else "bad-text", 1.8, x=20, y=yy + 2)
+        k.icon(help_card, "check" if tone == "good" else "x", 12, "good" if tone == "good" else "bad-text", 1.8, x=20, y=yy)
         txt(k, help_card, text, 40, yy, size=12, color="text-2", lh="100%")
     btn(k, help_card, 968, 18, 144, 34, "Empty trash", "danger", name="EmptyTrash")
 
