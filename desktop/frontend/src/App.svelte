@@ -1209,7 +1209,7 @@
   }
 
   .trash-view { flex: 1; overflow: auto; padding: var(--space-8) var(--gutter); width: 100%; }
-  .trash-view h2 { font-size: var(--text-2xl); font-weight: 700; margin: 0 0 16px; }
+  .trash-view h2 { font-size: var(--text-3xl); font-weight: 600; line-height: 1.15; letter-spacing: -0.01em; margin: 0 0 16px; }
   .trash-actions { margin-bottom: 16px; }
   .trash-view .table-header {
     display: grid;
