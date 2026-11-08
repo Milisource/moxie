@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -223,6 +224,83 @@ func (r *HostResolver) resolveDatanodesBrowser(rawURL string) (*ResolveResult, e
 	log.Info("browser resolver obtained direct link", "host", "datanodes", "target_host", strings.Split(strings.TrimPrefix(cdnURL, "https://"), "/")[0])
 	cacheBrowserResolution(rawURL, cdnURL, "datanodes")
 	return &ResolveResult{URL: cdnURL, Headers: browserHeaders(rawURL)}, nil
+}
+
+// resolveKrakenFilesBrowser drives the single-step KrakenFiles form:
+// wait for Turnstile + FingerprintJS, then POST /download/<hash> with the
+// form fields plus behavior data and read the JSON response.
+func (r *HostResolver) resolveKrakenFilesBrowser(rawURL string) (*ResolveResult, error) {
+	if store := getResolutionStore(); store != nil {
+		if cached, _, ok := store.GetResolvedURL(rawURL, time.Hour); ok && isValidDownloadURL(cached) {
+			log.Debug("krakenfiles browser cache hit", "url", rawURL)
+			return &ResolveResult{URL: cached, Headers: browserHeaders(rawURL)}, nil
+		}
+	}
+
+	body, err := runInBrowser("krakenfiles", "krakenfiles", 120*time.Second, func(ctx context.Context) (string, error) {
+		if err := chromedp.Do(ctx, chromedp.Navigate(rawURL)); err != nil {
+			return "", fmt.Errorf("browser resolver: navigate: %w", err)
+		}
+		if err := pollBrowser(ctx, 45*time.Second, `(() => {
+			const t = document.querySelector('input[name="cf-turnstile-response"]');
+			const f = document.querySelector('input[name="fingerprint"]');
+			return !!(t && t.value.length > 20 && f && f.value.length > 10);
+		})()`); err != nil {
+			return "", fmt.Errorf("browser resolver: KrakenFiles Turnstile/fingerprint: %w", err)
+		}
+		// Replicate custom.min.js: populate behavior data, POST the form, and
+		// return the raw JSON body.
+		return chromedp.Run(ctx, chromedp.Evaluate[string](`(async () => {
+			const form = document.getElementById('dl-form');
+			if (!form) return '{"status":"error","msg":"download form missing"}';
+			if (window.behaviorTracker) {
+				const c = behaviorTracker.getBehavior();
+				c.ft = behaviorTracker.getPageFocusTime();
+				c.fg = behaviorTracker.getFocusGaps();
+				c.bg = behaviorTracker.getBlurDurations();
+				c.iw = window.innerWidth;
+				c.documentReferrer = document.referrer;
+				form.querySelector('input[name="userdata"]').value = btoa(JSON.stringify(c));
+				behaviorTracker.removeAllListeners();
+			}
+			const resp = await fetch(form.action, {
+				method: 'POST',
+				headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+				body: new URLSearchParams(new FormData(form)).toString(),
+				credentials: 'same-origin'
+			});
+			return await resp.text();
+		})()`, chromedp.EvalAwaitPromise))
+	})
+	if err != nil {
+		return nil, err
+	}
+	return parseKrakenFilesResponse(rawURL, body)
+}
+
+// parseKrakenFilesResponse interprets the JSON returned by KrakenFiles'
+// /download/<hash> endpoint. Kept separate from the browser flow so the success
+// and error shapes are unit-testable without launching Chromium.
+func parseKrakenFilesResponse(rawURL, body string) (*ResolveResult, error) {
+	var result struct {
+		Status string `json:"status"`
+		URL    string `json:"url"`
+		Msg    string `json:"msg"`
+	}
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
+		return nil, fmt.Errorf("browser resolver: KrakenFiles returned non-JSON response")
+	}
+	if result.Status != "ok" || result.URL == "" {
+		if result.Msg == "" {
+			result.Msg = "unknown server error"
+		}
+		return nil, fmt.Errorf("krakenfiles: %s", result.Msg)
+	}
+	if !isValidDownloadURL(result.URL) || !strings.HasPrefix(result.URL, "https://") {
+		return nil, fmt.Errorf("browser resolver: KrakenFiles returned an invalid URL")
+	}
+	cacheBrowserResolution(rawURL, result.URL, "krakenfiles")
+	return &ResolveResult{URL: result.URL, Headers: browserHeaders(rawURL)}, nil
 }
 
 func cacheBrowserResolution(key, resolved, host string) {

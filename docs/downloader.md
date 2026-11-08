@@ -148,7 +148,7 @@ range or full download returned real bytes with the expected magic/type.
 | **Buzzheavier** | HTMX `GET <url>/download` with `HX-Request` | ⚠ Implemented | No live link remained in the local DB to test (all returned 404/self-redirect) |
 | **DataNodes** | Optional headed-browser resolver: click `#method_free`, wait for invisible Turnstile, click Free Download, capture `nodeNN.datanodes.to:8443/d/...` | ✅ Verified with `--browser` | Fresh upload `datanodes.to/swyya9wz61je` resolved in ~16 s; full 145-byte ZIP downloaded and validated (`PK\x03\x04`); cached second run ~1 s |
 | **MixDrop** | Page calls `grecaptcha.execute` + `POST a=genticket` | ❌ Browser | Direct GET returns HTML; genticket needs reCAPTCHA v3 |
-| **KrakenFiles** | `POST /download/<hash>` with token | ❌ Browser | HTTP POST returns `captcha not valid`; headed Chromium solved Turnstile but the POST returned `Server error` in testing |
+| **KrakenFiles** | Optional headed-browser resolver: wait Turnstile + FingerprintJS, POST `/download/<hash>`, read JSON `{url}` | ⚠ Browser implemented / server-blocked | Valid Turnstile, fingerprint and behavior data sent; every tested live file returned `{"status":"error","msg":"Server error"}` (3 files, 95 s wait, mouse activity) — server-side refusal from this network |
 | **VikingFile** | Optional headed-browser resolver → `/d/...` → presigned S3 | ✅ Verified with `--browser` | Turnstile auto-solved in a real Chromium; `#download-link` returned a `/d/` URL that 302s to a presigned S3 object; full 989 MB `.7z` downloaded in ~40 s |
 | **UploadHaven** | Form POST with `_token`, `hash`, countdown, Turnstile | ❌ Browser | POST without turnstile re-renders the page |
 | **WDHO** | Custom “click the colored button” check | ❌ Browser | Page JS only |
@@ -163,9 +163,9 @@ range or full download returned real bytes with the expected magic/type.
 | Score | Hosts |
 |-------|-------|
 | **+25** | Pixeldrain, Buzzheavier, Gofile, Catbox, MediaFire, Bunkrr, Dropbox |
-| **+10** | Google Drive, MixDrop, WorkUpload, MEGA (when `megatools` is installed), DataNodes/VikingFile (when `--browser` is enabled) |
+| **+10** | Google Drive, MixDrop, WorkUpload, MEGA (when `megatools` is installed), DataNodes/VikingFile/KrakenFiles (when `--browser` is enabled) |
 | **0** | Other recognized hosts |
-| **-50** | VikingFile, KrakenFiles, DataNodes (when `--browser` is disabled) |
+| **-50** | DataNodes/VikingFile/KrakenFiles (when `--browser` is disabled) |
 | **-200** | MEGA when `megatools` is missing |
 
 ### External downloader: MEGA
@@ -197,7 +197,7 @@ WorkUpload's “Are you a human?” page is not a captcha; it is SHA-256 grindin
 jar for the session. A live run solved 3 targets and the server accepted the
 captcha (the sample file itself had been deleted).
 
-### Optional browser resolver (VikingFile and DataNodes)
+### Optional browser resolver (VikingFile, DataNodes, KrakenFiles)
 
 Turnstile does not issue a token to headless Chromium or to plain HTTP clients.
 Moxie therefore has an opt-in headed-browser resolver implemented with
@@ -240,6 +240,20 @@ cached second run completed in ~1 s without opening the browser. DataNodes uses
 its own browser profile and clears cookies before each run, because its step-1
 token is single-use.
 
+**KrakenFiles** is wired to the same framework:
+
+1. wait for Turnstile + FingerprintJS visitor ID,
+2. populate the behavior payload (`mousemove`, focus gaps, telemetry),
+3. POST `/download/<hash>` and parse the JSON response.
+
+The browser side works: valid Turnstile tokens (709 chars), fingerprints and
+behavior data were sent. The server returned
+`{"status":"error","url":"","msg":"Server error"}` for every live file tested
+(3 files, including a 95-second wait and real mouse movement), so no range
+download could be verified. This looks like a server-side/IP refusal rather than
+a client-flow bug; the resolver reports the server message instead of pretending
+to succeed.
+
 Browser discovery order: `MOXIE_BROWSER`, `google-chrome-stable`,
 `google-chrome`, `chromium`, `chromium-browser`, `brave-browser`,
 `microsoft-edge`, then Playwright's cached Chromium. If no browser is found the
@@ -247,9 +261,6 @@ error explains how to set `MOXIE_BROWSER`.
 
 Other browser-gated hosts remain unimplemented:
 
-- **KrakenFiles** — Turnstile auto-solved in headed Chromium, but the subsequent
-  `POST /download/<hash>` returned `{"status":"error","msg":"Server error"}`
-  in testing (possibly rate limiting or a file-side restriction).
 - **F95Zone `/dl/` and masked links** — both render an interactive hCaptcha
   checkbox under automation; waiting does not auto-solve it.
 - **MixDrop** — reCAPTCHA v3 + `genticket`; no request fired in headed testing
@@ -316,9 +327,9 @@ when they install one package.
 - **F95 CAPTCHA** — masked and `/dl/` links escalate to an interactive hCaptcha
   under automation. No automated bypass is attempted. Use the cache, retry
   later, or `--open --watch`.
-- **Browser-only hosts** — MixDrop, KrakenFiles, UploadHaven, WDHO
-  and JS-only hosts remain manual/browser downloads. The optional browser
-  resolver currently implements VikingFile and DataNodes.
+- **Browser-only hosts** — MixDrop, UploadHaven, WDHO and JS-only hosts remain
+  manual/browser downloads. The optional browser resolver implements VikingFile,
+  DataNodes, and KrakenFiles (KrakenFiles is currently server-blocked).
 - **Browser resolver requirements** — `--browser` needs a Chrome/Chromium-family
   browser and opens a visible window; `MOXIE_BROWSER` can point at a specific
   binary.

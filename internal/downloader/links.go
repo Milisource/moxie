@@ -40,6 +40,9 @@ func ScoreLinkHost(host string) int {
 		}
 		return -50
 	case "krakenfiles":
+		if BrowserResolverEnabled() {
+			return 10
+		}
 		return -50
 	default:
 		return 0

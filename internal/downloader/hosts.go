@@ -100,6 +100,8 @@ func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) 
 		return r.resolveDropbox(url)
 	case "workupload":
 		return r.resolveWorkupload(url)
+	case "krakenfiles":
+		return r.resolveKrakenFilesWithFallback(url)
 	default:
 		// Direct download - just pass through
 		return &ResolveResult{
