@@ -241,3 +241,96 @@ func TestInstallDownloaderFallback_InvalidMode(t *testing.T) {
 		t.Errorf("reason = %q, want invalid-value mention", why)
 	}
 }
+
+// A /dl/ check needs a session, not clicks: the browser holding the host's
+// cookies must win over the Chrome binary that happens to be installed.
+func TestSelectEngine_DLPreferCookieHolderOverChrome(t *testing.T) {
+	isolateBrowserDiscovery(t)
+	binDir := t.TempDir()
+	fakeBin(t, binDir, "google-chrome")
+	fakeBin(t, binDir, "firefox")
+	pathWith(t, binDir, false)
+	t.Setenv("HOME", t.TempDir())
+
+	oldCookies := cookieBrowsersForHost
+	cookieBrowsersForHost = func(string) []string { return []string{"firefox"} }
+	t.Cleanup(func() { cookieBrowsersForHost = oldCookies })
+
+	oldDefault := detectDefaultBrowser
+	detectDefaultBrowser = func() string { return "" }
+	t.Cleanup(func() { detectDefaultBrowser = oldDefault })
+
+	eng, err := selectEngine(&Options{}, "https://f95zone.to/dl/123/?u=1")
+	if err != nil {
+		t.Fatalf("selectEngine: %v", err)
+	}
+	if _, ok := eng.(*firefoxEngine); !ok {
+		t.Fatalf("engine = %T, want *firefoxEngine (cookie holder)", eng)
+	}
+}
+
+// With no cookies for the host, the user's default browser wins over Chrome.
+func TestSelectEngine_DLPreferDefaultBrowser(t *testing.T) {
+	isolateBrowserDiscovery(t)
+	binDir := t.TempDir()
+	fakeBin(t, binDir, "google-chrome")
+	fakeBin(t, binDir, "firefox")
+	pathWith(t, binDir, false)
+	t.Setenv("HOME", t.TempDir())
+
+	oldCookies := cookieBrowsersForHost
+	cookieBrowsersForHost = func(string) []string { return nil }
+	t.Cleanup(func() { cookieBrowsersForHost = oldCookies })
+
+	oldDefault := detectDefaultBrowser
+	detectDefaultBrowser = func() string { return BrowserFirefox }
+	t.Cleanup(func() { detectDefaultBrowser = oldDefault })
+
+	eng, err := selectEngine(&Options{}, "https://f95zone.to/dl/123/?u=1")
+	if err != nil {
+		t.Fatalf("selectEngine: %v", err)
+	}
+	if _, ok := eng.(*firefoxEngine); !ok {
+		t.Fatalf("engine = %T, want *firefoxEngine (default browser)", eng)
+	}
+}
+
+// Masked-URL interstitials need clicks, so the rod engine still wins there.
+func TestSelectEngine_MaskedStillPrefersChromeForClicks(t *testing.T) {
+	isolateBrowserDiscovery(t)
+	binDir := t.TempDir()
+	fakeBin(t, binDir, "google-chrome")
+	fakeBin(t, binDir, "firefox")
+	pathWith(t, binDir, false)
+	t.Setenv("HOME", t.TempDir())
+
+	oldCookies := cookieBrowsersForHost
+	cookieBrowsersForHost = func(string) []string { return []string{"firefox"} }
+	t.Cleanup(func() { cookieBrowsersForHost = oldCookies })
+
+	eng, err := selectEngine(&Options{}, "https://f95zone.to/masked/abc")
+	if err != nil {
+		t.Fatalf("selectEngine: %v", err)
+	}
+	if _, ok := eng.(*rodEngine); !ok {
+		t.Fatalf("engine = %T, want *rodEngine (click automation)", eng)
+	}
+}
+
+func TestBrowserFamilyFromName(t *testing.T) {
+	cases := map[string]string{
+		"firefox.desktop":             BrowserFirefox,
+		"/usr/bin/firefox":            BrowserFirefox,
+		"google-chrome.desktop":       BrowserChrome,
+		"brave-browser.desktop":       BrowserChrome,
+		"FirefoxURL-308046B0AF4A39CB": BrowserFirefox,
+		"msedge.exe":                  BrowserChrome,
+		"librewolf.desktop":           "",
+		"":                            "",
+	}
+	for in, want := range cases {
+		if got := browserFamilyFromName(in); got != want {
+			t.Errorf("browserFamilyFromName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

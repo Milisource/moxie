@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -16,8 +18,8 @@ import (
 
 // Browser engine families. The default is auto-selection.
 const (
-	BrowserAuto    = "auto"   // per-URL cookie-holder, then Chrome, then Firefox
-	BrowserChrome  = "chrome" // rod + CDP engine (Chrome/Chromium/Edge/Brave)
+	BrowserAuto    = "auto"    // per-URL cookie-holder, then Chrome, then Firefox
+	BrowserChrome  = "chrome"  // rod + CDP engine (Chrome/Chromium/Edge/Brave)
 	BrowserFirefox = "firefox" // raw-launch engine (zero deps)
 )
 
@@ -45,7 +47,8 @@ var cookieBrowsersForHost = browser.GetCookieBrowsersForHost
 // selectEngine picks the engine for a session: an explicit WithBrowser
 // override wins; otherwise MOXIE_BROWSER; otherwise the browser whose store
 // holds cookies for the target host (a clearance only matches its minting
-// browser), then Chrome-family, then Firefox.
+// browser), then the user's default browser, then Chrome-family, then
+// Firefox.
 func selectEngine(o *Options, rawURL string) (engine, error) {
 	switch effectiveBrowserMode(o.Browser) {
 	case BrowserChrome:
@@ -53,32 +56,40 @@ func selectEngine(o *Options, rawURL string) (engine, error) {
 	case BrowserFirefox:
 		return newFirefoxEngine(*o), nil
 	}
-	// Auto: F95Zone masked URLs need click automation — the reCAPTCHA-
-	// gated "Continue" interstitial (F95Zone answers every unwrap POST
-	// with {"status":"captcha"}) cannot be passed by raw-launch Firefox.
-	// Prefer the rod engine: it clicks, and session cookies are injected
-	// from every browser store regardless of which browser holds them.
-	// /dl/ download-link pages need the same click capability (hCaptcha +
-	// script check).
-	if strings.Contains(rawURL, "/masked/") || strings.Contains(rawURL, "/dl/") {
+	host := urlHostname(rawURL)
+	// F95Zone masked URLs need click automation — the reCAPTCHA-gated
+	// "Continue" interstitial (F95Zone answers every unwrap POST with
+	// {"status":"captcha"}) cannot be passed by raw-launch Firefox. Prefer
+	// the rod engine: it clicks, and session cookies are injected from every
+	// browser store regardless of which browser holds them.
+	if strings.Contains(rawURL, "/masked/") {
 		if _, err := detectBrowserBinary(); err == nil {
 			return newRodEngine(*o), nil
 		}
-		// No Chrome-family binary: fall through — the cookie-holder or
-		// Firefox paths below will fail the masked flow without clicks,
-		// but nothing better is available on this machine.
+	}
+	// F95Zone /dl/ download-link pages need a session with a matching
+	// clearance, not clicks: the 2026-11 check page is a timed script. Use
+	// the browser that actually holds the host's cookies (usually the user's
+	// daily browser), so the check does not appear at all. Opening Chrome
+	// with injected cookies is the fallback, not the first choice.
+	if strings.Contains(rawURL, "/dl/") {
+		if eng, ok := cookieHolderEngine(o, host); ok {
+			return eng, nil
+		}
+		if eng, ok := defaultBrowserEngine(o); ok {
+			return eng, nil
+		}
+		if _, err := detectBrowserBinary(); err == nil {
+			return newRodEngine(*o), nil
+		}
 	}
 	// Auto: the cookie-holder for this host is the guaranteed fingerprint
 	// match; prefer it over any generic availability.
-	if host := urlHostname(rawURL); host != "" {
-		for _, name := range cookieBrowsersForHost(host) {
-			if chromeBrowserNames[name] {
-				return newRodEngine(*o), nil
-			}
-			if name == "firefox" {
-				return newFirefoxEngine(*o), nil
-			}
-		}
+	if eng, ok := cookieHolderEngine(o, host); ok {
+		return eng, nil
+	}
+	if eng, ok := defaultBrowserEngine(o); ok {
+		return eng, nil
 	}
 	if _, err := detectBrowserBinary(); err == nil {
 		return newRodEngine(*o), nil
@@ -87,6 +98,116 @@ func selectEngine(o *Options, rawURL string) (engine, error) {
 		return newFirefoxEngine(*o), nil
 	}
 	return nil, fmt.Errorf("%w: no Chrome/Chromium or Firefox binary found", ErrNoBrowser)
+}
+
+// cookieHolderEngine returns the engine for the first browser holding cookies
+// for host, when that browser is installed.
+func cookieHolderEngine(o *Options, host string) (engine, bool) {
+	if host == "" {
+		return nil, false
+	}
+	for _, name := range cookieBrowsersForHost(host) {
+		if chromeBrowserNames[name] {
+			if _, err := detectBrowserBinary(); err == nil {
+				return newRodEngine(*o), true
+			}
+			continue
+		}
+		if name == "firefox" {
+			if _, err := detectFirefoxBinary(); err == nil {
+				return newFirefoxEngine(*o), true
+			}
+		}
+	}
+	return nil, false
+}
+
+// defaultBrowserEngine returns the engine for the user's default browser when
+// Moxie supports it and its binary exists.
+func defaultBrowserEngine(o *Options) (engine, bool) {
+	switch detectDefaultBrowser() {
+	case BrowserFirefox:
+		if _, err := detectFirefoxBinary(); err == nil {
+			return newFirefoxEngine(*o), true
+		}
+	case BrowserChrome:
+		if _, err := detectBrowserBinary(); err == nil {
+			return newRodEngine(*o), true
+		}
+	}
+	return nil, false
+}
+
+// detectDefaultBrowser reports the user's default browser family
+// (BrowserFirefox / BrowserChrome) or "" when it cannot be determined. A var
+// so tests can drive selection without a desktop session.
+var detectDefaultBrowser = defaultBrowserFamily
+
+// defaultBrowserFamily queries the desktop environment for the default
+// browser. $BROWSER wins when set, matching the convention most tools use.
+func defaultBrowserFamily() string {
+	if v := strings.TrimSpace(os.Getenv("BROWSER")); v != "" {
+		for _, part := range strings.Split(v, string(os.PathListSeparator)) {
+			if fam := browserFamilyFromName(part); fam != "" {
+				return fam
+			}
+		}
+	}
+	switch runtime.GOOS {
+	case "linux":
+		out, err := exec.Command("xdg-settings", "get", "default-web-browser").Output()
+		if err != nil {
+			return ""
+		}
+		return browserFamilyFromName(string(out))
+	case "darwin":
+		out, err := exec.Command("defaults", "read",
+			"com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers").Output()
+		if err != nil {
+			return ""
+		}
+		return parseMacDefaultBrowser(string(out))
+	case "windows":
+		out, err := exec.Command("reg", "query",
+			`HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice`, "/v", "ProgId").Output()
+		if err != nil {
+			return ""
+		}
+		return browserFamilyFromName(string(out))
+	}
+	return ""
+}
+
+// browserFamilyFromName maps a desktop-file id, binary path, or ProgId to an
+// engine family.
+func browserFamilyFromName(s string) string {
+	l := strings.ToLower(s)
+	switch {
+	case strings.Contains(l, "firefox"):
+		return BrowserFirefox
+	case strings.Contains(l, "chrome"), strings.Contains(l, "chromium"),
+		strings.Contains(l, "brave"), strings.Contains(l, "edge"),
+		strings.Contains(l, "vivaldi"), strings.Contains(l, "opera"):
+		return BrowserChrome
+	}
+	return ""
+}
+
+// parseMacDefaultBrowser extracts the http handler from the
+// com.apple.launchservices.secure LSHandlers plist text.
+func parseMacDefaultBrowser(plist string) string {
+	lines := strings.Split(plist, "\n")
+	inHTTP := false
+	for _, line := range lines {
+		if strings.Contains(line, "LSHandlerURLScheme") && strings.Contains(line, "http") {
+			inHTTP = true
+			continue
+		}
+		if inHTTP && strings.Contains(line, "LSHandlerRoleAll") {
+			return browserFamilyFromName(line)
+		}
+	}
+	return ""
 }
 
 // effectiveBrowserMode resolves the mode option against the MOXIE_BROWSER

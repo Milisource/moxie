@@ -162,17 +162,27 @@
   )
   let allDone = $derived(count > 0 && doneCount === count)
 
-  // Batch progress counts FINISHED games (results) — games run in parallel,
-  // so "started" says little. Capped at 97% while the batch runs; only a
-  // finished batch (running=false) renders as 100%.
+  // Batch progress: completed games count in full, games still downloading
+  // contribute their own percentage, so the bar moves during a long transfer
+  // instead of sitting at 0% until the first game finishes.
   let batchDone = $derived(batchState?.results?.length ?? 0)
   let batchActive = $derived(
     Object.values(gameStates).filter(s => s && s.phase && !['idle', 'done', 'error', 'queued'].includes(s.phase)).length
   )
+  let batchWaiting = $derived(
+    (batchState?.games ?? []).filter(g => gameStates[g.id]?.manualRequired).length
+  )
   let batchProgressPct = $derived.by(() => {
     if (!batchState || !batchState.total) return 0
     if (!batchState.running) return 100
-    return Math.min(Math.round((batchDone / batchState.total) * 100), 97)
+    let inFlight = 0
+    for (const g of batchState.games ?? []) {
+      const phase = gameStates[g.id]?.phase
+      if (!phase || phase === 'done' || phase === 'idle' || phase === 'error') continue
+      const pct = gameStates[g.id]?.percent
+      if (typeof pct === 'number' && pct > 0) inFlight += Math.min(pct, 100) / 100
+    }
+    return Math.min(Math.round(((batchDone + inFlight) / batchState.total) * 100), 97)
   })
 </script>
 
@@ -225,7 +235,7 @@
             ></div>
           </div>
           <p class="batch-progress-label">
-            {batchDone} of {batchState.total} games done{batchActive ? ` · ${batchActive} running` : ''}
+            {batchDone} of {batchState.total} games done{batchActive ? ` · ${batchActive} running` : ''}{batchWaiting ? ` · ${batchWaiting} waiting for a downloaded file` : ''}
           </p>
         {/if}
 

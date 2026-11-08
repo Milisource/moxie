@@ -362,7 +362,7 @@
   // mid-run. The update view just renders this state and calls the callbacks.
   /** @type {Record<number, {phase:string,percent:number,speed:number,bytesDownloaded:number,totalBytes:number,filesExtracted:number,totalFiles:number,currentFile:string,error:string,oldVersion:string,newVersion:string}>} */
   let gameStates = $state({})
-  /** @type {{running:boolean,retrying?:boolean,current:number,total:number,currentGameTitle:string,results:Array,error:string,succeeded?:number,failed?:number}|null} */
+  /** @type {{running:boolean,retrying?:boolean,current:number,total:number,currentGameTitle:string,results:Array,error:string,succeeded?:number,failed?:number,games?:Array}|null} */
   let batchState = $state(null)
   // Retry plumbing: retries all start at once — the backend queues them
   // behind its update-concurrency slots (phase 'queued'). retryPending maps
@@ -510,7 +510,7 @@
       newStates[game.id] = {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', oldVersion: '', newVersion: ''}
     }
     gameStates = newStates
-    batchState = {running: true, current: 0, total: list.length, currentGameTitle: '', results: [], error: ''}
+    batchState = {running: true, current: 0, total: list.length, currentGameTitle: '', results: [], error: '', games: list.map(g => ({id: g.id, title: g.title}))}
     try {
       await DownloadAllUpdates()
     } catch (e) {
@@ -541,6 +541,7 @@
       error: '',
       succeeded: 0,
       failed: 0,
+      games: failed.map(r => ({id: r.gameID, title: r.title})),
     }
     const pending = {}
     for (const f of failed) pending[f.gameID] = 'running'
@@ -869,7 +870,13 @@
     // retry orchestration on top — a shape the shared factory
     // isn't meant to cover.
     subs.push(EventsOn('game-update:phase', (data) => {
-      updateGS(data.gameID, {phase: data.phase})
+      // Any new phase means a fresh attempt (retry, or the downloads watcher
+      // picked up a manually saved archive) — clear the manual-required flag
+      // so the row stops offering the file picker.
+      updateGS(data.gameID, {
+        phase: data.phase,
+        ...(data.phase === 'selecting-file' ? {} : {manualRequired: false, manualHost: ''}),
+      })
     }))
     subs.push(EventsOn('game-update:download-progress', (data) => {
       updateGS(data.gameID, {

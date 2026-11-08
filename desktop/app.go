@@ -5361,6 +5361,9 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 			"host":          selectedLink.Host,
 			"latestVersion": game.LatestVersion,
 		})
+		// Watch the browser download directory: the page Moxie just opened is
+		// where the user is likely to save the archive by hand.
+		a.watchForManualUpdate(gameID, title)
 		return fmt.Errorf("download game file: %w", err)
 	}
 	downloadTempDir = filepath.Dir(archivePath)
