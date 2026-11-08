@@ -79,12 +79,18 @@ successful mappings in memory for 12 hours. The cache matters because F95Zone
 rate-limits unmasking and escalates to an interactive CAPTCHA after a handful
 of automated requests. A trial run resolved `pixeldrain.com/u/f9USE4aK` on the
 first request; subsequent requests in the same session returned `captcha`.
+After roughly 30 minutes the limit reset: the same path resolved to a MEGA
+folder link (`mega.nz/#!...`), and a second attempt resolved to a Pixeldrain
+mirror and downloaded 24.9 MB of
+`A Red Flower Shining in the Moonlight-v1.02-Deepseek-Compressed.7z` before the
+test timeout. The endpoint appears to rotate among the thread's mirrors.
 
 **Remaining blocker:** F95Zone's masked endpoint and `/dl/` check both raise an
 interactive hCaptcha after automation is detected. `moxie` cannot and should not
 solve that captcha. Mitigations:
 
-- resolution cache limits repeated calls;
+- resolution cache and 12-hour reuse limit repeated calls;
+- F95Zone's rate limit is temporary — pausing and retrying works;
 - the fallback loop tries direct/non-masked links first;
 - `moxie download --open --watch` hands the link to a real browser and watches
   the download directory for the completed file.
