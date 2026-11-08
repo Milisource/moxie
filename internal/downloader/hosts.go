@@ -360,6 +360,12 @@ func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*Res
 			}
 			log.Info("F95Zone download link needs the browser check; handing it to the browser", "url", rawURL)
 			dest, err = r.dlSolver(context.Background(), rawURL)
+			if err != nil {
+				// Keep the classification: every mirror goes through the same
+				// check page, so callers should stop the mirror loop instead
+				// of opening a browser per link.
+				return nil, fmt.Errorf("%w: browser check failed: %v", errF95NeedsBrowser, err)
+			}
 		}
 		if err != nil {
 			return nil, fmt.Errorf("resolve F95Zone download link: %w", err)

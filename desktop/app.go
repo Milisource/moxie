@@ -5215,6 +5215,7 @@ func tryDownloadLinks(ctx context.Context, links []db.DownloadLink,
 		// Expired links: every mirror from the same scrape expires together;
 		// the caller re-scrapes instead (downloadWithFreshLinks).
 		if errors.Is(err, errNoF95Cookies) || downloader.IsF95SessionError(err) ||
+			downloader.IsF95BrowserCheckError(err) ||
 			downloader.IsF95StaleLinkError(err) || ctx.Err() != nil {
 			return "", link, err
 		}

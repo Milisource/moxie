@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -99,6 +100,14 @@ func IsF95SessionError(err error) bool {
 		errors.Is(err, ErrF95CookiesRequired)
 }
 
+// IsF95BrowserCheckError reports whether the /dl/ check page asked for a human
+// and the browser solver could not complete it. The check is per session, so
+// every mirror needs the same human action: callers should stop the mirror
+// loop and offer a manual download instead of opening a browser per link.
+func IsF95BrowserCheckError(err error) bool {
+	return errors.Is(err, errF95NeedsBrowser)
+}
+
 // F95 session hooks, wired by internal/f95session at startup and left nil
 // in tests.
 var f95Hooks struct {
@@ -192,6 +201,14 @@ func (r *HostResolver) solveF95DownloadLink(ctx context.Context, dlURL string) (
 	}
 	form, err := parseF95DLCheck(page.doc, base)
 	if err != nil {
+		// The /dl/ endpoint now sometimes serves the masked-link template
+		// ("Link Masked", masked.js) instead of the timed check form. Its
+		// Continue button POSTs xhr=1&download=1 to the same path and gets
+		// JSON: {"status":"ok","msg":"<destination>"} or {"status":"captcha"}.
+		// That path needs no browser unless the site demands a captcha token.
+		if isF95MaskedPage(page.doc) {
+			return r.solveF95MaskedLink(ctx, client, dlURL, page)
+		}
 		return "", err
 	}
 
@@ -223,6 +240,92 @@ func (r *HostResolver) solveF95DownloadLink(ctx context.Context, dlURL string) (
 		return "", errF95NeedsBrowser
 	}
 	return "", fmt.Errorf("F95Zone download link: no destination in the response (%s)", res.snippet)
+}
+
+// isF95MaskedPage reports whether the response is F95Zone's masked-link
+// template (Continue button + masked.js), which replaced the timed check page
+// for some sessions in 2026-11.
+func isF95MaskedPage(doc *goquery.Document) bool {
+	if doc == nil {
+		return false
+	}
+	if doc.Find(".host_link").Length() > 0 {
+		return true
+	}
+	title := strings.ToLower(strings.TrimSpace(doc.Find("title").First().Text()))
+	return strings.Contains(title, "link masked")
+}
+
+// solveF95MaskedLink posts the masked page's own request (xhr=1, download=1)
+// and reads the JSON answer. "ok" carries the destination; "captcha" means the
+// session must pass a reCAPTCHA, which only the browser can do.
+func (r *HostResolver) solveF95MaskedLink(ctx context.Context, client *http.Client, dlURL string, page *f95Page) (string, error) {
+	form := url.Values{}
+	form.Set("xhr", "1")
+	form.Set("download", "1")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dlURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	r.setF95Headers(req, dlURL)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("F95Zone masked link: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("F95Zone masked link: read: %w", err)
+	}
+
+	if resp.Header.Get("cf-mitigated") == "challenge" || isCloudflareChallengeBody(string(body)) {
+		return "", fmt.Errorf("%w (HTTP %d) on %s", ErrF95Challenge, resp.StatusCode, resp.Request.URL.Redacted())
+	}
+
+	var answer struct {
+		Status string `json:"status"`
+		Msg    string `json:"msg"`
+	}
+	if json.Unmarshal(body, &answer) != nil {
+		// Not the JSON API (challenge page, login wall, HTML error): classify
+		// the body the same way the HTML path does.
+		doc, derr := goquery.NewDocumentFromReader(strings.NewReader(string(body)))
+		if derr == nil {
+			if doc.Find(`form[action*="login"] input[name="login"]`).Length() > 0 ||
+				strings.Contains(strings.ToLower(pageSnippet(doc)), "you must be logged-in") {
+				return "", ErrF95LoginRequired
+			}
+			if isCloudflareChallengeBody(string(body)) {
+				return "", fmt.Errorf("%w (HTTP %d)", ErrF95Challenge, resp.StatusCode)
+			}
+		}
+		return "", fmt.Errorf("F95Zone masked link: unexpected response (HTTP %d)", resp.StatusCode)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(answer.Status)) {
+	case "ok":
+		dest := strings.TrimSpace(answer.Msg)
+		u, err := url.Parse(dest)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return "", fmt.Errorf("F95Zone masked link: unusable destination %q", answer.Msg)
+		}
+		return dest, nil
+	case "captcha":
+		// The site wants a reCAPTCHA token; only a real browser can produce
+		// one. Signal the browser fallback instead of guessing.
+		return "", errF95NeedsBrowser
+	default:
+		msg := strings.TrimSpace(answer.Msg)
+		if msg == "" {
+			msg = "the site rejected the request"
+		}
+		return "", fmt.Errorf("F95Zone masked link: %s", msg)
+	}
 }
 
 // f95Client is an HTTP client for F95Zone pages that stops at the first

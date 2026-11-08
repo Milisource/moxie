@@ -447,6 +447,13 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 				fmt.Fprintln(os.Stderr, "  ✗ F95Zone session problem — the other mirrors would fail the same way; open f95zone.to in your browser and retry")
 				break
 			}
+			if downloader.IsF95BrowserCheckError(err) {
+				// The check is per session, so every /dl/ link needs the same
+				// human action; walking the mirrors only opens more windows.
+				fmt.Fprintln(os.Stderr, "  ✗ F95Zone wants a human check on download links; every mirror uses the same check.")
+				fmt.Fprintln(os.Stderr, "    Download the file in your browser and retry when the check clears.")
+				break
+			}
 		}
 	} // end multiPartFinal == ""
 

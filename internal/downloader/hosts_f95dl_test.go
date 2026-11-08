@@ -430,3 +430,76 @@ func mustDoc(t *testing.T, html string) *goquery.Document {
 	}
 	return doc
 }
+
+const f95dlMaskedPage = `<!DOCTYPE html><html id="XF" data-template="masked"><head>
+<title>Link Masked | F95zone</title></head><body>
+<div class="leaving"><a class="host_link button" href="#">Continue to Pixeldrain</a></div>
+<div id="captcha"></div>
+<script src="https://www.google.com/recaptcha/api.js?render=explicit"></script>
+<script src="/assets/js/masked.js"></script>
+</body></html>`
+
+// The /dl/ endpoint now serves the masked-link template for some sessions.
+// Its Continue button posts xhr=1&download=1 to the same path and answers
+// JSON; that path needs no browser unless the site demands a captcha token.
+func TestF95DL_MaskedPageResolvesOverHTTP(t *testing.T) {
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, f95dlMaskedPage)
+			return
+		}
+		posts++
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		if r.PostForm.Get("xhr") != "1" || r.PostForm.Get("download") != "1" {
+			http.Error(w, "unexpected body", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"ok","msg":"https://pixeldrain.com/u/3vkeyGis"}`)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	r.client.Transport = rewriteToServer("f95zone.to", srv.URL)
+	r.SetF95Cookie("xf_user=1%2Cabc; xf_session=s")
+	r.SetDLSolver(nil)
+
+	dest, err := r.resolveF95DownloadLink(context.Background(), testDL)
+	if err != nil {
+		t.Fatalf("resolveF95DownloadLink: %v", err)
+	}
+	if dest != "https://pixeldrain.com/u/3vkeyGis" {
+		t.Errorf("destination = %q, want the pixeldrain URL", dest)
+	}
+	if posts != 1 {
+		t.Errorf("masked POSTs = %d, want 1", posts)
+	}
+}
+
+// A captcha demand must surface as the browser-check class so the mirror loop
+// stops after one link instead of opening a browser for every host.
+func TestF95DL_MaskedPageCaptchaNeedsBrowser(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, f95dlMaskedPage)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"captcha","msg":"Please solve the captcha"}`)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	r.client.Transport = rewriteToServer("f95zone.to", srv.URL)
+	r.SetF95Cookie("xf_user=1%2Cabc; xf_session=s")
+	r.SetDLSolver(nil)
+
+	_, err := r.resolveF95DownloadLink(context.Background(), testDL)
+	if !IsF95BrowserCheckError(err) {
+		t.Fatalf("error = %v, want the browser-check class", err)
+	}
+}
