@@ -76,8 +76,13 @@ func (r *HostResolver) gofileToken() string {
 	return out.Data.Token
 }
 
-// gofileContents returns the first direct file link under a content ID.
+// gofileContents returns the first direct file link under a content ID,
+// descending up to two folder levels.
 func (r *HostResolver) gofileContents(contentID, token string) (string, error) {
+	return r.gofileContentAt(contentID, token, 0)
+}
+
+func (r *HostResolver) gofileContentAt(contentID, token string, depth int) (string, error) {
 	apiURL := fmt.Sprintf("https://api.gofile.io/contents/%s?wt=4fd6sg89d7s6", contentID)
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
@@ -111,9 +116,14 @@ func (r *HostResolver) gofileContents(contentID, token string) (string, error) {
 	if out.Status != "ok" {
 		return "", fmt.Errorf("gofile status: %s", out.Status)
 	}
-	for _, child := range out.Data.Children {
+	for id, child := range out.Data.Children {
 		if child.Link != "" {
 			return child.Link, nil
+		}
+		if child.Type == "folder" && depth < 2 {
+			if link, err := r.gofileContentAt(id, token, depth+1); err == nil && link != "" {
+				return link, nil
+			}
 		}
 	}
 	return "", fmt.Errorf("gofile: no direct link in contents")
