@@ -242,9 +242,10 @@ func TestInstallDownloaderFallback_InvalidMode(t *testing.T) {
 	}
 }
 
-// A /dl/ check needs a session, not clicks: the browser holding the host's
-// cookies must win over the Chrome binary that happens to be installed.
-func TestSelectEngine_DLPreferCookieHolderOverChrome(t *testing.T) {
+// A /dl/ browser fallback exists to solve the hCaptcha/script check, which
+// requires click automation: the click-capable engine must win even when
+// Firefox holds the session and is the default browser.
+func TestSelectEngine_DLRequiresClickCapableEngine(t *testing.T) {
 	isolateBrowserDiscovery(t)
 	binDir := t.TempDir()
 	fakeBin(t, binDir, "google-chrome")
@@ -257,20 +258,20 @@ func TestSelectEngine_DLPreferCookieHolderOverChrome(t *testing.T) {
 	t.Cleanup(func() { cookieBrowsersForHost = oldCookies })
 
 	oldDefault := detectDefaultBrowser
-	detectDefaultBrowser = func() string { return "" }
+	detectDefaultBrowser = func() string { return BrowserFirefox }
 	t.Cleanup(func() { detectDefaultBrowser = oldDefault })
 
 	eng, err := selectEngine(&Options{}, "https://f95zone.to/dl/123/?u=1")
 	if err != nil {
 		t.Fatalf("selectEngine: %v", err)
 	}
-	if _, ok := eng.(*firefoxEngine); !ok {
-		t.Fatalf("engine = %T, want *firefoxEngine (cookie holder)", eng)
+	if _, ok := eng.(*rodEngine); !ok {
+		t.Fatalf("engine = %T, want *rodEngine (click automation)", eng)
 	}
 }
 
-// With no cookies for the host, the user's default browser wins over Chrome.
-func TestSelectEngine_DLPreferDefaultBrowser(t *testing.T) {
+// Non-click flows still prefer the user's default browser over Chrome.
+func TestSelectEngine_HostPagePrefersDefaultBrowser(t *testing.T) {
 	isolateBrowserDiscovery(t)
 	binDir := t.TempDir()
 	fakeBin(t, binDir, "google-chrome")
@@ -286,7 +287,7 @@ func TestSelectEngine_DLPreferDefaultBrowser(t *testing.T) {
 	detectDefaultBrowser = func() string { return BrowserFirefox }
 	t.Cleanup(func() { detectDefaultBrowser = oldDefault })
 
-	eng, err := selectEngine(&Options{}, "https://f95zone.to/dl/123/?u=1")
+	eng, err := selectEngine(&Options{}, "https://buzzheavier.com/abc")
 	if err != nil {
 		t.Fatalf("selectEngine: %v", err)
 	}

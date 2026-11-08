@@ -57,31 +57,17 @@ func selectEngine(o *Options, rawURL string) (engine, error) {
 		return newFirefoxEngine(*o), nil
 	}
 	host := urlHostname(rawURL)
-	// F95Zone masked URLs need click automation — the reCAPTCHA-gated
-	// "Continue" interstitial (F95Zone answers every unwrap POST with
-	// {"status":"captcha"}) cannot be passed by raw-launch Firefox. Prefer
-	// the rod engine: it clicks, and session cookies are injected from every
-	// browser store regardless of which browser holds them.
-	if strings.Contains(rawURL, "/masked/") {
-		if _, err := detectBrowserBinary(); err == nil {
-			return newRodEngine(*o), nil
-		}
-	}
-	// F95Zone /dl/ download-link pages need a session with a matching
-	// clearance, not clicks: the 2026-11 check page is a timed script. Use
-	// the browser that actually holds the host's cookies (usually the user's
-	// daily browser), so the check does not appear at all. Opening Chrome
-	// with injected cookies is the fallback, not the first choice.
-	if strings.Contains(rawURL, "/dl/") {
-		if eng, ok := cookieHolderEngine(o, host); ok {
+	// F95Zone masked URLs and /dl/ check pages need click automation — the
+	// reCAPTCHA/hCaptcha interstitials cannot be passed by raw-launch Firefox.
+	// The native /dl/ solver handles the no-captcha case over plain HTTP; this
+	// engine choice only applies when that solver hands the page to a browser,
+	// which is exactly when clicks are required. The rod engine also gets
+	// session cookies injected from every browser store.
+	if strings.Contains(rawURL, "/masked/") || strings.Contains(rawURL, "/dl/") {
+		if eng, ok := clickCapableEngine(o); ok {
 			return eng, nil
 		}
-		if eng, ok := defaultBrowserEngine(o); ok {
-			return eng, nil
-		}
-		if _, err := detectBrowserBinary(); err == nil {
-			return newRodEngine(*o), nil
-		}
+		// No Chrome-family binary: fall through to anything that exists.
 	}
 	// Auto: the cookie-holder for this host is the guaranteed fingerprint
 	// match; prefer it over any generic availability.
@@ -98,6 +84,15 @@ func selectEngine(o *Options, rawURL string) (engine, error) {
 		return newFirefoxEngine(*o), nil
 	}
 	return nil, fmt.Errorf("%w: no Chrome/Chromium or Firefox binary found", ErrNoBrowser)
+}
+
+// clickCapableEngine returns the rod engine when a Chrome-family browser is
+// installed.
+func clickCapableEngine(o *Options) (engine, bool) {
+	if _, err := detectBrowserBinary(); err == nil {
+		return newRodEngine(*o), true
+	}
+	return nil, false
 }
 
 // cookieHolderEngine returns the engine for the first browser holding cookies
