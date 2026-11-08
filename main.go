@@ -8,6 +8,7 @@ import (
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/commands"
 	"github.com/mili/moxie/internal/config"
+	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/tui"
@@ -17,6 +18,7 @@ var version = "0.4.0-alpha"
 
 func main() {
 	log.Init(config.LogDir())
+	downloader.SetBrowserResolver(os.Getenv("MOXIE_BROWSER") == "1")
 
 	// Parse global flags before command dispatch.
 	// --verbose / -v enables debug logging. The flag is consumed here and

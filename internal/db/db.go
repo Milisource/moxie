@@ -83,7 +83,9 @@ func (db *Database) Close() error {
 //     with series_id and series_order on games.
 //  4. Soft delete support: deleted_at TEXT column on games (NULL = active).
 //  5. Game collections: collections table + game_collections join table.
-const currentSchemaVersion = 6
+//  6. Repair pass for games columns added by older migrations.
+//  7. Cached F95Zone masked-link resolutions (resolved_urls table).
+const currentSchemaVersion = 7
 
 // fts5Setup creates the FTS5 virtual table, content sync triggers, and populates
 // existing games. Safe to run multiple times via IF NOT EXISTS and idempotent
@@ -137,6 +139,22 @@ func migrate(conn *sql.DB) error {
 	var userVersion int
 	if err := conn.QueryRow("PRAGMA user_version").Scan(&userVersion); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
+	}
+
+	// Ensure the masked-link resolution cache exists regardless of schema
+	// version. Some builds advanced user_version past this migration before
+	// the table existed, and the cache is safe/idempotent to create.
+	if _, err := conn.Exec(`
+		CREATE TABLE IF NOT EXISTS resolved_urls (
+			masked_url    TEXT PRIMARY KEY,
+			resolved_url  TEXT NOT NULL,
+			resolved_host TEXT,
+			created_at    INTEGER NOT NULL,
+			hits          INTEGER DEFAULT 0
+		);
+		CREATE INDEX IF NOT EXISTS idx_resolved_urls_created ON resolved_urls(created_at);
+	`); err != nil {
+		return fmt.Errorf("ensure resolved_urls: %w", err)
 	}
 
 	// Core tables definition — includes all current columns.
@@ -213,6 +231,15 @@ func migrate(conn *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_download_links_game_id ON download_links(game_id);
 		CREATE INDEX IF NOT EXISTS idx_download_links_platform ON download_links(platform);
 		CREATE INDEX IF NOT EXISTS idx_download_links_is_dead ON download_links(is_dead);
+
+		CREATE TABLE IF NOT EXISTS resolved_urls (
+			masked_url    TEXT PRIMARY KEY,
+			resolved_url  TEXT NOT NULL,
+			resolved_host TEXT,
+			created_at    INTEGER NOT NULL,
+			hits          INTEGER DEFAULT 0
+		);
+		CREATE INDEX IF NOT EXISTS idx_resolved_urls_created ON resolved_urls(created_at);
 
 		CREATE TABLE IF NOT EXISTS play_history (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -403,6 +430,23 @@ func migrateVersionStep(conn *sql.DB, version int) error {
 			if _, err := tx.Exec("ALTER TABLE games ADD COLUMN deleted_at TEXT"); err != nil {
 				return fmt.Errorf("add deleted_at: %w", err)
 			}
+		}
+	case 7:
+		// Cached F95Zone masked-link resolutions. Avoids re-hitting F95Zone's
+		// rate-limited unmask endpoint on every download.
+		if _, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS resolved_urls (
+				masked_url    TEXT PRIMARY KEY,
+				resolved_url  TEXT NOT NULL,
+				resolved_host TEXT,
+				created_at    INTEGER NOT NULL,
+				hits          INTEGER DEFAULT 0
+			)
+		`); err != nil {
+			return fmt.Errorf("create resolved_urls: %w", err)
+		}
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_resolved_urls_created ON resolved_urls(created_at)`); err != nil {
+			return fmt.Errorf("index resolved_urls: %w", err)
 		}
 	default:
 		return fmt.Errorf("unknown migration version %d", version)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/launcher"
 )
 
@@ -17,6 +18,7 @@ func OpenDB() *db.Database {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
 	}
+	downloader.SetResolutionStore(database)
 	return database
 }
 

@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Gofile current API** — Anonymous account token + `/contents/<id>` Bearer-auth flow.
 - **HTML game support** — `.html`/`.htm`/`.swf` downloads ≥ 64 KiB are accepted instead of rejected as interstitials.
 - **Content-Disposition filenames** — ID-only URLs (Pixeldrain, Bunkr CDN) save with their real filename and extension.
+- **Optional browser resolver** — `moxie download --browser` (or `MOXIE_BROWSER=1`) uses `chromedp` to drive a headed Chromium through Cloudflare Turnstile for VikingFile, captures the `/d/` link, and downloads the presigned S3 object over normal HTTP. Verified with a 989 MB `.7z` download.
+- **Persistent masked-link cache** — Successful F95Zone unmaskings are saved to the `resolved_urls` SQLite table for 12 hours and reused by later downloads, alongside the in-memory cache.
+- **F95 `/dl/` re-scrape** — Downloads re-scrape the thread when every stored link is a tokenized `/dl/` wrapper, instead of retrying expired tokens.
 
 ### Changed
 

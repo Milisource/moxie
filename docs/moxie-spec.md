@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
 **Version:** 0.4.0-alpha (July 2026)
-**Status:** Alpha — 0.4.0 (moxie update fix — correct GitHub repo URL). Download: Beta (verified: Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload; MEGA via megatools; Gofile/Buzzheavier/DataNodes implemented)
+**Status:** Alpha — 0.4.0 (moxie update fix — correct GitHub repo URL). Download: Beta (verified HTTP: Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload; MEGA via megatools; VikingFile via optional headed-browser resolver; Gofile/Buzzheavier/DataNodes implemented)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
@@ -130,6 +130,9 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] `ResolveFirstArg` variant — for multi-arg commands like `install <id|name> <archive-path>` that must not consume subsequent positional args as part of the game name
 - [x] `LaunchCommand` working directory fix — `cmd.Dir` set to game root so Windows games under Wine resolve relative asset paths correctly
 - [x] `SelectBestExe` scoring overhaul — skips known runtime engines (`nwjc`, `nw`, `node`) and launchers (`unitycrashhandler`, `unins`, `setup`); awards +1 GB score bonus for `Game.exe`
+- [x] Optional browser resolver (`--browser`) — `chromedp` drives a headed Chromium through Cloudflare Turnstile for VikingFile, returns the `/d/` URL, and hands it to normal HTTP download; verified with a full 989 MB `.7z` download
+- [x] Persistent masked-link cache — successful F95Zone unmaskings are stored in the `resolved_urls` SQLite table for 12 hours (plus an in-memory layer), so repeated downloads avoid the rate-limited endpoint
+- [x] F95Zone `/dl/` re-scrape — when every stored link is a tokenized `/dl/` wrapper, `moxie download` re-scrapes the thread instead of reusing stale tokens
 - [x] Host scoring reorganized — verified hosts (Pixeldrain, Buzzheavier, Gofile, Catbox, MediaFire, Bunkr, Dropbox) weighted +25, working hosts (DataNodes, Google Drive, MixDrop, WorkUpload, MEGA with megatools) weighted +10, browser-only hosts (VikingFile, KrakenFiles) penalized -50, MEGA without megatools -200
 - [x] F95Zone masked-link resolver — POST `xhr=1&download=1` JSON endpoint (the same call masked.js makes) replaces the old redirect guess; successful mappings cached in memory for 12h, CAPTCHA responses reported clearly
 - [x] F95Zone `/dl/` wrapper resolver — follows plain redirects to the host; detects the hCaptcha "Just a quick check" interstitial and stale-link pages
@@ -194,7 +197,7 @@ A local game library manager for adult games. Scans directories, detects engines
 ### Known Limitations
 
 - **Mega requires megatools** — MEGA's proprietary encrypted protocol is not implemented natively. When `megatools` is installed, links are downloaded through it (with resume); otherwise MEGA links score -200 and report an install hint.
-- **Download feature is BETA** — Interactive CAPTCHAs remain on F95Zone masked/`/dl` links after automation is detected, and on MixDrop, KrakenFiles, VikingFile, UploadHaven and WDHO. Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive and WorkUpload are verified. The fallback loop tries all available links and shows detailed per-host errors. When all links fail, use `moxie download --open --watch` or `moxie install <id> <path>` with a manually downloaded archive.
+- **Download feature is BETA** — Interactive CAPTCHAs remain on F95Zone masked/`/dl` links after automation is detected, and on MixDrop, KrakenFiles, DataNodes, UploadHaven and WDHO. Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive and WorkUpload are verified; VikingFile works with the optional `--browser` resolver. The fallback loop tries all available links and shows detailed per-host errors. When all links fail, use `moxie download --open --watch` or `moxie install <id> <path>` with a manually downloaded archive.
 - **Testability** — 130+ `os.Exit(1)` calls remain in CLI wrappers; `RunPlay`, `RunScan`, `RunSync` extracted as testable logic functions; other commands still need extraction
 - **False positives** — tool/editor directories and generic folder names may be misdetected as games
 - **No archive scanning** — `.zip`/`.rar`/`.7z` at scan roots are not inspected (but can be extracted after download)

@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/scraper"
 )
 
@@ -22,6 +23,7 @@ func Run(dbPath string, scraperClient *scraper.Client, f95Cookie string) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
+	downloader.SetResolutionStore(database)
 
 	p := tea.NewProgram(initialModel(database, scraperClient, f95Cookie), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {

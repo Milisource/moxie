@@ -29,8 +29,11 @@ func Download(args []string) {
 	open := fs.Bool("open", false, "Open download links in browser instead of direct download (bypasses bot detection)")
 	watch := fs.Bool("watch", false, "Watch download directory for new files and auto-install (use with --open)")
 	browserDir := fs.String("browser-dir", "", "Browser download directory to watch (default: ~/Downloads)")
+	browser := fs.Bool("browser", os.Getenv("MOXIE_BROWSER") == "1", "Use a headed browser for Turnstile-protected hosts (VikingFile); also MOXIE_BROWSER=1")
 	verbose := fs.Bool("verbose", false, "Verbose logging (debug level)")
 	fs.Parse(args)
+
+	downloader.SetBrowserResolver(*browser)
 
 	if *verbose {
 		log.SetLevel(slog.LevelDebug)

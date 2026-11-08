@@ -12,13 +12,30 @@ import (
 	"github.com/mili/moxie/internal/log"
 )
 
-// --- VikingFile ---
+// resolveVikingFileWithFallback uses the browser first when enabled, because
+// VikingFile's HTTP flow is known to stop at Turnstile. Without the browser it
+// keeps the plain HTTP attempt for hosts/variants that do not gate downloads.
+func (r *HostResolver) resolveVikingFileWithFallback(rawURL string) (*ResolveResult, error) {
+	if BrowserResolverEnabled() {
+		browserRes, browserErr := r.resolveVikingFileBrowser(rawURL)
+		if browserErr == nil {
+			return browserRes, nil
+		}
+		httpRes, httpErr := r.resolveVikingFile(rawURL)
+		if httpErr == nil {
+			return httpRes, nil
+		}
+		return nil, fmt.Errorf("browser fallback: %v; HTTP: %w", browserErr, httpErr)
+	}
+	return r.resolveVikingFile(rawURL)
+}
+
 // Flow (standard file host):
 //
-//	1. GET /f/<FILE_HASH> → HTML page with file info, optional captcha, hidden form fields
-//	2. POST to same URL with form fields (op=download1, id=<HASH>, rand=..., method_free=1)
-//	   → 302 redirect to CDN download URL
-//	3. Follow redirect to CDN
+//  1. GET /f/<FILE_HASH> → HTML page with file info, optional captcha, hidden form fields
+//  2. POST to same URL with form fields (op=download1, id=<HASH>, rand=..., method_free=1)
+//     → 302 redirect to CDN download URL
+//  3. Follow redirect to CDN
 //
 // If the page uses a Cloudflare Turnstile captcha (as vikingfile.com does), the
 // POST without a valid captcha token will fail. In that case the resolver falls

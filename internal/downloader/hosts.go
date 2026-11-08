@@ -85,7 +85,7 @@ func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) 
 	case "datanodes":
 		return r.resolveDatanodes(url)
 	case "vikingfile":
-		return r.resolveVikingFile(url)
+		return r.resolveVikingFileWithFallback(url)
 	case "mixdrop":
 		return r.resolveMixdrop(url)
 	case "google drive", "googledrive":
@@ -146,6 +146,16 @@ func (r *HostResolver) resolveMasked(maskedURL string) (string, error) {
 	}
 	maskedCacheMu.Unlock()
 
+	if store := getResolutionStore(); store != nil {
+		if resolved, host, ok := store.GetResolvedURL(maskedURL, maskedCacheTTL); ok && isValidDownloadURL(resolved) {
+			maskedCacheMu.Lock()
+			maskedCache[maskedURL] = maskedCacheEntry{url: resolved, expires: time.Now().Add(maskedCacheTTL)}
+			maskedCacheMu.Unlock()
+			log.Debug("masked URL DB cache hit", "url", maskedURL, "host", host)
+			return resolved, nil
+		}
+	}
+
 	if !isValidDownloadURL(maskedURL) {
 		return "", fmt.Errorf("invalid masked URL: %s", maskedURL)
 	}
@@ -201,6 +211,11 @@ func (r *HostResolver) resolveMasked(maskedURL string) (string, error) {
 		maskedCacheMu.Lock()
 		maskedCache[maskedURL] = maskedCacheEntry{url: result.Msg, expires: time.Now().Add(maskedCacheTTL)}
 		maskedCacheMu.Unlock()
+		if store := getResolutionStore(); store != nil {
+			if err := store.SaveResolvedURL(maskedURL, result.Msg, IdentifyHostInURL(result.Msg)); err != nil {
+				log.Warn("failed to cache masked URL resolution", "error", err)
+			}
+		}
 		log.Info("F95Zone masked link resolved", "host", IdentifyHostInURL(result.Msg))
 		return result.Msg, nil
 	case "captcha":
