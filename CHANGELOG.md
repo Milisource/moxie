@@ -17,13 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Gofile current API** — Anonymous account token + `/contents/<id>` Bearer-auth flow.
 - **HTML game support** — `.html`/`.htm`/`.swf` downloads ≥ 64 KiB are accepted instead of rejected as interstitials.
 - **Content-Disposition filenames** — ID-only URLs (Pixeldrain, Bunkr CDN) save with their real filename and extension.
-- **Optional browser resolver** — `moxie download --browser` (or `MOXIE_BROWSER=1`) uses `chromedp` to drive a headed Chromium through Cloudflare Turnstile for VikingFile, captures the `/d/` link, and downloads the presigned S3 object over normal HTTP. Verified with a 989 MB `.7z` download.
+- **Optional browser resolver** — `moxie download --browser` (or `MOXIE_BROWSER=1`) uses `chromedp` to drive a headed Chromium through Cloudflare Turnstile for VikingFile and DataNodes, captures the direct URL, and downloads it over normal HTTP. Verified with a 989 MB `.7z` (VikingFile) and a live DataNodes ZIP.
 - **Persistent masked-link cache** — Successful F95Zone unmaskings are saved to the `resolved_urls` SQLite table for 12 hours and reused by later downloads, alongside the in-memory cache.
 - **F95 `/dl/` re-scrape** — Downloads re-scrape the thread when every stored link is a tokenized `/dl/` wrapper, instead of retrying expired tokens.
 
 ### Changed
 
-- **Host scoring** — MediaFire/Bunkr/Dropbox now +25, WorkUpload/Google Drive/MEGA (with megatools) +10, browser-only VikingFile/KrakenFiles −50.
+- **Host scoring** — MediaFire/Bunkr/Dropbox now +25, WorkUpload/Google Drive/MEGA (with megatools) +10, DataNodes/VikingFile +10 with `--browser` and −50 without, KrakenFiles −50.
 
 ## [0.4.0-alpha] - 2026-07-01
 

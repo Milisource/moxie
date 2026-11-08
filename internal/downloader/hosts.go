@@ -83,7 +83,7 @@ func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) 
 	case "gofile":
 		return r.resolveGofile(url)
 	case "datanodes":
-		return r.resolveDatanodes(url)
+		return r.resolveDatanodesWithFallback(url)
 	case "vikingfile":
 		return r.resolveVikingFileWithFallback(url)
 	case "mixdrop":

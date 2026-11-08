@@ -1,6 +1,6 @@
 # Downloader
 
-> **Status: beta, with 7 verified HTTP host paths and an optional browser resolver.** HTTP-only downloads are verified for Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, and WorkUpload; MEGA is verified through the `megatools` subprocess. VikingFile is fully automated with the optional headed-browser resolver (`--browser`). Hosts behind interactive CAPTCHAs on F95Zone itself still need a browser handoff. See [Host support matrix](#host-support-matrix) for the per-host evidence.
+> **Status: beta, with 7 verified HTTP host paths and optional browser resolvers.** HTTP-only downloads are verified for Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, and WorkUpload; MEGA is verified through the `megatools` subprocess. VikingFile and DataNodes are fully automated with the optional headed-browser resolver (`--browser`). F95Zone's own masked/`/dl` hCaptcha still needs a browser handoff. See [Host support matrix](#host-support-matrix) for the per-host evidence.
 
 ## What
 
@@ -146,7 +146,7 @@ range or full download returned real bytes with the expected magic/type.
 | **WorkUpload** | Solve SHA-256 proof-of-work, then parse direct link | ✅ PoW verified | Live `/puzzle` solved (3 targets in range 10 000) and `/captcha` accepted; test file had been deleted |
 | **Gofile** | `GET /accounts` → `GET /contents/<id>` (Bearer token) | ⚠ Implemented | API host is unreachable from this test network (TCP timeout); resolver covered by unit test |
 | **Buzzheavier** | HTMX `GET <url>/download` with `HX-Request` | ⚠ Implemented | No live link remained in the local DB to test (all returned 404/self-redirect) |
-| **DataNodes** | Cookie + hidden-form POST + Turnstile | ❌ Browser | No live link available; external implementation notes confirm Turnstile does not issue a token to headless Chromium |
+| **DataNodes** | Optional headed-browser resolver: click `#method_free`, wait for invisible Turnstile, click Free Download, capture `nodeNN.datanodes.to:8443/d/...` | ✅ Verified with `--browser` | Fresh upload `datanodes.to/swyya9wz61je` resolved in ~16 s; full 145-byte ZIP downloaded and validated (`PK\x03\x04`); cached second run ~1 s |
 | **MixDrop** | Page calls `grecaptcha.execute` + `POST a=genticket` | ❌ Browser | Direct GET returns HTML; genticket needs reCAPTCHA v3 |
 | **KrakenFiles** | `POST /download/<hash>` with token | ❌ Browser | HTTP POST returns `captcha not valid`; headed Chromium solved Turnstile but the POST returned `Server error` in testing |
 | **VikingFile** | Optional headed-browser resolver → `/d/...` → presigned S3 | ✅ Verified with `--browser` | Turnstile auto-solved in a real Chromium; `#download-link` returned a `/d/` URL that 302s to a presigned S3 object; full 989 MB `.7z` downloaded in ~40 s |
@@ -163,9 +163,9 @@ range or full download returned real bytes with the expected magic/type.
 | Score | Hosts |
 |-------|-------|
 | **+25** | Pixeldrain, Buzzheavier, Gofile, Catbox, MediaFire, Bunkrr, Dropbox |
-| **+10** | DataNodes, Google Drive, MixDrop, WorkUpload, MEGA (when `megatools` is installed) |
+| **+10** | Google Drive, MixDrop, WorkUpload, MEGA (when `megatools` is installed), DataNodes/VikingFile (when `--browser` is enabled) |
 | **0** | Other recognized hosts |
-| **-50** | VikingFile, KrakenFiles |
+| **-50** | VikingFile, KrakenFiles, DataNodes (when `--browser` is disabled) |
 | **-200** | MEGA when `megatools` is missing |
 
 ### External downloader: MEGA
@@ -197,7 +197,7 @@ WorkUpload's “Are you a human?” page is not a captcha; it is SHA-256 grindin
 jar for the session. A live run solved 3 targets and the server accepted the
 captcha (the sample file itself had been deleted).
 
-### Optional browser resolver (VikingFile)
+### Optional browser resolver (VikingFile and DataNodes)
 
 Turnstile does not issue a token to headless Chromium or to plain HTTP clients.
 Moxie therefore has an opt-in headed-browser resolver implemented with
@@ -210,13 +210,13 @@ MOXIE_BROWSER=/path/to/chrome moxie download --browser <id>
 
 Flow:
 
-1. Try the normal HTTP form resolver first (fast, no window).
-2. If it fails and `--browser` is enabled, launch a visible Chromium-family
-   browser with a dedicated profile under `~/.cache/moxie/browser-profile`.
-3. Navigate to the file page and poll `#download-link` while Turnstile
-   auto-solves.
-4. Return the `/d/<id>/<filename>` URL; it 302s to a presigned S3 object, which
-   the normal HTTP downloader fetches with Range/resume support.
+1. With `--browser` enabled, browser-gated hosts (VikingFile, DataNodes) go
+   straight to the browser resolver because their HTTP flow is known to stop at
+   Turnstile. Other hosts use the normal HTTP resolver.
+2. Launch a visible Chromium-family browser with a dedicated profile under
+   `~/.cache/moxie/browser-profile-<host>`.
+3. Drive the host's page until Turnstile auto-solves and a direct URL appears.
+4. Return that URL; the normal HTTP downloader fetches it with Range/resume.
 
 Live evidence: the resolver obtained the link in ~8 s and downloaded the full
 **989,346,221-byte** `RJ01316694-Red_Flower_Shining_in_the_Moonlight.7z` in
@@ -224,6 +224,21 @@ about 40 seconds (≈25 MB/s). The browser window closes when the resolver
 returns; the download itself is plain HTTP. Resolved `/d/` links are cached in
 `resolved_urls` for 12 hours, so a second run returned the same URL in **0.095 s**
 without launching the browser.
+
+**DataNodes** uses the same browser session for its two-step flow:
+
+1. wait for `#method_free` to be enabled (the virus-scan component arms it
+   after ~6 s) and submit step 1 (`op=download1`),
+2. wait for step 2's invisible Turnstile token,
+3. click **Free Download**, and capture the `nodeNN.datanodes.to:8443/d/...`
+   request that the page issues.
+
+The captured node URL is a normal HTTP download with Range support. Live
+evidence: a freshly uploaded `https://datanodes.to/swyya9wz61je` resolved in
+~16 s and the full 145-byte ZIP downloaded and validated (`PK\x03\x04`); the
+cached second run completed in ~1 s without opening the browser. DataNodes uses
+its own browser profile and clears cookies before each run, because its step-1
+token is single-use.
 
 Browser discovery order: `MOXIE_BROWSER`, `google-chrome-stable`,
 `google-chrome`, `chromium`, `chromium-browser`, `brave-browser`,
@@ -239,8 +254,8 @@ Other browser-gated hosts remain unimplemented:
   checkbox under automation; waiting does not auto-solve it.
 - **MixDrop** — reCAPTCHA v3 + `genticket`; no request fired in headed testing
   without additional interaction.
-- **DataNodes / UploadHaven / WDHO** — Turnstile or custom checks not yet
-  wired to the browser resolver.
+- **UploadHaven / WDHO** — Turnstile or custom checks not yet wired to the
+  browser resolver.
 
 `moxie download --open --watch` remains the fallback for hosts that need a human
 to solve a CAPTCHA.
@@ -301,9 +316,9 @@ when they install one package.
 - **F95 CAPTCHA** — masked and `/dl/` links escalate to an interactive hCaptcha
   under automation. No automated bypass is attempted. Use the cache, retry
   later, or `--open --watch`.
-- **Browser-only hosts** — MixDrop, KrakenFiles, DataNodes, UploadHaven, WDHO
+- **Browser-only hosts** — MixDrop, KrakenFiles, UploadHaven, WDHO
   and JS-only hosts remain manual/browser downloads. The optional browser
-  resolver currently implements VikingFile only.
+  resolver currently implements VikingFile and DataNodes.
 - **Browser resolver requirements** — `--browser` needs a Chrome/Chromium-family
   browser and opens a visible window; `MOXIE_BROWSER` can point at a specific
   binary.

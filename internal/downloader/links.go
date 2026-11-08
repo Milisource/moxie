@@ -22,14 +22,24 @@ func ScoreLinkHost(host string) int {
 	switch strings.ToLower(host) {
 	case "pixeldrain", "buzzheavier", "gofile", "catbox", "mediafire", "bunkrr", "dropbox":
 		return 25
-	case "datanodes", "google drive", "mixdrop", "workupload":
+	case "google drive", "mixdrop", "workupload":
 		return 10
 	case "mega":
 		if _, err := exec.LookPath("megatools"); err == nil {
 			return 10
 		}
 		return -200
-	case "vikingfile", "krakenfiles":
+	case "datanodes":
+		if BrowserResolverEnabled() {
+			return 10
+		}
+		return -50
+	case "vikingfile":
+		if BrowserResolverEnabled() {
+			return 10
+		}
+		return -50
+	case "krakenfiles":
 		return -50
 	default:
 		return 0

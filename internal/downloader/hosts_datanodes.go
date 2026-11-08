@@ -12,12 +12,29 @@ import (
 	"github.com/mili/moxie/internal/log"
 )
 
+// resolveDatanodesWithFallback uses the browser first when enabled, because the
+// current DataNodes flow requires an invisible Turnstile token in step 2.
+func (r *HostResolver) resolveDatanodesWithFallback(rawURL string) (*ResolveResult, error) {
+	if BrowserResolverEnabled() {
+		browserRes, browserErr := r.resolveDatanodesBrowser(rawURL)
+		if browserErr == nil {
+			return browserRes, nil
+		}
+		httpRes, httpErr := r.resolveDatanodes(rawURL)
+		if httpErr == nil {
+			return httpRes, nil
+		}
+		return nil, fmt.Errorf("browser fallback: %v; HTTP: %w", browserErr, httpErr)
+	}
+	return r.resolveDatanodes(rawURL)
+}
+
 // --- DataNodes ---
 // Flow:
 //
-//	1. GET /download/<FILE_CODE> → obtain session cookies + hidden form fields
-//	2. POST with form fields + cookies → receive download redirect or link in body
-//	3. Follow redirect to CDN
+//  1. GET /download/<FILE_CODE> → obtain session cookies + hidden form fields
+//  2. POST with form fields + cookies → receive download redirect or link in body
+//  3. Follow redirect to CDN
 //
 // Known limitations: DataNodes uses Cloudflare protection which may cause
 // intermittent failures. The caller's fallback loop handles retries.
