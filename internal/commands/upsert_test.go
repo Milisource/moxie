@@ -140,3 +140,37 @@ func TestPruneSuperseded_RemovesStaleRows(t *testing.T) {
 		}
 	}
 }
+
+// A folder inside an existing game is not a new game: updates can leave
+// wrapper/web-app folders behind, and indexing them creates duplicate rows
+// with no metadata (observed live: "www" entries with missing covers).
+func TestUpsertDetected_SkipsPathsNestedInsideExistingGame(t *testing.T) {
+	d := setupTestDB(t)
+	defer d.Close()
+
+	if _, err := d.InsertGame(&db.Game{
+		Title: "Boneka Ascension", Path: "/root/Boneka_Ascension_WINv01",
+		Engine: "RPGM", Status: "active",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	detected := []scanner.DetectedGame{
+		{Title: "www", Path: "/root/Boneka_Ascension_WINv01/www", Engine: "HTML"},
+		{Title: "Inner Copy", Path: "/root/Boneka_Ascension_WINv01/Boneka Ascension", Engine: "RPGM"},
+		{Title: "Sibling Game", Path: "/root/Sibling Game", Engine: "RenPy"},
+	}
+	inserted, _, errs := UpsertDetected(d, detected, false)
+	if len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	if inserted != 1 {
+		t.Fatalf("inserted = %d, want 1 (only the sibling)", inserted)
+	}
+	if g, _ := d.GetGameByPath("/root/Boneka_Ascension_WINv01/www"); g != nil {
+		t.Error("nested www folder was indexed as a game")
+	}
+	if g, _ := d.GetGameByPath("/root/Sibling Game"); g == nil {
+		t.Error("sibling game was not inserted")
+	}
+}

@@ -114,6 +114,17 @@ func UpsertDetected(database *db.Database, detected []scanner.DetectedGame, forc
 		if title == "" {
 			title = g.Title
 		}
+		// Never insert a game inside another game's directory. Updates can
+		// leave wrapper folders, web-app folders ("www"), or a bundled
+		// variant inside an install; indexing those produces duplicate rows
+		// with no metadata (and therefore no cover) that look broken in the
+		// library. Existing child rows are untouched — this only stops new
+		// ones. Add Game still inserts a path explicitly on request.
+		if ancestor, ok := nearestExistingGame(prior, g.Path); ok {
+			slog.Debug("scan: skipping path nested inside an existing game",
+				"path", g.Path, "ancestor", ancestor)
+			continue
+		}
 		versionSource := ""
 		if g.Version != "" {
 			versionSource = "scanner"
@@ -138,6 +149,22 @@ func UpsertDetected(database *db.Database, detected []scanner.DetectedGame, forc
 		inserted++
 	}
 	return inserted, updated, errs
+}
+
+// nearestExistingGame returns the closest prior game row that is an ancestor
+// of path (not path itself), if any. Used to keep scans from registering
+// folders inside an existing install as separate games.
+func nearestExistingGame(prior map[string]db.GamePathEntry, path string) (string, bool) {
+	var best string
+	for p := range prior {
+		if p == path || !isPathUnder(p, path) {
+			continue
+		}
+		if best == "" || len(p) > len(best) {
+			best = p
+		}
+	}
+	return best, best != ""
 }
 
 // shallowestUndetectedDescendant returns the nearest prior row whose path is a
