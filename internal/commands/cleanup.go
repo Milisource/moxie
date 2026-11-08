@@ -311,6 +311,20 @@ func treeSize(root string) (int64, error) {
 // pruneArchiveFiles removes old top-level archive files from a downloads
 // directory. Subdirectories are not recursed into: extraction trees live there
 // and may legitimately contain archives.
+// isGameDownloadDir reports whether name is a per-game download directory
+// (the game ID).
+func isGameDownloadDir(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func pruneArchiveFiles(dir string, cutoff time.Time, dryRun bool) pruneCategory {
 	var result pruneCategory
 
@@ -336,6 +350,12 @@ func pruneArchiveFiles(dir string, cutoff time.Time, dryRun bool) pruneCategory 
 			return nil // never delete or measure through a symlink
 		}
 		if d.IsDir() {
+			// Downloads live in one numeric subdirectory per game (concurrent
+			// updates must not share a path). Descend into those, never
+			// deeper and never into arbitrary subdirectories.
+			if filepath.Dir(path) == dir && isGameDownloadDir(d.Name()) {
+				return nil
+			}
 			return filepath.SkipDir
 		}
 		if !archiveExtensions[strings.ToLower(filepath.Ext(d.Name()))] {

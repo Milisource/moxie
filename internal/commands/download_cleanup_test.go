@@ -69,3 +69,22 @@ func TestRemoveExtractionIfUnused_CopyMergeRemovesStaging(t *testing.T) {
 		t.Errorf("staging dir should be removed, stat err = %v", err)
 	}
 }
+
+// TestExtractionDir_IsPerGame guards the isolation contract that parallel
+// updates depend on: each download extracts into its own directory, never the
+// shared downloads directory.
+func TestExtractionDir_IsPerGame(t *testing.T) {
+	downloads := filepath.Join(t.TempDir(), "downloads")
+	a := extractionDir(downloads, 1)
+	b := extractionDir(downloads, 2)
+
+	if a == downloads || b == downloads {
+		t.Fatal("extraction dir must not be the shared downloads directory")
+	}
+	if a == b {
+		t.Fatalf("two games share an extraction dir: %q", a)
+	}
+	if filepath.Dir(a) != downloads || filepath.Dir(b) != downloads {
+		t.Errorf("extraction dirs must live under the download dir: %q, %q", a, b)
+	}
+}

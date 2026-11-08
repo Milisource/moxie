@@ -374,3 +374,41 @@ func TestOwnedByCurrentUser(t *testing.T) {
 		t.Fatal("a file created by this process should be owned by the current user")
 	}
 }
+
+// Per-game download directories (concurrent updates never share a path) must
+// still be pruned, without descending into extraction scratch dirs.
+func TestPruneArchives_DescendsIntoPerGameDownloadDirs(t *testing.T) {
+	parent := t.TempDir()
+	downloads := filepath.Join(parent, "downloads")
+	perGame := filepath.Join(downloads, "148")
+	scratch := filepath.Join(perGame, ".extract-g148-1")
+	for _, d := range []string{perGame, scratch} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	writeAged := func(p string) {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keepPath := filepath.Join(perGame, "Game_v1.1.zip")
+	deepPath := filepath.Join(scratch, "Scratch.zip")
+	writeAged(keepPath)
+	writeAged(deepPath)
+
+	report := pruneArchiveFiles(downloads, time.Now().Add(-24*time.Hour), false)
+	if report.Count != 1 || len(report.Entries) != 1 || report.Entries[0].Path != keepPath {
+		t.Fatalf("report = %+v, want only %s", report, keepPath)
+	}
+	if _, err := os.Stat(keepPath); !os.IsNotExist(err) {
+		t.Errorf("per-game archive was not removed: %v", err)
+	}
+	if _, err := os.Stat(deepPath); err != nil {
+		t.Errorf("scratch archive outside the game dir was removed: %v", err)
+	}
+}

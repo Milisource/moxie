@@ -217,7 +217,10 @@ func parseHostExclusions(v string) map[string]bool {
 func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, targetPlatform string, extract bool, client *scraper.Client, excludedHosts map[string]bool) error {
 	destDir := downloadDir
 	if destDir == "" {
-		destDir = filepath.Join(filepath.Dir(game.Path), "downloads")
+		// One directory per game: concurrent updates must never share a
+		// download path, or two archives with the same filename overwrite
+		// each other and the merge installs the wrong payload.
+		destDir = filepath.Join(filepath.Dir(game.Path), "downloads", fmt.Sprintf("%d", game.ID))
 	}
 
 	if err := os.MkdirAll(destDir, 0755); err != nil {
@@ -499,7 +502,23 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 			dlRecord.Status = db.DownloadStatusExtracting
 			database.UpdateDownload(dlRecord)
 
-			result, err := archive.Extract(downloadedFile, destDir, archive.Options{
+			// Extract into a directory owned by this game. The download
+			// directory is shared by every game with the same parent, so
+			// extracting there mixes two concurrent updates and the merge
+			// then installs the wrong tree (observed live: Corruption of
+			// Champions II landed in Kinky Dungeon).
+			extractDir := extractionDir(destDir, game.ID)
+			if err := os.MkdirAll(extractDir, 0755); err != nil {
+				return fmt.Errorf("create extraction dir: %w", err)
+			}
+			extractionAdopted := false
+			defer func() {
+				// An adopted tree is the live install now; the helper leaves
+				// it alone in that case.
+				removeExtractionIfUnused(extractDir, extractionAdopted)
+			}()
+
+			result, err := archive.Extract(downloadedFile, extractDir, archive.Options{
 				OnProgress: func(totalFiles, extractedFiles int, currentFile string, bytesProcessed, bytesTotal int64) {
 					if totalFiles > 0 {
 						percent := float64(extractedFiles) / float64(totalFiles) * 100
@@ -523,12 +542,6 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 				return fmt.Errorf("extract %s: %w", filepath.Base(downloadedFile), err)
 			}
 			fmt.Fprintf(os.Stderr, "\n    Extracted %d files\n", result.FilesExtracted)
-			// The extraction tree is scratch space — unless Merge adopts it.
-			// An adopted merge renames the tree into the game dir, so it is
-			// the live install, and deleting result.Destination here would
-			// delete the game.
-			extractionAdopted := false
-			defer func() { removeExtractionIfUnused(result.Destination, extractionAdopted) }()
 
 			fmt.Fprintf(os.Stderr, "  Merging update into %s...\n", game.Path)
 			mergeResult, mergeErr := updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
@@ -571,13 +584,22 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 	return nil
 }
 
-// removeExtractionIfUnused deletes the extraction tree created for a merge.
-// When updater.Merge adopted that tree it renamed it into the game directory,
-// so the staging path is the live install now (or an emptied shell Merge has
-// already removed) and must not be deleted from here.
+// removeExtractionIfUnused deletes the per-game extraction tree after a
+// merge. When updater.Merge adopted that tree it renamed it into the game
+// directory, so the staging path holds the live install now and must not be
+// deleted from here.
 func removeExtractionIfUnused(destination string, adopted bool) {
 	if destination == "" || adopted {
 		return
 	}
 	os.RemoveAll(destination)
+}
+
+// extractionDir returns the scratch directory an archive is extracted into.
+// It must be owned by one download: the download directory is shared by every
+// game with the same parent, and two concurrent updates extracting there mix
+// their payloads — the merge then installs the wrong tree (observed live:
+// Corruption of Champions II was installed over Kinky Dungeon).
+func extractionDir(downloadDir string, gameID int64) string {
+	return filepath.Join(downloadDir, fmt.Sprintf(".extract-g%d-%d", gameID, time.Now().UnixNano()))
 }
