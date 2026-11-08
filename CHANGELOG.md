@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Verified downloaders for MediaFire, Bunkr, Dropbox, and WorkUpload** — MediaFire direct URLs are parsed from the file page; Bunkr uses the `/api/_001_v2` metadata + `glb-apisign.cdn.cr` signing flow; Dropbox appends `dl=1`; WorkUpload solves the site's SHA-256 proof-of-work challenge automatically.
+- **MEGA downloads via `megatools`** — `resolveMega` delegates to an installed `megatools` binary with progress polling and resume. Missing installations get an actionable install hint instead of a dead link.
+- **F95Zone masked-link JSON resolver** — Replaces the old redirect guess with the POST `xhr=1&download=1` endpoint used by `masked.js`, including a 12-hour in-memory cache and explicit CAPTCHA errors.
+- **F95Zone `/dl/` wrapper resolver** — Follows plain redirects to the host and reports hCaptcha/stale-link interstitials clearly.
+- **Google Drive 2024+ form flow** — Supports `drive.usercontent.google.com/download` hidden forms in addition to legacy `confirm=` tokens.
+- **Gofile current API** — Anonymous account token + `/contents/<id>` Bearer-auth flow.
+- **HTML game support** — `.html`/`.htm`/`.swf` downloads ≥ 64 KiB are accepted instead of rejected as interstitials.
+- **Content-Disposition filenames** — ID-only URLs (Pixeldrain, Bunkr CDN) save with their real filename and extension.
+
+### Changed
+
+- **Host scoring** — MediaFire/Bunkr/Dropbox now +25, WorkUpload/Google Drive/MEGA (with megatools) +10, browser-only VikingFile/KrakenFiles −50.
+
 ## [0.4.0-alpha] - 2026-07-01
 
 ### Added

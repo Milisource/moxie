@@ -14,12 +14,12 @@ import (
 // --- Google Drive ---
 // Flow:
 //
-//	1. Extract file ID from URL (/file/d/<ID>/view or ?id=<ID>)
-//	2. GET https://drive.google.com/uc?export=download&id=<FILE_ID>
-//	   - Small files (<100MB): server redirects to CDN (direct download)
-//	   - Large files: server returns HTML virus-scan warning page with a confirm token
-//	3. If HTML response, parse for confirm= token from uc-download-link href
-//	4. Return URL with confirm token: /uc?export=download&confirm=<TOKEN>&id=<FILE_ID>
+//  1. Extract file ID from URL (/file/d/<ID>/view or ?id=<ID>)
+//  2. GET https://drive.google.com/uc?export=download&id=<FILE_ID>
+//     - Small files (<100MB): server redirects to CDN (direct download)
+//     - Large files: server returns HTML virus-scan warning page with a confirm token
+//  3. If HTML response, parse for confirm= token from uc-download-link href
+//  4. Return URL with confirm token: /uc?export=download&confirm=<TOKEN>&id=<FILE_ID>
 func (r *HostResolver) resolveGoogleDrive(url string) (*ResolveResult, error) {
 	fileID := extractGoogleDriveFileID(url)
 	if fileID == "" {
@@ -63,6 +63,18 @@ func (r *HostResolver) resolveGoogleDrive(url string) (*ResolveResult, error) {
 				},
 			}, nil
 		}
+
+		// 2024+ virus-scan page: a GET form posts to drive.usercontent.google.com
+		// with hidden id/export/confirm/uuid fields instead of a confirm= token.
+		if dlURL := extractGoogleDriveUserContentURL(body, fileID); dlURL != "" {
+			log.Debug("google drive: resolved via usercontent form", "url", dlURL)
+			return &ResolveResult{
+				URL: dlURL,
+				Headers: map[string]string{
+					"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
+				},
+			}, nil
+		}
 	}
 
 	// Small file or no confirm needed — UC URL redirects to CDN automatically
@@ -97,6 +109,25 @@ func extractGoogleDriveFileID(rawURL string) string {
 	// Pattern 3: /open?id=<FILE_ID> (handled by Pattern 2 via url.Parse)
 
 	return ""
+}
+
+// extractGoogleDriveUserContentURL builds the current Google Drive download URL
+// from the hidden form that replaced the old confirm= token flow.
+func extractGoogleDriveUserContentURL(body []byte, fileID string) string {
+	s := string(body)
+	if !strings.Contains(s, "drive.usercontent.google.com/download") {
+		return ""
+	}
+	confirm := "t"
+	if m := regexp.MustCompile(`name=["']confirm["'][^>]*value=["']([^"']+)["']`).FindStringSubmatch(s); len(m) >= 2 {
+		confirm = m[1]
+	}
+	u := fmt.Sprintf("https://drive.usercontent.google.com/download?id=%s&export=download&confirm=%s",
+		url.QueryEscape(fileID), url.QueryEscape(confirm))
+	if m := regexp.MustCompile(`name=["']uuid["'][^>]*value=["']([^"']+)["']`).FindStringSubmatch(s); len(m) >= 2 {
+		u += "&uuid=" + url.QueryEscape(m[1])
+	}
+	return u
 }
 
 // extractGoogleDriveConfirm parses the HTML virus-scan warning page for the

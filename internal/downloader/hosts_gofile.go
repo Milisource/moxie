@@ -2,72 +2,119 @@ package downloader
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
 )
 
 // --- Gofile ---
-// API: GET https://api.gofile.io/getContent?contentId=<FILE_ID>&wt=4fd6sg89d7s6
-// Then redirects to download server.
+// Current API flow (2025+):
+//
+//  1. GET https://api.gofile.io/accounts → anonymous account token
+//  2. GET https://api.gofile.io/contents/<id>?wt=4fd6sg89d7s6 with
+//     Authorization: Bearer <token>
+//  3. The response's data.children map contains file entries with a direct
+//     "link" field. Folders are traversed one level.
+//
+// The legacy getContent endpoint is kept as a fallback.
 func (r *HostResolver) resolveGofile(url string) (*ResolveResult, error) {
-	// Extract file ID from URL:
-	// https://gofile.io/d/<FILE_ID>
-	re := regexp.MustCompile(`gofile\.io/(?:d|download)/([a-zA-Z0-9]+)`)
+	re := regexp.MustCompile(`gofile\.io/(?:d|download)/([a-zA-Z0-9-]+)`)
 	matches := re.FindStringSubmatch(url)
 	if len(matches) < 2 {
-		// Try direct download subdomain
 		if strings.Contains(url, ".gofile.io") {
-			return &ResolveResult{
-				URL: url,
-				Headers: map[string]string{
-					"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
-				},
-			}, nil
+			return &ResolveResult{URL: url, Headers: gofileHeaders("")}, nil
 		}
 		return nil, fmt.Errorf("could not extract Gofile file ID from: %s", url)
 	}
-	fileID := matches[1]
+	contentID := matches[1]
 
-	// Gofile requires an account token for full-speed downloads in 2025+.
-	// For free downloads, use the direct download link pattern.
-	directURL := fmt.Sprintf("https://%s.gofile.io/%s", fileID, fileID)
-
-	// Try the content API first (may work without auth for some files)
-	apiURL := fmt.Sprintf("https://api.gofile.io/getContent?contentId=%s", fileID)
-	req, _ := http.NewRequest("GET", apiURL, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := r.client.Do(req)
-	if err == nil {
-		defer resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			// API returned content - parse response for download URL
-			body, _ := io.ReadAll(resp.Body)
-			return parseGofileAPIResponse(body, directURL)
+	token := r.gofileToken()
+	if token != "" {
+		if direct, err := r.gofileContents(contentID, token); err == nil && direct != "" {
+			return &ResolveResult{URL: direct, Headers: gofileHeaders(token)}, nil
 		}
 	}
 
-	// Fallback: try direct download
-	return &ResolveResult{
-		URL: directURL,
-		Headers: map[string]string{
-			"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
-			"Cookie":     "accountToken=guest",
-		},
-	}, nil
+	// Fallback: legacy direct download pattern.
+	directURL := fmt.Sprintf("https://%s.gofile.io/%s", contentID, contentID)
+	return &ResolveResult{URL: directURL, Headers: gofileHeaders(token)}, nil
 }
 
-// parseGofileAPIResponse attempts to extract a download URL from the Gofile API JSON response.
-func parseGofileAPIResponse(body []byte, fallbackURL string) (*ResolveResult, error) {
-	// The response looks like: {"status":"ok","data":{"<fileId>":{"downloadPage":"https://...",...}}}
-	// For now, just return the fallback. Full JSON parsing would add complexity.
-	return &ResolveResult{
-		URL: fallbackURL,
-		Headers: map[string]string{
-			"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
-		},
-	}, nil
+func gofileHeaders(token string) map[string]string {
+	h := map[string]string{
+		"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
+		"Referer":    "https://gofile.io/",
+	}
+	if token != "" {
+		h["Cookie"] = "accountToken=" + token
+	}
+	return h
+}
+
+// gofileToken creates an anonymous Gofile account and returns its token.
+func (r *HostResolver) gofileToken() string {
+	req, err := http.NewRequest("GET", "https://api.gofile.io/accounts", nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
+	req.Header.Set("Accept", "application/json")
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Status string `json:"status"`
+		Data   struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := decodeJSON(resp.Body, &out); err != nil {
+		return ""
+	}
+	return out.Data.Token
+}
+
+// gofileContents returns the first direct file link under a content ID.
+func (r *HostResolver) gofileContents(contentID, token string) (string, error) {
+	apiURL := fmt.Sprintf("https://api.gofile.io/contents/%s?wt=4fd6sg89d7s6", contentID)
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("gofile request: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("gofile contents: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("gofile contents: HTTP %d", resp.StatusCode)
+	}
+
+	var out struct {
+		Status string `json:"status"`
+		Data   struct {
+			Type     string `json:"type"`
+			Children map[string]struct {
+				Type string `json:"type"`
+				Link string `json:"link"`
+			} `json:"children"`
+		} `json:"data"`
+	}
+	if err := decodeJSON(resp.Body, &out); err != nil {
+		return "", fmt.Errorf("gofile decode: %w", err)
+	}
+	if out.Status != "ok" {
+		return "", fmt.Errorf("gofile status: %s", out.Status)
+	}
+	for _, child := range out.Data.Children {
+		if child.Link != "" {
+			return child.Link, nil
+		}
+	}
+	return "", fmt.Errorf("gofile: no direct link in contents")
 }

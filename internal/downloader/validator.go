@@ -3,6 +3,7 @@ package downloader
 import (
 	"fmt"
 	"net/http"
+	"os/exec"
 	"time"
 )
 
@@ -30,7 +31,10 @@ func CheckLinkWithHost(url, host string) error {
 		}
 		return nil
 	case "mega":
-		return fmt.Errorf("Mega uses encrypted protocol — cannot validate via HTTP")
+		if _, err := exec.LookPath("megatools"); err == nil {
+			return nil
+		}
+		return fmt.Errorf("Mega uses encrypted protocol — install megatools to validate or download")
 	}
 
 	if !isValidDownloadURL(url) {

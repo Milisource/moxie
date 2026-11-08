@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,12 +20,17 @@ func IsOnlineOnly(name, url string) bool {
 // Higher scores are preferred. Callers should add this to their platform priority score.
 func ScoreLinkHost(host string) int {
 	switch strings.ToLower(host) {
-	case "pixeldrain", "buzzheavier", "gofile", "catbox":
+	case "pixeldrain", "buzzheavier", "gofile", "catbox", "mediafire", "bunkrr", "dropbox":
 		return 25
-	case "datanodes", "google drive", "mixdrop":
+	case "datanodes", "google drive", "mixdrop", "workupload":
 		return 10
-	case "mega", "vikingfile", "workupload", "krakenfiles", "bunkrr":
+	case "mega":
+		if _, err := exec.LookPath("megatools"); err == nil {
+			return 10
+		}
 		return -200
+	case "vikingfile", "krakenfiles":
+		return -50
 	default:
 		return 0
 	}

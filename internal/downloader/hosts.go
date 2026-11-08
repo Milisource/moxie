@@ -1,9 +1,13 @@
 package downloader
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mili/moxie/internal/log"
@@ -17,7 +21,7 @@ type HostResolver struct {
 }
 
 // SetF95Cookie sets the F95Zone session cookie string used to authenticate
-// HEAD requests when resolving masked F95Zone redirect URLs.
+// link-unmasking requests on F95Zone.
 func (r *HostResolver) SetF95Cookie(cookie string) {
 	r.f95Cookie = cookie
 }
@@ -41,30 +45,34 @@ func NewHostResolver() *HostResolver {
 type ResolveResult struct {
 	URL     string
 	Headers map[string]string
+
+	// ExternalCommand, when non-empty, means the URL cannot be fetched with
+	// plain HTTP and must be downloaded by running this command. The value is
+	// the executable name (e.g. "megatools"); DownloadWithHost adds the URL
+	// and destination arguments.
+	ExternalCommand string
 }
 
 // Resolve takes a URL and host label, returns a direct download URL + headers.
 // If no host-specific handler exists, returns the URL as-is for direct download.
-// F95Zone masked URLs (f95zone.to/masked/) are resolved via HEAD redirect first,
-// then host-specific resolution is applied on the real download URL.
+// F95Zone masked URLs (f95zone.to/masked/) are unmasked via the same JSON
+// endpoint the site's own masked.js uses, then host-specific resolution is
+// applied to the real download URL.
 func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) {
 	log.Debug("resolving host URL", "host", host, "url", url)
 
-	// F95Zone masked URLs are redirect endpoints — unwrap them first by following
-	// a HEAD request to get the real download URL, then resolve from there.
 	if strings.Contains(strings.ToLower(url), "/masked/") {
-		log.Debug("masked URL detected", "url", url)
-		realURL, err := r.followRedirect(url)
-		realHost := IdentifyHostInURL(realURL)
-		log.Debug("followRedirect result", "real_url", realURL, "real_host", realHost, "error", err)
+		realURL, err := r.resolveMasked(url)
 		if err != nil {
-			log.Warn("failed to follow masked URL redirect", "url", url, "error", err)
-			// Fall through to host-specific resolution with the original URL;
-			// it will fail, but the caller's fallback loop will try other links.
-		} else if realURL != url {
-			log.Debug("masked URL resolved", "original", url, "real", realURL)
-			return r.Resolve(realURL, realHost)
+			return nil, err
 		}
+		realHost := IdentifyHostInURL(realURL)
+		log.Debug("masked URL resolved", "original", url, "real", realURL, "real_host", realHost)
+		return r.Resolve(realURL, realHost)
+	}
+
+	if isF95DLURL(url) {
+		return r.resolveF95DL(url)
 	}
 
 	switch host {
@@ -80,10 +88,18 @@ func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) 
 		return r.resolveVikingFile(url)
 	case "mixdrop":
 		return r.resolveMixdrop(url)
-	case "google drive":
+	case "google drive", "googledrive":
 		return r.resolveGoogleDrive(url)
 	case "mega":
 		return r.resolveMega(url)
+	case "mediafire":
+		return r.resolveMediafire(url)
+	case "bunkrr", "bunkr":
+		return r.resolveBunkrr(url)
+	case "dropbox":
+		return r.resolveDropbox(url)
+	case "workupload":
+		return r.resolveWorkupload(url)
 	default:
 		// Direct download - just pass through
 		return &ResolveResult{
@@ -93,56 +109,113 @@ func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) 
 	}
 }
 
-// followRedirect performs a GET request to url and follows redirects to find
-// the final destination URL. Used to unwrap F95Zone masked redirect endpoints
-// before applying host-specific URL resolution.
+// ---------------------------------------------------------------------------
+// F95Zone masked links
+// ---------------------------------------------------------------------------
+
+type maskedCacheEntry struct {
+	url     string
+	expires time.Time
+}
+
+var (
+	maskedCacheMu sync.Mutex
+	maskedCache   = map[string]maskedCacheEntry{}
+	// maskedCacheTTL is deliberately long: unmasking is cheap for F95Zone but
+	// each request counts toward the site's anti-bot rate limit. Cached results
+	// let repeated downloads avoid touching F95Zone at all.
+	maskedCacheTTL = 12 * time.Hour
+)
+
+// resolveMasked unwraps https://f95zone.to/masked/... using the JSON endpoint
+// that the site's masked.js calls (POST xhr=1&download=1 on the masked URL):
 //
-// GET is used instead of HEAD because some F95Zone masked URL handlers do
-// not serve the correct redirect on HEAD requests — they return the thread
-// page or login page instead. The Referer is set to an f95zone.to domain
-// to match the anti-hotlinking expectation.
-func (r *HostResolver) followRedirect(url string) (string, error) {
-	log.Debug("followRedirect request", "url", url, "has_cookie", r.f95Cookie != "")
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return url, fmt.Errorf("create redirect-follow request: %w", err)
+//	{"status":"ok","msg":"https://pixeldrain.com/u/..."}
+//	{"status":"captcha","msg":"Please complete the CAPTCHA to continue"}
+//	{"status":"error","msg":"..."}
+//
+// The endpoint requires an authenticated F95Zone session (xf_user cookie).
+// After several automated requests F95Zone raises an interactive CAPTCHA;
+// callers get a clear error so they can fall back to another link.
+func (r *HostResolver) resolveMasked(maskedURL string) (string, error) {
+	maskedCacheMu.Lock()
+	if e, ok := maskedCache[maskedURL]; ok && time.Now().Before(e.expires) {
+		maskedCacheMu.Unlock()
+		log.Debug("masked URL cache hit", "url", maskedURL)
+		return e.url, nil
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-	req.Header.Set("Referer", "https://f95zone.to/")
-	if r.f95Cookie != "" {
-		req.Header.Set("Cookie", r.f95Cookie)
+	maskedCacheMu.Unlock()
+
+	if !isValidDownloadURL(maskedURL) {
+		return "", fmt.Errorf("invalid masked URL: %s", maskedURL)
+	}
+	if r.f95Cookie == "" {
+		return "", fmt.Errorf("F95Zone masked link requires a session cookie — import browser cookies or pass --cookie")
 	}
 
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
+	form := url.Values{"xhr": {"1"}, "download": {"1"}}
+	req, err := http.NewRequest("POST", maskedURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("create masked request: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
+	req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("Referer", maskedURL)
+	req.Header.Set("Cookie", r.f95Cookie)
+
+	client := r.client
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return url, fmt.Errorf("redirect-follow GET failed: %w", err)
+		return "", fmt.Errorf("masked request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	finalURL := resp.Request.URL.String()
-	if finalURL == "" {
-		return url, nil
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return "", fmt.Errorf("read masked response: %w", err)
 	}
 
-	// If the final URL is the F95Zone login page, the cookie is invalid or
-	// the session expired. Signal this clearly so the caller can surface it.
-	if isLoginRedirect(finalURL) {
-		return url, fmt.Errorf("redirected to login — F95Zone session may have expired; re-import cookies")
+	var result struct {
+		Status string `json:"status"`
+		Msg    string `json:"msg"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		// Cloudflare or a login page was returned instead of JSON.
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusServiceUnavailable {
+			return "", fmt.Errorf("F95Zone blocked the unmask request (HTTP %d) — cookies may be stale", resp.StatusCode)
+		}
+		return "", fmt.Errorf("unexpected masked response (HTTP %d)", resp.StatusCode)
 	}
 
-	log.Debug("followRedirect result", "original", url, "final", finalURL, "status", resp.StatusCode)
-	return finalURL, nil
+	switch result.Status {
+	case "ok":
+		if !isValidDownloadURL(result.Msg) {
+			return "", fmt.Errorf("F95Zone returned an invalid download URL")
+		}
+		maskedCacheMu.Lock()
+		maskedCache[maskedURL] = maskedCacheEntry{url: result.Msg, expires: time.Now().Add(maskedCacheTTL)}
+		maskedCacheMu.Unlock()
+		log.Info("F95Zone masked link resolved", "host", IdentifyHostInURL(result.Msg))
+		return result.Msg, nil
+	case "captcha":
+		return "", fmt.Errorf("F95Zone requires a CAPTCHA to unmask this link — retry later or use --open (link: %s)", maskedURL)
+	case "error":
+		if result.Msg == "" {
+			result.Msg = "unknown error"
+		}
+		if isLoginRedirect(result.Msg) || strings.Contains(strings.ToLower(result.Msg), "logged in") {
+			return "", fmt.Errorf("F95Zone session expired — re-import cookies from your browser")
+		}
+		return "", fmt.Errorf("F95Zone unmask failed: %s", result.Msg)
+	default:
+		return "", fmt.Errorf("F95Zone unmask returned status %q", result.Status)
+	}
 }
 
 // isLoginRedirect returns true if the URL looks like an F95Zone login page.
@@ -164,6 +237,7 @@ func IdentifyHostInURL(rawURL string) string {
 		{"mega", "mega.co"},
 		{"pixeldrain", "pixeldrain"},
 		{"buzzheavier", "buzzheavier"},
+		{"buzzheavier", "bzzhr"},
 		{"gofile", "gofile"},
 		{"vikingfile", "vikingfile"},
 		{"vern", "vern.cc"},
@@ -200,6 +274,7 @@ func IdentifyHostInURL(rawURL string) string {
 		{"hexload", "hexupload"},
 		{"mixdrop", "mixdrop"},
 		{"mixdrop", "m1xdrop"},
+		{"mixdrop", "mxdrop"},
 		{"protondrive", "proton drive"},
 		{"quax", "qu.ax"},
 		{"terminal", "terminal"},

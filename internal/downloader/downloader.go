@@ -60,9 +60,9 @@ func isValidDownloadURL(rawURL string) bool {
 }
 
 type writeCounter struct {
-	total     int64
-	prevTotal int64
-	prevTime  time.Time
+	total      int64
+	prevTotal  int64
+	prevTime   time.Time
 	onProgress func(Progress)
 }
 
@@ -77,10 +77,10 @@ func (wc *writeCounter) Write(p []byte) (int, error) {
 		wc.prevTime = now
 		if wc.onProgress != nil {
 			wc.onProgress(Progress{
-				BytesDownloaded: wc.total,
-				TotalBytes:      0,
+				BytesDownloaded:  wc.total,
+				TotalBytes:       0,
 				SpeedBytesPerSec: speed,
-				Percent:         0,
+				Percent:          0,
 			})
 		}
 	}
@@ -100,6 +100,10 @@ func DownloadWithHost(urlStr, host, destDir string, expectedTotal int64, onProgr
 	if resolveErr != nil {
 		log.Info("download resolve failed", "host", host, "error", resolveErr)
 		return fmt.Errorf("resolve %s URL: %w", host, resolveErr)
+	}
+	if resolved.ExternalCommand != "" {
+		log.Debug("download delegated to external tool", "tool", resolved.ExternalCommand, "host", host)
+		return downloadWithExternal(resolved.ExternalCommand, resolved.URL, host, destDir, expectedTotal, onProgress)
 	}
 	log.Debug("download resolving via HTTP", "resolved_url", redactedURL(resolved.URL), "headers", len(resolved.Headers), "host", host)
 	return downloadWithHeaders(resolved.URL, resolved.Headers, host, destDir, expectedTotal, onProgress)
@@ -181,13 +185,40 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 	}
 	defer resp.Body.Close()
 
+	// Prefer the server's filename when starting fresh. This gives real names
+	// and extensions for hosts whose URL path is just an ID (Pixeldrain /u/<id>,
+	// MEGA handles, etc.).
+	if existingSize == 0 {
+		if name := contentDispositionFilename(resp.Header.Get("Content-Disposition")); name != "" {
+			name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+			if name != "" && name != "." && name != ".." && name != "/" {
+				base = name
+				partPath = filepath.Join(destDir, base+".part")
+				finalPath = filepath.Join(destDir, base)
+			}
+		}
+	}
+
 	log.Debug("download response", "url", redactedURL(urlStr), "status", resp.StatusCode, "content_length", resp.ContentLength, "content_type", resp.Header.Get("Content-Type"))
 
-	// Content-Type validation: reject HTML pages that indicate redirect/login pages.
-	// Missing Content-Type is allowed (some hosts omit it).
+	// Content-Type validation: reject HTML pages that indicate redirect/login
+	// pages, but allow genuine HTML games (Twine/SugarCube/etc.) which are a
+	// normal F95Zone release format. A real HTML game names itself in
+	// Content-Disposition (or the URL) and is far larger than a host
+	// interstitial. Missing Content-Type is allowed (some hosts omit it).
 	if ct := resp.Header.Get("Content-Type"); ct != "" && strings.HasPrefix(ct, "text/html") {
-		log.Warn("download rejected: Content-Type is text/html", "url", redactedURL(urlStr), "content_type", ct)
-		return fmt.Errorf("download rejected: server returned HTML instead of file (Content-Type: %s)", ct)
+		name := contentDispositionFilename(resp.Header.Get("Content-Disposition"))
+		if name == "" {
+			name = filepath.Base(urlStr)
+		}
+		lowerName := strings.ToLower(strings.TrimSuffix(name, "/"))
+		isHTMLGame := (strings.HasSuffix(lowerName, ".html") || strings.HasSuffix(lowerName, ".htm") || strings.HasSuffix(lowerName, ".swf")) &&
+			resp.ContentLength >= 64*1024
+		if !isHTMLGame {
+			log.Warn("download rejected: Content-Type is text/html", "url", redactedURL(urlStr), "content_type", ct)
+			return fmt.Errorf("download rejected: server returned HTML instead of file (Content-Type: %s)", ct)
+		}
+		log.Debug("allowing HTML game download", "file", name, "size", resp.ContentLength)
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
@@ -313,8 +344,8 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 	if onProgress != nil {
 		onProgress(Progress{
 			BytesDownloaded: wc.total,
-			TotalBytes:     totalBytes,
-			Percent:        100,
+			TotalBytes:      totalBytes,
+			Percent:         100,
 		})
 	}
 
@@ -333,8 +364,12 @@ func IsValidGameFile(path string) bool {
 	}
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
-	case ".exe", ".sh", ".x86_64", ".bin", ".run", ".AppImage":
+	case ".exe", ".sh", ".x86_64", ".bin", ".run", ".AppImage", ".apk", ".swf":
 		return true
+	case ".html", ".htm":
+		// Standalone HTML games (Twine/SugarCube/RPG Maker MV web builds) are
+		// legitimate. Interstitial/captcha pages are much smaller.
+		return fi.Size() >= 64*1024
 	}
 	return false
 }

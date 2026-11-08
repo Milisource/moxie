@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -185,6 +186,15 @@ func TestResolveMega_ReturnsError(t *testing.T) {
 	t.Parallel()
 	r := NewHostResolver()
 	result, err := r.Resolve("https://mega.nz/file/abc123", "mega")
+	if _, lookErr := exec.LookPath("megatools"); lookErr == nil {
+		if err != nil {
+			t.Fatalf("expected megatools delegation, got error: %v", err)
+		}
+		if result == nil || result.ExternalCommand == "" {
+			t.Fatalf("expected ExternalCommand for mega, got %+v", result)
+		}
+		return
+	}
 	if err == nil {
 		t.Fatal("expected error for mega URL, got nil")
 	}

@@ -54,7 +54,7 @@ Key capabilities:
 - **Steam integration** — Add non-Steam games with deterministic AppIDs, grid artwork (F95Zone cover or SteamGridDB), and Proton version configuration. Safe VDF read/write with automatic backups.
 - **Bubble Tea TUI** — Interactive terminal UI with list/detail views, engine/status filters, sortable columns, real-time search, and engine-colored rows.
 - **Version tracking** — Check all associated games for newer versions on F95Zone. Supports `--force` to bypass 24h cooldown.
-- **Download manager** — Download games directly from supported hosts (Pixeldrain, Buzzheavier, Gofile, Google Drive, DataNodes, MixDrop) with resume support, platform priority, and dead link fallback.
+- **Download manager** — Download games directly from verified hosts (Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload, plus MEGA via megatools) with resume support, platform priority, and dead link fallback.
 - **Cross-platform** — Single static Go binary (~16 MB), no CGO, no runtime deps. Linux, macOS, and Windows.
 
 ---

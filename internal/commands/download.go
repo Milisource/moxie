@@ -146,8 +146,22 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 		selectedLink = selectBestLinkByPlatform(links, platform)
 	}
 
-	// Fall back to scraping F95Zone
-	if selectedLink == nil && game.F95URL != "" {
+	// Fall back to scraping F95Zone. Also re-scrape when every stored link is a
+	// tokenized /dl/ wrapper: those tokens are tied to the page that rendered
+	// them and go stale, so reusing them usually fails.
+	needsScrape := selectedLink == nil
+	if !needsScrape && len(links) > 0 {
+		allTokenized := true
+		for _, l := range links {
+			if !downloader.IsF95DLURL(l.URL) {
+				allTokenized = false
+				break
+			}
+		}
+		needsScrape = allTokenized
+	}
+
+	if needsScrape && game.F95URL != "" {
 		if cookie != "" {
 			fmt.Fprintf(os.Stderr, "  Fetching download links from F95Zone...\n")
 			client := scraper.NewClient(cookie)

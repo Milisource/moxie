@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
 **Version:** 0.4.0-alpha (July 2026)
-**Status:** Alpha — 0.4.0 (moxie update fix — correct GitHub repo URL). Download: Beta (6 host resolvers: Pixeldrain, Buzzheavier, Gofile, Google Drive, DataNodes, MixDrop, VikingFile (beta))
+**Status:** Alpha — 0.4.0 (moxie update fix — correct GitHub repo URL). Download: Beta (verified: Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload; MEGA via megatools; Gofile/Buzzheavier/DataNodes implemented)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
@@ -130,14 +130,20 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] `ResolveFirstArg` variant — for multi-arg commands like `install <id|name> <archive-path>` that must not consume subsequent positional args as part of the game name
 - [x] `LaunchCommand` working directory fix — `cmd.Dir` set to game root so Windows games under Wine resolve relative asset paths correctly
 - [x] `SelectBestExe` scoring overhaul — skips known runtime engines (`nwjc`, `nw`, `node`) and launchers (`unitycrashhandler`, `unins`, `setup`); awards +1 GB score bonus for `Game.exe`
-- [x] Host scoring reorganized — verified hosts (Pixeldrain, Buzzheavier, Gofile, Catbox) weighted +25, may-work hosts (DataNodes, Google Drive, MixDrop) weighted +10, borked hosts (Mega, VikingFile, WorkUpload, KrakenFiles, Bunkrr) penalized -200
-- [x] Google Drive resolver — two-step confirm token extraction for >100 MB large files; `GET /uc?export=download&id=<ID>` → parse HTML for `confirm=` token → re-request with `&confirm=<TOKEN>`
-- [x] DataNodes resolver — cookie + POST flow: `GET /download/<CODE>` for session cookies → parse hidden form fields → `POST` same URL with cookies → follow 302 redirect to CDN download URL
-- [x] VikingFile resolver — form POST flow: GET page for hidden fields → POST with op/download1/id/rand/method_free → follow 302 redirect (blocked by Cloudflare Turnstile captcha, classified as beta)
-- [x] MixDrop resolver — passthrough with User-Agent header (may be blocked by interstitial file pages, classified as beta)
-- [x] Download validation (`IsValidGameFile`) — rejects files < 4096 bytes or that aren't archives/executables; catches interstitial HTML pages that fake hosts serve instead of real files
+- [x] Host scoring reorganized — verified hosts (Pixeldrain, Buzzheavier, Gofile, Catbox, MediaFire, Bunkr, Dropbox) weighted +25, working hosts (DataNodes, Google Drive, MixDrop, WorkUpload, MEGA with megatools) weighted +10, browser-only hosts (VikingFile, KrakenFiles) penalized -50, MEGA without megatools -200
+- [x] F95Zone masked-link resolver — POST `xhr=1&download=1` JSON endpoint (the same call masked.js makes) replaces the old redirect guess; successful mappings cached in memory for 12h, CAPTCHA responses reported clearly
+- [x] F95Zone `/dl/` wrapper resolver — follows plain redirects to the host; detects the hCaptcha "Just a quick check" interstitial and stale-link pages
+- [x] MediaFire resolver — extracts the time-limited `downloadNNN.mediafire.com` URL from the file page (verified full ZIP download)
+- [x] Bunkr resolver — page → `dl.bunkr.*/file/<id>` → `/api/_001_v2` metadata → `glb-apisign.cdn.cr/sign` token (verified 206 on a 1.1 GB RAR)
+- [x] Dropbox resolver — appends `dl=1` (verified 32.5 MB download)
+- [x] WorkUpload resolver — solves the SHA-256 proof-of-work challenge programmatically, then extracts the direct link
+- [x] MEGA support — `megatools` subprocess adapter with progress polling, resume delegated to megatools, and install hints when missing
+- [x] Google Drive resolver — supports the 2024+ `drive.usercontent.google.com/download` hidden-form flow in addition to the legacy `confirm=` token
+- [x] Gofile resolver — anonymous account token + `/contents/<id>` API with Bearer auth and direct-link extraction
+- [x] HTML game support — `.html`/`.htm`/`.swf` downloads >= 64 KiB accepted as real games instead of being rejected as interstitials
+- [x] Content-Disposition filenames — ID-only URLs (Pixeldrain `/u/<id>`, Bunkr CDN) now save with their real name and extension
 - [x] TUI step-by-step download status — `stepMsg` field on `activeDownload` shows host-finding phase, per-host attempt, failure reasons, extract/merge progress; rendered in `downloadSection()` in real-time via 500 ms poll tick
-- [x] Cookie wiring through download pipeline — `f95Cookie` parameter threaded through `Download()` → `DownloadWithHost()` → `HostResolver.SetF95Cookie()` → `followRedirect()` for authenticating F95Zone masked URL HEAD requests
+- [x] Cookie wiring through download pipeline — `f95Cookie` parameter threaded through `Download()` → `DownloadWithHost()` → `HostResolver.SetF95Cookie()` → `resolveMasked()`/`resolveF95DL()` for authenticating F95Zone unmask requests
 - [x] Archive progress improvements — `totalFiles` excludes directory entries so progress shows only real file extractions; filenames truncated to 60 chars in CLI progress output
 - [x] `internal/updater/` package — `Merge()` copies new files from extracted archive to game directory, preserves user saves/configs/mods via engine-aware glob patterns; optional `.old` backup with automatic restore
 - [x] `internal/log/` per-day log files — `log.Init(config.LogDir())` in `main()` writes structured logs to `~/.config/moxie/logs/moxie-YYYY-MM-DD.log`; instruments download attempts, fallbacks, resolve failures, and completions
@@ -150,7 +156,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Archive extraction (.zip, .7z, .rar, .tar.gz) with auto-detection
 - [x] Download links table with platform detection (Linux/Windows/MacOS)
 - [x] Dead link validation (404/5XX/DMCA detection)
-- [ ] Mega download support (native SDK or megatools subprocess wrapper)
+- [x] Mega download support (megatools subprocess wrapper)
 - [x] Protect user-curated fields (Version/Engine/ExePath) during rescan — only overwritten when empty or "Unknown"
 - [x] Scan tracking columns (`last_scanned_at`, `dir_mtime`) — per-game directory mtime tracking for incremental scanning
 - [x] Incremental scan by default — `moxie scan <dir>` skips known, unchanged directories; `--force` for full rescan
@@ -187,8 +193,8 @@ A local game library manager for adult games. Scans directories, detects engines
 
 ### Known Limitations
 
-- **Mega downloads not supported** — Mega's proprietary encrypted protocol cannot be handled via HTTP. Mega links are deprioritized to -200 in host scoring; the downloader auto-fallbacks to the next-best link. Only when all links fail is the user informed. A native SDK/integration is planned.
-- **Download feature is BETA** — Most file hosts use anti-bot protection (Cloudflare, CAPTCHAs, JS challenges) that HTTP clients cannot bypass. Only Pixeldrain (via API) has reliable support. Other hosts may fail intermittently. The fallback loop tries all available links and shows detailed per-host errors. When all links fail, use `moxie install <id> <path>` with a manually downloaded archive.
+- **Mega requires megatools** — MEGA's proprietary encrypted protocol is not implemented natively. When `megatools` is installed, links are downloaded through it (with resume); otherwise MEGA links score -200 and report an install hint.
+- **Download feature is BETA** — Interactive CAPTCHAs remain on F95Zone masked/`/dl` links after automation is detected, and on MixDrop, KrakenFiles, VikingFile, UploadHaven and WDHO. Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive and WorkUpload are verified. The fallback loop tries all available links and shows detailed per-host errors. When all links fail, use `moxie download --open --watch` or `moxie install <id> <path>` with a manually downloaded archive.
 - **Testability** — 130+ `os.Exit(1)` calls remain in CLI wrappers; `RunPlay`, `RunScan`, `RunSync` extracted as testable logic functions; other commands still need extraction
 - **False positives** — tool/editor directories and generic folder names may be misdetected as games
 - **No archive scanning** — `.zip`/`.rar`/`.7z` at scan roots are not inspected (but can be extracted after download)

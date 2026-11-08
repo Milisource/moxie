@@ -1,10 +1,44 @@
 package downloader
 
 import (
+	"encoding/json"
+	"io"
 	"net/url"
 	"regexp"
 	"strings"
 )
+
+// decodeJSON decodes a JSON response body into v.
+func decodeJSON(r io.Reader, v any) error {
+	return json.NewDecoder(io.LimitReader(r, 4*1024*1024)).Decode(v)
+}
+
+// contentDispositionFilename extracts the filename from a Content-Disposition
+// header, preferring RFC 5987 filename* over the plain filename parameter.
+func contentDispositionFilename(cd string) string {
+	if cd == "" {
+		return ""
+	}
+	for _, part := range strings.Split(cd, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(strings.ToLower(part), "filename*=") {
+			v := part[len("filename*="):]
+			if i := strings.Index(v, "''"); i >= 0 {
+				v = v[i+2:]
+			}
+			if decoded, err := url.PathUnescape(v); err == nil {
+				return strings.Trim(decoded, `"`)
+			}
+		}
+	}
+	for _, part := range strings.Split(cd, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(strings.ToLower(part), "filename=") {
+			return strings.Trim(strings.TrimSpace(part[len("filename="):]), `"`)
+		}
+	}
+	return ""
+}
 
 // extractFormAction extracts the form action attribute from an HTML response.
 // Returns empty string if no form with action found.
