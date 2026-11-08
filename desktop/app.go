@@ -5836,6 +5836,19 @@ func (a *App) DownloadAllUpdates() error {
 			if g.UpdateState != updateAvailable {
 				continue
 			}
+			// Only an unambiguously newer version may be installed without a
+			// human decision. A "changed" ordering (date form replacing a
+			// number, a dropped segment) stays visible in the list and can be
+			// updated per game, but a batch must not guess — the live batch
+			// spent minutes syncing games it then refused to install.
+			if !version.IsNewer(
+				scraper.StripVersionQualifier(g.LatestVersion),
+				scraper.StripVersionQualifier(g.Version),
+			) {
+				slog.Info("batch update: version ordering unclear, needs a manual update",
+					"gameID", g.ID, "version", g.Version, "latest", g.LatestVersion)
+				continue
+			}
 			if !gate.claimGame(g.ID) {
 				slog.Info("batch update: game already updating, skipping", "gameID", g.ID)
 				continue
