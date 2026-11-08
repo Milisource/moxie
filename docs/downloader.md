@@ -221,7 +221,9 @@ Flow:
 Live evidence: the resolver obtained the link in ~8 s and downloaded the full
 **989,346,221-byte** `RJ01316694-Red_Flower_Shining_in_the_Moonlight.7z` in
 about 40 seconds (≈25 MB/s). The browser window closes when the resolver
-returns; the download itself is plain HTTP.
+returns; the download itself is plain HTTP. Resolved `/d/` links are cached in
+`resolved_urls` for 12 hours, so a second run returned the same URL in **0.095 s**
+without launching the browser.
 
 Browser discovery order: `MOXIE_BROWSER`, `google-chrome-stable`,
 `google-chrome`, `chromium`, `chromium-browser`, `brave-browser`,

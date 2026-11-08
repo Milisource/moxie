@@ -36,6 +36,21 @@ func BrowserResolverEnabled() bool {
 // redirects to a presigned S3 object. The caller then downloads that URL with
 // ordinary HTTP (including Range/resume).
 func (r *HostResolver) resolveVikingFileBrowser(rawURL string) (*ResolveResult, error) {
+	// Reuse a previously browser-resolved link when fresh. VikingFile's /d/
+	// URL redirects to a new presigned S3 URL, so caching it avoids relaunching
+	// a browser on every retry/download.
+	if store := getResolutionStore(); store != nil {
+		if cached, _, ok := store.GetResolvedURL(rawURL, 12*time.Hour); ok && isValidDownloadURL(cached) {
+			log.Debug("vikingfile browser cache hit", "url", rawURL)
+			return &ResolveResult{
+				URL: cached,
+				Headers: map[string]string{
+					"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
+					"Referer":    rawURL,
+				},
+			}, nil
+		}
+	}
 	execPath, err := findBrowserExecutable()
 	if err != nil {
 		return nil, err
@@ -102,6 +117,11 @@ func (r *HostResolver) resolveVikingFileBrowser(rawURL string) (*ResolveResult, 
 	}
 
 	log.Info("browser resolver obtained direct link", "host", "vikingfile", "target_host", strings.Split(strings.TrimPrefix(href, "https://"), "/")[0])
+	if store := getResolutionStore(); store != nil {
+		if err := store.SaveResolvedURL(rawURL, href, "vikingfile"); err != nil {
+			log.Warn("failed to cache browser resolution", "error", err)
+		}
+	}
 	return &ResolveResult{
 		URL: href,
 		Headers: map[string]string{
