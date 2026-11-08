@@ -5312,15 +5312,19 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 
 	// Check whether an update is actually needed. Compare normalized forms
 	// so "v0.8" and "0.8" are recognised as the same version rather than
-	// kicking off a pointless re-download.
+	// kicking off a pointless re-download. A stale queue entry (the thread
+	// moved back, or a later check already converged) is not a failure: the
+	// batch treats it as done and stops showing a red error for a game that
+	// has nothing to install.
 	if !updatable(game.LatestVersion, game.Version) {
-		err = fmt.Errorf("no update available (current version: %s)", game.Version)
-		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
+		slog.Info("game update: already up to date", "gameID", gameID,
+			"version", game.Version, "latest", game.LatestVersion)
+		runtime.EventsEmit(a.ctx, "game-update:up-to-date", map[string]interface{}{
 			"gameID":  gameID,
-			"step":    "check",
-			"message": err.Error(),
+			"title":   title,
+			"version": game.Version,
 		})
-		return err
+		return nil
 	}
 
 	// Phase: selecting-link

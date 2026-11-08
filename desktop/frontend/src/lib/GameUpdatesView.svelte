@@ -68,9 +68,11 @@
         : 'Extracting…'
       case 'merging':        return 'Applying update…'
       case 'updating-db':    return 'Finalizing…'
-      case 'done':           return gs.oldVersion && gs.newVersion
-        ? `Updated ${gs.oldVersion} → ${gs.newVersion}`
-        : 'Update complete'
+      case 'done':           return gs.upToDate
+        ? 'Already up to date'
+        : (gs.oldVersion && gs.newVersion
+          ? `Updated ${gs.oldVersion} → ${gs.newVersion}`
+          : 'Update complete')
       case 'error':          return 'Update failed'
       default:               return ''
     }
@@ -400,21 +402,34 @@
                 {/if}
 
               {:else if phase === 'downloading'}
-                <div class="cell-download-progress">
-                  <div class="cell-progress-bg">
-                    <div
-                      class="cell-progress-fill"
-                      style="width: {gs.percent || 0}%"
-                    ></div>
+                {#if gs.totalBytes > 0}
+                  <div class="cell-download-progress">
+                    <div class="cell-progress-bg">
+                      <div
+                        class="cell-progress-fill"
+                        style="width: {gs.percent || 0}%"
+                      ></div>
+                    </div>
+                    <span class="cell-progress-text">
+                      {formatPercent(gs.percent)}%
+                      {#if gs.speed}
+                        <span class="cell-speed">— {formatSpeed(gs.speed)}</span>
+                      {/if}
+                    </span>
+                    <button class="btn btn-sm btn-outline cell-cancel" onclick={() => onCancelGame(game.id)} title="Cancel this update">Cancel</button>
                   </div>
-                  <span class="cell-progress-text">
-                    {formatPercent(gs.percent)}%
-                    {#if gs.speed}
-                      <span class="cell-speed">— {formatSpeed(gs.speed)}</span>
-                    {/if}
-                  </span>
-                  <button class="btn btn-sm btn-outline cell-cancel" onclick={() => onCancelGame(game.id)} title="Cancel this update">Cancel</button>
-                </div>
+                {:else}
+                  <!-- Browser- or megatools-assisted transfers run outside the
+                       Go reader, so there is no byte count to show. An
+                       indeterminate label is honest; 0.00% looked frozen. -->
+                  <div class="cell-status-row">
+                    <span class="spinner spinner-sm"></span>
+                    <span class="cell-status-text">
+                      Downloading{gs.host ? ` from ${gs.host}` : ''}… (no progress reported)
+                    </span>
+                    <button class="btn btn-sm btn-outline cell-cancel" onclick={() => onCancelGame(game.id)} title="Cancel this update">Cancel</button>
+                  </div>
+                {/if}
 
               {:else if phase === 'extracting'}
                 <div class="cell-status-row">

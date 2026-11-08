@@ -875,8 +875,17 @@
       // so the row stops offering the file picker.
       updateGS(data.gameID, {
         phase: data.phase,
+        host: data.host || '',
+        upToDate: false,
         ...(data.phase === 'selecting-file' ? {} : {manualRequired: false, manualHost: ''}),
       })
+    }))
+    subs.push(EventsOn('game-update:up-to-date', (data) => {
+      updateGS(data.gameID, {phase: 'done', upToDate: true, oldVersion: '', newVersion: ''})
+      if (!batchState?.running) {
+        refreshGames()
+        lastUpdate++
+      }
     }))
     subs.push(EventsOn('game-update:download-progress', (data) => {
       updateGS(data.gameID, {
