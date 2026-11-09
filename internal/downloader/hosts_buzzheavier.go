@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -68,7 +69,9 @@ func (r *HostResolver) resolveBuzzheavierHTTP(rawURL string) (string, error) {
 
 	hxURL := m[1]
 	if strings.HasPrefix(hxURL, "/") {
-		hxURL = "https://bzzhr.to" + hxURL
+		if u, err := url.Parse(base); err == nil {
+			hxURL = u.Scheme + "://" + u.Host + hxURL
+		}
 	}
 	hreq, err := http.NewRequest("GET", hxURL, nil)
 	if err != nil {
