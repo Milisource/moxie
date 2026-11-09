@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
@@ -489,6 +490,254 @@ func mixdropDownloadPageURL(rawURL string) string {
 	}
 	u.RawQuery = "download"
 	return u.String()
+}
+
+// browserChallengeTimeout bounds how long the masked-link and WDHO resolvers
+// wait for a human to clear an interactive challenge in the opened window.
+// It is a variable so tests can shorten it.
+var browserChallengeTimeout = 240 * time.Second
+
+// resolveMaskedBrowser opens F95Zone's masked page in a headed browser and
+// waits for the site's own reCAPTCHA widget to be cleared. It injects the
+// caller's F95Zone cookies first, clicks the host link, and captures the
+// document navigation to the real file host. The resolver never solves the
+// captcha itself; a human (or a prior reputation cookie) must clear it.
+func (r *HostResolver) resolveMaskedBrowser(maskedURL string) (string, error) {
+	if r.f95Cookie == "" {
+		return "", fmt.Errorf("F95Zone masked link requires a session cookie")
+	}
+	var captured string
+	var mu sync.Mutex
+	_, err := runInBrowser("f95masked", "f95masked", 300*time.Second, func(ctx context.Context) (string, error) {
+		if err := setF95BrowserCookies(ctx, r.f95Cookie); err != nil {
+			return "", fmt.Errorf("browser resolver: set F95 cookies: %w", err)
+		}
+		if _, err := chromedp.Call(ctx, network.Enable, network.EnableParams{}); err != nil {
+			return "", fmt.Errorf("browser resolver: enable network: %w", err)
+		}
+		chromedp.Listen(ctx, func(ev any) {
+			e, ok := ev.(*network.EventRequestWillBeSent)
+			if !ok || e.Type != network.ResourceTypeDocument {
+				return
+			}
+			u := e.Request.URL
+			if strings.Contains(strings.ToLower(u), "f95zone.to") {
+				return
+			}
+			if !isValidDownloadURL(u) || IdentifyHostInURL(u) == "unknown" {
+				return
+			}
+			mu.Lock()
+			if captured == "" {
+				captured = u
+			}
+			mu.Unlock()
+		})
+
+		if err := chromedp.Do(ctx, chromedp.Navigate(maskedURL)); err != nil {
+			return "", fmt.Errorf("browser resolver: navigate: %w", err)
+		}
+		if err := pollBrowser(ctx, 60*time.Second, `!!document.querySelector('.host_link')`); err != nil {
+			return "", fmt.Errorf("browser resolver: F95 masked page: %w", err)
+		}
+		if _, err := chromedp.Run(ctx, chromedp.Evaluate[chromedp.Void](`(() => {
+			const a = document.querySelector('.host_link');
+			if (a) a.click();
+		})()`)); err != nil {
+			return "", fmt.Errorf("browser resolver: click host link: %w", err)
+		}
+
+		deadline := time.Now().Add(browserChallengeTimeout)
+		for time.Now().Before(deadline) {
+			mu.Lock()
+			got := captured
+			mu.Unlock()
+			if got != "" {
+				return got, nil
+			}
+			select {
+			case <-ctx.Done():
+				return "", fmt.Errorf("browser resolver: F95Zone captcha not cleared")
+			case <-time.After(time.Second):
+			}
+		}
+		return "", fmt.Errorf("browser resolver: F95Zone captcha not cleared — complete the reCAPTCHA in the opened browser")
+	})
+	if err != nil {
+		return "", err
+	}
+	if !isValidDownloadURL(captured) {
+		return "", fmt.Errorf("browser resolver: F95Zone returned no host URL")
+	}
+	log.Info("browser resolver obtained masked target", "target_host", IdentifyHostInURL(captured))
+	return captured, nil
+}
+
+// setF95BrowserCookies copies a Cookie header into the chromedp browser so the
+// masked page is authenticated.
+func setF95BrowserCookies(ctx context.Context, header string) error {
+	cookies := make([]*network.CookieParam, 0, 8)
+	for _, pair := range strings.Split(header, "; ") {
+		name, value, ok := strings.Cut(pair, "=")
+		if !ok || name == "" || value == "" {
+			continue
+		}
+		cookies = append(cookies, &network.CookieParam{
+			Name:   name,
+			Value:  value,
+			Domain: ".f95zone.to",
+			Path:   "/",
+			Secure: true,
+		})
+	}
+	if len(cookies) == 0 {
+		return fmt.Errorf("empty cookie header")
+	}
+	if _, err := chromedp.Call(ctx, network.SetCookies, network.SetCookiesParams{Cookies: cookies}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// resolveWDHOBrowser drives WDHO's page through its JavaScript/device probe and
+// colour-button challenge. The page itself performs the POST to /robots.txt and
+// sets the antibot cookie; this resolver waits for a human to clear the colour
+// check, then captures the resulting download navigation or link. It never
+// picks a colour itself.
+func (r *HostResolver) resolveWDHOBrowser(rawURL string) (*ResolveResult, error) {
+	if store := getResolutionStore(); store != nil {
+		if cached, _, ok := store.GetResolvedURL(rawURL, time.Hour); ok && isValidDownloadURL(cached) {
+			log.Debug("wdho browser cache hit", "url", rawURL)
+			return &ResolveResult{URL: cached, Headers: browserHeaders(rawURL)}, nil
+		}
+	}
+
+	downloadDir, err := os.MkdirTemp("", "moxie-wdho-")
+	if err != nil {
+		return nil, fmt.Errorf("browser resolver: create download dir: %w", err)
+	}
+	defer os.RemoveAll(downloadDir)
+
+	var captured string
+	var sawFormDownload bool
+	var mu sync.Mutex
+	direct, err := runInBrowser("wdho", "wdho", 360*time.Second, func(ctx context.Context) (string, error) {
+		if _, err := chromedp.Call(ctx, network.Enable, network.EnableParams{}); err != nil {
+			return "", fmt.Errorf("browser resolver: enable network: %w", err)
+		}
+		eventsEnabled := true
+		if _, err := chromedp.Call(ctx, cdpbrowser.SetDownloadBehavior, cdpbrowser.SetDownloadBehaviorParams{
+			Behavior:      cdpbrowser.SetDownloadBehaviorBehaviorAllow,
+			DownloadPath:  downloadDir,
+			EventsEnabled: &eventsEnabled,
+		}); err != nil {
+			return "", fmt.Errorf("browser resolver: enable downloads: %w", err)
+		}
+		chromedp.Listen(ctx, func(ev any) {
+			switch e := ev.(type) {
+			case *cdpbrowser.EventDownloadWillBegin:
+				if !isValidDownloadURL(e.URL) {
+					return
+				}
+				if strings.Contains(e.URL, "/kbhw") {
+					mu.Lock()
+					sawFormDownload = true
+					mu.Unlock()
+					return
+				}
+				mu.Lock()
+				if captured == "" {
+					captured = e.URL
+				}
+				mu.Unlock()
+			case *network.EventRequestWillBeSent:
+				u := e.Request.URL
+				if strings.Contains(u, "/robots.txt") {
+					log.Info("browser resolver observed WDHO device probe", "host", "wdho")
+					return
+				}
+				if e.Type != network.ResourceTypeDocument {
+					return
+				}
+				// Ignore the challenge, ad and anti-bot frames; keep a
+				// navigation to a real download host.
+				if IdentifyHostInURL(u) == "unknown" || strings.Contains(u, "wdho.ru") {
+					return
+				}
+				if !isValidDownloadURL(u) {
+					return
+				}
+				mu.Lock()
+				if captured == "" {
+					captured = u
+				}
+				mu.Unlock()
+			}
+		})
+
+		if err := chromedp.Do(ctx, chromedp.Navigate(rawURL)); err != nil {
+			return "", fmt.Errorf("browser resolver: navigate: %w", err)
+		}
+		// The page runs its /robots.txt probe and reloads; wait for the
+		// colour buttons (or a direct download if the probe already cleared).
+		if err := pollBrowser(ctx, 90*time.Second, `(() => {
+			if (document.querySelector('button.btn-color, input[name="color"]')) return true;
+			return false;
+		})()`); err != nil {
+			mu.Lock()
+			got := captured
+			mu.Unlock()
+			if got != "" {
+				return got, nil
+			}
+			return "", fmt.Errorf("browser resolver: WDHO colour challenge did not appear: %w", err)
+		}
+		log.Info("browser resolver waiting for WDHO colour check", "host", "wdho")
+
+		deadline := time.Now().Add(browserChallengeTimeout)
+		for time.Now().Before(deadline) {
+			mu.Lock()
+			got := captured
+			mu.Unlock()
+			if got != "" {
+				return got, nil
+			}
+			href, err := chromedp.Run(ctx, chromedp.Evaluate[string](`(() => {
+				const a = [...document.querySelectorAll('a')].find(a => {
+					if (!a.href) return false;
+					if (a.hasAttribute('download')) return true;
+					try {
+						return /\.(zip|rar|7z|tar|gz|mp4|mkv|apk|exe)$/i.test(new URL(a.href).pathname);
+					} catch (e) { return false; }
+				});
+				return a ? a.href : '';
+			})()`))
+			if err == nil && isValidDownloadURL(href) {
+				return href, nil
+			}
+			select {
+			case <-ctx.Done():
+				return "", fmt.Errorf("browser resolver: WDHO challenge not cleared")
+			case <-time.After(time.Second):
+			}
+		}
+		mu.Lock()
+		formDownload := sawFormDownload
+		mu.Unlock()
+		if formDownload {
+			return "", fmt.Errorf("browser resolver: WDHO returned the challenge form endpoint instead of a replayable file URL")
+		}
+		return "", fmt.Errorf("browser resolver: WDHO challenge not cleared — complete the colour check in the opened browser")
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !isValidDownloadURL(direct) {
+		return nil, fmt.Errorf("browser resolver: invalid WDHO download URL")
+	}
+	log.Info("browser resolver obtained direct link", "host", "wdho", "target_host", strings.Split(strings.TrimPrefix(direct, "https://"), "/")[0])
+	cacheBrowserResolution(rawURL, direct, "wdho")
+	return &ResolveResult{URL: direct, Headers: browserHeaders(rawURL)}, nil
 }
 
 func cacheBrowserResolution(key, resolved, host string) {

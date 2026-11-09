@@ -15,6 +15,9 @@ import (
 // A direct file response from WDHO (CDN URL or an already-cleared session) is
 // still passed through.
 func (r *HostResolver) resolveWDHO(rawURL string) (*ResolveResult, error) {
+	if BrowserResolverEnabled() {
+		return r.resolveWDHOBrowser(rawURL)
+	}
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("wdho request: %w", err)

@@ -75,6 +75,10 @@ func TestResolveUploadHaven_RequiresBrowser(t *testing.T) {
 }
 
 func TestResolveWDHO_DetectsInteractiveChallenge(t *testing.T) {
+	old := BrowserResolverEnabled()
+	SetBrowserResolver(false)
+	defer SetBrowserResolver(old)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, `<form action="/kbhw" method="post"><input name="antibot" value="x"><button class="btn-color">GREEN</button></form>`)
@@ -90,6 +94,10 @@ func TestResolveWDHO_DetectsInteractiveChallenge(t *testing.T) {
 }
 
 func TestResolveWDHO_DirectFilePassthrough(t *testing.T) {
+	old := BrowserResolverEnabled()
+	SetBrowserResolver(false)
+	defer SetBrowserResolver(old)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/zip")
 		w.WriteHeader(http.StatusOK)

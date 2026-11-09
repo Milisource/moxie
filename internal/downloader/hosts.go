@@ -225,7 +225,23 @@ func (r *HostResolver) resolveMasked(maskedURL string) (string, error) {
 		log.Info("F95Zone masked link resolved", "host", IdentifyHostInURL(result.Msg))
 		return result.Msg, nil
 	case "captcha":
-		return "", fmt.Errorf("F95Zone requires a CAPTCHA to unmask this link — retry later or use --open (link: %s)", maskedURL)
+		if BrowserResolverEnabled() {
+			realURL, err := r.resolveMaskedBrowser(maskedURL)
+			if err != nil {
+				return "", err
+			}
+			maskedCacheMu.Lock()
+			maskedCache[maskedURL] = maskedCacheEntry{url: realURL, expires: time.Now().Add(maskedCacheTTL)}
+			maskedCacheMu.Unlock()
+			if store := getResolutionStore(); store != nil {
+				if err := store.SaveResolvedURL(maskedURL, realURL, IdentifyHostInURL(realURL)); err != nil {
+					log.Warn("failed to cache masked URL resolution", "error", err)
+				}
+			}
+			log.Info("F95Zone masked link resolved via browser", "host", IdentifyHostInURL(realURL))
+			return realURL, nil
+		}
+		return "", fmt.Errorf("F95Zone requires a CAPTCHA to unmask this link — retry with --browser to solve it in a visible window, or use --open (link: %s)", maskedURL)
 	case "error":
 		if result.Msg == "" {
 			result.Msg = "unknown error"

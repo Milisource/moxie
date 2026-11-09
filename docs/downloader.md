@@ -117,7 +117,14 @@ at least 15 minutes, so the cache and link fallback remain essential.
 
 **Remaining blocker:** F95Zone's masked endpoint and `/dl/` check both raise an
 interactive reCAPTCHA/hCaptcha after automation is detected. `moxie` cannot and
-should not solve that captcha. Mitigations:
+should not solve that captcha. With `--browser`, `resolveMaskedBrowser` opens the
+masked page in a headed browser, injects the same F95 cookies, clicks the host
+link, and captures the document navigation to the real host URL once the
+challenge is clear. Live evidence (challenge temporarily clear): the browser
+captured `https://pixeldrain.com/u/ysLVsEEB` from a masked pixeldrain link in
+~2 seconds. When the challenge is pending the resolver waits up to four minutes
+for a human to complete it, then reports that the captcha was not cleared.
+Mitigations:
 
 - resolution cache and 12-hour reuse limit repeated calls;
 - F95Zone's rate limit is temporary — pausing and retrying works;
@@ -169,7 +176,7 @@ range or full download returned real bytes with the expected magic/type.
 | **KrakenFiles** | Optional headed-browser resolver: wait Turnstile + FingerprintJS, POST `/download/<hash>`, read JSON `{url}` | ⚠ Browser implemented / server-blocked | Valid Turnstile, fingerprint and behavior data sent; every tested live file returned `{"status":"error","msg":"Server error"}` (3 files, 95 s wait, mouse activity) — server-side refusal from this network |
 | **VikingFile** | Optional headed-browser resolver → `/d/...` → presigned S3 | ✅ Verified with `--browser` | Turnstile auto-solved in a real Chromium; `#download-link` returned a `/d/` URL that 302s to a presigned S3 object; full 989 MB `.7z` downloaded in ~40 s |
 | **UploadHaven** | Browser waits for countdown + Turnstile, submits the form, reads the manual download link | ✅ Verified with `--browser` | Live `uploadhaven.com/download/96db…`: resolved in ~18 s to `download141.uploadhaven.com/.../KuroyaraCollection2025-05.zip`; GET 206, 256 bytes of `PK\x03\x04` ZIP (581 MB file) |
-| **WDHO** | Custom “click the button matching this colour” check after a JS/device probe | ⚠ Detected, not solved | Live `wdho.ru/kbhw` returns the `btn-color`/`antibot` challenge; the resolver reports `wdho requires an interactive colour-button check — use --open` instead of saving HTML |
+| **WDHO** | Browser: page performs `/robots.txt` device probe, then a colour-button check; resolver waits for a human to clear it and captures the resulting download URL | ⚠ Challenge reached, post-clear capture implemented | Live `wdho.ru/kbhw`: probe observed, colour form reached, resolver reports `WDHO challenge not cleared — complete the colour check in the opened browser`; no automated colour solving |
 | **Catbox / Quax / Vern / files.dp.ua** | Direct HTTP GET | ⚠ Pass-through | Catbox samples were 404 (deleted); no live samples available |
 | **transfer.sh / yourfilestore / delafil** | Direct HTTP GET | ❌ Dead in testing | `transfer.sh` and `yourfilestore.com` timed out / DNS failed; Delafil returned an error page |
 | **Files.fm / UploadNow / FromSmash / SendGB / DropMeFiles / others** | JS UI or account API | ❌ Browser | Not automatable with plain HTTP |
@@ -216,7 +223,7 @@ WorkUpload's “Are you a human?” page is not a captcha; it is SHA-256 grindin
 jar for the session. A live run solved 3 targets and the server accepted the
 captcha (the sample file itself had been deleted).
 
-### Optional browser resolver (Buzzheavier, MixDrop, UploadHaven, VikingFile, DataNodes, KrakenFiles)
+### Optional browser resolver (Buzzheavier, MixDrop, UploadHaven, WDHO, F95 masked, VikingFile, DataNodes, KrakenFiles)
 
 Turnstile does not issue a token to headless Chromium or to plain HTTP clients.
 Moxie therefore has an opt-in headed-browser resolver implemented with
@@ -230,9 +237,9 @@ MOXIE_BROWSER=/path/to/chrome moxie download --browser <id>
 Flow:
 
 1. With `--browser` enabled, browser-gated hosts (Buzzheavier, MixDrop,
-   UploadHaven, VikingFile, DataNodes, KrakenFiles) go straight to the browser
-   resolver because their HTTP flow stops at a challenge. Other hosts use the
-   normal HTTP resolver.
+   UploadHaven, WDHO, F95 masked links, VikingFile, DataNodes, KrakenFiles) go
+   straight to the browser resolver because their HTTP flow stops at a
+   challenge. Other hosts use the normal HTTP resolver.
 2. Launch a visible Chromium-family browser with a dedicated profile under
    `~/.cache/moxie/browser-profile-<host>`.
 3. Drive the host's page until Turnstile auto-solves and a direct URL appears.
@@ -295,6 +302,22 @@ the form directly (ad overlays make clicking unreliable), then reads the manual
 link (`downloadNNN.uploadhaven.com/...?key=…&expire=…`). Live: 206 + 256 bytes
 of `PK\x03\x04` from a 581,886,038-byte ZIP.
 
+**F95Zone masked links** — on a `captcha` response, `resolveMaskedBrowser`
+opens the masked page, injects the caller's F95 cookies through CDP, clicks
+`.host_link`, and listens for the document navigation to a known file host. It
+never interacts with the reCAPTCHA. Live (challenge temporarily clear): captured
+`https://pixeldrain.com/u/ysLVsEEB` in ~2 s. If the challenge is pending, the
+resolver waits up to `browserChallengeTimeout` (four minutes) and then reports
+that it was not cleared.
+
+**WDHO** — the page's own JavaScript performs the `/robots.txt` device probe and
+sets the `antibot_…` cookie, then renders the colour buttons. The browser
+resolver enables download events, waits for a human to click the matching colour,
+and captures either the `Browser.downloadWillBegin` URL or a post-challenge
+direct link. Live: the probe was observed, the colour form was reached, and the
+resolver reported `WDHO challenge not cleared — complete the colour check in the
+opened browser` after the timeout. No colour solving is attempted.
+
 Browser discovery order: `MOXIE_BROWSER`, `google-chrome-stable`,
 `google-chrome`, `chromium`, `chromium-browser`, `brave-browser`,
 `microsoft-edge`, then Playwright's cached Chromium. If no browser is found the
@@ -303,8 +326,8 @@ error explains how to set `MOXIE_BROWSER`.
 Hosts that still need a human:
 
 - **F95Zone `/dl/` and masked links** — both render an interactive
-  reCAPTCHA/hCaptcha after automation is detected; waiting does not auto-solve
-  it.
+  reCAPTCHA/hCaptcha after automation is detected; `--browser` waits for a human
+  to clear it but does not solve it.
 - **WDHO** — the page presents a “click the button matching this colour” check
   (`btn-color` + `antibot` form). The resolver detects it and refuses rather
   than solving an interactive anti-bot challenge.

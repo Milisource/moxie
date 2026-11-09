@@ -51,7 +51,10 @@ func TestResolveMasked_OK(t *testing.T) {
 }
 
 func TestResolveMasked_Captcha(t *testing.T) {
-	t.Parallel()
+	old := BrowserResolverEnabled()
+	SetBrowserResolver(false)
+	defer SetBrowserResolver(old)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"status":"captcha","msg":"Please complete the CAPTCHA to continue"}`)
 	}))
