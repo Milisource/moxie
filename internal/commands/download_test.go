@@ -152,7 +152,7 @@ func TestSelectBestLinkByPlatform_NativePlatform(t *testing.T) {
 	t.Parallel()
 	links := []db.DownloadLink{
 		{Name: "Linux version", Platform: db.PlatformLinux, Host: "pixeldrain"},
-		{Name: "Windows version", Platform: db.PlatformWindows, Host: "vikingfile"},
+		{Name: "Windows version", Platform: db.PlatformWindows, Host: "mega"},
 	}
 	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
 	if got == nil {
@@ -167,14 +167,14 @@ func TestSelectBestLinkByPlatform_WindowsViaWine(t *testing.T) {
 	t.Parallel()
 	links := []db.DownloadLink{
 		{Name: "All platforms", Platform: db.PlatformAll, Host: "mediafire"},
-		{Name: "Windows version", Platform: db.PlatformWindows, Host: "vikingfile"},
+		{Name: "Windows version", Platform: db.PlatformWindows, Host: "mega"},
 	}
 	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
 	if got == nil {
 		t.Fatal("expected non-nil result")
 	}
 	if got.Name != "All platforms" {
-		t.Errorf("expected 'All platforms' first (VikingFile -50 penalty), got %q", got.Name)
+		t.Errorf("expected 'All platforms' first (Mega -200 penalty), got %q", got.Name)
 	}
 }
 
@@ -182,21 +182,21 @@ func TestSelectBestLinkByPlatform_UnknownLowestOnLinux(t *testing.T) {
 	t.Parallel()
 	links := []db.DownloadLink{
 		{Name: "Unknown platform", Platform: db.PlatformUnknown, Host: "unknown"},
-		{Name: "Windows version", Platform: db.PlatformWindows, Host: "vikingfile"},
+		{Name: "Windows version", Platform: db.PlatformWindows, Host: "mega"},
 	}
 	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
 	if got == nil {
 		t.Fatal("expected non-nil result")
 	}
 	if got.Name != "Unknown platform" {
-		t.Errorf("expected 'Unknown platform' first (VikingFile -50 penalty), got %q", got.Name)
+		t.Errorf("expected 'Unknown platform' first (Mega -200 penalty), got %q", got.Name)
 	}
 }
 
 func TestSelectBestLinkByPlatform_HostBonus(t *testing.T) {
 	t.Parallel()
 	links := []db.DownloadLink{
-		{Name: "With vikingfile", Platform: db.PlatformUnknown, Host: "vikingfile"},
+		{Name: "With mega", Platform: db.PlatformUnknown, Host: "mega"},
 		{Name: "With unknown", Platform: db.PlatformUnknown, Host: "randomhost"},
 	}
 	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
@@ -204,7 +204,7 @@ func TestSelectBestLinkByPlatform_HostBonus(t *testing.T) {
 		t.Fatal("expected non-nil result")
 	}
 	if got.Name != "With unknown" {
-		t.Errorf("expected 'With unknown' first (VikingFile -50 penalty), got %q", got.Name)
+		t.Errorf("expected 'With unknown' first (Mega -200 penalty), got %q", got.Name)
 	}
 }
 
@@ -215,14 +215,15 @@ func TestSelectBestLinkByPlatform_HostBonuses(t *testing.T) {
 		host   string
 		expect string
 	}{
-		{"vikingfile loses (-50)", "vikingfile", "no bonus link"},
+		{"vikingfile loses (-200)", "vikingfile", "no bonus link"},
 		{"buzzheavier wins (+25)", "buzzheavier", "bonus link"},
 		{"pixeldrain wins (+25)", "pixeldrain", "bonus link"},
+		{"mega loses (-200)", "mega", "no bonus link"},
 		{"gofile wins (+25)", "gofile", "bonus link"},
-		{"mediafire wins (+25)", "mediafire", "bonus link"},
+		{"mediafire (tie, stable sort)", "mediafire", "bonus link"},
 		{"workupload wins (+10)", "workupload", "bonus link"},
-		{"krakenfiles loses (-50)", "krakenfiles", "no bonus link"},
-		{"googledrive wins (+10)", "googledrive", "bonus link"},
+		{"krakenfiles loses (-200)", "krakenfiles", "no bonus link"},
+		{"googledrive (tie, stable sort)", "googledrive", "bonus link"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -245,7 +246,7 @@ func TestSelectBestLinkByPlatform_SkipsOnlineOnly(t *testing.T) {
 	t.Parallel()
 	links := []db.DownloadLink{
 		{Name: "Online Version", URL: "", Platform: db.PlatformUnknown, Host: "pixeldrain"},
-		{Name: "Linux Download", URL: "", Platform: db.PlatformLinux, Host: "vikingfile"},
+		{Name: "Linux Download", URL: "", Platform: db.PlatformLinux, Host: "mega"},
 	}
 	got := selectBestLinkByPlatform(links, downloader.PlatformLinux)
 	if got == nil {
@@ -272,7 +273,7 @@ func TestSelectBestLinkByPlatform_PriorityOrdering(t *testing.T) {
 	t.Parallel()
 	// Native > All > Unknown > Different
 	links := []db.DownloadLink{
-		{Name: "Windows only", Platform: db.PlatformWindows, Host: "vikingfile"},
+		{Name: "Windows only", Platform: db.PlatformWindows, Host: "mega"},
 		{Name: "All platforms", Platform: db.PlatformAll, Host: "catbox"},
 		{Name: "Unknown plat", Platform: db.PlatformUnknown, Host: "random"},
 		{Name: "Linux native", Platform: db.PlatformLinux, Host: "pixeldrain"},
@@ -315,5 +316,49 @@ func TestSelectBestLinkByPlatform_AllWithHostBonus(t *testing.T) {
 	}
 	if got.Name != "All on pixeldrain" {
 		t.Errorf("expected 'All on pixeldrain' (50+15 > 25+0), got %q", got.Name)
+	}
+}
+
+func TestParseHostExclusions(t *testing.T) {
+	t.Parallel()
+	got := parseHostExclusions(" Pixeldrain, gofile ,, MEGA ")
+	for _, want := range []string{"pixeldrain", "gofile", "mega"} {
+		if !got[want] {
+			t.Errorf("missing %q in %v", want, got)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("got %d hosts, want 3: %v", len(got), got)
+	}
+	if len(parseHostExclusions("")) != 0 {
+		t.Error("empty input should exclude nothing")
+	}
+}
+
+func TestScoreDownloadLinksSkipsExcludedHosts(t *testing.T) {
+	t.Parallel()
+	links := []db.DownloadLink{
+		{Host: "pixeldrain", Name: "DOWNLOAD · Win", Platform: db.PlatformWindows, URL: "https://f95zone.to/dl/1/"},
+		{Host: "gofile", Name: "DOWNLOAD · Win", Platform: db.PlatformWindows, URL: "https://f95zone.to/dl/2/"},
+		{Host: "mega", Name: "DOWNLOAD · Win", Platform: db.PlatformWindows, URL: "https://f95zone.to/dl/3/"},
+	}
+
+	scored, skipped := scoreDownloadLinks(links, downloader.PlatformWindows, parseHostExclusions("pixeldrain"))
+	if skipped != 1 {
+		t.Errorf("skipped = %d, want 1", skipped)
+	}
+	if len(scored) != 2 {
+		t.Fatalf("scored %d links, want 2", len(scored))
+	}
+	for _, s := range scored {
+		if s.link.Host == "pixeldrain" {
+			t.Error("excluded host survived scoring")
+		}
+	}
+
+	// No exclusions keeps every link.
+	all, none := scoreDownloadLinks(links, downloader.PlatformWindows, nil)
+	if none != 0 || len(all) != len(links) {
+		t.Errorf("nil exclusions: %d scored, %d skipped; want %d, 0", len(all), none, len(links))
 	}
 }

@@ -1,7 +1,9 @@
 package downloader
 
 import (
+	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -13,89 +15,261 @@ import (
 )
 
 // --- Buzzheavier ---
-// The file page exposes an HTMX download endpoint:
+// Token-based resolution (live-verified 2026-08-09, F95-hs4y). The wall is
+// NOT a TLS fingerprint and NOT a Turnstile proof: the share page embeds a
+// server-signed t= token in its hx-get attributes, and the HTMX /download
+// endpoint accepts it from a plain stdlib client. Flow:
 //
-//	<a class="download-btn" hx-get="/<id>/download?t=<signed-token>">
+//  1. GET the share page (browser cookies required; retry through
+//     intermittent adaptive 403s — backoff ~1s, cap 5 tries).
+//  2. Extract t= from hx-get="/<id>/download?t=<token>" (the &amp;-encoded
+//     &alt=true variant carries the same token).
+//  3. GET /download?t=<token>&alt=true with HX-Request + priority: u=1, i
+//     + Referer → hx-redirect. alt=true yields fafda.to/d/<id>?v=<token>
+//     (challenge-free app-layer token gate); the non-alt ts.bzzhr.to origin
+//     is dead, so its redirects are rewritten to fafda.to.
+//  4. Probe the file URL (Range: bytes=0-0): 503 {"error":"service
+//     unavailable"} is a transient origin outage (retry/backoff); 403/404
+//     JSON errors mean an expired/forged token → re-fetch the page for a
+//     fresh one (bounded).
 //
-// and the endpoint answers with an empty 204 whose hx-redirect header is the
-// signed CDN URL (ts.bzzhr.to/d/<id>?v=...). Cloudflare often rejects plain
-// HTTP clients with 403, in which case the headed browser resolver performs
-// the same request from inside the already-validated page.
-var buzzheavierHXGet = regexp.MustCompile(`hx-get="(/[^"]+/download\?t=[^"]+)"`)
+// The old dd.buzzheavier.com direct pattern is dead (521/522).
 
-func (r *HostResolver) resolveBuzzheavierWithFallback(rawURL string) (*ResolveResult, error) {
-	if store := getResolutionStore(); store != nil {
-		if cached, _, ok := store.GetResolvedURL(rawURL, time.Hour); ok && isValidDownloadURL(cached) {
-			log.Debug("buzzheavier cache hit", "url", rawURL)
-			return &ResolveResult{URL: cached, Headers: browserHeaders(rawURL)}, nil
+const (
+	buzzUserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
+)
+
+// Per-stage retry caps and backoff (adaptive 403s on the page, origin 503s
+// on the probe). Vars so tests can shrink them.
+var (
+	buzzMaxTries   = 5
+	buzzRetryDelay = time.Second
+	// buzzProbeBackoff is the escalating backoff between file-probe retries:
+	// the fafda.to origin's 503 outages are intermittent (live-observed
+	// recovering within a minute), so a flat 1s×5 window misses them. Empty
+	// falls back to buzzRetryDelay; probe tries = len(backoff) + 1.
+	buzzProbeBackoff = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 8 * time.Second}
+	// buzzMaxPageRefetch bounds how many times a rejected token re-fetches
+	// the share page for a fresh one, so a broken share link cannot loop.
+	buzzMaxPageRefetch = 2
+)
+
+// reBuzzHxGet matches the hx-get attributes that carry the download
+// endpoint; the server-signed t= token lives in their query string.
+// HTML-entity encoded &amp; is unescaped before parsing.
+var reBuzzHxGet = regexp.MustCompile(`hx-get=["']([^"']*/download\?[^"']*)["']`)
+
+// errBuzzTokenRejected signals a 403/404 JSON error from the file origin:
+// the t= token is expired or forged — re-fetch the share page for a new one.
+var errBuzzTokenRejected = errors.New("buzzheavier: token rejected by file origin")
+
+func (r *HostResolver) resolveBuzzheavier(rawURL string) (*ResolveResult, error) {
+	pageURL := strings.TrimRight(rawURL, "/")
+
+	for attempt := 1; attempt <= buzzMaxPageRefetch; attempt++ {
+		body, err := r.buzzFetchSharePage(pageURL)
+		if err != nil {
+			return nil, err
 		}
-	}
 
-	// First try plain HTTP. It works when the caller's IP already has a
-	// Cloudflare clearance cookie or when the host is not challenging.
-	if direct, err := r.resolveBuzzheavierHTTP(rawURL); err == nil && direct != "" {
-		log.Info("buzzheavier resolved over HTTP", "target_host", strings.Split(strings.TrimPrefix(direct, "https://"), "/")[0])
-		cacheBrowserResolution(rawURL, direct, "buzzheavier")
-		return &ResolveResult{URL: direct, Headers: browserHeaders(rawURL)}, nil
-	}
+		token, endpoint, err := extractBuzzDownloadHref(body)
+		if err != nil {
+			return nil, err
+		}
 
-	if !BrowserResolverEnabled() {
-		return nil, fmt.Errorf("buzzheavier is behind a Cloudflare challenge — retry with --browser")
+		fileURL, err := r.buzzRequestDownload(pageURL, endpoint, token)
+		if err != nil {
+			return nil, err
+		}
+
+		fileURL, err = r.buzzProbeFile(fileURL)
+		if errors.Is(err, errBuzzTokenRejected) {
+			log.Debug("buzzheavier token rejected, re-fetching share page", "url", redactedURL(pageURL))
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		return &ResolveResult{
+			URL: fileURL,
+			Headers: map[string]string{
+				"User-Agent": buzzUserAgent,
+				"Referer":    pageURL,
+			},
+		}, nil
 	}
-	return r.resolveBuzzheavierBrowser(rawURL)
+	return nil, fmt.Errorf(
+		"buzzheavier: token rejected after %d share-page refetches — the share link is expired or invalid",
+		buzzMaxPageRefetch,
+	)
 }
 
-func (r *HostResolver) resolveBuzzheavierHTTP(rawURL string) (string, error) {
-	base := strings.TrimRight(rawURL, "/")
-	req, err := http.NewRequest("GET", base, nil)
-	if err != nil {
-		return "", err
+// buzzFetchSharePage GETs the share page with browser cookies and retries
+// through the intermittent adaptive 403s Cloudflare serves between 200s.
+// Only 403 (and transport errors) are retried — 404/5xx are permanent share
+// problems.
+func (r *HostResolver) buzzFetchSharePage(pageURL string) ([]byte, error) {
+	var lastErr error
+	for attempt := 1; attempt <= buzzMaxTries; attempt++ {
+		req, err := http.NewRequest(http.MethodGet, pageURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("buzzheavier create page request: %w", err)
+		}
+		req.Header.Set("User-Agent", buzzUserAgent)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		r.attachBrowserCookies(req)
+
+		resp, err := r.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("buzzheavier page GET: %w", err)
+			time.Sleep(buzzRetryDelay)
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			return body, nil
+		}
+		lastErr = fmt.Errorf("buzzheavier page: HTTP %d", resp.StatusCode)
+		if readErr != nil {
+			lastErr = fmt.Errorf("buzzheavier read page body: %w", readErr)
+		}
+		if resp.StatusCode != http.StatusForbidden {
+			return nil, lastErr
+		}
+		time.Sleep(buzzRetryDelay)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	return nil, fmt.Errorf("buzzheavier: share page still challenged after %d attempts: %w", buzzMaxTries, lastErr)
+}
+
+// extractBuzzDownloadHref pulls the /download endpoint and its server-signed
+// t= token from the share page's hx-get attributes. The endpoint is rebuilt
+// deterministically with alt=true (the fafda.to backend), regardless of which
+// variant the page embeds — all variants carry the same token.
+func extractBuzzDownloadHref(body []byte) (token string, endpoint string, err error) {
+	for _, m := range reBuzzHxGet.FindAllSubmatch(body, -1) {
+		u, parseErr := url.Parse(html.UnescapeString(string(m[1])))
+		if parseErr != nil {
+			continue
+		}
+		tok := u.Query().Get("t")
+		if tok == "" {
+			continue
+		}
+		q := url.Values{}
+		q.Set("t", tok)
+		q.Set("alt", "true")
+		return tok, u.Path + "?" + q.Encode(), nil
+	}
+	return "", "", fmt.Errorf("buzzheavier: no t= token in share page (hx-get download attribute missing)")
+}
+
+// buzzRequestDownload performs the HTMX GET /download?t=<token>&alt=true and
+// returns the hx-redirect file URL, preferring the fafda.to origin. The
+// non-alt backend ts.bzzhr.to is dead (000 / wrong DNS), so its redirects —
+// which carry the same v= token — are rewritten to fafda.to.
+func (r *HostResolver) buzzRequestDownload(pageURL, endpoint, token string) (string, error) {
+	dlURL := resolveRelativeURL(pageURL, endpoint)
+	req, err := http.NewRequest(http.MethodGet, dlURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("buzzheavier create download request: %w", err)
+	}
+	req.Header.Set("User-Agent", buzzUserAgent)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("HX-Request", "true")
+	req.Header.Set("HX-Current-URL", pageURL)
+	req.Header.Set("priority", "u=1, i")
+	req.Header.Set("Referer", pageURL)
+	r.attachBrowserCookies(req)
+
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("buzzheavier download request: %w", err)
 	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("buzzheavier page: HTTP %d", resp.StatusCode)
-	}
-	m := buzzheavierHXGet.FindStringSubmatch(string(body))
-	if len(m) < 2 {
-		return "", fmt.Errorf("buzzheavier: no HTMX download endpoint on page")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("buzzheavier /download: HTTP %d", resp.StatusCode)
 	}
 
-	hxURL := m[1]
-	if strings.HasPrefix(hxURL, "/") {
-		if u, err := url.Parse(base); err == nil {
-			hxURL = u.Scheme + "://" + u.Host + hxURL
+	redirect := resp.Header.Get("hx-redirect")
+	if redirect == "" {
+		// Some deployments return the URL in the body instead.
+		if body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10)); len(body) > 0 {
+			redirect = strings.TrimSpace(string(body))
 		}
 	}
-	hreq, err := http.NewRequest("GET", hxURL, nil)
-	if err != nil {
-		return "", err
+	if redirect == "" {
+		return "", fmt.Errorf("buzzheavier /download: empty hx-redirect (no token was issued)")
 	}
-	hreq.Header.Set("User-Agent", req.Header.Get("User-Agent"))
-	hreq.Header.Set("HX-Request", "true")
-	hreq.Header.Set("HX-Current-URL", base)
-	hreq.Header.Set("Referer", base)
-	hreq.Header.Set("Accept", "*/*")
-	hresp, err := r.client.Do(hreq)
-	if err != nil {
-		return "", err
+
+	u, err := url.Parse(redirect)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("buzzheavier /download: malformed hx-redirect %q", redirect)
 	}
-	hresp.Body.Close()
-	if hresp.StatusCode != http.StatusOK && hresp.StatusCode != http.StatusNoContent {
-		return "", fmt.Errorf("buzzheavier download endpoint: HTTP %d", hresp.StatusCode)
+	if strings.HasPrefix(u.Hostname(), "ts.") || strings.HasPrefix(u.Hostname(), "dd.") {
+		u.Host = "fafda.to"
 	}
-	direct := hresp.Header.Get("HX-Redirect")
-	if direct == "" {
-		direct = hresp.Header.Get("hx-redirect")
+	if u.Scheme == "" {
+		u.Scheme = "https"
 	}
-	if !isValidDownloadURL(direct) {
-		return "", fmt.Errorf("buzzheavier: no hx-redirect in response")
+	return u.String(), nil
+}
+
+// buzzProbeFile validates the resolved file URL with a 1-byte ranged GET:
+// 503 {"error":"service unavailable"} is a transient origin outage — retried
+// with an escalating backoff. 403/404 JSON errors mean the v= token is
+// expired or forged — returned as errBuzzTokenRejected so the caller
+// re-fetches the share page.
+func (r *HostResolver) buzzProbeFile(fileURL string) (string, error) {
+	probeTries := buzzMaxTries
+	if len(buzzProbeBackoff) > 0 {
+		probeTries = len(buzzProbeBackoff) + 1
 	}
-	return direct, nil
+	var lastErr error
+	for attempt := 1; attempt <= probeTries; attempt++ {
+		req, err := http.NewRequest(http.MethodGet, fileURL, nil)
+		if err != nil {
+			return "", fmt.Errorf("buzzheavier create file probe: %w", err)
+		}
+		req.Header.Set("User-Agent", buzzUserAgent)
+		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Range", "bytes=0-0")
+
+		resp, err := r.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("buzzheavier file probe: %w", err)
+			time.Sleep(buzzBackoff(attempt))
+			continue
+		}
+		// Drain only a little — a server that ignores Range would otherwise
+		// stream the whole file into memory.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		resp.Body.Close()
+
+		switch resp.StatusCode {
+		case http.StatusPartialContent, http.StatusOK:
+			return fileURL, nil
+		case http.StatusServiceUnavailable:
+			lastErr = fmt.Errorf("buzzheavier file origin unavailable (HTTP 503): %s", strings.TrimSpace(string(body)))
+			time.Sleep(buzzBackoff(attempt))
+		case http.StatusForbidden, http.StatusNotFound:
+			return "", fmt.Errorf("buzzheavier file probe: HTTP %d — %s: %w",
+				resp.StatusCode, strings.TrimSpace(string(body)), errBuzzTokenRejected)
+		default:
+			return "", fmt.Errorf("buzzheavier file probe: HTTP %d", resp.StatusCode)
+		}
+	}
+	return "", lastErr
+}
+
+// buzzBackoff returns the sleep before retry attempt n (1-based): the probe's
+// escalating schedule when set, else the flat default.
+func buzzBackoff(attempt int) time.Duration {
+	if attempt <= len(buzzProbeBackoff) {
+		return buzzProbeBackoff[attempt-1]
+	}
+	return buzzRetryDelay
 }

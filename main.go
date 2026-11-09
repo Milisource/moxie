@@ -8,7 +8,7 @@ import (
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/commands"
 	"github.com/mili/moxie/internal/config"
-	"github.com/mili/moxie/internal/downloader"
+	"github.com/mili/moxie/internal/f95session"
 	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/tui"
@@ -16,9 +16,15 @@ import (
 
 var version = "0.4.0-alpha"
 
+// channel selects the release channel at build time via
+// -ldflags "-X main.channel=dev". It defaults to the stable "main" channel.
+// The dev channel uses a distinct binary name (moxie-dev) and data directory
+// (moxie-dev) so a dev build and a stable install can coexist safely.
+var channel = "main"
+
 func main() {
+	config.SetChannel(channel)
 	log.Init(config.LogDir())
-	downloader.SetBrowserResolver(os.Getenv("MOXIE_BROWSER") == "1")
 
 	// Parse global flags before command dispatch.
 	// --verbose / -v enables debug logging. The flag is consumed here and
@@ -43,12 +49,15 @@ func main() {
 	}
 
 	log.Info("moxie started", "version", version, "args", args)
+	// Match the F95Zone User-Agent to the borrowed cf_clearance and mint a
+	// fresh clearance when Cloudflare challenges (internal/f95session).
+	f95session.Install()
 
 	if len(args) < 1 {
 		// First-run welcome if no database exists yet
 		dbPath := config.DbPath()
 		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-			fmt.Fprintln(os.Stderr, "👋 Welcome to moxie! It looks like this is your first run.")
+			fmt.Fprintln(os.Stderr, "Welcome to moxie! It looks like this is your first run.")
 			fmt.Fprintln(os.Stderr)
 			fmt.Fprintln(os.Stderr, "   Quick start:")
 			fmt.Fprintln(os.Stderr, "     moxie scan ~/Downloads       Scan a directory for games")
@@ -85,6 +94,8 @@ func main() {
 		switch args[0] {
 		case "scan":
 			commands.Scan(args[1:])
+		case "detect":
+			commands.Detect(args[1:])
 		case "tui":
 			cmdTUI()
 		case "add":
@@ -99,6 +110,8 @@ func main() {
 			commands.SetPath(args[1:])
 		case "set-exe":
 			commands.SetExe(args[1:])
+		case "set-wine-prefix":
+			commands.SetWinePrefix(args[1:])
 		case "list":
 			commands.List(args[1:])
 		case "remove":
@@ -107,6 +120,8 @@ func main() {
 			commands.Rename(args[1:])
 		case "check-updates", "updates":
 			commands.CheckUpdates(args[1:])
+		case "auto-update", "auto":
+			commands.AutoUpdate(args[1:])
 		case "sync":
 			commands.Sync(args[1:])
 		case "play":
@@ -118,11 +133,20 @@ func main() {
 		case "history":
 			commands.History(args[1:])
 		case "update":
+			// "update" is moxie's self-update. Game updates are a separate
+			// command; refuse extra args rather than silently self-updating.
+			if len(args) > 1 {
+				fmt.Fprintf(os.Stderr, "moxie update takes no arguments (it updates moxie itself).\n")
+				fmt.Fprintf(os.Stderr, "To apply a game update archive: moxie install <id|name> <archive-path>\n")
+				os.Exit(1)
+			}
 			commands.Update(version)
 		case "cleanup":
 			commands.Cleanup(args[1:])
 		case "refresh-versions":
 			commands.RefreshVersions(args[1:])
+		case "covers":
+			commands.Covers(args[1:])
 		case "download":
 			commands.Download(args[1:])
 		case "install":
@@ -131,6 +155,8 @@ func main() {
 			commands.ListDownloads(args[1:])
 		case "check-links":
 			commands.CheckDeadLinks(args[1:])
+		case "saves":
+			commands.Saves(args[1:])
 		case "restore":
 			commands.Restore(args[1:])
 		case "purge":
@@ -164,10 +190,12 @@ USAGE
 
 CORE
   scan <dir> [flags]          Scan directory for new games (incremental by default)
+  detect [--json] <path|id>   Explain engine detection for a path or game
   list [flags]                List all games in library
   tui                         Launch interactive terminal UI
   info <id|name>              Show detailed game info
-  play <id|name>              Launch a game
+  play <id|name>              Launch a game (use --wine-prefix for custom prefix)
+  set-wine-prefix <id> <path>  Set a default Wine prefix for a game
   history [count]             Show recently played games
   add <path> [flags]          Manually add a game to library
   remove <id|name>            Remove a game from library (soft delete)
@@ -183,13 +211,25 @@ F95ZONE
   sync [id] [flags]           Full sync: auto-associate + check version updates
   scrape <id> [flags]         Scrape F95Zone metadata for a game
   check-updates [flags]       Check all games for newer versions on F95Zone
-  refresh-versions [flags]    Re-extract version strings from directory names
+  auto-update [flags]         Check and install every update that can complete
+  refresh-versions [flags]    Re-detect installed versions from folders and game files
+  covers upgrade [flags]      Replace landscape/low-res covers with portrait art (Steam, SteamGridDB, VNDB)
 
 DOWNLOADS
   download <id> [flags]       Download a game from F95Zone links
   install <id> <archive>      Install a downloaded archive into game directory
   downloads [flags]           List download history
   check-links [flags]         Validate download links (detect dead URLs)
+
+SAVES
+  saves list [id]              List save sets (all games when no id)
+  saves snapshot <id> [flags]  Snapshot the game's current live saves
+  saves add <id> <src> [flags] Import a set from a directory or archive
+  saves apply <id> <set>      Apply a set to the live save location
+  saves restore <id>          Re-apply the newest snapshot (my saves)
+  saves path <id> [flags]     Show/pin/clear the live save location
+  saves remove <id> <set>     Delete a save set
+  saves fetch <id> [flags]    Download a save from the F95 thread OP
 
 STEAM
   steam add <id> [flags]      Add a game to Steam library
@@ -200,7 +240,7 @@ STEAM
   steam fix-artwork <id>      Re-download Steam artwork
 
 ADMIN
-  cleanup [flags]             Detect and fix wrong F95Zone thread associations
+  cleanup [flags]             Fix F95Zone associations, or prune .old/archives
   config <set|get|show>       Manage configuration settings
   update                      Check for and install moxie updates
 
@@ -215,6 +255,7 @@ COMMON FLAGS
     --no-save                 Print detected games without saving to library
     --engine <type>           Filter by engine (Unity, RenPy, RPGM, etc.)
     --json                    Output as JSON
+    (flags may appear before or after the directory)
 
   list:
     --engine <type>           Filter by engine
@@ -224,10 +265,33 @@ COMMON FLAGS
     --json                    Output as JSON
 
   sync, check-updates:
-    --cookie <str>            Cookie header from browser DevTools
+    --cookie <str>            Cookie header (only needed for the direct-scrape fallback)
     --cookie-file <path>      Read cookie from file
-    --unsafe                  ⚠ Skip rate limiting (may get IP-banned)
+    --unsafe                  Skip rate limiting (unsafe: may get IP-banned)
     --force                   Re-check even if checked within 24h
+    --auto                    Install updates immediately after checking
+
+  auto-update:
+    --check-only              Only check for updates; do not download
+    --no-check                Skip the check; act on updates already in the DB
+    --dry-run                 Show what would be updated
+    --max <n>                 Update at most n games this run
+    --concurrency <n>         Games to update at once, 1-4 (default: config or 2)
+    --exclude-host <hosts>    Skip mirrors by host, comma-separated (e.g. pixeldrain)
+    --no-extract              Download only; do not extract/merge
+    --force                   Ignore the 24h cooldown and the retry backoff
+    --platform <p>            linux, windows or macos (default: auto)
+
+  config keys for unattended updates:
+    auto_update               true to update after sync/check-updates/scan --sync
+    auto_update_max           cap the number of games per automatic run
+    update-concurrency        games updated in parallel (1-4, default 2)
+
+  cleanup:
+    --backups                 Remove <gameDir>.old backup trees left by updates
+    --archives                Remove leftover archives in each game's downloads dir
+    --older-than <duration>   Only prune entries older than this (default 168h)
+    --dry-run                 Show what would be removed without deleting
 
   scrape:
     --cookie <str>            Cookie header from browser DevTools

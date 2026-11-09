@@ -18,6 +18,7 @@ var EngineTagVariants = map[string][]string{
 	"HTML":         {"html", "html5"},
 	"Flash":        {"flash"},
 	"Java":         {"java"},
+	"Godot":        {"godot"},
 	"UnrealEngine": {"unreal", "unreal engine"},
 	"WebGL":        {"webgl"},
 	"WolfRPG":      {"wolf rpg", "wolfrpg"},
@@ -58,6 +59,42 @@ func FindInText(text string) string {
 	return findInText(text)
 }
 
+// EngineFromPrefixes returns the engine named by a thread's prefix labels
+// (e.g. ["VN", "Ren'Py"] → "RenPy"), or "" when no label names an engine.
+//
+// F95Zone renders prefixes as separate labels inside the thread heading and
+// the scraper strips them from the title, so the title alone no longer carries
+// the engine for those threads.
+func EngineFromPrefixes(prefixes []string) string {
+	for _, prefix := range prefixes {
+		if eng := findInText(prefix); eng != "" {
+			return eng
+		}
+	}
+	return ""
+}
+
+// Normalize maps a user-supplied or legacy engine name to a canonical engine.
+// Matching ignores case and accepts the descriptive variants in
+// EngineTagVariants ("ren'py", "rpg maker", "rpgmakermv", "unreal", …).
+// Values that name no known engine become "Unknown", which the games.engine
+// CHECK constraint always accepts.
+func Normalize(name string) Engine {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "Unknown"
+	}
+	for _, canonical := range db.CanonicalEngines {
+		if strings.EqualFold(name, canonical) {
+			return Engine(canonical)
+		}
+	}
+	if eng := findInText(name); eng != "" {
+		return Engine(eng)
+	}
+	return "Unknown"
+}
+
 // EngineMatchesTags checks whether the scanner-detected engine is consistent
 // with the F95Zone thread tags.  Returns true when:
 //   - There are no tags to compare (inconclusive)
@@ -93,23 +130,21 @@ func EngineMatchesTags(detected Result, tags []string) bool {
 }
 
 // EngineMatchesThread checks whether the scanner-detected engine is consistent
-// with F95Zone thread metadata.  Unlike EngineMatchesTags (which only checks
-// content tags like "2dcg", "bdsm"), this function ALSO checks the thread
-// title for engine prefix indicators — the primary signal on F95Zone.
-//
-// On F95Zone, search result titles include the engine prefix (e.g.
-// "Unity Completed A Queen Confined"), while content tags are
-// genre/theme tags.  This function checks both sources.
+// with F95Zone thread metadata. Unlike EngineMatchesTags (which only checks
+// content tags like "2dcg", "bdsm"), this function also checks the thread's
+// prefix labels — F95Zone's own engine classification — and falls back to an
+// engine word in the title for search-result titles, which still carry the
+// prefix inline.
 //
 // Returns true when:
 //   - The detected engine is "Others" or empty (inconclusive)
 //   - No variant mapping exists for the engine (inconclusive)
-//   - The thread title contains a variant of the detected engine
-//   - At least one tag contains a variant of the detected engine
+//   - A prefix label, the title, or a tag names the detected engine
+//   - No metadata names any engine at all (inconclusive)
 //
-// Returns false only when a specific engine was detected, the title and tags
-// contain engine metadata, and neither matches the detected engine.
-func EngineMatchesThread(detected Result, tags []string, title string) bool {
+// Returns false only when a specific engine was detected and the metadata
+// positively names a different, incompatible engine.
+func EngineMatchesThread(detected Result, prefixes, tags []string, title string) bool {
 	if detected.Engine == "Others" || detected.Engine == "" {
 		return true // detection inconclusive — don't flag
 	}
@@ -119,40 +154,45 @@ func EngineMatchesThread(detected Result, tags []string, title string) bool {
 		return true // no mapping known for this engine — don't flag
 	}
 
-	// 1. Primary signal: thread title prefix.
-	//    F95Zone search result titles include engine prefix like
-	//    "Unity Completed A Queen Confined" or "RPGM Game Name".
-	titleLower := strings.ToLower(title)
-	for _, variant := range variants {
-		if strings.Contains(titleLower, variant) {
-			return true // engine found in title
-		}
-	}
-
-	// 2. Secondary signal: content tags (genre/theme tags might include
-	//    engine info on some threads).
-	if len(tags) > 0 {
-		for _, tag := range tags {
-			tagLower := strings.ToLower(tag)
-			for _, variant := range variants {
-				if strings.Contains(tagLower, variant) {
-					return true // engine found in tags
-				}
+	matches := func(text string) bool {
+		lower := strings.ToLower(text)
+		for _, variant := range variants {
+			if strings.Contains(lower, variant) {
+				return true
 			}
 		}
+		return false
 	}
 
-	// No engine info found in either title or tags — can't verify.
-	// Don't flag as mismatch (the metadata just didn't include engine info).
-	if title == "" && len(tags) == 0 {
-		return true
+	// 1. Primary signal: the thread's prefix labels ("Ren'Py", "RPGM", …).
+	//    The scraper exposes these separately after stripping them from the
+	//    h1 title, so this is the only title-level engine signal for scraped
+	//    thread data.
+	for _, prefix := range prefixes {
+		if matches(prefix) {
+			return true
+		}
 	}
 
-	// We found tags/title but neither contained the expected engine.
-	// Only flag as false if there's engine metadata present that contradicts.
-	// Extract any engine from title.
-	f95Engine := findInText(titleLower)
-	// Also check tags for any engine indicator.
+	// 2. Search-result titles still carry the prefix inline.
+	if matches(title) {
+		return true // engine found in title
+	}
+
+	// 3. Secondary signal: content tags (genre/theme tags might include
+	//    engine info on some threads).
+	for _, tag := range tags {
+		if matches(tag) {
+			return true // engine found in tags
+		}
+	}
+
+	// Nothing matched. Only flag a mismatch when the metadata actually names
+	// a different engine; silence means the fields simply carry no engine.
+	f95Engine := findInText(strings.Join(prefixes, " "))
+	if f95Engine == "" {
+		f95Engine = findInText(title)
+	}
 	if f95Engine == "" {
 		for _, tag := range tags {
 			if f95Engine = findInText(tag); f95Engine != "" {
@@ -162,12 +202,12 @@ func EngineMatchesThread(detected Result, tags []string, title string) bool {
 	}
 
 	if f95Engine == "" {
-		// No engine info in either title or tags — inconclusive.
+		// No engine info in prefixes, title or tags — inconclusive.
 		return true
 	}
 
-	// Title/tags indicate engine X, but scanner found engine Y.
-	// True mismatch.  But check compatibility (RPGM↔HTML, etc.).
+	// Metadata names engine X, but scanner found engine Y. True mismatch —
+	// unless the two engines are implementation-compatible (RPGM↔HTML, …).
 	if f95Engine == string(detected.Engine) {
 		return true
 	}

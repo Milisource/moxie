@@ -30,7 +30,7 @@ func (m model) libraryView() string {
 
 	// ── Startup tip (auto-dismiss) ─────────────────────────────
 	if m.showStartupTip {
-		tip := noticeStyle.Render("  💡 Press / to search  •  s to sort  •  Ctrl+E/S to filter  •  Enter for details  •  ? for help  ")
+		tip := noticeStyle.Render("  Tip: press / to search  •  s to sort  •  Ctrl+E/S to filter  •  Enter for details  •  ? for help  ")
 		b.WriteString(tip)
 		b.WriteString("\n")
 	}
@@ -79,7 +79,7 @@ func (m model) libraryView() string {
 
 	downloadInfo := ""
 	if dlCount > 0 {
-		downloadInfo = fmt.Sprintf("  ⬇ %d", dlCount)
+		downloadInfo = fmt.Sprintf("  ↓ %d", dlCount)
 	}
 
 	spinnerView := ""
@@ -93,7 +93,7 @@ func (m model) libraryView() string {
 		engineInfo,
 		statusInfo,
 		collectionInfo,
-		m.sortBy.Indicator(),
+		m.sortIndicator(),
 		filterIndicator,
 		downloadInfo,
 		spinnerView,
@@ -110,7 +110,7 @@ func (m model) libraryView() string {
 		dimFilter := filterInputStyle.Copy().BorderForeground(subtle)
 		if m.filterText != "" {
 			dimFilter = dimFilter.Foreground(subtle)
-			b.WriteString(dimFilter.Render("🔍 " + m.filterText))
+			b.WriteString(dimFilter.Render("/ " + m.filterText))
 		} else {
 			b.WriteString(dimFilter.Render("type to filter..."))
 		}
@@ -146,6 +146,8 @@ func (m model) libraryView() string {
 		footerParts = append(footerParts, "Ctrl+S status:"+m.statusFilter)
 	}
 	footerParts = append(footerParts, "s sort")
+	footerParts = append(footerParts, "r reverse")
+	footerParts = append(footerParts, "b browse dirs")
 	footerParts = append(footerParts, "? help")
 	footer := subtleStyle.Render("  " + strings.Join(footerParts, "  •  ") + "  ")
 	b.WriteString(footer)
@@ -177,6 +179,40 @@ func (m model) renderMessage(b *strings.Builder) {
 		b.WriteString("\n")
 		b.WriteString(errorStyle.Render(fmt.Sprintf("  ✗ %s  ", msg)))
 	}
+}
+
+// ── File picker view ─────────────────────────────────────────────────
+
+func (m model) filePickerView() string {
+	var b strings.Builder
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+
+	// Header
+	title := titleStyle.Render("◆  Browse Game Directory  ")
+	hint := subtleStyle.Render("[Esc] cancel")
+	gap := w - lipgloss.Width(title) - lipgloss.Width(hint) - 4
+	if gap < 1 {
+		gap = 1
+	}
+	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, title, strings.Repeat(" ", gap), hint))
+	b.WriteString("\n")
+
+	// Separator
+	sep := max(0, w-4)
+	b.WriteString(separatorStyle.Render(strings.Repeat("━", sep)))
+	b.WriteString("\n\n")
+
+	// File picker
+	b.WriteString(m.filePicker.View())
+	b.WriteString("\n")
+
+	// Footer
+	b.WriteString(subtleStyle.Render("  ↑/↓ navigate  •  Enter select directory  •  Esc cancel"))
+
+	return appStyle.Render(b.String())
 }
 
 // renderDeletePrompt returns a styled delete confirmation widget.

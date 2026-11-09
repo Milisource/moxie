@@ -11,8 +11,53 @@ import (
 	"github.com/mili/moxie/internal/log"
 )
 
+// configDirOverride redirects ConfigDir and its derivatives. Test-only:
+// set via SetConfigDirForTest so desktop tests can exercise the cover
+// server and thumbnail pipeline without touching a real home directory.
+var configDirOverride string
+
+// channel is the build-time release channel ("main" or "dev"), set by
+// SetChannel from the main package's -X main.channel ldflag. It only changes
+// the on-disk directory name, so a dev build never shares a database or
+// config with a stable install.
+var channel = "main"
+
+// SetChannel records the release channel. Anything other than "dev" keeps
+// the stable directory name, so a binary built without the ldflag stays
+// backward compatible.
+func SetChannel(c string) {
+	if strings.EqualFold(strings.TrimSpace(c), "dev") {
+		channel = "dev"
+	} else {
+		channel = "main"
+	}
+}
+
+// Channel returns the active release channel ("main" or "dev").
+func Channel() string {
+	return channel
+}
+
+// appDirName is the per-channel directory name under the platform data root.
+func appDirName() string {
+	if channel == "dev" {
+		return "moxie-dev"
+	}
+	return "moxie"
+}
+
+// SetConfigDirForTest redirects ConfigDir (and thus CoverDir, DbPath, ...)
+// to dir. Pass an empty string to restore platform-standard behaviour.
+func SetConfigDirForTest(dir string) {
+	configDirOverride = dir
+}
+
 // ConfigDir returns the platform-standard configuration directory for moxie.
 func ConfigDir() string {
+	if configDirOverride != "" {
+		return configDirOverride
+	}
+	name := appDirName()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.TempDir()
@@ -20,11 +65,16 @@ func ConfigDir() string {
 	}
 	switch runtime.GOOS {
 	case "windows":
-		return filepath.Join(os.Getenv("APPDATA"), "moxie")
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			return filepath.Join(appData, name)
+		}
+		// APPDATA unset (services/CI): fall back to the conventional path
+		// instead of a relative "moxie" dir under the CWD.
+		return filepath.Join(home, "AppData", "Roaming", name)
 	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "moxie")
+		return filepath.Join(home, "Library", "Application Support", name)
 	default:
-		return filepath.Join(home, ".config", "moxie")
+		return filepath.Join(home, ".config", name)
 	}
 }
 
@@ -56,13 +106,45 @@ func EngineProfilesDir() string {
 	return filepath.Join(ConfigDir(), "engines")
 }
 
+// CoverDir returns the directory where cover art images are cached on disk.
+// Cached cover files are named by gameID (no extension) and stored here.
+// WorkDir returns the scratch directory for game downloads and archive
+// extraction. It lives under the config directory, on real disk: os.TempDir()
+// is commonly a RAM-backed tmpfs a few GiB in size, which multi-GiB game
+// archives (downloaded and then extracted alongside) overflow.
+func WorkDir() string {
+	return filepath.Join(ConfigDir(), "work")
+}
+
+func CoverDir() string {
+	return filepath.Join(ConfigDir(), "covers")
+}
+
+// DefaultSavesDir returns the default root of the save-set store. Save sets are
+// user data, so the store lives under the XDG data directory rather than the
+// config directory: $XDG_DATA_HOME/<app>/saves, or
+// ~/.local/share/<app>/saves when XDG_DATA_HOME is unset.
+func DefaultSavesDir() string {
+	base := os.Getenv("XDG_DATA_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = os.TempDir()
+			log.Warn("cannot determine home directory, using temp dir", "error", err, "fallback", home)
+		}
+		base = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(base, appDirName(), "saves")
+}
+
 // Config holds typed configuration values alongside a generic key-value store
 // for backward compatibility with arbitrary string-based keys.
 type Config struct {
 	// Typed fields (known schema).
-	ScanPaths         []string `json:"scan_paths,omitempty"`
-	DefaultDownloadDir string  `json:"default_download_dir,omitempty"`
-	RateLimitDelay    int      `json:"rate_limit_delay,omitempty"` // seconds between requests
+	ScanPaths          []string `json:"scan_paths,omitempty"`
+	DefaultDownloadDir string   `json:"default_download_dir,omitempty"`
+	SavesDir           string   `json:"saves_dir,omitempty"`
+	RateLimitDelay     int      `json:"rate_limit_delay,omitempty"` // seconds between requests
 
 	// Raw holds arbitrary string key-value pairs for settings not covered by
 	// typed fields (e.g., steamgriddb-key, cookie). These are serialized
@@ -79,6 +161,8 @@ func (c *Config) Get(key string) string {
 	switch key {
 	case "default_download_dir":
 		return c.DefaultDownloadDir
+	case "saves_dir":
+		return c.SavesDir
 	case "rate_limit_delay":
 		if c.RateLimitDelay > 0 {
 			return fmt.Sprintf("%d", c.RateLimitDelay)
@@ -103,6 +187,8 @@ func (c *Config) Set(key, value string) {
 	switch key {
 	case "default_download_dir":
 		c.DefaultDownloadDir = value
+	case "saves_dir":
+		c.SavesDir = value
 	case "rate_limit_delay":
 		if value == "" {
 			c.RateLimitDelay = 0
@@ -141,6 +227,9 @@ func (c *Config) Keys() []string {
 	var keys []string
 	if c.DefaultDownloadDir != "" {
 		keys = append(keys, "default_download_dir")
+	}
+	if c.SavesDir != "" {
+		keys = append(keys, "saves_dir")
 	}
 	if c.RateLimitDelay > 0 {
 		keys = append(keys, "rate_limit_delay")
@@ -206,6 +295,12 @@ func writeConfigTo(path string, cfg *Config) error {
 		tmp.Close()
 		return err
 	}
+	// fsync before the rename so a crash cannot leave a truncated config
+	// at the final path (the rename is atomic, the write is not).
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	tmp.Close()
 	return os.Rename(tmpName, path)
 }
@@ -220,6 +315,9 @@ func marshalConfig(cfg *Config) ([]byte, error) {
 	}
 	if cfg.DefaultDownloadDir != "" {
 		m["default_download_dir"] = cfg.DefaultDownloadDir
+	}
+	if cfg.SavesDir != "" {
+		m["saves_dir"] = cfg.SavesDir
 	}
 	if cfg.RateLimitDelay > 0 {
 		m["rate_limit_delay"] = cfg.RateLimitDelay
@@ -271,6 +369,12 @@ func unmarshalConfig(data []byte) (*Config, error) {
 			cfg.DefaultDownloadDir = s
 		}
 		delete(raw, "default_download_dir")
+	}
+	if v, ok := raw["saves_dir"]; ok {
+		if s, ok := v.(string); ok {
+			cfg.SavesDir = s
+		}
+		delete(raw, "saves_dir")
 	}
 	if v, ok := raw["rate_limit_delay"]; ok {
 		switch n := v.(type) {

@@ -2,27 +2,54 @@
 
 ## What
 
-The scanner walks a directory tree, identifies which subdirectories are games, detects the engine for each one, and computes total size and executable path. It lives in `internal/scanner/scanner.go` (one file, ~245 lines) and calls into `internal/engine/detector.go` for engine identification.
+The scanner walks a directory tree, identifies which subdirectories are games, detects the engine for each one, and computes total size and executable path. It lives in `internal/scanner/scanner.go` and calls into `internal/engine/detector.go` for engine identification.
 
 ## How
 
 ### Directory Walk
 
-`scanner.Scan(root)` calls `filepath.WalkDir` on the root directory. For each visited directory:
+`scanner.Scan(ctx, root)` calls `filepath.WalkDir` on the root directory — the walk and the parallel detection pass both check `ctx` and abort promptly on cancellation, so application shutdown can never hang on a slow or network-mounted scan path. For each visited directory:
 
-1. **Skip excluded dirs** — checks `shouldSkip(name)` against a hardcoded list of names like `unins`, `python`, `dxsetup`, `config`, `saved`, `logs`. These catch installer remnants, redistributables, and common false positives.
+1. **Skip excluded dirs** — checks `shouldSkip(name)` against a hardcoded list of names like `unins`, `python`, `dxsetup`, `config`, `saved`, `logs`. These catch installer remnants, redistributables, and common false positives. The scan root itself is exempt: a library folder literally named `config` or ending in `.old` must still be scanned.
 
 2. **Skip __MACOSX** — macOS resource fork directories are skipped entirely.
 
-3. **Skip already-detected game subdirectories** — once a directory is identified as a game root, its children are not walked. This prevents detecting engine subdirectories (like a `renpy/` folder inside a Ren'Py game) as separate games.
+3. **Skip already-detected game subdirectories** — once a directory is identified as a game root, its children are not walked. This prevents detecting engine subdirectories (like a `renpy/` folder inside a Ren'Py game) as separate games. WalkDir is depth-first, so the active game dir short-circuits all its descendants; a directory still visited afterwards is provably outside every game root, so no extra ancestor scan is needed.
 
-4. **Check if it's a game root** — `looksLikeGameRoot(path)` via `hasGameMarkers(dir)` checks for the presence of executables (`.exe`, `.sh`, `.AppImage`, `.x86_64`, `.x86`) or engine markers (`renpy/`, `www/`, `_Data/`, `package.json`, `.rpyc`, `.rpa`, `Game.rgss*`).
+4. **Check if it's a game root** — `isGameRoot(path, entries)` combines fast file/dir markers with an HTML content sniff:
+   - executables (`.exe`, `.sh`, `.app`, `.x86_64`, `.x86`)
+   - engine markers (`renpy/`, `www/`, `Engine/`, `_Data/`, a subdirectory exactly named `game`, `package.json`, `.pck`, `.rpyc`, `.rpa`, `Game.rgss*`, `.swf`, `.jar`, `.qsp`/`.qsps`, `.taf`, `.gam`/`.t3`, `.wolf`, `data.win`, `nscript.dat`, `flutter_windows.dll`)
+   - **HTML content sniff** — a root-level `.html` file is read (bounded 256 KiB head + 128 KiB tail) and must contain a game signature (`tw-storydata`/SugarCube/Harlowe/Snowman, `<canvas`, PixiJS, Phaser, CreateJS, RPG Maker web, Unity WebGL, `gamefiles`, `js/engine/`). A bare `index.html` (docs page) is not enough — this is what recovers Twine games while rejecting static pages.
+   The `game` marker is an exact name match — `gamedata`/`gameplay`/`game2` folders are not promoted to game roots.
 
-5. **Check for category directories** — if the directory name matches a known engine (`Unity`, `Ren'Py`, `RPGM`, `HTML`, etc.) **and** it contains subdirectories that look like games, it's treated as a category folder (not a game itself). The walk continues into its children.
+5. **Container detection** — a directory holding two or more complete games (each with a root executable, HTML signature, or strong engine marker) is a *container* (a library root, or a release folder bundling several games). It is not registered; the walk descends into its children. Engine-internal dirs (`game/`, `renpy/`, `www/`, `*_Data/`, `data/`, `resources/`, ...), `jre*/`, tool dirs, and `downloads/` never count as children. This stops a loose engine file at a library root from registering the whole library as one game.
+
+6. **Check for category directories** — if the directory name matches a known engine (`Unity`, `Ren'Py`, `RPGM`, `HTML`, etc.) **and** it contains subdirectories that look like games, it's treated as a category folder (not a game itself). The walk continues into its children.
+
+7. **Release-wrapper collapse** — a non-game directory holding exactly one game (possibly through nested wrappers) whose name matches that game (prefix, ignoring case/punctuation/version) is registered as the wrapper itself; engine detection, exe discovery, and version resolution then descend into the inner game directory. This yields clean paths (`Brothel King/`, not `Brothel King/Brothel King/`) and recovers the wrapper's version (`Fox Girls…v1.03.01`). Engine-named category folders and the scan root never collapse. `ScanSingle` — used by `moxie detect` and `moxie add` — applies the same collapse, so a single-directory detection agrees with what a scan would have registered.
+
+### Engine Detection
+
+On the detected game directory, `engine.Detect(dir)` is called. It reads the directory listing once and checks profiles in priority order. The profiles are a combination of:
+- **Built-in profiles** — 14 canonical engines + 3 community engines (see engine table below)
+- **Custom profiles** — loaded from `~/.config/moxie/engines/*.json` drop-in files, allowing users to add patterns for niche engines or override built-in profiles by name
+
+Custom profiles are loaded from `config.EngineProfilesDir()` (which returns `~/.config/moxie/engines/`). Each JSON file defines:
+```json
+{
+  "name": "MyEngine",
+  "engine": "Unity",         // maps to one of the 15 canonical engine values
+  "confidence": 80,           // 0-100, divided by 100 for internal usage
+  "subdirs": ["game"],        // required subdirectories
+  "filenames": ["game.exe"],  // required files
+  "extensions": [".exe"]      // required extensions
+}
+```
+At least one detection criterion is required. Custom profiles can override built-in profiles by name (e.g., providing a higher-confidence Unity detection pattern).
 
 ### Version Extraction
 
-`ExtractVersion(name)` extracts a version string from a directory or file name using regex patterns tried in priority order:
+`ExtractVersion(name)` extracts a version string from a directory or file name using regex patterns tried in priority order. Spelled-out prefixes are normalised to `v` first (`ver1.11`, `Ver.0.80`, `version 2`, `v.0.1`, `ov1.0.3`):
 
 1. **Date** — `\d{4}-\d{2}-\d{2}` (e.g. `2025-11-14`, `Game-2025-11-14`)
 2. **Compact date** — `YYYYMMDD` without separators (e.g. `Data20260403`, `Game-20260403`). Uses `\D` boundary so dates attached to words are matched. Year/month/day validation prevents false positives on arbitrary 8-digit numbers.
@@ -36,8 +63,10 @@ When the directory name yields no version, the scanner escalates through additio
 - **File contents** (`ExtractVersionFromDir`) — checks known files inside the game directory:
   - `Game.ini` (RPG Maker) — parses the `Title=` line, normalizes common version prefixes (`ver` → `v`, `version` → `v`) and applies the same regex patterns
   - `package.json` (HTML/NW.js) — reads the `"version"` field
-  - `game/options.rpy` (Ren'Py) — reads `config.version`
-- **Parent directory name** — many games are nested (e.g. `Game v1.0/Game Windows/Game.exe`), so the scanner checks the parent dir for version when the game dir itself has none
+  - `www/data/System.json` / `data/System.json` (RPG Maker MV/MZ) — runs `gameTitle` through `ExtractVersion` (`"Demons Roots v1.03"` → `1.03`)
+  - Ren'Py `config.version`, from `game/options.rpy`, else the compiled `game/options.rpyc` (RPC2 slots zlib-inflated; the AST keeps source strings), else any `game/*.rpa` archive ≤ 64 MiB (smallest first; scripts are stored inside as `.rpy` text and/or `.rpyc` blobs). Format strings such as `"%s %s" % (...)` are rejected
+- **Parent directories** — many games are nested (e.g. `Game v1.0/Game Windows/Game.exe`), so the scanner checks up to three parent directories for a version when the game dir and its files yield none. For a collapsed release wrapper it prefers the more specific of the wrapper/inner name versions (`A_Lot_of_Ways_v0.2.2p` over `…_v0.2`)
+- **Release dates are not versions** — a bare date in a folder name (`…_2024-08-17`) is a release date and is only used when no non-date version exists anywhere
 - **Executable filename** — some games only have the version in the executable name (e.g. `[Full]EmberDoors_v0.1.7_Linux.x86_64` → `0.1.7`)
 
 **Boundary handling:** Go's regex `\b` treats `_` as a word character. Since most F95Zone game directories use underscores around versions (`FullEmberDoors_v0.1.7_Linux`), the patterns use explicit `(?:^|[^a-zA-Z0-9])` / `(?:$|[^a-zA-Z0-9])` instead of `\b` to prevent underscore-delimited versions from being missed.
@@ -47,17 +76,23 @@ When the directory name yields no version, the scanner escalates through additio
 - Trailing build letters are kept in the extracted version (`v0.7.7i` → `"0.7.7i"`)
 - No semver parsing — `NormalizeVersion()` in the sync code handles comparison
 
-### Engine Detection
+### Progress Reporting
 
-On the detected game directory, `engine.Detect(dir)` is called. It reads the directory listing once and checks 20+ profiles in priority order (see table below). Each profile specifies files, subdirectories, or extensions that must be present. First match wins.
+`ScanFiltered(ctx, root, skipPaths, progressFn)` accepts a context (cancellation aborts the walk), a map of already-known game paths to skip (nil or empty = scan everything — the CLI's `--force` mode), and an optional `ScanProgressFunc` callback:
+```go
+type ScanProgressFunc func(dirsExamined, gamesFound int, phase string)
+```
+`phase` is `"walk"` (first pass, finding game directories) or `"detect"` (second pass, engine detection).
+
+The CLI calls this to display live progress on stderr using `\r` (carriage return) for in-place updates, showing directories examined and games found so far.
 
 ### Size Calculation
 
-`dirSize(dir)` does a secondary `WalkDir` over the game directory to sum all file sizes. This is independent of the primary scan walk.
+`ScanFiltered` accumulates size inline during its single `WalkDir`: every file visited while inside a detected game directory is added to that game's total — no separate pass. `dirSize(dir)` still exists for single-directory analysis (`ScanSingle`/`analyzeDir`), where it runs its own `WalkDir` over the directory.
 
 ### Executable Discovery
 
-`findGameExe(dir)` scans for the largest executable (`.exe`, `.sh`, `.x86_64`, `.x86`) after filtering out crash handlers, uninstallers, and setup utilities. On Linux this also finds AppImage files.
+`findGameExe(dir)` scans for the largest native executable (`.exe`, `.sh`, `.x86_64`, `.x86`) after filtering out crash handlers, uninstallers, and setup utilities. When no native executable exists it falls back to the game's HTML entry page (`engine.FindHTMLEntry`) so browser-played HTML games are recorded with a launchable `exe_path`. Entry-page selection prefers a root `index.html`, then the largest file carrying a game signature, then the largest `.html`/`.htm`. AppImage files are not matched by the extension check; games that ship them are usually detected via engine markers instead.
 
 ## Why Pattern Matching Over Binary Parsing
 
@@ -75,7 +110,8 @@ PE/ELF binary scanning would be more precise but is 10x more complex. Pattern ma
 | | `<exe>_Data/` folder matching an .exe | 0.93 |
 | **Ren'Py** | `renpy/` directory | 0.98 |
 | | `.rpyc` / `.rpa` files + `game/` | 0.85 |
-| **RPGM** | `www/` + `package.json` (MV/MZ disambiguated) | 0.95 |
+| **RPGM** | `icudtl.dat` + `nw.dll` (NW.js — `icudtl.dat` alone is **not** enough) | 0.96 |
+| | `www/` + `package.json` (MV/MZ disambiguated) | 0.95 |
 | | `Game.rgss3a` (VX Ace) | 0.93 |
 | | `Game.rgss2a` (VX) | 0.90 |
 | | `Game.rgssad` (XP) | 0.88 |
@@ -85,8 +121,12 @@ PE/ELF binary scanning would be more precise but is 10x more complex. Pattern ma
 | **WebGL** | `index.html` + `Build/` | 0.75 |
 | **HTML** | `index.html` | 0.70 |
 | | `.html` files | 0.60 |
+| | *(scanner gate additionally requires an HTML game signature — see step 4)* | |
 | **Java** | `.jar` files | 0.90 |
+| | bundled JRE dir (`jre*/` with `.jar` inside) | 0.88 |
+| **Godot** | `.pck` files | 0.85 |
 | **Flash** | `.swf` files | 0.90 |
+| | `ruffle.exe` / `ruffle` | 0.85 |
 | **WolfRPG** | `WolfRPG.exe` + `Game.ini` + `Data/` | 0.90 |
 | | `.wolf` files | 0.80 |
 | **QSP** | `.qsp` / `.qsps` files | 0.90 |
@@ -96,13 +136,26 @@ PE/ELF binary scanning would be more precise but is 10x more complex. Pattern ma
 | **RAGS** | `RAGS.exe` / `RAGS Player.exe` | 0.85 |
 | **Tads** | `.gam` / `.t3` files | 0.90 |
 
-### Community (3 engines → Others)
+### Non-F95 engines (→ Others)
+
+The canonical engine set is exactly F95Zone's engine taxonomy (15 names). Engines outside it classify as **Others** but keep a truthful `MatchedBy` (visible via `moxie detect`) and are matched *before* weaker canonical profiles so they can't leak (e.g. a KiriKiri gallery `index.html` is not read as HTML).
 
 | Detected As | Actual Engine | Signal | Confidence |
 |---|---|---|---|
-| Others | Godot | `.pck` files | 0.85 |
+| Others | Chromium/Electron app | `chrome_100_percent.pak` / `LICENSE.electron.txt` | 0.90 |
+| | GameMaker Studio | `data.win` | 0.88 |
+| | KiriKiri | `krkr.console.log` / `krmovie.dll` | 0.85 |
+| | KiriKiri archive | `.xp3` | 0.82 |
+| | NScripter | `nscript.dat` / `nslua.dll` | 0.85 |
+| | NScripter archive | `.nsa` | 0.80 |
+| | HSP (Hot Soup Processor) | `hspext.dll` / `.hpi` | 0.80 |
+| | Flutter app | `flutter_windows.dll` | 0.80 |
 | | Electron / nw.js | `resources.pak` + `package.json` | 0.80 |
 | | M.U.G.E.N. | 3+ of `{chars, data, stages, font, sound}` dirs | 0.92 |
+
+### Custom Profiles
+
+Users can add custom engine detection patterns by placing JSON files in `~/.config/moxie/engines/`. Each file can define new profiles or override built-in ones. Custom profiles are validated on load (name required, at least one detection criterion, confidence 0-100).
 
 ### Known Limitations
 

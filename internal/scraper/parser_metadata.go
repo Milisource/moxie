@@ -1,6 +1,7 @@
 package scraper
 
 import (
+	urlpkg "net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -166,24 +167,61 @@ func extractTags(doc *goquery.Document) []string {
 	return tags
 }
 
-// extractCoverImage returns the first usable image URL found in the first post's
-// content area. It prefers images with class "bbImage", then falls back to
-// any <img> with a non-empty src in the bbWrapper.  data: URIs and SVGs are
-// skipped — we need real downloadable images for cover art.
+// extractCoverImage returns the best image URL found in the first post's
+// content area — the game's cover/banner art.
+//
+// Modern XenForo lazy-loads post images: the <img> src is an SVG
+// placeholder and the real URL sits in data-src (and on the wrapping
+// .lbContainer-zoomer div for the lightbox). Gallery thumbnails are
+// additionally served from a thumb/ subpath with the full-size original
+// linked from the wrapping anchor.
+//
+// The FIRST image in the post wins — on F95Zone that is the OP's banner,
+// while later images are gallery screenshots. (Scoring across all images
+// used to let a later screenshot's full-size anchor outrank the lazy-loaded
+// banner.) Within one image the best URL is taken: the lightbox zoomer's or
+// thumb anchor's full-size original, then data-src, then src. data: URIs and
+// SVGs are always rejected, as are images declared narrower than 100px
+// (icons, smilies).
 func extractCoverImage(content *goquery.Selection) string {
-	// content is already the scoped bbWrapper selection from parseThreadHTML.
 	if content.Length() == 0 {
 		return ""
 	}
 
-	// Prefer images with the XenForo "bbImage" class (skipping data: URIs / SVGs).
-	imgs := content.Find("img.bbImage")
-	for i := 0; i < imgs.Length(); i++ {
-		img := imgs.Eq(i)
-		src, ok := img.Attr("src")
-		if ok && isValidCoverURL(src) {
-			return src
+	best := ""
+	content.Find(".lbContainer-zoomer, img.bbImage").EachWithBreak(func(_ int, el *goquery.Selection) bool {
+		if el.Is(".lbContainer-zoomer") {
+			// The zoomer precedes its <img> and carries the full-res URL.
+			if ds, ok := el.Attr("data-src"); ok && isValidCoverURL(ds) {
+				best = ds
+				return false
+			}
+			return true
 		}
+		if w, ok := el.Attr("width"); ok {
+			if pw, err := strconv.Atoi(w); err == nil && pw < 100 {
+				return true
+			}
+		}
+		src, _ := el.Attr("src")
+		if a := el.Closest("a").First(); a.Length() > 0 && strings.Contains(src, "/thumb/") {
+			if href, ok := a.Attr("href"); ok && isValidCoverURL(href) {
+				best = href
+				return false
+			}
+		}
+		if ds, ok := el.Attr("data-src"); ok && isValidCoverURL(ds) {
+			best = ds
+			return false
+		}
+		if isValidCoverURL(src) {
+			best = src
+			return false
+		}
+		return true
+	})
+	if best != "" {
+		return best
 	}
 
 	// Fall back to the first <img> with a meaningful src.
@@ -218,6 +256,29 @@ func isValidCoverURL(src string) bool {
 		return false
 	}
 	return true
+}
+
+// StripAttachmentSignature removes F95Zone's short-lived attachment signing
+// parameters (?h=…&e=…&u=…) from an attachments.f95zone.to URL, leaving the
+// durable path. Since 2026-10 the site appends these to OP images and
+// attachment links; a stored signed URL can expire before a later
+// cover/save fetch. The unsigned URL still serves the same file (verified
+// 2026-10-24), and F95Checker's indexer strips them for the same reason.
+// Other hosts and unsigned URLs are returned unchanged.
+func StripAttachmentSignature(raw string) string {
+	u, err := urlpkg.Parse(strings.TrimSpace(raw))
+	if err != nil || !strings.EqualFold(u.Hostname(), "attachments.f95zone.to") {
+		return raw
+	}
+	q := u.Query()
+	if q.Get("h") == "" {
+		return raw
+	}
+	q.Del("h")
+	q.Del("e")
+	q.Del("u")
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // ---------------------------------------------------------------------------

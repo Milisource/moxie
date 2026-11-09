@@ -5,67 +5,65 @@ import (
 	"time"
 )
 
-// ResolvedURL is a cached unmasking result for an F95Zone masked link.
-type ResolvedURL struct {
-	MaskedURL    string
-	ResolvedURL  string
-	ResolvedHost string
-	CreatedAt    int64
-	Hits         int
-}
+// ResolvedURLTTL is how long a cached masked-URL unwrap result is trusted.
+// F95Zone's masked unwrap endpoint (POST xhr=1&download=1) rate-limits after
+// repeated hits, so caching unwrap results avoids re-hitting it — but the
+// unwrapped destination can go stale (hosts rotate links), so entries are
+// pruned after a week and stale entries are treated as misses at read time.
+const ResolvedURLTTL = 7 * 24 * time.Hour
 
-// GetResolvedURL returns a cached unmask result newer than maxAge. It also
-// increments the hit counter so stale entries can be pruned intelligently.
-func (db *Database) GetResolvedURL(maskedURL string, maxAge time.Duration) (string, string, bool) {
-	cutoff := time.Now().Add(-maxAge).Unix()
-	var resolved, host string
-	err := db.conn.QueryRow(
-		`SELECT resolved_url, COALESCE(resolved_host, '')
-		 FROM resolved_urls
-		 WHERE masked_url = ? AND created_at >= ?`,
-		maskedURL, cutoff,
-	).Scan(&resolved, &host)
-	if err != nil {
-		return "", "", false
+// GetResolvedURL returns the cached unwrap result for a masked F95Zone URL.
+// The boolean is false when the URL is uncached or the entry is older than
+// ResolvedURLTTL — a stale unwrap must re-hit the endpoint.
+func (db *Database) GetResolvedURL(maskedURL string) (string, bool) {
+	if maskedURL == "" {
+		return "", false
 	}
-	_, _ = db.conn.Exec(`UPDATE resolved_urls SET hits = hits + 1 WHERE masked_url = ?`, maskedURL)
-	return resolved, host, true
+	var resolved string
+	err := db.conn.QueryRow(`
+		SELECT resolved_url FROM resolved_urls
+		WHERE masked_url = ? AND created_at >= strftime('%s', 'now') - ?
+	`, maskedURL, int64(ResolvedURLTTL.Seconds())).Scan(&resolved)
+	if err != nil {
+		return "", false
+	}
+	return resolved, true
 }
 
-// SaveResolvedURL caches a masked-link resolution.
-func (db *Database) SaveResolvedURL(maskedURL, resolvedURL, resolvedHost string) error {
+// PutResolvedURL stores (or refreshes) the unwrap result for a masked URL.
+// Upsert semantics: a re-unwrap of the same masked URL replaces the
+// destination in place, restarts the TTL (created_at), and bumps hits — the
+// table stays one row per masked URL.
+func (db *Database) PutResolvedURL(maskedURL, resolvedURL, host string) error {
 	if maskedURL == "" || resolvedURL == "" {
-		return fmt.Errorf("resolved URL cache: empty key or value")
+		return fmt.Errorf("resolved URL cache requires both a masked and a resolved URL")
 	}
-	_, err := db.conn.Exec(
-		`INSERT INTO resolved_urls (masked_url, resolved_url, resolved_host, created_at, hits)
-		 VALUES (?, ?, ?, ?, 0)
-		 ON CONFLICT(masked_url) DO UPDATE SET
-		   resolved_url = excluded.resolved_url,
-		   resolved_host = excluded.resolved_host,
-		   created_at = excluded.created_at`,
-		maskedURL, resolvedURL, resolvedHost, time.Now().Unix(),
-	)
+	_, err := db.conn.Exec(`
+		INSERT INTO resolved_urls (masked_url, resolved_url, resolved_host, created_at, hits)
+		VALUES (?, ?, ?, ?, 1)
+		ON CONFLICT(masked_url) DO UPDATE SET
+			resolved_url  = excluded.resolved_url,
+			resolved_host = excluded.resolved_host,
+			created_at    = excluded.created_at,
+			hits          = hits + 1
+	`, maskedURL, resolvedURL, nullableString(host), time.Now().Unix())
+	return err
+}
+
+// DeleteResolvedURLsOlderThan removes cache entries older than age and
+// returns the number of rows deleted.
+func (db *Database) DeleteResolvedURLsOlderThan(age time.Duration) (int64, error) {
+	res, err := db.conn.Exec(`
+		DELETE FROM resolved_urls
+		WHERE created_at < strftime('%s', 'now') - ?
+	`, int64(age.Seconds()))
 	if err != nil {
-		return fmt.Errorf("resolved URL cache: %w", err)
-	}
-	return nil
-}
-
-// PruneResolvedURLs deletes cache entries older than maxAge.
-func (db *Database) PruneResolvedURLs(maxAge time.Duration) error {
-	cutoff := time.Now().Add(-maxAge).Unix()
-	if _, err := db.conn.Exec(`DELETE FROM resolved_urls WHERE created_at < ?`, cutoff); err != nil {
-		return fmt.Errorf("prune resolved URL cache: %w", err)
-	}
-	return nil
-}
-
-// CountResolvedURLs returns the number of cached unmask results.
-func (db *Database) CountResolvedURLs() (int, error) {
-	var n int
-	if err := db.conn.QueryRow(`SELECT COUNT(*) FROM resolved_urls`).Scan(&n); err != nil {
 		return 0, err
 	}
-	return n, nil
+	return res.RowsAffected()
+}
+
+// PruneResolvedURLs deletes cache entries older than ResolvedURLTTL.
+func (db *Database) PruneResolvedURLs() (int64, error) {
+	return db.DeleteResolvedURLsOlderThan(ResolvedURLTTL)
 }

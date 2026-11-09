@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 )
 
 // vdfBuffer represents a method of storing binary data.
@@ -14,6 +15,18 @@ type vdfBuffer struct {
 
 // vdfMap represents a VDF file map (map[string]any).
 type vdfMap map[string]any
+
+// vdfOrderedEntry is a (key, value) pair for ordered serialization.
+type vdfOrderedEntry struct {
+	Key   string
+	Value any
+}
+
+// vdfOrderedMap is a key-value sequence with preserved order. Used where
+// byte-exact output order matters: Steam writes shortcuts.vdf entries in a
+// canonical field order, and the round-trip fixture test asserts the
+// serializer reproduces it byte for byte.
+type vdfOrderedMap []vdfOrderedEntry
 
 const (
 	vdfMapStart byte = 0x00
@@ -114,53 +127,89 @@ func nextStringZero(buf *vdfBuffer) (string, error) {
 	return string(buf.Data[start:end]), nil
 }
 
-// writeVdf serializes a vdfMap to binary VDF bytes.
-func writeVdf(m vdfMap) ([]byte, error) {
-	return addMap(m)
+// writeVdfOrdered serializes a vdfOrderedMap, preserving key order.
+func writeVdfOrdered(m vdfOrderedMap) ([]byte, error) {
+	return addOrderedMap(m)
 }
 
-// addMap serializes a vdfMap.
+// addMap serializes a vdfMap with keys in sorted order.
 func addMap(m vdfMap) ([]byte, error) {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	var buf []byte
-	for k, v := range m {
-		switch val := v.(type) {
-		case uint32:
-			kt, err := addKT(vdfNumber, k)
-			if err != nil {
-				return nil, err
-			}
-			buf = append(buf, kt...)
-			bytes := make([]byte, 4)
-			binary.LittleEndian.PutUint32(bytes, val)
-			buf = append(buf, bytes...)
-		case string:
-			kt, err := addKT(vdfString, k)
-			if err != nil {
-				return nil, err
-			}
-			buf = append(buf, kt...)
-			bytes, err := addString(val)
-			if err != nil {
-				return nil, err
-			}
-			buf = append(buf, bytes...)
-		case vdfMap:
-			kt, err := addKT(vdfMapStart, k)
-			if err != nil {
-				return nil, err
-			}
-			buf = append(buf, kt...)
-			bytes, err := addMap(val)
-			if err != nil {
-				return nil, err
-			}
-			buf = append(buf, bytes...)
-		default:
-			return nil, fmt.Errorf("vdf: unrecognized Go type %T for key %q", v, k)
+	for _, k := range keys {
+		item, err := addItem(k, m[k])
+		if err != nil {
+			return nil, err
 		}
+		buf = append(buf, item...)
 	}
 	buf = append(buf, vdfMapEnd)
 	return buf, nil
+}
+
+// addOrderedMap serializes a vdfOrderedMap in its given order.
+func addOrderedMap(m vdfOrderedMap) ([]byte, error) {
+	var buf []byte
+	for _, e := range m {
+		item, err := addItem(e.Key, e.Value)
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, item...)
+	}
+	buf = append(buf, vdfMapEnd)
+	return buf, nil
+}
+
+// addItem serializes a single key-value item.
+func addItem(k string, v any) ([]byte, error) {
+	switch val := v.(type) {
+	case uint32:
+		kt, err := addKT(vdfNumber, k)
+		if err != nil {
+			return nil, err
+		}
+		bytes := make([]byte, 4)
+		binary.LittleEndian.PutUint32(bytes, val)
+		return append(kt, bytes...), nil
+	case string:
+		kt, err := addKT(vdfString, k)
+		if err != nil {
+			return nil, err
+		}
+		bytes, err := addString(val)
+		if err != nil {
+			return nil, err
+		}
+		return append(kt, bytes...), nil
+	case vdfMap:
+		kt, err := addKT(vdfMapStart, k)
+		if err != nil {
+			return nil, err
+		}
+		bytes, err := addMap(val)
+		if err != nil {
+			return nil, err
+		}
+		return append(kt, bytes...), nil
+	case vdfOrderedMap:
+		kt, err := addKT(vdfMapStart, k)
+		if err != nil {
+			return nil, err
+		}
+		bytes, err := addOrderedMap(val)
+		if err != nil {
+			return nil, err
+		}
+		return append(kt, bytes...), nil
+	default:
+		return nil, fmt.Errorf("vdf: unrecognized Go type %T for key %q", v, k)
+	}
 }
 
 func addString(value string) ([]byte, error) {

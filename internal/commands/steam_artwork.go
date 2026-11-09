@@ -85,7 +85,7 @@ func SteamFixArtwork(args []string) {
 		if err := steam.SetAllArtwork(steamRoot, uid, appID, meta.CoverURL); err == nil {
 			artDone = true
 		} else if !errors.Is(err, steam.ErrUnsupportedFormat) {
-			fmt.Fprintf(os.Stderr, "  ⚠ Error setting artwork: %v\n", err)
+			fmt.Fprintf(os.Stderr, "  ! Error setting artwork: %v\n", err)
 			// Continue — artwork is best-effort, the game is still handled.
 		}
 	}
@@ -130,13 +130,13 @@ func DownloadSGDBArtwork(sgdb *steam.SGDBClient, steamRoot string, uid, appID ui
 	// Vertical grid (600×900).
 	grids, err := sgdb.GetGridsBySteamAppID(realSteamAppID, "600x900")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "  ⚠ SGDB grids: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  ! SGDB grids: %v\n", err)
 		return false
 	}
 	if url, ok := steam.BestGridImage(grids); ok {
 		dest := steam.GridFilePath(steamRoot, uid, appID, steam.ArtVertical)
 		if err := sgdb.DownloadImage(url, dest); err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠ SGDB vertical: %v\n", err)
+			fmt.Fprintf(os.Stderr, "  ! SGDB vertical: %v\n", err)
 		} else {
 			fmt.Fprintf(os.Stderr, "  ✓ Vertical grid\n")
 		}
@@ -187,7 +187,7 @@ func TrySGDBArtworkByName(sgdb *steam.SGDBClient, steamRoot string, uid, appID u
 	fmt.Fprintf(os.Stderr, "  Searching SteamGridDB for %q...\n", SanitizeTitleForSGDB(gameName))
 	results, err := sgdb.SearchGame(SanitizeTitleForSGDB(gameName))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "  ⚠ SGDB search: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  ! SGDB search: %v\n", err)
 		return false
 	}
 	if len(results) == 0 {
@@ -201,7 +201,7 @@ func TrySGDBArtworkByName(sgdb *steam.SGDBClient, steamRoot string, uid, appID u
 	// Vertical grid (600×900).
 	grids, err := sgdb.GetGridsBySGDBGameID(gameID, "600x900")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "  ⚠ SGDB grids: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  ! SGDB grids: %v\n", err)
 		return false
 	}
 	url, ok := steam.BestGridImage(grids)
@@ -211,7 +211,7 @@ func TrySGDBArtworkByName(sgdb *steam.SGDBClient, steamRoot string, uid, appID u
 	}
 	dest := steam.GridFilePath(steamRoot, uid, appID, steam.ArtVertical)
 	if err := sgdb.DownloadImage(url, dest); err != nil {
-		fmt.Fprintf(os.Stderr, "  ⚠ SGDB download: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  ! SGDB download: %v\n", err)
 		return false
 	}
 	fmt.Fprintf(os.Stderr, "  ✓ Vertical grid\n")

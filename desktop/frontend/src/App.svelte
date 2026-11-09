@@ -1,0 +1,1327 @@
+<script>
+  import {onMount, tick} from 'svelte'
+  import {fly} from 'svelte/transition'
+  import {EventsOn, BrowserOpenURL, WindowFullscreen, WindowUnfullscreen} from '../wailsjs/runtime/runtime'
+  import {GetGames, GetVersion, GetStartupError, ListDeletedGames, RestoreGame, PurgeDeleted, GetCookieStatus, SyncAllGames, DownloadGameUpdate, DownloadAllUpdates, CancelGameUpdate, CancelGameUpdateFor, CancelSync, ProvideUpdateFile, ScanDirectory, FetchCovers, UpgradeCovers, GetGameCount, GetUpdatableCount, CheckForUpdate, DownloadUpdate, ApplyUpdate, InstallGame} from '../wailsjs/go/main/App'
+  import Sidebar from './lib/Sidebar.svelte'
+  import GameList from './lib/GameList.svelte'
+  import GameDetail from './lib/GameDetail.svelte'
+  import ScanDialog from './lib/ScanDialog.svelte'
+  import GameUpdatesView from './lib/GameUpdatesView.svelte'
+  import DownloadsView from './lib/DownloadsView.svelte'
+  import AddGameDialog from './lib/AddGameDialog.svelte'
+  import SyncDialog from './lib/SyncDialog.svelte'
+  import F95Browser from './lib/F95Browser.svelte'
+  import DedupDialog from './lib/DedupDialog.svelte'
+  import CollectionsView from './lib/CollectionsView.svelte'
+  import CoversView from './lib/CoversView.svelte'
+  import SavesView from './lib/SavesView.svelte'
+  import SettingsView from './lib/SettingsView.svelte'
+  import StatusBar from './lib/StatusBar.svelte'
+  import ShortcutsDialog from './lib/ShortcutsDialog.svelte'
+  import ConfirmDialog from './lib/ConfirmDialog.svelte'
+  import PromptDialog from './lib/PromptDialog.svelte'
+  import EditGameDialog from './lib/EditGameDialog.svelte'
+  import {library, appMeta, setLastSyncAt} from './lib/viewState.svelte.js'
+  import {createPipeline} from './lib/pipeline.svelte.js'
+  import {confirmAction} from './lib/confirmDialog.svelte.js'
+
+  let version = $state('')
+  let games = $state([])
+  // Idle is silent: the status-bar summary (games · updates · last sync) is
+  // the resting state, and this only carries transient action feedback.
+  let statusMsg = $state('')
+  let activeView = $state('library')
+  let lastUpdate = $state(0)
+  let upstreamUpdateCount = $state(0)
+  let selectedGameId = $state(null)
+  let loading = $state(true)
+  let shortcutsOpen = $state(false)
+  // Couch mode: fullscreen + no sidebar, so the grid is the whole window on a
+  // TV or a controller-and-keyboard setup. Persisted because it is a room
+  // preference, not a per-session one.
+  let couchMode = $state(false)
+  let gameListRef = $state.raw()   // bound to GameList; exposes focusSearch() for the global shortcut below
+  let deletedGames = $state([])
+  // Non-empty when the backend failed to start (usually the database). Without
+  // this every bound call just answers "database not initialized" and the user
+  // sees an empty library with no explanation.
+  let startupError = $state('')
+
+  // Sync state lives here (App level) rather than inside SyncDialog so it
+  // survives tab switches. SyncDialog used to own its state and event
+  // subscriptions, so navigating away destroyed them: an in-flight sync
+  // vanished from the UI, its completion result was lost, and returning to
+  // the tab allowed starting a second concurrent run. createPipeline owns
+  // the $state object and the sync:* event wiring; startSync/cancelSync
+  // below own the SyncAllGames/CancelSync calls.
+  const syncPipeline = createPipeline({
+    cookieStatus: '',        // 'available' | 'not_found' | ''
+    syncing: false,
+    progress: {current: 0, total: 0, title: '', phase: ''},
+    gameResults: [],         // {id, title, status, version}
+    result: null,            // {associated, updated, skipped, errors} or null
+    syncError: '',
+  }, {
+    'sync:progress': (s, data) => {
+      // A live run clears any stale rejection text (e.g. a double-click
+      // that hit the "already running" guard before the button disabled).
+      s.syncError = ''
+      s.progress = data
+      s.syncing = true
+      statusMsg = `Sync: ${syncPhaseLabel(data?.phase)} (${data?.current ?? 0}/${data?.total ?? 0})`
+    },
+    'sync:game-done': (s, data) => {
+      // A sync run cached this game's cover — retry it right away (app-level
+      // so it also fires while the library tab is hidden, see covers:complete).
+      if (data?.id && library.failedCovers.has(data.id)) {
+        library.coverEpoch++
+        const next = new Set(library.failedCovers)
+        next.delete(data.id)
+        library.failedCovers = next
+      }
+      s.gameResults = [...s.gameResults, data].slice(-50)
+    },
+    'sync:complete': async (s, data) => {
+      s.result = data
+      s.syncing = false
+      try {
+        // A sync run may have cached covers or associated new games — refresh
+        // so cover cells and rows reflect the new state.
+        await refreshGames()
+        // A sync can discover new game versions: bump lastUpdate so the
+        // updates view (and sidebar badge) refresh even while it's open.
+        lastUpdate++
+        setLastSyncAt(new Date().toISOString())
+        statusMsg = 'Sync complete — library refreshed'
+      } catch (e) {
+        statusMsg = `Sync finished, but the library refresh failed — ${e}`
+      }
+    },
+    'sync:error': (s, data) => {
+      s.syncError = data?.error || 'Sync failed'
+      s.syncing = false
+      statusMsg = `Sync error: ${s.syncError}`
+    },
+  })
+  let syncState = syncPipeline.state
+
+  // Cover backfill state lives here for the same reason: CoversView is
+  // destroyed on tab switch, and an in-flight fetch must stay visible (and
+  // non-redundant) from any view.
+  const coverPipeline = createPipeline({
+    gameCount: null,           // null = not loaded
+    fetching: false,
+    progress: {current: 0, total: 0, title: '', phase: ''},
+    result: null,              // {fetched, failed, skipped, total, backfilled} or null
+    upgrading: false,          // UpgradeCovers run (shares the backend guard)
+    upgradeResult: null,       // {checked, replaced, failed, errors} or null
+    coverError: '',
+  }, {
+    'covers:progress': (s, r) => {
+      s.progress = r
+      s.fetching = true
+    },
+    'covers:complete': async (s, r) => {
+      s.result = r
+      s.fetching = false
+      // Failed-cover retry bookkeeping lives here (not in GameList) because
+      // this subscription survives tab switches: a backfill finishing while
+      // the library tab is hidden must still bump the epoch so the next
+      // mount re-requests those covers instead of re-rendering cached 404s.
+      if (library.failedCovers.size > 0) {
+        library.coverEpoch++
+        library.failedCovers = new Set()
+      }
+      try {
+        await refreshGames()
+        if (r?.total === 0) statusMsg = 'All games already have covers'
+        else statusMsg = `Cover fetch complete — ${r?.fetched ?? 0} cached`
+      } catch (e) {
+        statusMsg = `Covers fetched, but the library refresh failed — ${e}`
+      }
+    },
+    'covers:error': (s, r) => {
+      s.coverError = r?.error || 'Cover fetch failed'
+      s.fetching = false
+      s.upgrading = false
+    },
+    'covers:upgrade-progress': (s, r) => {
+      s.progress = r
+      s.upgrading = true
+    },
+    'covers:upgrade-complete': async (s, r) => {
+      s.upgradeResult = r
+      s.upgrading = false
+      try {
+        await refreshGames()
+        statusMsg = `Cover upgrade complete — ${r?.replaced ?? 0} replaced`
+      } catch (e) {
+        statusMsg = `Covers upgraded, but the library refresh failed — ${e}`
+      }
+    },
+  })
+  let coverState = coverPipeline.state
+
+  // ── App self-update state (App level) ─────────────────
+  // The DownloadUpdate pipeline runs in the background. UpdateDialog used to
+  // own this state and its update:* subscriptions, so leaving the Settings
+  // tab mid-download killed the progress UI and reset the button while the
+  // backend kept downloading unseen. State and subscriptions live here so the
+  // whole check→download→apply flow survives tab switches.
+  const appUpdatePipeline = createPipeline({
+    checking: false,
+    info: null,              // CheckForUpdate result or null
+    downloading: false,
+    downloadProgress: {downloaded: 0, total: 0},
+    downloadComplete: false,
+    error: '',
+  }, {
+    'update:progress': (s, data) => {
+      s.downloadProgress = data || s.downloadProgress
+    },
+    'update:complete': (s) => {
+      s.downloading = false
+      s.downloadComplete = true
+    },
+    'update:error': (s, data) => {
+      s.error = data?.error || 'Update failed'
+      s.downloading = false
+    },
+  })
+  let appUpdateState = appUpdatePipeline.state
+
+  async function checkAppUpdate() {
+    if (appUpdateState.checking || appUpdateState.downloading) return
+    appUpdateState.checking = true
+    appUpdateState.error = ''
+    appUpdateState.info = null
+    appUpdateState.downloadComplete = false
+    appUpdateState.downloadProgress = {downloaded: 0, total: 0}
+    try {
+      const result = await CheckForUpdate()
+      // CheckForUpdate carries API failures in `error` instead of throwing —
+      // surface it rather than rendering "up to date".
+      if (result?.error) {
+        appUpdateState.error = result.error
+        appUpdateState.info = null
+      } else {
+        appUpdateState.info = result
+      }
+    } catch (e) {
+      appUpdateState.error = String(e)
+    }
+    appUpdateState.checking = false
+  }
+
+  async function downloadAppUpdate() {
+    if (appUpdateState.downloading) return
+    appUpdateState.downloading = true
+    appUpdateState.error = ''
+    appUpdateState.downloadComplete = false
+    appUpdateState.downloadProgress = {downloaded: 0, total: 0}
+    try {
+      await DownloadUpdate()
+    } catch (e) {
+      appUpdateState.error = String(e)
+      appUpdateState.downloading = false
+    }
+  }
+
+  async function applyAppUpdate() {
+    try {
+      await ApplyUpdate()
+    } catch (e) {
+      appUpdateState.error = String(e)
+    }
+  }
+
+  // ── Install pipeline state (App level) ─────────────────
+  // InstallGame shares the update single-run lock with the game-update
+  // pipeline and runs in the background. GameDetail used to own this state
+  // and its game-install:* subscriptions, so navigating back to the library
+  // mid-install reset the Install button to its default while the backend
+  // kept going (and a second click could start a redundant second run).
+  // Field mutations only (never a whole-object reassignment of `installState`
+  // itself) — createPipeline's $state object stays reactive that way even
+  // though the `installState` binding below isn't itself declared via $state.
+  const installPipeline = createPipeline(
+    {running: false, gameId: null, phase: '', progress: 0, error: ''},
+    {
+      'game-install:phase': (s, data) => {
+        if (Number(data?.gameID) === Number(s.gameId)) s.phase = data.phase || ''
+      },
+      'game-install:download-progress': (s, data) => {
+        if (Number(data?.gameID) === Number(s.gameId)) s.progress = Math.round(data.percent ?? 0)
+      },
+      'game-install:error': (s, data) => {
+        if (Number(data?.gameID) === Number(s.gameId)) {
+          s.running = false
+          s.phase = 'error'
+          s.error = data?.message || 'Install failed'
+          refreshGames()
+        }
+      },
+      'game-install:complete': (s, data) => {
+        if (Number(data?.gameID) === Number(s.gameId)) {
+          s.running = false
+          s.phase = 'done'
+          s.progress = 100
+          refreshGames()
+          lastUpdate++
+        }
+      },
+    }
+  )
+  /** @type {{running:boolean, gameId:number|null, phase:string, progress:number, error:string}} */
+  let installState = installPipeline.state
+
+  async function startInstall(gameId, dest) {
+    if (installState.running) return
+    installState.running = true
+    installState.gameId = gameId
+    installState.phase = 'selecting-link'
+    installState.progress = 0
+    installState.error = ''
+    try {
+      await InstallGame(gameId, dest)
+    } catch (e) {
+      installState.running = false
+      installState.phase = 'error'
+      installState.error = String(e)
+    }
+  }
+
+  function syncPhaseLabel(phase) {
+    if (phase === 'associating') return 'Associating games'
+    if (phase === 'checking-updates') return 'Checking for updates'
+    return 'Synchronizing'
+  }
+
+  async function startSync(force = false) {
+    if (syncState.syncing) return   // UI guard — the backend single-flight rejects a 2nd run anyway
+    syncState.syncError = ''
+    syncState.result = null
+    syncState.gameResults = []
+    syncState.progress = {current: 0, total: 0, title: '', phase: ''}
+    syncState.syncing = true
+    try {
+      await SyncAllGames(force)
+    } catch (e) {
+      syncState.syncError = String(e)
+      syncState.syncing = false
+    }
+  }
+
+  // Ask the backend to stop the running sync. The backend emits the usual
+  // completion events; this also flips the local flag so the UI never stays
+  // stuck in "Syncing…" if no event follows the cancel.
+  async function cancelSync() {
+    if (!syncState.syncing) return
+    try {
+      await CancelSync()
+    } catch (e) {
+      syncState.syncError = String(e)
+    }
+    syncState.syncing = false
+  }
+
+  // ── Scan state (App level) ─────────────────────────────────
+  // Moved up from ScanDialog, exactly like syncState: the backend scan runs
+  // in a goroutine, so navigating away mid-scan must not destroy the state
+  // or the event subscriptions — otherwise the UI loses the running flag and
+  // lets the user start a second concurrent scan.
+  let scanState = $state({
+    scanning: false,
+    currentPath: '',
+    progress: {dirsExamined: 0, gamesFound: 0, phase: ''},
+    showProgress: false,
+    lastResult: null,            // { gamesFound, inserted, updated, errors } or null
+    scanError: '',
+  })
+
+  async function startScan(path, force = false) {
+    if (scanState.scanning) return   // prevent duplicate concurrent runs
+    scanState.scanning = true
+    scanState.currentPath = path
+    scanState.showProgress = true
+    scanState.lastResult = null
+    scanState.scanError = ''
+    scanState.progress = {dirsExamined: 0, gamesFound: 0, phase: ''}
+    try {
+      await ScanDirectory(path, force)
+    } catch (e) {
+      scanState.scanError = String(e)
+      scanState.scanning = false
+    }
+  }
+
+  // ── Game update pipeline state (App level) ─────────────────
+  // Like syncState, this lives here so the Updates view keeps its state (and
+  // the backend's single-flight pipeline stays visible) when switching tabs
+  // mid-run. The update view just renders this state and calls the callbacks.
+  /** @type {Record<number, {phase:string,percent:number,speed:number,bytesDownloaded:number,totalBytes:number,filesExtracted:number,totalFiles:number,currentFile:string,error:string,oldVersion:string,newVersion:string}>} */
+  let gameStates = $state({})
+  /** @type {{running:boolean,retrying?:boolean,current:number,total:number,currentGameTitle:string,results:Array,error:string,succeeded?:number,failed?:number,games?:Array}|null} */
+  let batchState = $state(null)
+  // Retry plumbing: retries all start at once — the backend queues them
+  // behind its update-concurrency slots (phase 'queued'). retryPending maps
+  // gameID → 'running' | 'deferred'; game-update:idle {gameID} (fires after
+  // each game's run releases its claim) records that game's outcome.
+  // 'deferred' games were rejected because their previous run hadn't
+  // released yet and start on that idle instead.
+  let retryPending = $state({})
+
+  const UPDATE_BUSY_PHASES = ['queued', 'syncing', 'selecting-link', 'downloading', 'extracting', 'merging', 'updating-db']
+
+  // True while any update/install runs — drives the status-bar indicator.
+  // Per-game actions check only their own game: runs are per game.
+  let pipelineBusy = $derived(
+    installState.running ||
+    !!batchState?.running ||
+    Object.values(gameStates).some(s => s && UPDATE_BUSY_PHASES.includes(s.phase))
+  )
+
+  // One-line description of the running pipeline for the status bar, so a
+  // background update/install stays visible from any tab.
+  let pipelineLabel = $derived.by(() => {
+    if (installState.running) {
+      const g = games.find(x => Number(x.id) === installState.gameId)
+      return `Installing ${g?.title || 'game'}…`
+    }
+    const busyIds = Object.keys(gameStates).filter(id => {
+      const s = gameStates[id]
+      return s && UPDATE_BUSY_PHASES.includes(s.phase) && s.phase !== 'queued'
+    })
+    const queued = Object.values(gameStates).filter(s => s?.phase === 'queued').length
+    const tail = queued ? ` (${queued} queued)` : ''
+    if (batchState?.running) {
+      const done = batchState.results.length
+      return batchState.retrying
+        ? `Retrying updates… ${done}/${batchState.total} done${tail}`
+        : `Updating ${busyIds.length || 1} game${busyIds.length > 1 ? 's' : ''}… ${done}/${batchState.total} done${tail}`
+    }
+    if (busyIds.length === 1) {
+      const g = games.find(x => Number(x.id) === Number(busyIds[0]))
+      return `Updating ${g?.title || 'game'}…${tail}`
+    }
+    if (busyIds.length > 1) return `Updating ${busyIds.length} games…${tail}`
+    if (queued) return `${queued} update${queued > 1 ? 's' : ''} queued…`
+    return ''
+  })
+
+  // Surfaced in the status bar (P2 item 11 — "free space for ... upgrade
+  // suggests") once the user has manually checked from Settings; this app
+  // never auto-checks on startup, so there's no extra network call here.
+  let updateAvailable = $derived(
+    !appUpdateState.downloading && appUpdateState.info?.hasUpdate ? appUpdateState.info : null
+  )
+
+  function updateGS(gameId, patch) {
+    gameStates = {...gameStates, [gameId]: {...(gameStates[gameId] || {}), ...patch}}
+  }
+
+  // A pipeline that dies before its per-game events arrive leaves rows in the
+  // optimistic 'syncing' phase (startUpdateAll) — isUpdatingAny stays true
+  // forever and every row/button stays disabled. Reset busy phases back to
+  // idle and drop any phantom gameStates[0] entry the backend may have left.
+  function resetStaleBusyPhases() {
+    const next = {...gameStates}
+    let changed = false
+    if (next[0]) {
+      delete next[0]
+      changed = true
+    }
+    for (const [id, gs] of Object.entries(next)) {
+      if (gs && UPDATE_BUSY_PHASES.includes(gs.phase)) {
+        next[id] = {...gs, phase: 'idle'}
+        changed = true
+      }
+    }
+    if (changed) gameStates = next
+  }
+
+  // Cancel everything the UI knows about. Mirrors the backend's
+  // game-update:cancelled handling so rows can never wedge in a busy phase.
+  function markAllAsCancelled() {
+    const next = {...gameStates}
+    for (const [id, gs] of Object.entries(next)) {
+      // 'selecting-file' is not a busy phase but is still non-terminal —
+      // a cancel must never leave a row wedged in it.
+      if (UPDATE_BUSY_PHASES.includes(gs.phase) || gs.phase === 'selecting-file') {
+        next[id] = {...gs, phase: 'error', error: 'Cancelled'}
+      }
+    }
+    gameStates = next
+    if (batchState?.running) batchState = {...batchState, running: false, error: 'Cancelled'}
+  }
+
+  function retryTitle(gameId) {
+    const g = games.find(g => Number(g.id) === Number(gameId))
+    if (g?.title) return g.title
+    const r = (batchState?.results || []).find(r => Number(r.gameID) === Number(gameId))
+    return r?.title || ''
+  }
+
+  // Single-game update (row button / per-row retry). The backend runs the
+  // pipeline in a goroutine and rejects a second run for the same game —
+  // surface that rejection instead of dropping it.
+  function startUpdateGame(gameId) {
+    const gs = gameStates[gameId] || {phase: 'idle'}
+    if (gs.phase !== 'idle' && gs.phase !== 'error') return
+    updateGS(gameId, {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', oldVersion: '', newVersion: '', manualRequired: false, manualHost: '', step: ''})
+    DownloadGameUpdate(gameId).catch((e) => {
+      const msg = String(e)
+      updateGS(gameId, {phase: 'error', error: msg})
+      if (!batchState?.retrying || !(gameId in retryPending)) return
+      if (/already in progress/i.test(msg)) {
+        // The game's previous run hasn't released its claim yet; its
+        // game-update:idle starts this retry for real.
+        retryPending = {...retryPending, [gameId]: 'deferred'}
+        return
+      }
+      // The pipeline never started and no idle will follow — record the
+      // failure now so the pass can't stall.
+      recordRetryResult(gameId, false, msg)
+    })
+  }
+
+  // Manual fallback for auto-download failures (Cloudflare-blocked hosts,
+  // dead links). The backend opens a native file picker for the archive the
+  // user downloaded by hand, then resumes the pipeline from extraction. It
+  // returns an error only if the pipeline could not be started; per-game
+  // failures surface via the game-update:* events.
+  async function provideUpdateFile(gameId) {
+    const id = Number(gameId)
+    try {
+      await ProvideUpdateFile(id)
+    } catch (e) {
+      updateGS(id, {phase: 'error', error: String(e)})
+    }
+  }
+
+  async function startUpdateAll(updatableGames) {
+    if (batchState?.running) return
+    const list = updatableGames || []
+    // Optimistically mark every updatable game as syncing until the backend
+    // confirms the batch actually started.
+    const newStates = {...gameStates}
+    for (const game of list) {
+      newStates[game.id] = {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', oldVersion: '', newVersion: ''}
+    }
+    gameStates = newStates
+    batchState = {running: true, current: 0, total: list.length, currentGameTitle: '', results: [], error: '', games: list.map(g => ({id: g.id, title: g.title}))}
+    try {
+      await DownloadAllUpdates()
+    } catch (e) {
+      batchState = {...batchState, running: false, error: String(e)}
+      // The batch never started (e.g. the backend's single-run CAS rejected
+      // it because a single-game update holds the lock). Roll back the
+      // optimistic 'syncing' phases we set above, or isUpdatingAny stays true
+      // forever and every row spins with no pipeline behind it.
+      resetStaleBusyPhases()
+    }
+  }
+
+  // Retry the failed games of the last batch. All start at once; the backend
+  // runs up to update-concurrency of them and queues the rest. The backend
+  // won't emit batch-start/progress/complete for this path, so we keep a
+  // live batchState ourselves and accumulate per-game results from the
+  // per-game game-update:idle events.
+  function handleRetryFailed() {
+    const failed = (batchState?.results || []).filter(r => !r.success)
+    if (failed.length === 0) return
+    batchState = {
+      running: true,
+      retrying: true,
+      current: 0,
+      total: failed.length,
+      currentGameTitle: '',
+      results: [],
+      error: '',
+      succeeded: 0,
+      failed: 0,
+      games: failed.map(r => ({id: r.gameID, title: r.title})),
+    }
+    const pending = {}
+    for (const f of failed) pending[f.gameID] = 'running'
+    retryPending = pending
+    for (const f of failed) startUpdateGame(f.gameID)
+  }
+
+  function recordRetryResult(gameId, ok, error) {
+    if (!(gameId in retryPending)) return
+    const {[gameId]: _, ...rest} = retryPending
+    retryPending = rest
+    if (batchState?.retrying) {
+      const results = [...batchState.results, {
+        gameID: gameId,
+        title: retryTitle(gameId),
+        success: ok,
+        error: ok ? '' : (error || 'Update failed'),
+      }]
+      batchState = {...batchState, results, current: results.length}
+    }
+    if (Object.keys(retryPending).length === 0) finishRetryBatch()
+  }
+
+  function finishRetryBatch() {
+    if (!batchState?.running || !batchState?.retrying) return
+    const results = batchState.results
+    const succeeded = results.filter(r => r.success).length
+    const failed = results.filter(r => !r.success).length
+    batchState = {...batchState, running: false, retrying: false, succeeded, failed}
+    refreshGames()
+    lastUpdate++
+  }
+
+  function cancelUpdates() {
+    retryPending = {}
+    CancelGameUpdate().then((cancelled) => {
+      // false = nothing was running — the backend emits no
+      // game-update:cancelled event, so run the same phase reset locally to
+      // make sure stale busy phases can't wedge the UI.
+      if (!cancelled) markAllAsCancelled()
+    }).catch(() => {
+      // Binding rejected: still reset, a stuck row is worse than a
+      // redundant cancel attempt.
+      markAllAsCancelled()
+    })
+  }
+
+  // Cancel one game's run (queued or in progress). It ends through its own
+  // game-update:error and :idle events; if nothing was running, clear the row.
+  function cancelUpdateFor(gameId) {
+    CancelGameUpdateFor(gameId).then((cancelled) => {
+      if (!cancelled) {
+        const gs = gameStates[gameId]
+        if (gs && UPDATE_BUSY_PHASES.includes(gs.phase)) updateGS(gameId, {phase: 'error', error: 'Cancelled'})
+      }
+    }).catch(() => {})
+  }
+
+  // Like startSync: UI guard plus backend single-flight (coverRunning) as
+  // the backstop. State survives tab switches because it lives here.
+  async function startCoverFetch() {
+    if (coverState.fetching) return
+    coverState.coverError = ''
+    coverState.result = null
+    coverState.progress = {current: 0, total: 0, title: '', phase: ''}
+    coverState.fetching = true
+    try {
+      await FetchCovers()
+    } catch (e) {
+      coverState.coverError = String(e)
+      coverState.fetching = false
+    }
+  }
+
+  async function startCoverUpgrade() {
+    if (coverState.fetching || coverState.upgrading) return
+    coverState.coverError = ''
+    coverState.upgradeResult = null
+    coverState.progress = {current: 0, total: 0, title: '', phase: ''}
+    coverState.upgrading = true
+    try {
+      await UpgradeCovers()
+    } catch (e) {
+      coverState.coverError = String(e)
+      coverState.upgrading = false
+    }
+  }
+
+  async function loadGames() {
+    loading = true
+    try {
+      games = await GetGames()
+      // No transient message on a plain load: the status bar's summary
+      // (games · updates · last sync) is the resting state.
+      statusMsg = ''
+      try { upstreamUpdateCount = await GetUpdatableCount() } catch (e) { upstreamUpdateCount = 0 }
+    } catch (e) {
+      statusMsg = `Couldn't load your library — ${e}`
+    }
+    loading = false
+  }
+
+  // View-switch animation parameters. Tab switches fade+rise the incoming
+  // view (~140ms); users with reduced-motion preference get a hard switch
+  // (0ms, no transform) so nothing flashes or drifts. Evaluated once at
+  // module load — the preference doesn't change while the app is running.
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  function viewMotion() {
+    if (reducedMotion) return {y: 0, duration: 0}
+    return {y: 8, duration: 140}
+  }
+
+  async function init() {
+    try { version = await GetVersion() } catch (e) { version = '?' }
+
+    // Check before loading games — if startup failed, every data call will
+    // fail too, and the banner explains why rather than a bare status message.
+    try { startupError = await GetStartupError() } catch (e) { startupError = '' }
+    if (startupError) {
+      statusMsg = 'Startup failed'
+      loading = false
+      return
+    }
+
+    await loadGames()
+
+    // Cookie status gates the sync view; load it once here so the tab opens
+    // with the state already known.
+    try { syncState.cookieStatus = await GetCookieStatus() } catch (e) { syncState.cookieStatus = '' }
+
+    try { coverState.gameCount = await GetGameCount() } catch (e) { coverState.gameCount = 0 }
+  }
+
+  function openDetail(id) {
+    selectedGameId = id
+    activeView = 'detail'
+  }
+
+  function closeDetail() {
+    selectedGameId = null
+    activeView = 'library'
+  }
+
+  async function refreshGames() {
+    loading = true
+    try {
+      games = await GetGames()
+      try { upstreamUpdateCount = await GetUpdatableCount() } catch (e) { /* keep the last value */ }
+    } catch (e) {
+      // Callers own their status message — setting a generic "N games loaded"
+      // here would clobber meaningful results (scan/sync/cover summaries).
+    } finally {
+      loading = false
+    }
+  }
+
+  // A game added from the F95Zone browser: refresh the library (new rows,
+  // count in the status bar) and bump lastUpdate so sidebar badges (updates,
+  // counts) reflect the new library.
+  async function handleBrowserGameAdded() {
+    await refreshGames()
+    lastUpdate++
+  }
+
+  async function loadTrash() {
+    try { deletedGames = await ListDeletedGames() } catch (e) { console.error(e) }
+  }
+
+  $effect(() => {
+    if (activeView === 'trash') loadTrash()
+  })
+
+  async function handleRestore(id) {
+    try {
+      await RestoreGame(id)
+      await loadTrash()
+      await refreshGames()
+      statusMsg = 'Game restored'
+    } catch (e) { statusMsg = `Couldn't restore that game — ${e}` }
+  }
+
+  async function handlePurge() {
+    const ok = await confirmAction({
+      title: `Permanently delete ${deletedGames.length} game${deletedGames.length === 1 ? '' : 's'}?`,
+      description: 'This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
+    try {
+      await PurgeDeleted()
+      await loadTrash()
+      await refreshGames()
+      statusMsg = 'Trash emptied'
+    } catch (e) { statusMsg = `Couldn't empty the trash — ${e}` }
+  }
+
+  // Manual EventsOn subscriptions that don't fit createPipeline (auto-scan
+  // status messages, and the per-game update/batch/retry pipeline, which is
+  // keyed by gameID rather than being a single flat state object) are
+  // collected here instead of one `let unsubX` + one teardown line each —
+  // cleanup below just loops the array.
+  let subs = []
+
+  // Global search shortcut (P1 item 8): "/" or Ctrl/Cmd+F jumps to the
+  // library and focuses its search field, Steam/Playnite-style. "/" is only
+  // intercepted when nothing is already accepting text input, so it doesn't
+  // clobber typing elsewhere (e.g. the F95 browser's own search box).
+  function isTypingTarget(el) {
+    if (!el) return false
+    const tag = el.tagName
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable
+  }
+
+  function toggleCouch() {
+    couchMode = !couchMode
+    try { localStorage.setItem('moxie.couch', couchMode ? '1' : '0') } catch (e) { /* private mode */ }
+    try {
+      if (couchMode) WindowFullscreen()
+      else WindowUnfullscreen()
+    } catch (e) { /* browser mock / restricted runtime */ }
+  }
+
+  function handleGlobalKeydown(e) {
+    if (e.key === 'F11') {
+      e.preventDefault()
+      toggleCouch()
+      return
+    }
+    // "?" is the conventional shortcut-sheet key (GitHub, Linear, Steam).
+    // Shift+/ produces "?" on US layouts; e.key is layout-aware, so match the
+    // character rather than the key code.
+    if (e.key === '?' && !isTypingTarget(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault()
+      // Never stack the sheet on top of another dialog; ? still closes its own.
+      if (!shortcutsOpen && document.querySelector('[role="dialog"][data-state="open"]')) return
+      shortcutsOpen = !shortcutsOpen
+      return
+    }
+    const isSlash = e.key === '/' && !isTypingTarget(e.target)
+    const isFindCombo = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f'
+    if (!isSlash && !isFindCombo) return
+    e.preventDefault()
+    activeView = 'library'
+    // GameList is destroyed/remounted on tab switch (see the {#if} below), so
+    // its search field may not exist yet on this same tick.
+    tick().then(() => gameListRef?.focusSearch())
+  }
+
+  // Wails v2 never opens external links on its own — an <a href> click
+  // (target="_blank" emits a create request nothing handles) is swallowed by
+  // the webview, so the link looks clickable but does nothing. Delegate on the
+  // document so every external anchor the app renders — game-profile F95Zone /
+  // Steam / store links, Browse results, update-notes links — opens in the
+  // system browser. Only http(s) is intercepted; anything else falls through
+  // to the webview's default handling.
+  function handleExternalLinkClick(e) {
+    const anchor = e.target?.closest?.('a[href]')
+    if (!anchor) return
+    const url = anchor.getAttribute('href') || ''
+    if (!/^https?:\/\//i.test(url)) return
+    e.preventDefault()
+    BrowserOpenURL(url)
+  }
+
+  onMount(() => {
+    init()
+    try {
+      couchMode = localStorage.getItem('moxie.couch') === '1'
+      if (couchMode) WindowFullscreen()
+    } catch (e) { /* ignore */ }
+    window.addEventListener('keydown', handleGlobalKeydown)
+    document.addEventListener('click', handleExternalLinkClick)
+    // Live library refresh when the directory watcher finishes an auto-scan.
+    subs.push(EventsOn('scan:auto-complete', async (r) => {
+      let msg = ''
+      if (r) {
+        const parts = []
+        if (r.inserted) parts.push(`${r.inserted} new`)
+        if (r.updated) parts.push(`${r.updated} updated`)
+        if (r.removed) parts.push(`${r.removed} removed`)
+        msg = parts.length
+          ? `Auto-scan: ${parts.join(', ')}`
+          : 'Auto-scan: no changes'
+      }
+      try {
+        await refreshGames()
+        // refreshGames sets its own "Library ready" message — restore the
+        // auto-scan result afterwards so the user actually sees it.
+        if (msg) statusMsg = msg
+      } catch (e) {
+        statusMsg = `Auto-scan finished, but the library refresh failed — ${e}`
+      }
+    }))
+    subs.push(EventsOn('scan:auto-error', (r) => {
+      statusMsg = `Auto-scan failed — ${r?.error || 'unknown error'}`
+    }))
+    // The directory watcher's auto-scans emit these but nothing displayed
+    // them — surface them in the status bar so background scanning is
+    // visible from any tab.
+    subs.push(EventsOn('scan:auto', () => {
+      statusMsg = 'Auto-scan in progress…'
+    }))
+    subs.push(EventsOn('scan:auto-progress', (r) => {
+      statusMsg = `Auto-scan in progress… (${r?.dirsExamined ?? 0} dirs, ${r?.gamesFound ?? 0} games)`
+    }))
+    // Manual scan events live at app level: the backend scan runs in a
+    // goroutine, so navigating away must not drop the running flag or the
+    // completion result. (Same shape as the pipelines in pipeline.svelte.js,
+    // but kept manual here rather than folded in — out of scope for this pass.)
+    subs.push(EventsOn('scan:progress', (data) => {
+      scanState.progress = data
+    }))
+    subs.push(EventsOn('scan:complete', (data) => {
+      scanState.lastResult = data
+      scanState.scanning = false
+      refreshGames()
+    }))
+    subs.push(EventsOn('scan:error', (data) => {
+      scanState.scanError = data.error || 'Unknown error'
+      scanState.scanning = false
+    }))
+    // Game update pipeline events (App level so they survive tab switches).
+    // Kept manual rather than folded into createPipeline: gameStates is
+    // keyed by gameID (not a flat object) and batchState/retryPending add
+    // retry orchestration on top — a shape the shared factory
+    // isn't meant to cover.
+    subs.push(EventsOn('game-update:phase', (data) => {
+      // Any new phase means a fresh attempt (retry, or the downloads watcher
+      // picked up a manually saved archive) — clear the manual-required flag
+      // so the row stops offering the file picker.
+      updateGS(data.gameID, {
+        phase: data.phase,
+        host: data.host || '',
+        upToDate: false,
+        ...(data.phase === 'selecting-file' ? {} : {manualRequired: false, manualHost: ''}),
+      })
+    }))
+    subs.push(EventsOn('game-update:up-to-date', (data) => {
+      updateGS(data.gameID, {phase: 'done', upToDate: true, oldVersion: '', newVersion: ''})
+      if (!batchState?.running) {
+        refreshGames()
+        lastUpdate++
+      }
+    }))
+    subs.push(EventsOn('game-update:download-progress', (data) => {
+      updateGS(data.gameID, {
+        percent: Math.round(Math.min(data.percent ?? 0, 100) * 100) / 100,
+        speed: data.speedBytesPerSec ?? 0,
+        bytesDownloaded: data.bytesDownloaded ?? 0,
+        totalBytes: data.totalBytes ?? 0,
+      })
+    }))
+    subs.push(EventsOn('game-update:extract-progress', (data) => {
+      updateGS(data.gameID, {
+        filesExtracted: data.filesExtracted ?? 0,
+        totalFiles: data.totalFiles ?? 0,
+        currentFile: data.currentFile ?? '',
+      })
+    }))
+    subs.push(EventsOn('game-update:manual-required', (data) => {
+      // Auto-download failed (Cloudflare-blocked host, dead link, …). The
+      // pipeline has already ended in the error state; flag the game so the
+      // UI can offer the file-picker fallback (ProvideUpdateFile).
+      updateGS(data.gameID, {
+        manualRequired: true,
+        manualHost: data.host || '',
+      })
+    }))
+    subs.push(EventsOn('game-update:error', (data) => {
+      // A gameID of 0 (or the 'list-updatable' step) means the whole batch
+      // failed before it started (e.g. GetUpdatableGames error). The backend
+      // emits this instead of batch-complete, so treat it as a batch-level
+      // failure — otherwise batchState.running stays true forever and the UI
+      // is stuck with a spinner and disabled buttons.
+      if (data.gameID === 0 || data.step === 'list-updatable') {
+        batchState = {
+          ...(batchState || {running: true, current: 0, total: Math.max(games.length, 1), currentGameTitle: '', results: [], error: ''}),
+          running: false,
+          error: data.message || 'Update check failed',
+        }
+        // startUpdateAll optimistically marks every game 'syncing' before the
+        // batch starts; with the batch never starting those states would keep
+        // isUpdatingAny true and leave every button disabled. Reset active
+        // phases back to idle (and drop the phantom gameStates[0]) so the
+        // rows and action buttons re-enable.
+        resetStaleBusyPhases()
+        return
+      }
+      updateGS(data.gameID, {phase: 'error', error: data.message || 'Unknown error', step: data.step || ''})
+    }))
+    subs.push(EventsOn('game-update:complete', (data) => {
+      updateGS(data.gameID, {
+        phase: 'done',
+        oldVersion: data.oldVersion || '',
+        newVersion: data.newVersion || '',
+      })
+      // Refresh once per pipeline, not once per game: during a batch (or a
+      // retry pass) batchState.running is true and the summary handlers below
+      // do a single refresh; only a standalone single-game update refreshes
+      // here. Guard on running — not on batchState existing — because a
+      // finished batch leaves batchState non-null (with running:false) for the
+      // session, which used to make every later single-game update skip its
+      // refresh and stay listed as needing an update.
+      if (!batchState?.running) {
+        refreshGames()
+        lastUpdate++
+      }
+    }))
+    subs.push(EventsOn('game-update:batch-start', (data) => {
+      batchState = {
+        running: true,
+        current: 0,
+        total: data.total || 0,
+        currentGameTitle: '',
+        results: [],
+        error: '',
+      }
+    }))
+    subs.push(EventsOn('game-update:batch-progress', (data) => {
+      if (batchState) {
+        batchState = {...batchState, current: data.current ?? 0, currentGameTitle: data.currentGameTitle || ''}
+      }
+    }))
+    subs.push(EventsOn('game-update:game-done', (data) => {
+      if (batchState) {
+        batchState = {
+          ...batchState,
+          results: [...batchState.results, {
+            gameID: data.gameID,
+            title: data.title || '',
+            success: !!data.success,
+            error: data.error || '',
+          }],
+        }
+      }
+    }))
+    subs.push(EventsOn('game-update:batch-complete', (data) => {
+      if (batchState) {
+        batchState = {
+          ...batchState,
+          running: false,
+          succeeded: data.succeeded ?? 0,
+          failed: data.failed ?? 0,
+        }
+        // One refresh for the whole batch (not N per-game refreshes).
+        refreshGames()
+        lastUpdate++
+      }
+    }))
+    subs.push(EventsOn('game-update:cancelled', () => {
+      markAllAsCancelled()
+    }))
+    // Emitted after each game's run (update, batch member, install) releases
+    // its claim. Any row still in a busy phase missed its terminal event
+    // (e.g. a pipeline that bailed without :error) — surface it instead of
+    // spinning forever. Then record a retry's outcome or start a deferred one.
+    subs.push(EventsOn('game-update:idle', (data) => {
+      const id = data?.gameID
+      if (id === undefined || id === null) return
+      const gs = gameStates[id]
+      if (gs && UPDATE_BUSY_PHASES.includes(gs.phase)) {
+        updateGS(id, {phase: 'error', error: gs.error || 'Update stopped before finishing'})
+      }
+      if (!(id in retryPending)) return
+      if (retryPending[id] === 'deferred') {
+        retryPending = {...retryPending, [id]: 'running'}
+        startUpdateGame(id)
+        return
+      }
+      const after = gameStates[id] || {}
+      recordRetryResult(id, after.phase === 'done', after.error)
+    }))
+    return () => {
+      window.removeEventListener('keydown', handleGlobalKeydown)
+      document.removeEventListener('click', handleExternalLinkClick)
+      subs.forEach(unsub => unsub())
+      syncPipeline.unsubscribe()
+      coverPipeline.unsubscribe()
+      appUpdatePipeline.unsubscribe()
+      installPipeline.unsubscribe()
+    }
+  })
+</script>
+
+<div class="shell" class:shell-couch={couchMode}>
+  {#if !couchMode}
+    <Sidebar bind:activeView onShortcuts={() => shortcutsOpen = true} onNavigate={(id) => activeView = id} {lastUpdate} updateCount={upstreamUpdateCount}/>
+  {/if}
+
+  <main class="main">
+    {#if startupError}
+      <div class="startup-error">
+        <h2>Moxie could not start</h2>
+        <p class="startup-error-msg">{startupError}</p>
+        <p class="startup-error-hint">
+          The library is unavailable until this is resolved. Check that the config
+          directory is writable and that no other copy of Moxie is running.
+        </p>
+      </div>
+    {:else}
+      <!-- Keyed by the active view: the old view animates out while the new
+           one animates in. Long-running state (sync/scan/covers/updates) lives
+           above this block, so it survives the remounts either way. -->
+      {#key activeView}
+        <div class="view" transition:fly={viewMotion()}>
+          {#if activeView === 'detail' && selectedGameId !== null}
+            <GameDetail
+              gameId={selectedGameId}
+              onBack={closeDetail}
+              onUpdate={refreshGames}
+              gameState={gameStates[selectedGameId]}
+              installState={installState}
+              onUpdateGame={startUpdateGame}
+              onProvideFile={provideUpdateFile}
+              onInstall={startInstall}
+            />
+          {:else if activeView === 'library'}
+            <GameList
+              bind:this={gameListRef}
+              {games}
+              {loading}
+              {gameStates}
+              {installState}
+              lastSyncAt={appMeta.lastSyncAt}
+              onOpenDetail={openDetail}
+              onUpdate={refreshGames}
+              onLaunched={(msg) => statusMsg = msg}
+              onScan={() => activeView = 'scan'}
+              onCollectionsChanged={() => lastUpdate++}
+            />
+          {:else if activeView === 'scan'}
+            <ScanDialog
+              scanning={scanState.scanning}
+              currentPath={scanState.currentPath}
+              progress={scanState.progress}
+              showProgress={scanState.showProgress}
+              lastResult={scanState.lastResult}
+              scanError={scanState.scanError}
+              onScan={startScan}
+            />
+          {:else if activeView === 'settings'}
+            <SettingsView
+              appVersion={version}
+              appUpdateState={appUpdateState}
+              onCheckAppUpdate={checkAppUpdate}
+              onDownloadAppUpdate={downloadAppUpdate}
+              onApplyAppUpdate={applyAppUpdate}
+            />
+          {:else if activeView === 'updates'}
+            <GameUpdatesView
+              gameStates={gameStates}
+              batchState={batchState}
+              {lastUpdate}
+              installRunning={installState.running}
+              onNavigate={(id) => activeView = id}
+              onUpdateGame={startUpdateGame}
+              onUpdateAll={startUpdateAll}
+              onRetryFailed={handleRetryFailed}
+              onProvideFile={provideUpdateFile}
+              onCancel={cancelUpdates}
+              onCancelGame={cancelUpdateFor}
+            />
+          {:else if activeView === 'downloads'}
+            <DownloadsView
+              onGoToSync={() => activeView = 'sync'} />
+          {:else if activeView === 'covers'}
+            <CoversView
+              gameCount={coverState.gameCount}
+              {games}
+              fetching={coverState.fetching}
+              progress={coverState.progress}
+              result={coverState.result}
+              coverError={coverState.coverError}
+              upgrading={coverState.upgrading}
+              upgradeResult={coverState.upgradeResult}
+              onFetch={startCoverFetch}
+              onUpgrade={startCoverUpgrade}
+              onNavigate={(id) => activeView = id}
+            />
+          {:else if activeView === 'add'}
+            <AddGameDialog onGameAdded={refreshGames} onNavigate={(id) => activeView = id}/>
+          {:else if activeView === 'sync'}
+            <SyncDialog
+              cookieStatus={syncState.cookieStatus}
+              syncing={syncState.syncing}
+              progress={syncState.progress}
+              gameResults={syncState.gameResults}
+              result={syncState.result}
+              syncError={syncState.syncError}
+              gameCount={games.length}
+              lastSyncAt={appMeta.lastSyncAt}
+              onSync={startSync}
+              onCancel={cancelSync}
+            />
+          {:else if activeView === 'browser'}
+            <F95Browser onAdded={handleBrowserGameAdded} installState={installState} onInstall={startInstall}/>
+          {:else if activeView === 'collections'}
+            <CollectionsView
+              onOpenDetail={openDetail}
+              onCollectionsChanged={() => lastUpdate++}
+            />
+          {:else if activeView === 'saves'}
+            <SavesView onOpenDetail={openDetail} />
+          {:else if activeView === 'duplicates'}
+            <DedupDialog onDedupDone={refreshGames}/>
+          {:else if activeView === 'trash'}
+            <div class="trash-view">
+              <div class="trash-header">
+                <div>
+                  <h2>Trash</h2>
+                  <p class="trash-sub">
+                    {deletedGames.length} game{deletedGames.length === 1 ? '' : 's'} · deleted games keep saves and metadata until purged.
+                  </p>
+                </div>
+                {#if deletedGames.length > 0}
+                  <button class="btn btn-sm btn-danger-ghost" onclick={handlePurge}>
+                    Empty trash ({deletedGames.length})
+                  </button>
+                {/if}
+              </div>
+              {#if deletedGames.length === 0}
+                <div class="trash-empty">
+                  <p class="trash-empty-title">Trash is empty</p>
+                  <p class="trash-empty-hint">Games you remove appear here before they are purged.</p>
+                </div>
+              {:else}
+                <div class="table-header">
+                  <span>Title</span><span>Engine</span><span>Actions</span>
+                </div>
+                {#each deletedGames as game (game.id)}
+                  <div class="table-row">
+                    <span>{game.title}</span>
+                    <span>{game.engine || '—'}</span>
+                    <span>
+                      <button class="btn btn-sm btn-primary" onclick={() => handleRestore(game.id)}>Restore</button>
+                    </span>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+          {:else}
+            <div class="placeholder-view">
+              <h2 style="text-transform: capitalize">{activeView}</h2>
+              <p>Coming soon.</p>
+            </div>
+          {/if}
+        </div>
+      {/key}
+    {/if}
+
+    <StatusBar
+      {statusMsg}
+      gameCount={games.length}
+      updateCount={upstreamUpdateCount}
+      onGoToUpdates={() => activeView = 'updates'}
+      {pipelineBusy}
+      {pipelineLabel}
+      appUpdateDownloading={appUpdateState.downloading}
+      lastSyncAt={appMeta.lastSyncAt}
+      {updateAvailable}
+      onGoToUpdate={() => activeView = 'settings'}
+      {couchMode}
+      onToggleCouch={toggleCouch}
+    />
+  </main>
+</div>
+
+<ConfirmDialog />
+<ShortcutsDialog bind:open={shortcutsOpen} />
+<PromptDialog />
+<EditGameDialog />
+
+<style>
+  .shell {
+    display: flex;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* Couch mode drops the sidebar; the status bar remains so the exit control
+     is always on screen. */
+  .shell-couch .main { max-width: 1800px; margin: 0 auto; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+
+  .main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;   /* keep the status bar pinned to the bottom */
+    min-width: 0;
+    background: var(--bg-primary);
+    position: relative;
+  }
+
+  /* Keyed view container. Absolutely positioned so the outgoing and incoming
+     views overlap during the 140ms switch instead of sharing the flex row —
+     with both in normal flow (flex:1 each) the screen would split 50/50 and
+     the incoming view would render squished. bottom: 25px keeps the view
+     above the 24px status bar (plus its 1px border). */
+  .view {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 25px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .placeholder-view {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    gap: 8px;
+    color: var(--text-secondary);
+  }
+  .placeholder-view h2 { font-size: var(--text-xl); font-weight: 600; }
+  .placeholder-view p  { font-size: var(--text-md); }
+
+  .startup-error {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 32px;
+    text-align: center;
+  }
+  .startup-error h2 { font-size: var(--text-xl); font-weight: 700; color: var(--danger); margin: 0; }
+  .startup-error-msg {
+    font-size: var(--text-base);
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    max-width: 560px;
+    margin: 0;
+  }
+  .startup-error-hint {
+    font-size: var(--text-base);
+    color: var(--text-secondary);
+    max-width: 560px;
+    margin: 0;
+  }
+
+  .trash-view { flex: 1; overflow: auto; padding: var(--space-7) var(--gutter); width: 100%; }
+  .trash-view h2 { font-size: var(--text-3xl); font-weight: 600; line-height: 1.15; letter-spacing: -0.01em; margin: 0; }
+  .trash-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+  .trash-sub { margin: 4px 0 0; font-size: var(--text-sm); color: var(--text-muted); }
+  .trash-empty { padding: 42px 24px; border: 1px dashed var(--rule-strong); text-align: center; }
+  .trash-empty-title { margin: 0; font-size: var(--text-lg); font-weight: 600; color: var(--text-secondary); }
+  .trash-empty-hint { margin: 4px 0 0; font-size: var(--text-sm); color: var(--text-muted); }
+  .trash-view .table-header {
+    display: grid;
+    grid-template-columns: 1fr 110px 100px;
+    gap: 8px;
+    padding: 6px 12px;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-tertiary);
+  }
+  .trash-view .table-row {
+    display: grid;
+    grid-template-columns: 1fr 110px 100px;
+    gap: 8px;
+    padding: 8px 12px;
+    font-size: var(--text-base);
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+  }
+  .trash-view .table-row:hover { background: var(--bg-hover); }
+  .btn-sm { padding: 4px 10px; font-size: var(--text-sm); cursor: pointer; border: 1px solid var(--border); border-radius: var(--radius-1); background: transparent; color: var(--text-primary); }
+  .btn-sm:hover { background: var(--bg-hover); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-danger-ghost { background: transparent; color: var(--danger); border-color: var(--danger); }
+  .btn-danger-ghost:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+</style>

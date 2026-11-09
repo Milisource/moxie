@@ -1,21 +1,44 @@
 package commands
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/mili/moxie/internal/archive"
+	"github.com/mili/moxie/internal/browserresolve"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
+	"github.com/mili/moxie/internal/extensionbridge"
 	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/updater"
 )
+
+// prepareDownloader wires the process-wide downloader services used by every
+// command that downloads: the DB-backed masked-URL cache and the browser
+// fallback for challenge-graded links. Both are optional; when no browser is
+// available the Go path still runs and reports the challenge.
+func prepareDownloader(database *db.Database) {
+	downloader.SetDefaultResolvedCache(
+		database.GetResolvedURL,
+		func(maskedURL, resolved, host string) {
+			if err := database.PutResolvedURL(maskedURL, resolved, host); err != nil {
+				log.Warn("failed to cache resolved masked URL", "error", err)
+			}
+		},
+	)
+	if installed, reason := browserresolve.InstallDownloaderFallback(); !installed {
+		log.Debug("downloader browser fallback unavailable", "reason", reason)
+	}
+}
 
 // Download downloads a game from F95Zone download links with platform priority.
 func Download(args []string) {
@@ -25,15 +48,14 @@ func Download(args []string) {
 	cookieStr := fs.String("cookie", "", "Cookie header from browser")
 	cookieFile := fs.String("cookie-file", "", "File containing cookie header")
 	platform := fs.String("platform", "", "Platform preference (linux/windows/macos/all, default: auto-detect)")
+	excludeHost := fs.String("exclude-host", "", "Comma-separated hosts to skip (e.g. pixeldrain when rate-limited)")
 	all := fs.Bool("all", false, "Download all games with pending updates")
 	open := fs.Bool("open", false, "Open download links in browser instead of direct download (bypasses bot detection)")
+	extBridge := fs.Bool("extension", false, "Resolve /dl/ check pages in your browser via the moxie-bridge extension, then download automatically (implies browser-assisted flow)")
 	watch := fs.Bool("watch", false, "Watch download directory for new files and auto-install (use with --open)")
 	browserDir := fs.String("browser-dir", "", "Browser download directory to watch (default: ~/Downloads)")
-	browser := fs.Bool("browser", os.Getenv("MOXIE_BROWSER") == "1", "Use a headed browser for Turnstile-protected hosts (VikingFile); also MOXIE_BROWSER=1")
 	verbose := fs.Bool("verbose", false, "Verbose logging (debug level)")
 	fs.Parse(args)
-
-	downloader.SetBrowserResolver(*browser)
 
 	if *verbose {
 		log.SetLevel(slog.LevelDebug)
@@ -41,6 +63,34 @@ func Download(args []string) {
 
 	database := OpenDB()
 	defer database.Close()
+
+	prepareDownloader(database)
+
+	// --extension: resolve F95Zone /dl/ check pages in the user's own browser
+	// (where hCaptcha passes) instead of the automated browser. Overrides the
+	// browser /dl/ solver installed above; the rest of the pipeline is
+	// unchanged.
+	if *extBridge {
+		bridge, err := extensionbridge.New(extensionbridge.WithOpener(openURL))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error starting the extension bridge: %v\n", err)
+			os.Exit(1)
+		}
+		defer bridge.Close()
+		var extTimedOut bool
+		downloader.SetDefaultDLSolver(func(ctx context.Context, dlURL string) (string, error) {
+			if extTimedOut {
+				return "", fmt.Errorf("extension check already timed out — re-run `moxie download --extension` when you can pass the check")
+			}
+			fmt.Fprintf(os.Stderr, "  Opening F95Zone's check in your browser (port %d) — pass it there and the download continues automatically...\n", bridge.Port())
+			dest, err := bridge.Resolve(ctx, dlURL)
+			if errors.Is(err, context.DeadlineExceeded) {
+				extTimedOut = true
+			}
+			return dest, err
+		})
+		fmt.Fprintf(os.Stderr, "Extension bridge listening on 127.0.0.1:%d\n", bridge.Port())
+	}
 
 	cookie := ResolveCookie(*cookieStr, *cookieFile)
 
@@ -61,7 +111,7 @@ func Download(args []string) {
 		if *open {
 			downloadAllOpen(database, cookie, string(targetPlatform), dlWatchDir, *extract, *watch)
 		} else {
-			downloadAll(database, cookie, *downloadDir, string(targetPlatform), *extract)
+			downloadAll(database, cookie, *downloadDir, string(targetPlatform), *extract, parseHostExclusions(*excludeHost))
 		}
 		return
 	}
@@ -83,13 +133,14 @@ func Download(args []string) {
 
 	if *open {
 		downloadSingleOpen(database, game, cookie, string(targetPlatform), dlWatchDir, *extract, *watch)
-	} else {
-		downloadSingle(database, game, cookie, *downloadDir, string(targetPlatform), *extract)
+	} else if err := downloadSingle(database, game, cookie, *downloadDir, string(targetPlatform), *extract, nil, parseHostExclusions(*excludeHost)); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+		os.Exit(1)
 	}
 }
 
 // downloadAll downloads all games with pending version updates.
-func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform string, extract bool) {
+func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform string, extract bool, excludedHosts map[string]bool) {
 	queue, err := database.GamesNeedingUpdate()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error listing games: %v\n", err)
@@ -102,11 +153,20 @@ func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform stri
 	}
 
 	fmt.Fprintf(os.Stderr, "Downloading updates for %d games...\n\n", len(queue))
+	var client *scraper.Client
+	if cookie != "" {
+		client = scraper.NewClient(cookie)
+	}
 	ok, failed := 0, 0
-	for i, g := range queue {
+	for i := range queue {
+		g := &queue[i]
 		fmt.Fprintf(os.Stderr, "[%d/%d] %s: %s → %s\n", i+1, len(queue), g.Title, g.Version, g.LatestVersion)
-		downloadSingle(database, &g, cookie, downloadDir, targetPlatform, extract)
-		ok++
+		if err := downloadSingle(database, g, cookie, downloadDir, targetPlatform, extract, client, excludedHosts); err != nil {
+			failed++
+			fmt.Fprintf(os.Stderr, "  ✗ %v\n", err)
+		} else {
+			ok++
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "\n=== Batch download complete: %d/%d games ===\n", ok, len(queue))
@@ -115,22 +175,76 @@ func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform stri
 	}
 }
 
+// scoredDL pairs a download link with its host/platform score.
+type scoredDL struct {
+	link  db.DownloadLink
+	score int
+}
+
+// scoreDownloadLinks ranks the usable links for a platform, dropping
+// online-only entries and any host the caller excluded (a rate-limited mirror
+// is not a failure, so the downloader would otherwise keep choosing it).
+// skippedExcluded counts the links removed by the exclusion so the caller can
+// explain an empty result.
+func scoreDownloadLinks(links []db.DownloadLink, platform downloader.Platform, excluded map[string]bool) (scored []scoredDL, skippedExcluded int) {
+	for _, link := range links {
+		if downloader.IsOnlineOnly(link.Name, link.URL) {
+			continue
+		}
+		if excluded[strings.ToLower(strings.TrimSpace(link.Host))] {
+			skippedExcluded++
+			continue
+		}
+		scored = append(scored, scoredDL{link, downloader.ScoreDownloadLink(link, platform)})
+	}
+	return scored, skippedExcluded
+}
+
+// parseHostExclusions turns a comma-separated host list into a lookup set.
+func parseHostExclusions(v string) map[string]bool {
+	set := make(map[string]bool)
+	for _, part := range strings.Split(v, ",") {
+		if h := strings.ToLower(strings.TrimSpace(part)); h != "" {
+			set[h] = true
+		}
+	}
+	return set
+}
+
 // downloadSingle handles the full download flow for one game.
-func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, targetPlatform string, extract bool) {
+// Returns an error when the download did not complete; nil on success or
+// when skipped (e.g. download already in progress).
+func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, targetPlatform string, extract bool, client *scraper.Client, excludedHosts map[string]bool) error {
 	destDir := downloadDir
 	if destDir == "" {
-		destDir = filepath.Join(filepath.Dir(game.Path), "downloads")
+		// One directory per game: concurrent updates must never share a
+		// download path, or two archives with the same filename overwrite
+		// each other and the merge installs the wrong payload.
+		destDir = filepath.Join(filepath.Dir(game.Path), "downloads", fmt.Sprintf("%d", game.ID))
 	}
 
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "  ✗ Error creating download directory: %v\n", err)
-		return
+		return fmt.Errorf("create download directory: %w", err)
 	}
 
 	existing, _ := database.GetDownloadByGameID(game.ID)
 	if existing != nil && existing.Status == db.DownloadStatusDownloading {
-		fmt.Fprintf(os.Stderr, "  – Download already in progress.\n")
-		return
+		const staleDownloadAfter = 2 * time.Hour
+		if !existing.StartedAt.IsZero() && time.Since(existing.StartedAt) < staleDownloadAfter {
+			fmt.Fprintf(os.Stderr, "  – Download already in progress.\n")
+			return fmt.Errorf("a download for %q is already in progress", game.Title)
+		}
+		// A crashed run leaves status=downloading behind. Returning success
+		// here made auto-update print "✓ Updated" and skip the game on every
+		// later run; heal the row and continue with a real download.
+		fmt.Fprintf(os.Stderr, "  – Clearing an interrupted download record.\n")
+		existing.Status = db.DownloadStatusFailed
+		existing.Error = "interrupted"
+		existing.CompletedAt = time.Now()
+		if err := database.UpdateDownload(existing); err != nil {
+			log.Warn("could not clear stale download record", "game_id", game.ID, "error", err)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "  Looking for %s downloads...\n", targetPlatform)
@@ -146,44 +260,50 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 	}
 
 	if len(links) > 0 {
-		selectedLink = selectBestLinkByPlatform(links, platform)
-	}
-
-	// Fall back to scraping F95Zone. Also re-scrape when every stored link is a
-	// tokenized /dl/ wrapper: those tokens are tied to the page that rendered
-	// them and go stale, so reusing them usually fails.
-	needsScrape := selectedLink == nil
-	if !needsScrape && len(links) > 0 {
-		allTokenized := true
-		for _, l := range links {
-			if !downloader.IsF95DLURL(l.URL) {
-				allTokenized = false
-				break
-			}
+		// Always refresh from the thread when a session is available: stored
+		// links (masked or /dl/) point at the revision that was live when
+		// they were scraped, so a game updated since the last sync would
+		// otherwise download the previous build. On scrape failure the
+		// stored links still fall through to the ranking below.
+		if cookie == "" {
+			selectedLink = selectBestLinkByPlatform(links, platform)
 		}
-		needsScrape = allTokenized
 	}
 
-	if needsScrape && game.F95URL != "" {
+	// Fall back to scraping F95Zone
+	if selectedLink == nil && game.F95URL != "" {
 		if cookie != "" {
 			fmt.Fprintf(os.Stderr, "  Fetching download links from F95Zone...\n")
-			client := scraper.NewClient(cookie)
+			if client == nil {
+				client = scraper.NewClient(cookie)
+			}
 			scrapeURL := scraper.ResolveScrapeURL(game.F95URL, game.F95ThreadID)
 			data, err := client.ScrapeThread(scrapeURL)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  Warning: Could not scrape F95Zone: %v\n", err)
 			} else if len(data.DownloadLinks) > 0 {
-				database.DeleteDownloadLinksByGameID(game.ID)
+				if err := database.DeleteDownloadLinksByGameID(game.ID); err != nil {
+					fmt.Fprintf(os.Stderr, "  ! Failed to clear stale download links: %v\n", err)
+				}
 				for _, dl := range data.DownloadLinks {
-					linkPlatform := downloader.DetectPlatformFromLink(dl.Name, dl.URL)
+					linkPlatform := db.Platform(downloader.DetectPlatform(dl.Name, dl.URL))
 					link := &db.DownloadLink{
 						GameID:   game.ID,
 						URL:      dl.URL,
 						Host:     dl.Host,
 						Name:     dl.Name,
+						Size:     dl.Size,
 						Platform: db.Platform(linkPlatform),
 					}
 					database.CreateDownloadLink(link)
+				}
+				// The thread page exposes only browser-checked /dl/ links;
+				// add the cache API's still-unwrappable /masked/ links for
+				// the same version so a failed check still has a path.
+				if dataHasF95CheckLinks(data.DownloadLinks) {
+					if added := addCacheDownloadLinks(database, game, data, cookie); added > 0 {
+						fmt.Fprintf(os.Stderr, "  Added %d cache fallback link(s)\n", added)
+					}
 				}
 				links, _ = database.ListDownloadLinks(game.ID, "", false)
 				selectedLink = selectBestLinkByPlatform(links, platform)
@@ -193,24 +313,20 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 
 	if len(links) == 0 {
 		fmt.Fprintf(os.Stderr, "  – No download links found.\n")
-		return
+		return fmt.Errorf("no download links found")
 	}
 
-	type scoredLink struct {
-		link  db.DownloadLink
-		score int
-	}
-	var scored []scoredLink
-	for _, link := range links {
-		if downloader.IsOnlineOnly(link.Name, link.URL) {
-			continue
-		}
-		score := downloader.ScoreDownloadLink(link, platform)
-		scored = append(scored, scoredLink{link, score})
-	}
+	scored, skippedExcluded := scoreDownloadLinks(links, platform, excludedHosts)
 	if len(scored) == 0 {
+		if skippedExcluded > 0 {
+			fmt.Fprintf(os.Stderr, "  – No downloadable links (all %d hosts excluded).\n", skippedExcluded)
+			return fmt.Errorf("every download host was excluded")
+		}
 		fmt.Fprintf(os.Stderr, "  – No downloadable links (all online-only).\n")
-		return
+		return fmt.Errorf("no downloadable links (all online-only)")
+	}
+	if skippedExcluded > 0 {
+		fmt.Fprintf(os.Stderr, "  Skipped %d link(s) from excluded hosts.\n", skippedExcluded)
 	}
 	sort.SliceStable(scored, func(i, j int) bool {
 		return scored[i].score > scored[j].score
@@ -232,68 +348,114 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 	dlID, err := database.CreateDownload(dlRecord)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  ✗ Error creating download record: %v\n", err)
-		return
+		return fmt.Errorf("create download record: %w", err)
 	}
 	dlRecord.ID = dlID
 
+	progressFn := func(p downloader.Progress) {
+		dlRecord.BytesDownloaded = p.BytesDownloaded
+		dlRecord.TotalBytes = p.TotalBytes
+		dlRecord.SpeedBytesPerSec = p.SpeedBytesPerSec
+		dlRecord.PercentComplete = p.Percent
+		database.UpdateDownload(dlRecord)
+		renderProgressBar(p)
+	}
+
+	// Multi-part archives: download every part of the best group (with
+	// per-part host fallback); on success skip the single-link loop and go
+	// straight to install. On failure fall back to single links.
 	var lastErr error
 	var failures []string
-	for i, sl := range scored {
-		link := sl.link
-
-		if i > 0 {
-			dlRecord.URL = link.URL
-			dlRecord.Host = link.Host
-			dlRecord.Filename = link.Name
+	var multiPartFinal string
+	groupLinks := make([]db.DownloadLink, 0, len(scored))
+	for _, sl := range scored {
+		groupLinks = append(groupLinks, sl.link)
+	}
+	if groups := downloader.GroupMultiPartLinks(groupLinks); len(groups) > 0 {
+		group := groups[0]
+		fmt.Fprintf(os.Stderr, "  Multi-part archive: %d parts (%s)\n", len(group.Parts), group.Prefix)
+		finalFile, err := downloader.DownloadMultiPart(group, destDir, progressFn, cookie)
+		if err == nil && downloader.IsValidGameFile(finalFile) {
+			multiPartFinal = finalFile
+			dlRecord.Filename = filepath.Base(finalFile)
 			dlRecord.Status = db.DownloadStatusDownloading
-			dlRecord.StartedAt = time.Now()
-			dlRecord.BytesDownloaded = 0
-			dlRecord.TotalBytes = 0
-			dlRecord.SpeedBytesPerSec = 0
-			dlRecord.PercentComplete = 0
-			dlRecord.Error = ""
 			database.UpdateDownload(dlRecord)
-
-			log.Info("download fallback", "game_id", game.ID, "attempt", i+1, "total", len(scored), "host", link.Host)
-			fmt.Fprintf(os.Stderr, "  Retrying with [%s] [%s] %s\n", link.Platform, link.Host, link.Name)
 		} else {
-			dlRecord.Status = db.DownloadStatusDownloading
-			dlRecord.StartedAt = time.Now()
-			database.UpdateDownload(dlRecord)
+			if err == nil {
+				os.Remove(finalFile)
+				err = fmt.Errorf("downloaded content is not a valid game file")
+			}
+			lastErr = err
+			failures = append(failures, err.Error())
+			fmt.Fprintf(os.Stderr, "  ✗ Multi-part download failed: %v (trying single links)\n", err)
 		}
+	}
 
-		progressFn := func(p downloader.Progress) {
-			dlRecord.BytesDownloaded = p.BytesDownloaded
-			dlRecord.TotalBytes = p.TotalBytes
-			dlRecord.SpeedBytesPerSec = p.SpeedBytesPerSec
-			dlRecord.PercentComplete = p.Percent
-			database.UpdateDownload(dlRecord)
-			renderProgressBar(p)
-		}
+	if multiPartFinal == "" {
+		for i, sl := range scored {
+			link := sl.link
 
-		err = downloader.Download(link.URL, destDir, 0, progressFn, cookie)
-		if err == nil {
-			downloadedFile := findDownloadedFile(destDir, dlRecord.Filename)
-			if downloadedFile != "" && !downloader.IsValidGameFile(downloadedFile) {
-				fi, _ := os.Stat(downloadedFile)
-				size := int64(0)
-				if fi != nil {
-					size = fi.Size()
+			if i > 0 {
+				dlRecord.URL = link.URL
+				dlRecord.Host = link.Host
+				dlRecord.Filename = link.Name
+				dlRecord.Status = db.DownloadStatusDownloading
+				dlRecord.StartedAt = time.Now()
+				dlRecord.BytesDownloaded = 0
+				dlRecord.TotalBytes = 0
+				dlRecord.SpeedBytesPerSec = 0
+				dlRecord.PercentComplete = 0
+				dlRecord.Error = ""
+				database.UpdateDownload(dlRecord)
+
+				log.Info("download fallback", "game_id", game.ID, "attempt", i+1, "total", len(scored), "host", link.Host)
+				fmt.Fprintf(os.Stderr, "  Retrying with [%s] [%s] %s\n", link.Platform, link.Host, link.Name)
+			} else {
+				dlRecord.Status = db.DownloadStatusDownloading
+				dlRecord.StartedAt = time.Now()
+				database.UpdateDownload(dlRecord)
+			}
+
+			err = downloader.Download(link.URL, destDir, link.Size, progressFn, cookie)
+			if err == nil {
+				downloadedFile := findDownloadedFile(destDir, dlRecord.Filename)
+				if downloadedFile != "" && !downloader.IsValidGameFile(downloadedFile) {
+					fi, _ := os.Stat(downloadedFile)
+					size := int64(0)
+					if fi != nil {
+						size = fi.Size()
+					}
+					log.Warn("downloaded file is not a valid game file (likely interstitial page)", "file", downloadedFile, "size", size)
+					os.Remove(downloadedFile)
+					err = fmt.Errorf("downloaded content is not a valid game file (%d bytes)", size)
 				}
-				log.Warn("downloaded file is not a valid game file (likely interstitial page)", "file", downloadedFile, "size", size)
-				os.Remove(downloadedFile)
-				err = fmt.Errorf("downloaded content is not a valid game file (%d bytes)", size)
+			}
+			if err == nil {
+				lastErr = nil
+				break
+			}
+			lastErr = err
+			failures = append(failures, err.Error())
+			log.Warn("download attempt failed", "game_id", game.ID, "host", link.Host, "error", err)
+			fmt.Fprintf(os.Stderr, "  ✗ [%s] download failed: %v\n", link.Host, err)
+			if downloader.IsF95StaleLinkError(err) {
+				fmt.Fprintln(os.Stderr, "  ✗ F95Zone download links expired (they last a few hours) — run `moxie sync` for this game and retry")
+				break
+			}
+			if downloader.IsF95SessionError(err) {
+				// Every mirror goes through the same F95Zone session.
+				fmt.Fprintln(os.Stderr, "  ✗ F95Zone session problem — the other mirrors would fail the same way; open f95zone.to in your browser and retry")
+				break
+			}
+			if downloader.IsF95BrowserCheckError(err) {
+				// The check is per session, so every /dl/ link needs the same
+				// human action; walking the mirrors only opens more windows.
+				fmt.Fprintln(os.Stderr, "  ✗ F95Zone wants a human check on download links; every mirror uses the same check.")
+				fmt.Fprintln(os.Stderr, "    Download the file in your browser and retry when the check clears.")
+				break
 			}
 		}
-		if err == nil {
-			lastErr = nil
-			break
-		}
-		lastErr = err
-		failures = append(failures, err.Error())
-		log.Warn("download attempt failed", "game_id", game.ID, "host", link.Host, "error", err)
-		fmt.Fprintf(os.Stderr, "  ✗ [%s] download failed: %v\n", link.Host, err)
-	}
+	} // end multiPartFinal == ""
 
 	if lastErr != nil {
 		dlRecord.Status = db.DownloadStatusFailed
@@ -303,7 +465,11 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 
 		log.Error("download failed (all links exhausted)", "game_id", game.ID, "links_tried", len(scored), "error", lastErr)
 		fmt.Fprintf(os.Stderr, "  ✗ Failed: %s\n", lastErr.Error())
-		return
+		if containsF95CheckLink(groupLinks) && isCaptchaError(lastErr) {
+			fmt.Fprintf(os.Stderr, "  F95Zone now gates every download link behind a human hCaptcha check.\n")
+			fmt.Fprintf(os.Stderr, "  Open the game's links in your browser instead: moxie download --open %d\n", game.ID)
+		}
+		return lastErr
 	}
 
 	dlRecord.Status = db.DownloadStatusCompleted
@@ -316,13 +482,50 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 
 	// Auto-extract
 	if extract {
-		downloadedFile := findDownloadedFile(destDir, dlRecord.Filename)
-		if downloadedFile != "" && archive.IsArchiveFile(downloadedFile) {
+		downloadedFile := multiPartFinal
+		if downloadedFile == "" {
+			downloadedFile = findDownloadedFile(destDir, dlRecord.Filename)
+		}
+		if downloadedFile == "" {
+			// Reporting success without a file leaves the game queued while
+			// auto-update claims it was installed.
+			fmt.Fprintf(os.Stderr, "  ✗ Could not locate the downloaded file in %s\n", destDir)
+			return fmt.Errorf("downloaded file not found in %s", destDir)
+		}
+		if !archive.IsArchiveFile(downloadedFile) {
+			// Single-file HTML games ship the game itself, not an archive.
+			// Try that before calling the payload unmergeable; a plain
+			// executable/patch still gets the manual-install message.
+			if !applyHTMLGameInstall(database, game, downloadedFile) {
+				fmt.Fprintf(os.Stderr, "  Downloaded file is not an archive or HTML game: %s\n", downloadedFile)
+				fmt.Fprintf(os.Stderr, "  Install it manually: moxie install %d %s\n", game.ID, downloadedFile)
+				return fmt.Errorf("downloaded file is not an archive or HTML game; install manually")
+			}
+			fmt.Fprintf(os.Stderr, "  ✓ Ready: %s\n", destDir)
+			return nil
+		}
+		if archive.IsArchiveFile(downloadedFile) {
 			fmt.Fprintf(os.Stderr, "  Extracting archive...\n")
 			dlRecord.Status = db.DownloadStatusExtracting
 			database.UpdateDownload(dlRecord)
 
-			result, err := archive.Extract(downloadedFile, destDir, archive.Options{
+			// Extract into a directory owned by this game. The download
+			// directory is shared by every game with the same parent, so
+			// extracting there mixes two concurrent updates and the merge
+			// then installs the wrong tree (observed live: Corruption of
+			// Champions II landed in Kinky Dungeon).
+			extractDir := extractionDir(destDir, game.ID)
+			if err := os.MkdirAll(extractDir, 0755); err != nil {
+				return fmt.Errorf("create extraction dir: %w", err)
+			}
+			extractionAdopted := false
+			defer func() {
+				// An adopted tree is the live install now; the helper leaves
+				// it alone in that case.
+				removeExtractionIfUnused(extractDir, extractionAdopted)
+			}()
+
+			result, err := archive.Extract(downloadedFile, extractDir, archive.Options{
 				OnProgress: func(totalFiles, extractedFiles int, currentFile string, bytesProcessed, bytesTotal int64) {
 					if totalFiles > 0 {
 						percent := float64(extractedFiles) / float64(totalFiles) * 100
@@ -337,25 +540,73 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 			})
 
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "\n    ⚠ Warning: %v\n", err)
-			} else {
-				fmt.Fprintf(os.Stderr, "\n    Extracted %d files\n", result.FilesExtracted)
-				os.Remove(downloadedFile)
-				fmt.Fprintf(os.Stderr, "    Removed archive\n")
-
-				fmt.Fprintf(os.Stderr, "  Merging update into %s...\n", game.Path)
-				mergeResult, mergeErr := updater.Merge(game.Path, string(game.Engine), result.Destination, true)
-				if mergeErr != nil {
-					fmt.Fprintf(os.Stderr, "    ⚠ Warning: %v\n", mergeErr)
-				} else {
-					fmt.Fprintf(os.Stderr, "    Files updated: %d  |  User files preserved: %d\n", mergeResult.FilesCopied, mergeResult.FilesPreserved)
-					if mergeResult.BackupPath != "" {
-						fmt.Fprintf(os.Stderr, "    Backup: %s\n", mergeResult.BackupPath)
-					}
-				}
+				dlRecord.Status = db.DownloadStatusFailed
+				dlRecord.Error = err.Error()
+				dlRecord.CompletedAt = time.Now()
+				database.UpdateDownload(dlRecord)
+				fmt.Fprintf(os.Stderr, "\n    Extraction failed: %v\n", err)
+				fmt.Fprintf(os.Stderr, "    Archive kept: %s\n", downloadedFile)
+				return fmt.Errorf("extract %s: %w", filepath.Base(downloadedFile), err)
 			}
+			fmt.Fprintf(os.Stderr, "\n    Extracted %d files\n", result.FilesExtracted)
+
+			fmt.Fprintf(os.Stderr, "  Merging update into %s...\n", game.Path)
+			mergeResult, mergeErr := updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
+			if mergeErr == nil && mergeResult != nil && mergeResult.Adopted {
+				extractionAdopted = true
+			}
+			if mergeErr != nil {
+				dlRecord.Status = db.DownloadStatusFailed
+				dlRecord.Error = mergeErr.Error()
+				dlRecord.CompletedAt = time.Now()
+				database.UpdateDownload(dlRecord)
+				fmt.Fprintf(os.Stderr, "    Merge failed: %v\n", mergeErr)
+				fmt.Fprintf(os.Stderr, "    Version left at %q. Archive kept: %s\n", game.Version, downloadedFile)
+				return fmt.Errorf("merge update: %w", mergeErr)
+			}
+			fmt.Fprintf(os.Stderr, "    Files updated: %d  |  User files preserved: %d\n", mergeResult.FilesCopied, mergeResult.FilesPreserved)
+			if mergeResult.BackupPath != "" {
+				fmt.Fprintf(os.Stderr, "    Backup: %s\n", mergeResult.BackupPath)
+			}
+
+			// Record the installed version so the game leaves the update
+			// queue; only now is it safe to delete the archive.
+			if installed, verr := recordInstalledVersion(database, game, downloadedFile); verr != nil {
+				log.Warn("failed to record installed version", "game_id", game.ID, "error", verr)
+				fmt.Fprintf(os.Stderr, "    Warning: could not record version: %v\n", verr)
+			} else if installed != "" {
+				fmt.Fprintf(os.Stderr, "    Version: %s\n", installed)
+			}
+			if rerr := os.Remove(downloadedFile); rerr != nil {
+				fmt.Fprintf(os.Stderr, "    Warning: could not remove archive: %v\n", rerr)
+			}
+			dlRecord.Status = db.DownloadStatusCompleted
+			dlRecord.PercentComplete = 100
+			dlRecord.CompletedAt = time.Now()
+			database.UpdateDownload(dlRecord)
 		}
 	}
 
 	fmt.Fprintf(os.Stderr, "  ✓ Ready: %s\n", destDir)
+	return nil
+}
+
+// removeExtractionIfUnused deletes the per-game extraction tree after a
+// merge. When updater.Merge adopted that tree it renamed it into the game
+// directory, so the staging path holds the live install now and must not be
+// deleted from here.
+func removeExtractionIfUnused(destination string, adopted bool) {
+	if destination == "" || adopted {
+		return
+	}
+	os.RemoveAll(destination)
+}
+
+// extractionDir returns the scratch directory an archive is extracted into.
+// It must be owned by one download: the download directory is shared by every
+// game with the same parent, and two concurrent updates extracting there mix
+// their payloads — the merge then installs the wrong tree (observed live:
+// Corruption of Champions II was installed over Kinky Dungeon).
+func extractionDir(downloadDir string, gameID int64) string {
+	return filepath.Join(downloadDir, fmt.Sprintf(".extract-g%d-%d", gameID, time.Now().UnixNano()))
 }

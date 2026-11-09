@@ -2,34 +2,26 @@ package downloader
 
 import (
 	"fmt"
-	"os/exec"
 
 	"github.com/mili/moxie/internal/log"
 )
 
 // --- Mega ---
-// Mega uses a proprietary encrypted protocol, so plain HTTP cannot fetch the
-// file. When megatools is installed we hand the link to it; megatools performs
-// the key exchange and AES-CTR decryption itself and supports resume.
-//
-// Install: apt install megatools / brew install megatools
+// Mega uses a proprietary encrypted protocol that plain HTTP cannot handle.
+// When the megatools binary is installed, resolveMega signals the download
+// flow to delegate to 'megatools dl' via ErrMegaNeedsMegatools (intercepted
+// by DownloadWithContext). Without megatools the user gets install
+// instructions instead of a silent failure.
 func (r *HostResolver) resolveMega(url string) (*ResolveResult, error) {
-	path, err := exec.LookPath("megatools")
-	if err != nil {
-		log.Info("mega link skipped: megatools not installed", "url", url)
+	if _, err := findMegatools(); err != nil {
+		log.Info("mega link skipped (megatools not installed)", "url", redactedURL(url))
 		return nil, fmt.Errorf(
-			"Mega needs megatools (not installed). Install it with:\n" +
-				"  apt install megatools   (Debian/Ubuntu)\n" +
-				"  brew install megatools  (macOS)\n" +
-				"  pacman -S megatools     (Arch)\n" +
-				"then retry the download",
+			"Mega uses encrypted protocol - use megatools CLI:\n"+
+				"  megatools dl --path <dest> '%s'\n"+
+				"  Install: brew install megatools / apt install megatools",
+			url,
 		)
 	}
-
-	log.Debug("mega link delegated to megatools", "binary", path)
-	return &ResolveResult{
-		URL:             url,
-		Headers:         map[string]string{},
-		ExternalCommand: path,
-	}, nil
+	log.Debug("mega link delegating to megatools subprocess", "url", redactedURL(url))
+	return nil, &MegaNeedsToolsError{URL: url}
 }

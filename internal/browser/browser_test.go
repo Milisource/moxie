@@ -1,7 +1,10 @@
 package browser
 
 import (
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/browserutils/kooky"
 )
@@ -14,6 +17,157 @@ func cookie(name, value string) *kooky.Cookie {
 	c.Name = name
 	c.Value = value
 	return c
+}
+
+// domainCookie is cookie() with a domain set.
+func domainCookie(name, value, domain string) *kooky.Cookie {
+	c := cookie(name, value)
+	c.Domain = domain
+	return c
+}
+
+// browserCookie is cookie() with a kooky BrowserInfo (store name).
+func browserCookie(name, value, domain, browserName string) *kooky.Cookie {
+	c := domainCookie(name, value, domain)
+	c.Browser = &fakeBrowserInfo{name: browserName}
+	return c
+}
+
+type fakeBrowserInfo struct{ name string }
+
+func (f *fakeBrowserInfo) Browser() string        { return f.name }
+func (f *fakeBrowserInfo) Profile() string        { return "default" }
+func (f *fakeBrowserInfo) IsDefaultProfile() bool { return true }
+func (f *fakeBrowserInfo) FilePath() string       { return "/fake/" + f.name }
+
+// TestGetCookieBrowsersForHost covers browser-store selection: domain
+// matching, dedup, and the stable preference order.
+func TestGetCookieBrowsersForHost(t *testing.T) {
+	cookies := []*kooky.Cookie{
+		browserCookie("cf_clearance", "a", ".vikingfile.com", "firefox"),
+		browserCookie("cf_clearance", "b", ".vikingfile.com", "chrome"),
+		browserCookie("session", "c", "datanodes.to", "firefox"),
+		browserCookie("other", "d", "example.org", "edge"),
+		nil,
+	}
+	tests := []struct {
+		host string
+		want []string
+	}{
+		{"vikingfile.com", []string{"chrome", "firefox"}}, // preference order, deduped
+		{"datanodes.to", []string{"firefox"}},
+		{"cdn.example.org", []string{"edge"}}, // subdomain domain-match
+		{"unrelated.com", nil},
+		{"", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			got := cookieBrowsersForHostname(cookies, tt.host)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("got %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// filterF95Cookies
+// ---------------------------------------------------------------------------
+
+// Regression: kooky's Domain filter is exact-match and drops domain-scoped
+// cookies stored with a leading dot; the local filter must accept them.
+func TestFilterF95Cookies_DotDomain(t *testing.T) {
+	t.Parallel()
+	cookies := []*kooky.Cookie{
+		domainCookie("xf_session", "sess", ".f95zone.to"),
+		domainCookie("xf_user", "u1", "f95zone.to"),
+		domainCookie("cf_clearance", "cf", "www.f95zone.to"),
+		domainCookie("other", "x", "example.com"),
+		domainCookie("lookalike", "x", "notf95zone.to"),
+		nil,
+	}
+	got := filterF95Cookies(cookies)
+	if len(got) != 3 {
+		t.Fatalf("filterF95Cookies kept %d cookies, want 3 (got: %v)", len(got), got)
+	}
+	// All kept cookies must be f95zone-owned (both bare and dot-prefixed).
+	for _, c := range got {
+		if !f95ZoneDomain(c.Domain) {
+			t.Errorf("kept cookie with domain %q", c.Domain)
+		}
+	}
+}
+
+func TestFilterF95Cookies_Empty(t *testing.T) {
+	t.Parallel()
+	if got := filterF95Cookies(nil); len(got) != 0 {
+		t.Errorf("filterF95Cookies(nil) = %v, want empty", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// dedupCookies
+// ---------------------------------------------------------------------------
+
+func TestDedupCookies_KeepsNewest(t *testing.T) {
+	t.Parallel()
+	old := cookie("xf_session", "old")
+	old.Creation = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	mid := cookie("xf_session", "mid")
+	mid.Creation = time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	new := cookie("xf_session", "new")
+	new.Creation = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	got := dedupCookies([]*kooky.Cookie{old, new, mid})
+	if len(got) != 1 {
+		t.Fatalf("dedupCookies = %v, want 1 cookie", got)
+	}
+	if got[0].Value != "new" {
+		t.Errorf("dedupCookies kept value %q, want newest %q", got[0].Value, "new")
+	}
+}
+
+func TestDedupCookies_FallsBackToExpires(t *testing.T) {
+	t.Parallel()
+	// Both Creation times unset — newer Expires wins as a proxy.
+	soon := cookie("xf_user", "soon")
+	soon.Expires = time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
+	later := cookie("xf_user", "later")
+	later.Expires = time.Date(2027, 12, 31, 0, 0, 0, 0, time.UTC)
+
+	got := dedupCookies([]*kooky.Cookie{later, soon})
+	if len(got) != 1 || got[0].Value != "later" {
+		t.Errorf("dedupCookies = %v, want single cookie with value %q", got, "later")
+	}
+}
+
+func TestDedupCookies_KeepsDistinctNames(t *testing.T) {
+	t.Parallel()
+	cookies := []*kooky.Cookie{
+		cookie("xf_session", "a"),
+		cookie("xf_user", "b"),
+		cookie("cf_clearance", "c"),
+	}
+	got := dedupCookies(cookies)
+	if len(got) != 3 {
+		t.Errorf("dedupCookies = %v, want all 3 distinct names kept", got)
+	}
+}
+
+func TestDedupCookies_FirstKeptWhenTimesEqual(t *testing.T) {
+	t.Parallel()
+	// Identical timestamps (all zero) — the first occurrence wins.
+	a := cookie("xf_session", "first")
+	b := cookie("xf_session", "second")
+	got := dedupCookies([]*kooky.Cookie{a, b})
+	if len(got) != 1 || got[0].Value != "first" {
+		t.Errorf("dedupCookies = %v, want first occurrence kept", got)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -115,5 +269,121 @@ func TestBuildCookieHeader_EmptyCookies(t *testing.T) {
 	got = buildCookieHeader([]*kooky.Cookie{})
 	if got != "" {
 		t.Errorf("buildCookieHeader(empty) = %q, want empty", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// domainMatchesHostname
+// ---------------------------------------------------------------------------
+
+func TestDomainMatchesHostname(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		hostname string
+		domain   string
+		want     bool
+	}{
+		{"exact match", "buzzheavier.com", "buzzheavier.com", true},
+		{"dot-prefixed exact", "buzzheavier.com", ".buzzheavier.com", true},
+		{"subdomain", "dd.buzzheavier.com", ".buzzheavier.com", true},
+		{"subdomain no dot prefix", "dd.buzzheavier.com", "buzzheavier.com", true},
+		{"deep subdomain", "a.b.buzzheavier.com", ".buzzheavier.com", true},
+		{"unrelated host", "example.com", "buzzheavier.com", false},
+		{"lookalike suffix", "notbuzzheavier.com", "buzzheavier.com", false},
+		{"lookalike boundary", "evilbuzzheavier.com", ".buzzheavier.com", false},
+		{"empty hostname", "", ".buzzheavier.com", false},
+		{"empty domain", "buzzheavier.com", "", false},
+		{"bare dot domain", "buzzheavier.com", ".", false},
+		{"uppercase normalized", "DD.BUZZHEAVIER.COM", ".BuzzHeavier.com", true},
+		{"trailing dot host", "buzzheavier.com.", ".buzzheavier.com", true},
+		{"single label cookie domain", "com", ".com", false},
+		{"localhost cookie", "localhost", "localhost", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := domainMatchesHostname(tt.hostname, tt.domain)
+			if got != tt.want {
+				t.Errorf("domainMatchesHostname(%q, %q) = %v, want %v", tt.hostname, tt.domain, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildHostCookieHeader
+// ---------------------------------------------------------------------------
+
+func TestBuildHostCookieHeader_FiltersSortsDedups(t *testing.T) {
+	t.Parallel()
+	old := domainCookie("cf_clearance", "old", "buzzheavier.com")
+	old.Creation = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newCF := domainCookie("cf_clearance", "new", "buzzheavier.com")
+	newCF.Creation = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	cookies := []*kooky.Cookie{
+		domainCookie("session", "s1", ".buzzheavier.com"),
+		old,
+		domainCookie("other", "x", "example.com"),
+		nil,
+		newCF,
+		domainCookie("__cf_bm", "bm", ".dd.buzzheavier.com"),
+	}
+	// Sorted by name, newest cf_clearance kept, unrelated host excluded.
+	got := buildHostCookieHeader(cookies, "dd.buzzheavier.com")
+	want := "__cf_bm=bm; cf_clearance=new; session=s1"
+	if got != want {
+		t.Errorf("buildHostCookieHeader = %q, want %q", got, want)
+	}
+}
+
+func TestBuildHostCookieHeader_NoMatchReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	cookies := []*kooky.Cookie{
+		domainCookie("cf_clearance", "c", ".example.com"),
+	}
+	if got := buildHostCookieHeader(cookies, "buzzheavier.com"); got != "" {
+		t.Errorf("buildHostCookieHeader = %q, want empty", got)
+	}
+	if got := buildHostCookieHeader(nil, "buzzheavier.com"); got != "" {
+		t.Errorf("buildHostCookieHeader(nil) = %q, want empty", got)
+	}
+	if got := buildHostCookieHeader(cookies, ""); got != "" {
+		t.Errorf("buildHostCookieHeader(empty host) = %q, want empty", got)
+	}
+}
+
+func TestBuildHostCookieHeader_CapsAtMaxLength(t *testing.T) {
+	t.Parallel()
+	var cookies []*kooky.Cookie
+	for i := 0; i < 80; i++ {
+		cookies = append(cookies, domainCookie(fmt.Sprintf("c%02d", i), strings.Repeat("v", 150), ".buzzheavier.com"))
+	}
+	got := buildHostCookieHeader(cookies, "buzzheavier.com")
+	if len(got) > maxCookieHeaderLen+160 {
+		t.Errorf("header length %d exceeds cap %d + pair slack", len(got), maxCookieHeaderLen)
+	}
+	var all []string
+	for _, c := range cookies {
+		all = append(all, c.Name+"="+c.Value)
+	}
+	full := strings.Join(all, "; ")
+	if len(got) >= len(full) {
+		t.Errorf("expected header to be truncated by cap, got full %d bytes", len(got))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetCookiesForHost
+// ---------------------------------------------------------------------------
+
+func TestGetCookiesForHost_EmptyHostname(t *testing.T) {
+	t.Parallel()
+	got, err := GetCookiesForHost("")
+	if err != nil {
+		t.Errorf("GetCookiesForHost(\"\") returned error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("GetCookiesForHost(\"\") = %q, want empty", got)
 	}
 }

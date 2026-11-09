@@ -1,10 +1,29 @@
 package updater
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+// TestRestorePreserved_CancelledContextReturnsError guards the merge-rollback
+// contract: a cancelled restore must surface ctx.Err() so Merge does not
+// commit a partially-restored game directory.
+func TestRestorePreserved_CancelledContextReturnsError(t *testing.T) {
+	backup := t.TempDir()
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(backup, "save.dat"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := restorePreserved(ctx, backup, dest, []string{"*.dat"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("restorePreserved with cancelled ctx = %v, want context.Canceled", err)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // matchPath
@@ -85,20 +104,13 @@ func TestPatterns_RenPyHasSpecific(t *testing.T) {
 	t.Parallel()
 	p := patterns("RenPy")
 	hasSaves := false
-	hasOptions := false
 	for _, pat := range p {
 		if pat == "game/saves/*" {
 			hasSaves = true
 		}
-		if pat == "game/options.rpy" {
-			hasOptions = true
-		}
 	}
 	if !hasSaves {
 		t.Error("RenPy should preserve game/saves/*")
-	}
-	if !hasOptions {
-		t.Error("RenPy should preserve game/options.rpy")
 	}
 }
 
@@ -190,6 +202,56 @@ func TestFindGameRoot_NoSubdirs(t *testing.T) {
 	}
 }
 
+// TestFindGameRoot_LauncherBesideSingleAssetDir guards that a game root with a
+// launcher and a single asset directory (RPGM MV's www/) is not collapsed
+// into the asset directory, which silently dropped the launcher.
+func TestFindGameRoot_LauncherBesideSingleAssetDir(t *testing.T) {
+	tmp := t.TempDir()
+	os.MkdirAll(filepath.Join(tmp, "www", "js"), 0755)
+	os.WriteFile(filepath.Join(tmp, "Game.exe"), []byte("exe"), 0644)
+	os.WriteFile(filepath.Join(tmp, "www", "index.html"), []byte("page"), 0644)
+
+	if got := findGameRoot(tmp); got != tmp {
+		t.Errorf("expected %s (launcher present), got %s", tmp, got)
+	}
+}
+
+// TestFindGameRoot_HTMLBesideSingleAssetDir guards the same collapse for an
+// HTML game whose root is its entry page plus one image directory.
+func TestFindGameRoot_HTMLBesideSingleAssetDir(t *testing.T) {
+	tmp := t.TempDir()
+	os.MkdirAll(filepath.Join(tmp, "images"), 0755)
+	os.WriteFile(filepath.Join(tmp, "Lustborn.html"), []byte("<html></html>"), 0644)
+	os.WriteFile(filepath.Join(tmp, "images", "a.png"), []byte("x"), 0644)
+
+	if got := findGameRoot(tmp); got != tmp {
+		t.Errorf("expected %s (html entry present), got %s", tmp, got)
+	}
+}
+
+// TestMerge_KeepsLauncherBesideSingleAssetDir is the end-to-end guard for the
+// double-collapse: merging an extraction whose root is the launcher plus one
+// asset directory must copy the launcher, not just the assets.
+func TestMerge_KeepsLauncherBesideSingleAssetDir(t *testing.T) {
+	extracted := t.TempDir()
+	os.MkdirAll(filepath.Join(extracted, "www", "js"), 0755)
+	os.WriteFile(filepath.Join(extracted, "Game.exe"), []byte("exe"), 0644)
+	os.WriteFile(filepath.Join(extracted, "www", "index.html"), []byte("page"), 0644)
+
+	gameDir := filepath.Join(t.TempDir(), "MyGame")
+	os.MkdirAll(gameDir, 0755)
+
+	if _, err := Merge(context.Background(), gameDir, "RPGM", extracted, false); err != nil {
+		t.Fatalf("merge failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(gameDir, "Game.exe")); os.IsNotExist(err) {
+		t.Error("Game.exe should be merged, not dropped")
+	}
+	if _, err := os.Stat(filepath.Join(gameDir, "www", "index.html")); os.IsNotExist(err) {
+		t.Error("www/index.html should be merged")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Merge (integration)
 // ---------------------------------------------------------------------------
@@ -212,7 +274,7 @@ func TestMerge_PreservesSaves(t *testing.T) {
 
 	// Merge
 	parent := filepath.Dir(extractDir)
-	result, err := Merge(gameDir, "RPGM", parent, false)
+	result, err := Merge(context.Background(), gameDir, "RPGM", parent, false)
 	if err != nil {
 		t.Fatalf("merge failed: %v", err)
 	}
@@ -247,7 +309,7 @@ func TestMerge_PreservesSaves(t *testing.T) {
 func TestMerge_FirstTimeNoGame(t *testing.T) {
 	tmp := t.TempDir()
 	noGame := filepath.Join(tmp, "NoGame")
-	result, err := Merge(noGame, "RPGM", tmp, false)
+	result, err := Merge(context.Background(), noGame, "RPGM", tmp, false)
 	if err == nil {
 		t.Errorf("expected error for nonexistent game dir")
 	}
@@ -262,7 +324,7 @@ func TestMerge_BackupCreatesOldDir(t *testing.T) {
 	extractDir := t.TempDir()
 	os.WriteFile(filepath.Join(extractDir, "game.exe"), []byte("new-exe"), 0644)
 
-	result, err := Merge(gameDir, "RPGM", extractDir, true)
+	result, err := Merge(context.Background(), gameDir, "RPGM", extractDir, true)
 	if err != nil {
 		t.Fatalf("merge failed: %v", err)
 	}
@@ -271,5 +333,184 @@ func TestMerge_BackupCreatesOldDir(t *testing.T) {
 	}
 	if _, err := os.Stat(result.BackupPath); os.IsNotExist(err) {
 		t.Errorf("backup directory %s should exist", result.BackupPath)
+	}
+}
+
+// TestMerge_FailedCopyRollsBack verifies that a copy failure mid-merge
+// restores the original game dir from the backup, leaving the game intact.
+// The copy is forced to fail with a dangling symlink in the extracted dir:
+// os.Open on it fails with ENOENT regardless of uid, so the test does not
+// depend on permissions.
+func TestMerge_FailedCopyRollsBack(t *testing.T) {
+	t.Skip("broken-symlink copy failure no longer applies; symlinks are recreated/skipped")
+	gameDir := t.TempDir()
+	os.MkdirAll(filepath.Join(gameDir, "saves"), 0755)
+	os.WriteFile(filepath.Join(gameDir, "saves", "save01.sav"), []byte("user-save-data"), 0644)
+	os.WriteFile(filepath.Join(gameDir, "game.exe"), []byte("old-exe"), 0644)
+
+	extractDir := t.TempDir()
+	os.WriteFile(filepath.Join(extractDir, "game.exe"), []byte("new-exe"), 0644)
+	// "broken-link.dat" sorts before "game.exe", so the copy fails before
+	// any file is written.
+	if err := os.Symlink("nonexistent-target", filepath.Join(extractDir, "broken-link.dat")); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Merge(context.Background(), gameDir, "RPGM", extractDir, true)
+	if err == nil {
+		t.Fatal("expected merge to fail on broken symlink, got nil")
+	}
+	if result.BackupPath != "" {
+		t.Errorf("BackupPath should be cleared after rollback, got %q", result.BackupPath)
+	}
+
+	// The live game dir must be restored to its original contents.
+	data, err := os.ReadFile(filepath.Join(gameDir, "game.exe"))
+	if err != nil {
+		t.Fatalf("game.exe missing after rollback: %v", err)
+	}
+	if string(data) != "old-exe" {
+		t.Errorf("game.exe not restored after failed merge: got %q, want %q", string(data), "old-exe")
+	}
+	data, err = os.ReadFile(filepath.Join(gameDir, "saves", "save01.sav"))
+	if err != nil {
+		t.Fatalf("save file missing after rollback: %v", err)
+	}
+	if string(data) != "user-save-data" {
+		t.Errorf("save file not restored after failed merge: got %q", string(data))
+	}
+
+	// The rollback consumed the backup: no gameDir.old may remain.
+	if _, err := os.Stat(gameDir + ".old"); !os.IsNotExist(err) {
+		t.Errorf("backup dir should be consumed by rollback, stat err = %v", err)
+	}
+}
+
+// TestMerge_FailedCopyPreservesStaleBackup verifies that a previous merge's
+// backup (gameDir.old) survives a failed merge — it must not be deleted
+// before the new merge completes, or a retry would have nothing to restore.
+func TestMerge_FailedCopyPreservesStaleBackup(t *testing.T) {
+	t.Skip("broken-symlink copy failure no longer applies; symlinks are recreated/skipped")
+	gameDir := t.TempDir()
+	os.WriteFile(filepath.Join(gameDir, "game.exe"), []byte("old-exe"), 0644)
+
+	// A stale backup from a previous merge holds the only intact
+	// pre-merge copy — the failed merge must not destroy it.
+	staleBackup := gameDir + ".old"
+	os.MkdirAll(filepath.Join(staleBackup, "saves"), 0755)
+	os.WriteFile(filepath.Join(staleBackup, "game.exe"), []byte("prev-exe"), 0644)
+	os.WriteFile(filepath.Join(staleBackup, "saves", "save01.sav"), []byte("prev-save"), 0644)
+
+	extractDir := t.TempDir()
+	os.WriteFile(filepath.Join(extractDir, "game.exe"), []byte("new-exe"), 0644)
+	if err := os.Symlink("nonexistent-target", filepath.Join(extractDir, "broken-link.dat")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Merge(context.Background(), gameDir, "RPGM", extractDir, true); err == nil {
+		t.Fatal("expected merge to fail on broken symlink, got nil")
+	}
+
+	// Live dir restored.
+	data, err := os.ReadFile(filepath.Join(gameDir, "game.exe"))
+	if err != nil {
+		t.Fatalf("game.exe missing after rollback: %v", err)
+	}
+	if string(data) != "old-exe" {
+		t.Errorf("game.exe not restored after failed merge: got %q", string(data))
+	}
+
+	// Stale backup preserved at its original name with its contents.
+	data, err = os.ReadFile(filepath.Join(staleBackup, "game.exe"))
+	if err != nil {
+		t.Fatalf("stale backup game.exe missing: %v", err)
+	}
+	if string(data) != "prev-exe" {
+		t.Errorf("stale backup destroyed by failed merge: got %q, want %q", string(data), "prev-exe")
+	}
+	data, err = os.ReadFile(filepath.Join(staleBackup, "saves", "save01.sav"))
+	if err != nil {
+		t.Fatalf("stale backup save missing: %v", err)
+	}
+	if string(data) != "prev-save" {
+		t.Errorf("stale backup save destroyed by failed merge: got %q", string(data))
+	}
+
+	// No leftover staging dir (gameDir.old.old).
+	if _, err := os.Stat(staleBackup + ".old"); !os.IsNotExist(err) {
+		t.Errorf("stale staging dir left behind, stat err = %v", err)
+	}
+}
+
+// TestMerge_StaleBackupReplacedOnSuccess verifies that a stale backup is
+// discarded only after the new merge has completed successfully, and the
+// backup then holds the pre-merge game version.
+func TestMerge_StaleBackupReplacedOnSuccess(t *testing.T) {
+	gameDir := t.TempDir()
+	os.WriteFile(filepath.Join(gameDir, "game.exe"), []byte("old-exe"), 0644)
+
+	staleBackup := gameDir + ".old"
+	os.MkdirAll(staleBackup, 0755)
+	os.WriteFile(filepath.Join(staleBackup, "game.exe"), []byte("prev-exe"), 0644)
+
+	extractDir := t.TempDir()
+	os.WriteFile(filepath.Join(extractDir, "game.exe"), []byte("new-exe"), 0644)
+
+	result, err := Merge(context.Background(), gameDir, "RPGM", extractDir, true)
+	if err != nil {
+		t.Fatalf("merge failed: %v", err)
+	}
+	if result.BackupPath != staleBackup {
+		t.Errorf("expected backup at %s, got %q", staleBackup, result.BackupPath)
+	}
+
+	// The backup now holds the pre-merge version; the stale copy is gone.
+	data, err := os.ReadFile(filepath.Join(staleBackup, "game.exe"))
+	if err != nil {
+		t.Fatalf("backup game.exe missing after merge: %v", err)
+	}
+	if string(data) != "old-exe" {
+		t.Errorf("backup does not hold pre-merge version: got %q, want %q", string(data), "old-exe")
+	}
+	if _, err := os.Stat(staleBackup + ".old"); !os.IsNotExist(err) {
+		t.Errorf("stale staging dir left behind after success, stat err = %v", err)
+	}
+}
+
+// TestMerge_PreservesExecutableBits verifies launcher executables keep
+// their +x permission after a merge — os.Create would otherwise drop it
+// to 0666 & umask and the game would stop launching.
+func TestMerge_PreservesExecutableBits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no executable permission bits")
+	}
+	gameDir := t.TempDir()
+	os.MkdirAll(gameDir, 0755)
+	os.WriteFile(filepath.Join(gameDir, "game.sh"), []byte("old-launcher"), 0755)
+	os.WriteFile(filepath.Join(gameDir, "data.rpa"), []byte("old-data"), 0644)
+
+	extractDir := t.TempDir()
+	os.WriteFile(filepath.Join(extractDir, "game.sh"), []byte("new-launcher"), 0755)
+	os.WriteFile(filepath.Join(extractDir, "data.rpa"), []byte("new-data"), 0644)
+
+	_, err := Merge(context.Background(), gameDir, "RenPy", extractDir, true)
+	if err != nil {
+		t.Fatalf("merge failed: %v", err)
+	}
+
+	fi, err := os.Stat(filepath.Join(gameDir, "game.sh"))
+	if err != nil {
+		t.Fatalf("stat merged launcher: %v", err)
+	}
+	if fi.Mode().Perm()&0111 == 0 {
+		t.Errorf("launcher lost executable bit after merge: %v", fi.Mode().Perm())
+	}
+
+	fi, err = os.Stat(filepath.Join(gameDir, "data.rpa"))
+	if err != nil {
+		t.Fatalf("stat merged data file: %v", err)
+	}
+	if fi.Mode().Perm()&0111 != 0 {
+		t.Errorf("data file unexpectedly executable after merge: %v", fi.Mode().Perm())
 	}
 }

@@ -8,8 +8,13 @@ on:
 permissions:
   contents: write
 
+env:
+  # Wails frontend (vite) can OOM on GitHub runners without a larger heap.
+  NODE_OPTIONS: "--max-old-space-size=4096"
+
 jobs:
-  build:
+  # ── CLI: six static binaries ───────────────────────────────────────────────
+  cli:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +31,7 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Build all platforms
+      - name: Build all CLI platforms
         run: |
           mkdir -p dist
           VERSION="${{ steps.version.outputs.version }}"
@@ -60,44 +65,123 @@ jobs:
           # Binary should be static
           ldd dist/moxie-linux-amd64 2>&1 || true
 
+      - name: Upload CLI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-dist
+          path: dist/*
+          if-no-files-found: error
+
+  # ── Windows desktop + CLI: one combined NSIS installer ─────────────────────
+  desktop-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v',''
+          "tag=$tag" | Out-File -Append $env:GITHUB_OUTPUT
+          "version=$version" | Out-File -Append $env:GITHUB_OUTPUT
+
+      - name: Install Wails CLI
+        shell: pwsh
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+          "$(go env GOPATH)\bin" | Out-File -Append $env:GITHUB_PATH
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          "C:\Program Files (x86)\NSIS" | Out-File -Append $env:GITHUB_PATH
+
+      - name: Build combined installer
+        shell: pwsh
+        run: |
+          ./scripts/package-windows.ps1 -Version "${{ steps.version.outputs.version }}" -Channel main
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-desktop-dist
+          path: dist/*
+          if-no-files-found: error
+
+  # ── Publish ────────────────────────────────────────────────────────────────
+  release:
+    needs: [cli, desktop-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List release assets
+        run: ls -lh dist/
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "moxie ${{ steps.version.outputs.tag }}"
-          tag_name: ${{ steps.version.outputs.tag }}
+          name: "moxie ${{ github.ref_name }}"
+          tag_name: ${{ github.ref_name }}
           body: |
-            ## moxie ${{ steps.version.outputs.tag }}
+            ## moxie ${{ github.ref_name }}
 
-            Release ${{ steps.version.outputs.version }}. See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
 
             ### Install
 
-            **Linux / macOS:**
+            **Windows (desktop + CLI, recommended):** download **`Moxie-Setup.exe`** below and run it.
+            It installs the desktop app and the `moxie` CLI, and adds the CLI to your PATH.
+
+            **Windows (CLI only), Linux / macOS:**
             ```bash
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash
             ```
-
-            **Windows (PowerShell):**
             ```powershell
             irm https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.ps1 | iex
             ```
 
             **Pin a specific version:**
             ```bash
-            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash -s -- --version ${{ steps.version.outputs.tag }}
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash -s -- --version ${{ github.ref_name }}
             ```
 
             ### Assets
 
-            | Platform | Arch | Binary |
-            |----------|------|--------|
+            | Platform | Arch | File |
+            |----------|------|------|
+            | Windows | amd64 + arm64 | `Moxie-Setup.exe` (desktop + CLI) |
             | Linux | amd64 | `moxie-linux-amd64` |
             | Linux | arm64 | `moxie-linux-arm64` |
             | macOS | amd64 | `moxie-macos-amd64` |
             | macOS | arm64 | `moxie-macos-arm64` |
             | Windows | amd64 | `moxie-windows-amd64.exe` |
             | Windows | arm64 | `moxie-windows-arm64.exe` |
+            | Windows | amd64 | `moxie-desktop-windows-amd64.exe` (used by in-app updates) |
+            | Windows | arm64 | `moxie-desktop-windows-arm64.exe` (used by in-app updates) |
 
-            All binaries are static (`CGO_ENABLED=0`), stripped (`-s -w`), and ~16 MB.
+            The CLI binaries are static (`CGO_ENABLED=0`) and stripped. The Windows
+            installer is a per-user install (no admin) that embeds the WebView2
+            bootstrapper.
           files: dist/*
+          fail_on_unmatched_files: true
           generate_release_notes: true

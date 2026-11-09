@@ -188,10 +188,12 @@ func IsSteamRunning() (bool, error)
 
 ### 1.4 `shortcuts.go` — shortcuts.vdf Management
 
+Binary VDF parsing is **vendored** in `vdf.go` (replacing the unmaintained `github.com/wakeful-cloud/vdf`). The vendored code uses a custom binary VDF reader/writer (`readVdf`, `writeVdf`, `vdfMap` type) providing the same functionality without external dependency risk.
+
+The serializer is **deterministic and byte-faithful**: fields are emitted in Steam's canonical order (verified against a byte-identical copy of a real Steam-generated `shortcuts.vdf` committed as `testdata/shortcuts_real.vdf` — 12 entries with `FlatpakAppID`, `LastPlayTime`, `DevkitOverrideAppID`, tags and the root terminator). The fixture test asserts the known layout parses, serialization is deterministic across runs, and the round-trip loses nothing. Steam itself quotes `exe`/`StartDir` inconsistently across entries, so byte-equality with the fixture is not the contract — semantic round-trip equality is. Unknown keys (`RawFields`) round-trip byte-for-byte so new Steam fields are never dropped.
+
 ```go
 package steam
-
-import "github.com/wakeful-cloud/vdf"
 
 // ReadShortcuts reads and parses the binary VDF shortcuts file at the given path.
 // Returns a parsed ShortcutFile or an error if the file is missing, corrupt,
@@ -205,8 +207,9 @@ func ReadShortcuts(path string) (*ShortcutFile, error)
 //
 // SAFETY: Automatically creates a backup of the original file before writing.
 // The backup is named "<path>.backup-<timestamp>". If the write succeeds,
-// the backup is retained for 1 hour (caller can delete it). If the write
-// fails, the original file is preserved.
+// the backup is retained; only the 5 most recent backups are kept, older
+// ones are pruned on the next write. If the write fails, the original file
+// is preserved.
 //
 // Caller MUST ensure Steam is not running before calling this.
 func WriteShortcuts(path string, sf *ShortcutFile) error
@@ -344,8 +347,9 @@ func RemoveProtonVersion(steamRoot string, appID uint32) error
 // This is informational; the caller can present the list to the user.
 //
 // Scan locations:
-//   - <steamRoot>/compatibilitytools.d/    (custom, e.g. GE-Proton)
-//   - <steamRoot>/steamapps/common/Proton*/ (official)
+//   - <steamRoot>/compatibilitytools.d/    (custom, e.g. GE-Proton — used as-is)
+//   - <steamRoot>/steamapps/common/Proton*/ (official — lowercased: "Proton
+//     Experimental" → "proton_experimental", matching Steam's tool IDs)
 //
 // On non-Linux platforms, returns ErrNotLinux.
 func ListProtonVersions(steamRoot string) ([]string, error)
@@ -465,7 +469,7 @@ var (
          │
          ▼
 ┌──────────────────┐     ┌─────────────────────┐
-│ 1. Open DB       │────▶│ db.GetGame(42)       │
+│ 1. Open DB       │────►│ db.GetGame(42)       │
 │    (~/.config/   │     │ db.GetScrapedMeta(42) │
 │     moxie/     │     └─────────┬─────────────┘
 │     games.db)    │               │ game: { Title, ExePath, Engine, StoreLinks }
@@ -480,9 +484,9 @@ var (
          ▼
 ┌──────────────────┐
 │ 3. steam.         │
-│    FindSteamRoot()│──▶ ~/.steam/steam/  (or flatpak path)
-│    IsSteamRunning()│──▶ if true → ERROR "close Steam first"
-│    FindSteamUsers()│──▶ [123456789]     (could be multiple)
+│    FindSteamRoot()│──► ~/.steam/steam/  (or flatpak path)
+│    IsSteamRunning()│──► if true → ERROR "close Steam first"
+│    FindSteamUsers()│──► [123456789]     (could be multiple)
 └──────┬───────────┘
        │
        ▼
@@ -533,7 +537,7 @@ var (
 │      User: 123456789                                              │
 │      Proton: proton_experimental (Linux)                          │
 │      Artwork: from F95Zone cover                                  │
-│    ⚠ Restart Steam to see the game in your library.               │
+│    ! Restart Steam to see the game in your library.               │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -572,7 +576,7 @@ func extractSteamAppID(storeLink string) (int, bool) {
 
 | Module | Version | Purpose | File |
 |---|---|---|---|
-| `github.com/wakeful-cloud/vdf` | latest stable | Binary VDF read/write for shortcuts.vdf | `shortcuts.go` |
+| `github.com/wakeful-cloud/vdf` ~~latest stable~~ **VENDORED** | Binary VDF read/write for shortcuts.vdf — replaced with vendored `internal/steam/vdf.go` due to unmaintained dependency (zero tagged releases since 2021) | `vdf.go` (vendored) |
 | `github.com/andygrunwald/vdf` | latest stable | Text VDF parse/write for config.vdf (Proton) | `proton.go` |
 | `golang.org/x/image` | latest | High-quality image resizing (CatmullRom scaler) | `grid.go` |
 
@@ -726,36 +730,36 @@ moxie steam add 42 --name "My Custom Title"
 
 **Output (success):**
 ```
-⚙  Checking Steam... installed at ~/.steam/steam
-⚠  Steam is running — please close Steam before continuing.
+- Checking Steam... installed at ~/.steam/steam
+!  Steam is running — please close Steam before continuing.
    (Press Enter after closing Steam, or Ctrl+C to cancel)
 
 ✓ Steam is closed.
 
-📂 Game: "Summer Scent" (Unity, ID 42)
+- Game: "Summer Scent" (Unity, ID 42)
    Path: /home/user/Games/SummerScent-v1.0
    Exe:  /home/user/Games/SummerScent-v1.0/SummerScent.exe
 
-🔍 Steam User: 123456789
+- Steam User: 123456789
    Backup: ~/.steam/steam/userdata/123456789/config/shortcuts.vdf.backup-20260502T143000Z
 
-📝 Adding to shortcuts.vdf...
+- Adding to shortcuts.vdf...
    AppID: 0x81234567
    Tags: [F95Zone, Unity]
 
-🖼  Downloading cover art...
+- Downloading cover art...
    Source: https://attachments.f95zone.to/2024/12/1234567_cover.png
    ✓ Vertical grid (600×900)
    ✓ Horizontal grid (460×215)
    ✓ Hero banner (1920×620)
 
-🐧 Setting Proton: proton_experimental
+- Setting Proton: proton_experimental
 
 ✓ Added "Summer Scent" to Steam library
   AppID: 0x81234567
   Proton: proton_experimental
 
-⚠  RESTART STEAM to see the game in your library.
+!  RESTART STEAM to see the game in your library.
    If shortcuts disappear, restore from:
    ~/.steam/steam/userdata/123456789/config/shortcuts.vdf.backup-20260502T143000Z
 ```

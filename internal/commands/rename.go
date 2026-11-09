@@ -48,7 +48,7 @@ func Rename(args []string) {
 		// Skip if new path already exists (different game).
 		if newPath != g.Path {
 			if _, err := os.Stat(newPath); err == nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ Skipping %q — target already exists: %q\n",
+				fmt.Fprintf(os.Stderr, "  ! Skipping %q — target already exists: %q\n",
 					filepath.Base(g.Path), newName)
 				continue
 			}
@@ -97,7 +97,7 @@ func Rename(args []string) {
 		// Update DB path.
 		p.game.Path = p.newPath
 		if err := database.UpdateGame(&p.game); err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠ Renamed dir but failed to update DB for %s: %v\n",
+			fmt.Fprintf(os.Stderr, "  ! Renamed dir but failed to update DB for %s: %v\n",
 				p.newName, err)
 		}
 		fmt.Fprintf(os.Stderr, "  ✓ %s → %s\n", filepath.Base(p.oldPath), p.newName)
@@ -107,16 +107,11 @@ func Rename(args []string) {
 }
 
 // CleanGameTitle produces a clean directory name for a game.
-// Prefers the scraped title (stripped of engine/status prefixes), falls back
-// to sanitizing the directory name.
+// Game titles are already stored without F95Zone's engine/status prefixes —
+// the parser exposes those separately — so stripping again would eat a
+// legitimate leading word (a game actually titled "Unity of Command").
 func CleanGameTitle(g db.Game) string {
 	title := g.Title
-
-	// If we have a scraped F95Zone title, strip engine/status prefix tags.
-	if g.F95URL != "" {
-		title = scraper.StripThreadPrefix(title)
-	}
-
 	// Filesystem-safe: replace forbidden chars, limit length.
 	title = FilesystemSafe(title)
 	return title

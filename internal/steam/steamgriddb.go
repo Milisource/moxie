@@ -1,6 +1,7 @@
 package steam
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,8 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/mili/moxie/internal/log"
 )
@@ -21,13 +23,14 @@ import (
 
 // SGDBClient is a rate-limited HTTP client for the SteamGridDB v2 REST API.
 type SGDBClient struct {
-	apiKey            string
-	http              *http.Client
-	mu                sync.Mutex
-	lastReq           time.Time
-	minDelay          time.Duration // 1050ms minimum between API requests
-	lastImageDownload time.Time
-	cdnMinDelay       time.Duration // 200ms minimum between image downloads
+	apiKey string
+	http   *http.Client
+
+	// apiLimiter paces API requests (1050ms apart — the free tier allows
+	// 1 req/s and 200 req/day); cdnLimiter paces CDN image downloads
+	// separately since they hit a different origin with its own limit.
+	apiLimiter *rate.Limiter
+	cdnLimiter *rate.Limiter
 }
 
 // CDNMinDelay is the minimum delay between SteamGridDB CDN image downloads.
@@ -37,10 +40,10 @@ const CDNMinDelay = 200 * time.Millisecond
 // The free tier allows 1 req/s and 200 req/day.
 func NewSGDBClient(apiKey string) *SGDBClient {
 	return &SGDBClient{
-		apiKey:      apiKey,
-		http:        &http.Client{Timeout: 30 * time.Second},
-		minDelay:    1050 * time.Millisecond,
-		cdnMinDelay: CDNMinDelay,
+		apiKey:     apiKey,
+		http:       &http.Client{Timeout: 30 * time.Second},
+		apiLimiter: rate.NewLimiter(rate.Every(1050*time.Millisecond), 1),
+		cdnLimiter: rate.NewLimiter(rate.Every(CDNMinDelay), 1),
 	}
 }
 
@@ -237,15 +240,9 @@ func (c *SGDBClient) DownloadImage(imgURL, destPath string) error {
 	}
 
 	// CDN rate limit: ensure minimum delay between image downloads.
-	c.mu.Lock()
-	elapsed := time.Since(c.lastImageDownload)
-	if elapsed < c.cdnMinDelay {
-		c.mu.Unlock()
-		time.Sleep(c.cdnMinDelay - elapsed)
-		c.mu.Lock()
+	if err := c.cdnLimiter.Wait(context.Background()); err != nil {
+		return fmt.Errorf("steamgriddb: rate limiter: %w", err)
 	}
-	c.lastImageDownload = time.Now()
-	c.mu.Unlock()
 
 	resp, err := c.http.Get(imgURL)
 	if err != nil {
@@ -314,15 +311,9 @@ func BestGridImage(results []SGDBImageResult) (string, bool) {
 
 // doGet performs a rate-limited GET request to the SteamGridDB API.
 func (c *SGDBClient) doGet(path string) ([]byte, error) {
-	c.mu.Lock()
-	elapsed := time.Since(c.lastReq)
-	if elapsed < c.minDelay {
-		c.mu.Unlock()
-		time.Sleep(c.minDelay - elapsed)
-		c.mu.Lock()
+	if err := c.apiLimiter.Wait(context.Background()); err != nil {
+		return nil, fmt.Errorf("steamgriddb: rate limiter: %w", err)
 	}
-	c.lastReq = time.Now()
-	c.mu.Unlock()
 
 	req, err := http.NewRequest("GET", "https://www.steamgriddb.com/api/v2"+path, nil)
 	if err != nil {

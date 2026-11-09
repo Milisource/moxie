@@ -16,10 +16,11 @@ moxie is a local game library manager. It scans directories for installed games,
 ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
 │ scanner  │ │ engine   │ │ db       │ │ scraper  │ │ tui      │ │ steam    │
 │ WalkDir  │ │ detect   │ │ SQLite   │ │ HTTP     │ │ Bubble   │ │ shortcuts│
-│ size     │ │ profiles │ │ CRUD     │ │ parse    │ │ Tea      │ │ VDF      │
-│ find exe │ │ tags     │ │ 6 files  │ │ apply    │ │          │ │ SGDB API │
-│ ver extr │ │ match    │ │ migrate  │ │ search   │ │          │ │ appid    │
-└────┬─────┘ └────┬─────┘ └──────────┘ └────┬─────┘ └──────────┘ │ artwork  │
+│ size     │ │ profiles │ │ CRUD     │ │ parse    │ │ Tea      │ │ vendored │
+│ find exe │ │ tags     │ │ 8 files  │ │ apply    │ │ 12 files │ │ appid    │
+│ ver extr │ │ match    │ │ FTS5     │ │ search   │ │ spinner  │ │ artwork  │
+│ progress │ │ custom   │ │ soft del │ │ nongame  │ │ launcher │ │ proton   │
+└────┬─────┘ └────┬─────┘ └──────────┘ └────┬─────┘ └──────────┘ └──────────┘
      │            │                          │                    └──────────┘
      └─────┬──────┘                          │
            │                                 │
@@ -38,41 +39,53 @@ package main          internal/util/          internal/commands/
                 sync_check.go    (RunUpdateCheck, CheckUpdates)
                 sync_game.go     (SyncGameLogic)
                 cleanup.go       (engine mismatch, refresh-versions)
-                play.go          (resolveExecutable, launch, fuzzy name search)
-                install.go       (install from archive → extract → merge → DB update)
-                steam.go         (Steam dispatcher)
-                                                steam_add.go     (steam add)
-                                                steam_remove.go  (steam remove)
-                                                steam_list.go    (steam list, proton-list)
-                                                steam_proton.go  (proton-set)
-                                                steam_artwork.go (fix-artwork, SGDB helpers)
-                                                download.go      (download)
-                                                download_links.go(link selection, dead-link check)
-                                                download_ui.go   (progress bars, formatting)
-                                                rename.go        (rename, FilesystemSafe)
-                                                config.go        (config get/set/show)
-                                                install.go       (install from archive)
-                                                update.go        (self-update)
-                                                dbutil.go        (OpenDB)
+                covers.go        (covers upgrade → internal/coverart)
+                 play.go          (RunPlay, launch, fuzzy name search)
+                 install.go       (install from archive → extract → merge → DB update)
+                 steam.go         (Steam dispatcher)
+                                                 steam_add.go     (steam add)
+                                                 steam_remove.go  (steam remove)
+                                                 steam_list.go    (steam list, proton-list)
+                                                 steam_proton.go  (proton-set)
+                                                 steam_artwork.go (fix-artwork, SGDB helpers)
+                                                 download.go      (download)
+                                                 download_links.go(link selection, dead-link check)
+                                                 download_ui.go   (progress bars, formatting)
+                                                 rename.go        (rename, FilesystemSafe)
+                                                 config.go        (config get/set/show)
+                                                 install.go       (install from archive)
+                                                 update.go        (self-update)
+                                                 dbutil.go        (OpenDB)
+                                                 collections.go   (collections add/list/add-game)
+                                                 set_status.go    (set-status --engine/--all)
+                                                 export.go        (export --output file.json)
+                                                 import.go        (import <file.json>)
+                                                 history.go       (history [count])
 ```
 
-`config.json` is stored in the platform-standard config directory — `~/.config/moxie/` on Linux. `internal/util/` provides config I/O and shared formatters; `internal/commands/` contains all CLI command handlers across 22 domain-grouped files.
+`config.json` is stored in the platform-standard config directory — `~/.config/moxie/` on Linux. `internal/util/` provides config I/O and shared formatters; `internal/commands/` contains all CLI command handlers across 27 domain-grouped files.
 
 Additional shared packages:
 
 - **`internal/log/`** — `slog` wrapper with `Init(dir)` that creates per-day log files (`moxie-YYYY-MM-DD.log`) in the platform log directory (`~/.config/moxie/logs/`). Called once from `main()` before any command runs. All download attempts, fallbacks, resolve failures, and completions are instrumented through this logger.
 
-- **`internal/updater/`** — `Merge()` copies files from a downloaded+extracted archive into the game directory, preserving user saves, mods, and configs based on engine-aware glob patterns (14 engines + default fallback). Supports optional `.old` backup with automatic restore of preserved files.
+- **`internal/updater/`** — `Merge()` copies files from a downloaded+extracted archive into the game directory, preserving user saves, mods, and configs based on engine-aware glob patterns (14 engines + default fallback). Supports optional `.old` backup with automatic restore of preserved files; the desktop updater removes the backup once the merged launcher is confirmed (`RemoveBackup`). `MergeOverlay()` applies patch ("Update only") archives in place without deleting anything, backing up each overwritten file to `<game>.patch-old` for rollback.
+
+- **`internal/coverart/`** — Finds portrait cover art for library games from Steam (keyless store APIs), SteamGridDB (API key) and VNDB (keyless). It matches on exact normalised titles only, applies per-source rate limits, and ranks candidates portrait first, then Steam > SteamGridDB > VNDB. It also owns the cover sidecar (`<id>.meta.json`), the download/store/undo helpers and the source settings (`cover-steam`, `cover-vndb`, `steamgriddb-key`), so the desktop app (`desktop/coverart.go`) and the CLI (`moxie covers upgrade`) share one implementation. See `docs/cover-art.md`.
+
+- **`internal/version/`** — Compares F95Zone game version strings against locally-known ones. `Compare()` returns `Same`/`Newer`/`Older`/`Changed` rather than a boolean, because game versions are not semver: real values include `v0.12.0`, `0.8.1b`, `Ch.4 Free`, `2018-07-18` (the date form used when a game has no version number), and `Final`. `Normalize()` folds case, strips a leading `v`, collapses digit separators (`0_8_1` → `0.8.1`) and trailing `.0` segments. Only `Newer` is an unambiguous update; `Older` signals a parse regression or edited thread, and `Changed` means the two versions cannot be ordered. Used by `check-updates`, `sync`, and the desktop app so all three agree on what "an update is available" means.
+
+- **`internal/launcher/`** — Shared game launching logic used by both the CLI (`moxie play`) and the TUI (`p` key). Contains `ResolveExecutable()` (scoring-based exe selection with macOS .app/Mach-O detection and an HTML-entry fallback), `Launch()` (platform-aware process spawning with Wine/CrossOver, and a system-browser opener for `.html`/`.htm` entry points), and `detect.go` (platform detection helpers). Extracted from duplicated code that previously lived separately in `commands/play.go` and `tui/helpers.go`.
 
 ### Data Flow Through the System
 
-1. **Scan** — `scanner.Scan()` walks a directory tree using `filepath.WalkDir`. For each directory that looks like a game root (has executables or engine markers), it calls into `engine.Detect()` which checks 20+ detection profiles in priority order. Results: `DetectedGame` structs with title, path, engine, exe, and byte size.
+1. **Scan** — `scanner.Scan()` walks a directory tree using `filepath.WalkDir`. For each directory that looks like a game root (has executables or engine markers), it calls into `engine.Detect()` which checks built-in + custom profiles (loaded from `~/.config/moxie/engines/*.json`) in priority order. Results: `DetectedGame` structs with title, path, engine, exe, and byte size. Live progress is reported via `ScanProgressFunc` callback.
 
 2. **Store** — `db.InsertGame()` writes a `Game` row to SQLite. The game's path is unique (duplicate paths are skipped on subsequent scans). Title is sanitized via `scraper.SanitizeTitle()` before saving.
 
-3. **Scrape** — `scraper.Client.ScrapeThread()` sends an authenticated HTTP GET to an F95Zone thread URL. The `cookieTransport` injects the `Cookie` header from kooky-extracted browser cookies. `goquery` parses the XenForo HTML into a `ThreadData` struct (title, version, developer, tags, overview, cover URL, download links). The same cookie is also threaded through the download pipeline — `Download() → DownloadWithHost() → HostResolver.SetF95Cookie() → resolveMasked()`/`resolveF95DL()` — to authenticate F95Zone unmask requests during download resolution.
+3. **Scrape** — `scraper.Client.ScrapeThread()` sends an authenticated HTTP GET to an F95Zone thread URL. The `cookieTransport` injects the `Cookie` header from kooky-extracted browser cookies. `goquery` parses the XenForo HTML into a `ThreadData` struct (title, version, developer, tags, overview, cover URL, download links). The same cookie is also threaded through the download pipeline — `Download() → DownloadWithHost() → HostResolver.SetF95Cookie() → followRedirect()` — to authenticate F95Zone masked URL HEAD requests during download resolution.
 
-4. **Associate** — `scraper.FindMatches()` finds unassociated games, sanitizes their titles, searches F95Zone, scores candidate threads by title similarity (exact=1.0, contains=0.85, word overlap=proportional), engine-aware scoring (+0.15 boost), and auto-accepts the best match. Engine matching logic (`EngineMatchesThread`, `EngineTagVariants`, `ExtractEngineFromTitle`) lives in `internal/engine/engine_tags.go` rather than the commands layer. After association, `scraper.ApplyThreadData()` copies scraped metadata onto the DB game record.
+4. **Associate** — `scraper.FindMatches()` finds unassociated games, sanitizes their titles, searches F95Zone, scores candidate threads by title similarity (exact=1.0, contains=0.85, word overlap=proportional), engine-aware scoring (+0.15 boost), and auto-accepts the best match. Engine matching logic (`EngineMatchesThread`, `EngineTagVariants`, `EngineFromPrefixes`, `ThreadEngine`, `ExtractEngineFromTitle`) lives in `internal/engine/engine_tags.go` / `internal/scraper/apply.go` rather than the commands layer. After association, `scraper.ApplyThreadData()` copies scraped metadata onto the DB game record, taking the engine from the thread's prefix labels and the title from `ThreadTitle` (which avoids re-stripping an already-clean title).
 
 5. **Check updates** — Re-scrapes every associated game's thread, extracts the version from the structured header block, compares with `latest_version` in the DB, and reports differences.
 
@@ -92,6 +105,8 @@ The TUI shares the same Go backend as the CLI. The alternative — a web UI — 
 
 Cloudflare evasion via browser automation (Playwright, Puppeteer, Selenium) is legally risky (CF ToS violation) and technically fragile (undetected-chromedriver version churn). Cookie import works with months-valid sessions, no browser process needed, and is the approach used by similar tools. Firefox auto-detection makes it seamless for the default use case.
 
+`internal/f95session` (wired once at startup from `main.go` and `desktop/app.go`) keeps borrowed cookies acceptable: Cloudflare binds `cf_clearance` to the minting browser's User-Agent, so the scraper and downloader get a UA provider reporting that browser's UA (`browser.F95UserAgent`). When a clearance is missing or expired, the package launches Camoufox or the system Firefox headless — no automation protocol, just a page load on a throwaway profile — and reads the clearance it earned from the profile's cookie DB. Dependency direction: `f95session` → `browser`, `scraper`, `downloader` (they expose `Set…Provider`/`Set…Refresher` hooks and never import it, so their tests never touch real browser stores).
+
 ### Pattern matching over PE binary scanning
 
 File/folder patterns (`UnityPlayer.dll`, `renpy/`, `Game.ini`) are 95%+ reliable for game engine detection and 10x simpler to implement than PE binary parsing. The tradeoff: false positives from tool directories and generic folder names. Handled via an exclusion list and category directory detection.
@@ -100,6 +115,70 @@ File/folder patterns (`UnityPlayer.dll`, `renpy/`, `Game.ini`) are 95%+ reliable
 
 The DB is SQLite — single file, no server process. The tool opens it, reads/writes, and closes. No background sync, no auto-watcher, no daemon lifecycle. This keeps the binary small, the startup instant, and the mental model simple.
 
-## Future
+## Desktop GUI (Wails)
 
-The planned Wails desktop path keeps all `internal/` packages unchanged. A new `internal/desktop/` entry point and a Svelte/React `frontend/` directory would add cover image display, native dialogs, system tray, and NSFW blur — all on top of the same scan/scrape/store pipeline.
+A Wails v2 + Svelte 5 desktop GUI ships alongside the CLI, sharing the same `internal/` packages and `games.db`.
+
+```
+main.go                        CLI entry point (unchanged)
+desktop/
+  main.go                      Wails entry: wails.Run() with 1200×800 window
+  app.go                       App struct with 45+ methods bound to frontend (Go ~2100 LOC)
+  wails.json                   Wails project configuration
+  frontend/                    Svelte 5 app (Vite 6, embedded via //go:embed)
+    src/
+      App.svelte               Root layout with view routing
+      lib/
+        Sidebar.svelte         Navigation sidebar (Library, Media, Management)
+        GameList.svelte        Sortable game table with search/engine/status filters, cover thumbnails, context menu (Edit Game…, Set Status, Rename Folder…, Remove)
+        GameDetail.svelte      Cover art, metadata, overview, inline editing, Edit Game dialog, sync, download links
+        GameUpdatesView.svelte Game version updates list with per-game and batch update
+        F95Browser.svelte      F95Zone game browser with search, preview panel, add-to-library
+        DownloadsView.svelte   Download management with expandable game cards, open-in-browser
+        ScanDialog.svelte      Saved paths, scan with live progress from Wails Events
+        SyncDialog.svelte      F95Zone sync with per-game progress, association, update check
+        UpdateDialog.svelte    App self-update checker with download and apply
+        AddGameDialog.svelte   Manual add game with directory picker, engine detection, fields
+        EditGameDialog.svelte  Shared app-root dialog editing every game field in one call (title, developer, overview, engine, version, executable, wine prefix, status, tags, notes, F95 URL, store links); title edits are metadata-only
+        DedupDialog.svelte     Duplicate game detection and resolution
+        StatusBar.svelte       Game count + status messages
+        viewState.svelte.js    Tab-surviving view state (filters, sort, scroll, browser session)
+      app.css                  CSS custom properties with dark/light auto-detection
+  build/                       Platform build assets (icon, macOS plists, Windows manifests)
+```
+
+**Build & Install:**
+```bash
+./scripts/install-local.sh            # build + install CLI and desktop from this checkout
+make desktop                          # production build → dist/moxie-desktop
+make install-desktop                  # register in system app launcher
+cd desktop && wails dev -tags webkit2_41  # hot-reload development
+```
+`install-local.sh` builds both binaries, installs the CLI into a bin dir on PATH
+(`--bin-dir`, default `~/.local/bin`), runs `install-desktop.sh` to register the
+launcher, and verifies the result; `--skip-desktop` installs the CLI only.
+`make desktop` stamps the git descriptor into the binary (`-X main.appVersion=$(VERSION)`), so the sidebar shows exactly which build is running. On KDE, `install-desktop.sh` forces a ksycoca rebuild so the launcher menu reflects new builds immediately instead of waiting on the background watcher.
+
+**Per-platform install behavior** (`scripts/install-desktop.sh`):
+- **Linux** → copies to `~/.local/bin`, writes a `.desktop` entry + icon, refreshes the desktop database.
+- **macOS** → builds `/Applications/Moxie.app` with a generated `.icns` icon and `Info.plist`. Verify on real hardware with:
+  ```bash
+  ./scripts/install-desktop.sh
+  open /Applications/Moxie.app
+  # If Gatekeeper blocks it:  xattr -dr com.apple.quarantine /Applications/Moxie.app
+  plutil -lint /Applications/Moxie.app/Contents/Info.plist
+  ls /Applications/Moxie.app/Contents/Resources/AppIcon.icns
+  ```
+- **Windows** → copies to `%APPDATA%\moxie\bin` and creates a Start Menu shortcut via PowerShell (`[Environment]::GetFolderPath('Programs')`, icon points at the installed exe).
+
+**Key design:** Every bound Go method delegates to an existing `internal/` package. The frontend is purely a view layer — all business logic stays in the shared Go backend. The Svelte frontend communicates with Go exclusively through auto-generated `wailsjs/` bindings (no REST, no IPC).
+
+**Cover art pipeline:** Covers are cached to `~/.config/moxie/covers/<gameID>` and served to the webview over loopback HTTP (`/cover/<id>` full image, `/cover/<id>/thumb` list thumbnail; missing `.thumb` falls back to the full image). F95Zone's CDN serves many covers as **AVIF** regardless of the URL extension — the webview (Chromium) renders AVIF natively, but Go has no pure-Go AVIF decoder (libavif is CGO, banned), so AVIF covers are cached and served in full and simply get no thumbnail: `decodeCoverImage` returns a typed `errCoverFormatNotThumbnailable`, `writeCoverThumb` skips them silently, and `backfillCoverThumbs` reports one `skippedAVIF=N` summary line instead of a per-cover WARN storm (F95-x2mg).
+
+**F95Zone browser search flow:** `F95Browser.svelte` calls `App.SearchF95Zone(query)` which runs a **two-phase lookup**: (1) the XenForo POST search (`scraper.Client.SearchF95Zone` — requires the fresh `_xfToken` fetched from page HTML, see `docs/scraper.md`), and (2) a catalog cover lookup (`scraper.PublicAPI.SearchCovers`) whose `thread_id → cover` map is matched to results by `scraper.ThreadIDFromURL`. Results the catalog doesn't know (mods, requests) get an empty thumbnail → UI placeholder. Searches are **explicit-only**: typing updates the query, only the Search button / Enter calls the backend, and remounting the tab never re-runs a persisted query — in-flight responses are still guarded by the shared `searchSeq` counter in `viewState.svelte.js`.
+
+**State across tabs:** Views are destroyed on every tab switch, so state lives at two levels. Long-running operations (sync, scan, cover backfill, update pipeline) keep their state in `App.svelte` itself — the dialog views only render it, so an in-flight run survives navigation and the backend's guards stay enforced (game updates/installs are claimed per game by `desktop/update_runs.go` and run in parallel up to `update-concurrency`; scans and sync are single-flight). Interactive view state (library search/filters/sort/scroll, browser search+preview, downloads expansion, expanded collection) lives in `lib/viewState.svelte.js` as module-scope `$state` objects (`library`, `browser`, `downloads`, `collectionsView`). Exported as containers rather than individual runes: the Svelte compiler rewrites runes one file at a time, so a directly-exported binding can't be reassigned from an importing component. The browser's request sequence counters also live in shared state, so a stale in-flight response can't land in a freshly remounted view.
+
+**View transitions:** The active view is wrapped in `{#key activeView}` with a `fly` transition (140ms, 8px rise + fade), so tab switches crossfade instead of hard-swapping. `prefers-reduced-motion` users get a 0ms hard switch.
+
+**Browser design reference:** See [`docs/f95zone-browser-design.md`](f95zone-browser-design.md) for a detailed analysis of F95Zone's `latest_alpha` page structure and UX patterns, used as inspiration for the `F95Browser.svelte` component.

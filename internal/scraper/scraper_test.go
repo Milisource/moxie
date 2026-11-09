@@ -3,11 +3,14 @@ package scraper
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PuerkitoBio/goquery"
 )
 
 // ---------------------------------------------------------------------------
@@ -93,6 +96,10 @@ func TestExtractThreadID_Valid(t *testing.T) {
 		{"https://f95zone.to/threads/game-name.12345/", 12345},
 		{"https://f95zone.to/threads/some-long-slug.67890/", 67890},
 		{"https://f95zone.to/threads/a.b.c.111/", 111},
+		// Slug-agnostic form built by ThreadURL / ResolveScrapeURL.
+		{"https://f95zone.to/threads/180466/", 180466},
+		{"https://f95zone.to/threads/180466", 180466},
+		{"https://f95zone.to/threads/180466/page-2", 180466},
 	}
 	for _, tt := range tests {
 		t.Run(tt.url, func(t *testing.T) {
@@ -144,8 +151,8 @@ func TestExtractVersion(t *testing.T) {
 		{"", ""},
 		{"Ver 0.9", "0.9"},
 		{"ver 4.5.6", "4.5.6"},
-		{"Developer: SomeStudio", ""},         // no version
-		{"v 1.0", ""},                          // "v " not "v" directly followed by digit
+		{"Developer: SomeStudio", ""}, // no version
+		{"v 1.0", ""},                 // "v " not "v" directly followed by digit
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%q", tt.text), func(t *testing.T) {
@@ -171,7 +178,7 @@ func TestExtractDeveloper(t *testing.T) {
 		{"Developer: Cool Dev Team", "Cool Dev Team"},
 		{"Publisher: BigPublisher", "BigPublisher"},
 		{"Developer/Publisher: DevName", "DevName"}, // Publisher pattern captures "DevName"
-		{"No developer info here", ""},     // "developer" mid-sentence should NOT match
+		{"No developer info here", ""},              // "developer" mid-sentence should NOT match
 		{"", ""},
 		{"Developer:   Lots of   spaces  ", "Lots of   spaces"},
 		{"Developer: Studio\nOther text", "Studio"},
@@ -209,6 +216,14 @@ func TestIdentifyHost(t *testing.T) {
 		{"https://www.dropbox.com/s/abc", "Dropbox", "dropbox"},
 		{"https://example.com/file.zip", "Random Link", "other"},
 		{"", "", "other"},
+		// Short needles must not match unrelated URLs that merely contain
+		// the substring (hostname-suffix matching only).
+		{"https://example.com/k2s/file.zip", "Download", "other"},
+		{"https://example.com/bunkr/file.zip", "Download", "other"},
+		{"https://example.com/dp.ua/file.zip", "Download", "other"},
+		{"https://example.com/terminal/file.zip", "Download", "other"},
+		{"https://files.dp.ua/file/abc", "", "filesdpua"},
+		{"https://terminal.ink/file/abc", "", "terminal"},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%s|%s", tt.url, tt.text), func(t *testing.T) {
@@ -542,6 +557,98 @@ const testXenForoHTML = `<!DOCTYPE html>
 </body>
 </html>`
 
+// TestExtractCoverImage_LazyLoaded: modern XenForo lazy-loads post images
+// — the <img> src is an SVG placeholder and the real URL sits in data-src
+// (and on the lightbox zoomer div). The extractor must read those.
+func TestExtractCoverImage_LazyLoaded(t *testing.T) {
+	t.Parallel()
+
+	const html = `<div class="bbWrapper">
+<div style="text-align: center"><b>
+<div class="lbContainer lbContainer--inline" data-lb-container-zoom="1" data-lb-id="attachment30243" data-lb-single-image="1">
+<div class="lbContainer-zoomer js-lbImage-attachment30243" data-src="https://attachments.f95zone.to/2017/10/41433_RJ207427_img_main.jpg"></div>
+<img alt="RJ207427_img_main.jpg" class="bbImage lazyload" data-src="https://attachments.f95zone.to/2017/10/41433_RJ207427_img_main.jpg" src="data:image/svg+xml;charset=utf-8,%3Csvg%20viewBox%3D'0%200%20560%20420'%2F%3E" />
+<noscript><img alt="RJ207427_img_main.jpg" class="bbImage" src="https://attachments.f95zone.to/2017/10/41433_RJ207427_img_main.jpg" /></noscript>
+</div>
+</b></div>
+</div>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := extractCoverImage(doc.Find(".bbWrapper").First())
+	want := "https://attachments.f95zone.to/2017/10/41433_RJ207427_img_main.jpg"
+	if got != want {
+		t.Errorf("extractCoverImage = %q, want %q (data-src/zoomer must win over the SVG placeholder)", got, want)
+	}
+}
+
+// TestExtractCoverImage_ThumbAnchorPrefersFullRes: gallery thumbnails are
+// served from a thumb/ subpath with the full-size original linked from the
+// wrapping anchor — the full URL must win over the low-res thumb.
+func TestExtractCoverImage_ThumbAnchorPrefersFullRes(t *testing.T) {
+	t.Parallel()
+
+	const html = `<div class="bbWrapper">
+<p><a href="https://attachments.f95zone.to/2017/10/41434_RJ207427_img_smp1.jpg"><img src="https://attachments.f95zone.to/2017/10/thumb/41434_RJ207427_img_smp1.jpg" class="bbImage" /></a></p>
+<p><img src="https://attachments.f95zone.to/2017/10/thumb/41435_RJ207427_img_smp2.jpg" class="bbImage" /></p>
+</div>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := extractCoverImage(doc.Find(".bbWrapper").First())
+	want := "https://attachments.f95zone.to/2017/10/41434_RJ207427_img_smp1.jpg"
+	if got != want {
+		t.Errorf("extractCoverImage = %q, want %q (anchor href full-res beats thumb src)", got, want)
+	}
+}
+
+// TestExtractCoverImage_BannerBeatsGallery: the OP's lazy-loaded banner
+// comes first; a later gallery screenshot with a full-size anchor must not
+// outrank it (it used to, by score).
+func TestExtractCoverImage_BannerBeatsGallery(t *testing.T) {
+	t.Parallel()
+
+	const html = `<div class="bbWrapper">
+<div class="lbContainer"><div class="lbContainer-zoomer" data-src="https://attachments.f95zone.to/2025/01/100_banner.png"></div>
+<img class="bbImage lazyload" data-src="https://attachments.f95zone.to/2025/01/100_banner.png" src="data:image/svg+xml;charset=utf-8,x" /></div>
+<p>Overview…</p>
+<a href="https://attachments.f95zone.to/2025/01/101_ss1.png"><img src="https://attachments.f95zone.to/2025/01/thumb/101_ss1.png" class="bbImage" /></a>
+<a href="https://attachments.f95zone.to/2025/01/102_ss2.png"><img src="https://attachments.f95zone.to/2025/01/thumb/102_ss2.png" class="bbImage" /></a>
+</div>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := extractCoverImage(doc.Find(".bbWrapper").First())
+	want := "https://attachments.f95zone.to/2025/01/100_banner.png"
+	if got != want {
+		t.Errorf("extractCoverImage = %q, want the banner %q", got, want)
+	}
+}
+
+// TestExtractCoverImage_PlainSrcStillWorks: legacy posts with a plain
+// bbImage src (no lazy-load, no lightbox) keep working.
+func TestExtractCoverImage_PlainSrcStillWorks(t *testing.T) {
+	t.Parallel()
+
+	const html = `<div class="bbWrapper"><p><img src="https://attachments.f95zone.to/2024/07/3858605_Cover.png" class="bbImage" width="500" /></p></div>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := extractCoverImage(doc.Find(".bbWrapper").First())
+	want := "https://attachments.f95zone.to/2024/07/3858605_Cover.png"
+	if got != want {
+		t.Errorf("extractCoverImage = %q, want %q", got, want)
+	}
+}
+
 func TestParseThreadHTML(t *testing.T) {
 	t.Parallel()
 
@@ -621,6 +728,286 @@ func TestParseThreadHTML(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Version source precedence
+// ---------------------------------------------------------------------------
+
+// TestDownloadLinkSectionPlatform covers threads whose download section
+// lists the same host once per part/platform row (e.g. "Henteria Chronicles")
+// — the flattened anchor text alone cannot tell the links apart.
+func TestDownloadLinkSectionPlatform(t *testing.T) {
+	t.Parallel()
+
+	body := `<p>Story text.</p>
+<b><span style="font-size: 26px">DOWNLOAD</span><br /><span style="font-size: 18px">Part 2</span></b><br />
+<span style="font-size: 18px"><b>Win</b>: <a href="https://f95zone.to/masked/gofile.io/134272/1">GOFILE</a> - <a href="https://f95zone.to/masked/mega.nz/134272/2">MEGA</a></span><br />
+<br />
+<b>Part 1</b><br />
+<span style="font-size: 18px"><b>Win</b>: <a href="https://f95zone.to/masked/gofile.io/134272/3">GOFILE</a> - <a href="https://www.mediafire.com/file/HC3-PK[Part.2]+fix1.rar/file">MEDIAFIRE</a></span><br />
+<b>Mac</b>: <a href="https://f95zone.to/masked/pixeldrain.com/134272/4">PIXELDRAIN</a><br />
+<p>Random prose with <b>important</b> words must not become a heading.</p>
+<a href="https://vikingfile.com/f/abc123">Game_v1.0.rar</a>`
+
+	td, err := parseThreadHTML(threadHTMLWith("Section Test [v1.0] [Test]", body), "https://f95zone.to/threads/test.999/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	got := make([]DownloadLink, 0, len(td.DownloadLinks))
+	got = td.DownloadLinks
+
+	want := []struct {
+		host, name string
+	}{
+		{"gofile", "DOWNLOAD Part 2 · Win"},
+		{"mega", "DOWNLOAD Part 2 · Win"},
+		{"gofile", "Part 1 · Win"},
+		{"mediafire", "Part 1 · Win"},
+		{"pixeldrain", "Part 1 · Mac"},
+		{"vikingfile", "Game_v1.0.rar"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d links, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].Host != w.host || got[i].Name != w.name {
+			t.Errorf("link[%d] = {%q, %q}, want {%q, %q}", i, got[i].Host, got[i].Name, w.host, w.name)
+		}
+	}
+}
+
+// threadHTMLWith builds a minimal XenForo thread page with the given title
+// and first-post body.
+func threadHTMLWith(title, body string) string {
+	return `<html><body>
+<h1 class="p-title-value">` + title + `</h1>
+<article class="message-content"><div class="bbWrapper">` + body + `</div></article>
+</body></html>`
+}
+
+// TestParseThreadHTML_TitlePrefixLabels: F95Zone renders the thread's
+// engine/status/category prefixes inside h1.p-title-value as
+// span.p-title-prefix links. Reading the h1 text verbatim turned "FurrHouse"
+// into "VN Ren'Py FurrHouse" and "Noxian Nights" into
+// "RPGM Completed Noxian Nights"; the labels belong in Prefixes, and the
+// status must still be detected from them.
+func TestParseThreadHTML_TitlePrefixLabels(t *testing.T) {
+	t.Parallel()
+
+	html := `<html><body>
+<h1 class="p-title-value"><span class="p-title-prefix"><a href="/forums/games.2/?prefix_id=13"><span class="label label--red">VN</span></a><span class="label-append">&nbsp;</span><a href="/forums/games.2/?prefix_id=7"><span class="pre-renpy">Ren&#039;Py</span></a><span class="label-append">&nbsp;</span></span>FurrHouse [Ch.27] [Chimeros]</h1>
+<article class="message-content"><div class="bbWrapper">
+<h2>Overview</h2>
+<p>A visual novel.</p>
+<p>Version: Chapter 27</p>
+</div></article>
+</body></html>`
+
+	// Slug-agnostic URL: the form ThreadURL/ResolveScrapeURL build.
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/180466/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	if td.Title != "FurrHouse" {
+		t.Errorf("Title = %q, want %q", td.Title, "FurrHouse")
+	}
+	wantPrefixes := []string{"VN", "Ren'Py"}
+	if len(td.Prefixes) != len(wantPrefixes) {
+		t.Fatalf("Prefixes = %v, want %v", td.Prefixes, wantPrefixes)
+	}
+	for i, want := range wantPrefixes {
+		if td.Prefixes[i] != want {
+			t.Errorf("Prefixes[%d] = %q, want %q", i, td.Prefixes[i], want)
+		}
+	}
+	if td.ThreadID != 180466 {
+		t.Errorf("ThreadID = %d, want 180466", td.ThreadID)
+	}
+}
+
+// TestParseThreadHTML_StatusFromPrefixLabel: a "Completed" prefix label must
+// set the status even though the title no longer contains the word.
+func TestStripAttachmentSignature(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ in, want string }{
+		{
+			"https://attachments.f95zone.to/2024/05/3618062_x.png?h=r8vla&e=1792958400&u=6265512",
+			"https://attachments.f95zone.to/2024/05/3618062_x.png",
+		},
+		{
+			"https://attachments.f95zone.to/2024/05/3618062_x.png",
+			"https://attachments.f95zone.to/2024/05/3618062_x.png",
+		},
+		{
+			// Other hosts are never touched.
+			"https://example.com/a.png?h=1",
+			"https://example.com/a.png?h=1",
+		},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := StripAttachmentSignature(tt.in); got != tt.want {
+			t.Errorf("StripAttachmentSignature(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestParseThreadHTML_StripsCoverSignature(t *testing.T) {
+	t.Parallel()
+
+	html := `<html><body>
+<h1 class="p-title-value">Signed Cover [v1.0]</h1>
+<article class="message-content"><div class="bbWrapper">
+<h2>Overview</h2><p>Story.</p>
+<img data-src="https://attachments.f95zone.to/2024/05/banner.png?h=abc&amp;e=1792958400&amp;u=6265512" class="bbImage" />
+</div></article>
+</body></html>`
+
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	if want := "https://attachments.f95zone.to/2024/05/banner.png"; td.CoverURL != want {
+		t.Errorf("CoverURL = %q, want %q", td.CoverURL, want)
+	}
+}
+
+func TestParseThreadHTML_StatusFromPrefixLabel(t *testing.T) {
+	t.Parallel()
+
+	html := `<html><body>
+<h1 class="p-title-value"><span class="p-title-prefix"><a href="/forums/games.2/?prefix_id=2"><span class="label">RPGM</span></a><a href="/forums/games.2/?prefix_id=18"><span class="label label--green">Completed</span></a></span>Noxian Nights [v1.2.4]</h1>
+<article class="message-content"><div class="bbWrapper"><h2>Overview</h2><p>Story.</p></div></article>
+</body></html>`
+
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/2/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	if td.Title != "Noxian Nights" {
+		t.Errorf("Title = %q, want %q", td.Title, "Noxian Nights")
+	}
+	if td.Status != "completed" {
+		t.Errorf("Status = %q, want %q", td.Status, "completed")
+	}
+}
+
+// TestExtractDownloadLinks_DLRedirect covers the 2026-10 markup: download
+// anchors point at /dl/<postID>/?u=…&k=…&r=…&t=…, the destination host is
+// only in the anchor's favicon, and each row starts with a hidden duplicate
+// anchor (span.u-hidden.js-noSelectToQuote) that the endpoint rejects.
+func TestExtractDownloadLinks_DLRedirect(t *testing.T) {
+	t.Parallel()
+
+	body := `<b><span style="font-size: 22px">DOWNLOAD</span><br />
+<span style="font-size: 18px">Win/Linux</span></b><span style="font-size: 18px">:
+<span class="u-hidden js-noSelectToQuote" aria-hidden="true"><a href="https://f95zone.to/dl/12120217/?u=1&amp;k=hidden&amp;r=1&amp;t=decoy" target="_blank" class="link link--external has-favicon" style="background-image: url(&quot;https://external-content.duckduckgo.com/ip3/mega.nz.ico&quot;);" tabindex="-1">MEGA</a></span>
+<a href="https://f95zone.to/dl/12120217/?u=1&amp;k=mega1&amp;r=1&amp;t=tok1" target="_blank" class="link link--external has-favicon" style="background-image: url(&quot;https://external-content.duckduckgo.com/ip3/mega.nz.ico&quot;);">MEGA</a> -
+<a href="https://f95zone.to/dl/12120217/?u=1&amp;k=buzz1&amp;r=1&amp;t=tok2" target="_blank" class="link link--external has-favicon" style="background-image: url(&quot;https://external-content.duckduckgo.com/ip3/bzzhr.to.ico&quot;);">BUZZHEAVIER</a> -
+<a href="https://f95zone.to/dl/12120217/?u=1&amp;k=pd1&amp;r=1&amp;t=tok3" target="_blank" class="link link--external has-favicon" style="background-image: url(&quot;https://external-content.duckduckgo.com/ip3/pixeldrain.com.ico&quot;);">PIXELDRAIN</a><br />
+<b>Mac</b>: <a href="https://f95zone.to/dl/12120217/?u=1&amp;k=pd2&amp;r=1&amp;t=tok4" class="link link--external has-favicon" style="background-image: url(&quot;https://external-content.duckduckgo.com/ip3/pixeldrain.com.ico&quot;);">PIXELDRAIN</a>`
+
+	td, err := parseThreadHTML(threadHTMLWith("FurrHouse [Ch.27] [Chimeros]", body), "https://f95zone.to/threads/180466/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+
+	if len(td.DownloadLinks) != 4 {
+		t.Fatalf("expected 4 download links, got %d: %+v", len(td.DownloadLinks), td.DownloadLinks)
+	}
+	wantHosts := []string{"mega", "buzzheavier", "pixeldrain", "pixeldrain"}
+	for i, want := range wantHosts {
+		if td.DownloadLinks[i].Host != want {
+			t.Errorf("link[%d].Host = %q, want %q", i, td.DownloadLinks[i].Host, want)
+		}
+	}
+	for _, l := range td.DownloadLinks {
+		if strings.Contains(l.URL, "k=hidden") {
+			t.Errorf("hidden decoy anchor was collected: %+v", l)
+		}
+	}
+}
+
+// A changelog lists every past release. The title bracket is the version
+// F95Zone's posting rules mandate, so it must win over a body scan that
+// would otherwise return the longest string in the changelog.
+func TestParseThreadHTML_TitleBracketBeatsChangelog(t *testing.T) {
+	t.Parallel()
+
+	body := `Overview
+A game about things.
+
+Developer: Some Studio
+
+Changelog:
+v0.4.10 - added the barn
+v0.4.9 - fixed the barn`
+
+	td, err := parseThreadHTML(threadHTMLWith("Barn Game [v0.9] [Some Studio]", body), "https://f95zone.to/threads/barn.999/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML returned error: %v", err)
+	}
+	if td.Version != "0.9" {
+		t.Errorf("Version = %q, want %q (title bracket must outrank changelog entries)", td.Version, "0.9")
+	}
+}
+
+// The structured metadata block still outranks the title bracket.
+func TestParseThreadHTML_MetaBeatsTitleBracket(t *testing.T) {
+	t.Parallel()
+
+	body := `Overview
+A game about things.
+
+Version: 1.2.3
+Developer: Some Studio`
+
+	td, err := parseThreadHTML(threadHTMLWith("Barn Game [v0.9] [Some Studio]", body), "https://f95zone.to/threads/barn.999/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML returned error: %v", err)
+	}
+	if td.Version != "1.2.3" {
+		t.Errorf("Version = %q, want %q", td.Version, "1.2.3")
+	}
+}
+
+func TestExtractVersionFromBody(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "ignores changelog entries after the heading",
+			body: "Updated to v0.9 today.\n\nChangelog:\nv0.4.10 - old\nv0.3.12 - older",
+			want: "0.9",
+		},
+		{
+			name: "ignores engine strings listed under Installation",
+			body: "Now at version 0.9.\n\nInstallation: built with Unity 2019.4.31",
+			want: "0.9",
+		},
+		{
+			name: "falls back to full text when the lead region has none",
+			body: "Grab it below.\n\nDownload: PC - v1.4.2 here",
+			want: "1.4.2",
+		},
+		{
+			name: "no version anywhere",
+			body: "Just some prose with no numbers.",
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractVersionFromBody(tt.body); got != tt.want {
+				t.Errorf("extractVersionFromBody() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // stripBracketed
 // ---------------------------------------------------------------------------
 
@@ -669,10 +1056,10 @@ func TestExtractVersionFromBrackets(t *testing.T) {
 		{"Game [v0.5] [Studio]", "0.5"},
 		{"Game [v1.0]", "1.0"},
 		{"[v1.0.0] Game At Start", "1.0.0"},
-		{"Multiple [v1.0] [v2.0]", "1.0"},               // first match wins
-		{"[v 0.5]", ""},                                  // space between v and digit not handled
-		{"Game [v1.0 Alpha] [Dev]", "1.0"},               // prerelease suffix
-		{"Game [Ch. 2 v3.0] [Dev]", "3.0"},               // chapter + version
+		{"Multiple [v1.0] [v2.0]", "1.0"},  // first match wins
+		{"[v 0.5]", ""},                    // space between v and digit not handled
+		{"Game [v1.0 Alpha] [Dev]", "1.0"}, // prerelease suffix
+		{"Game [Ch. 2 v3.0] [Dev]", "3.0"}, // chapter + version
 
 		// Date in brackets (per F95Zone title format rules)
 		{"Game [2018-07-18] [Dev]", "2018-07-18"},
@@ -685,6 +1072,15 @@ func TestExtractVersionFromBrackets(t *testing.T) {
 		// [Final] sentinel for complete games
 		{"Game [Final] [Dev]", "Final"},
 		{"Game [final] [Dev]", "Final"},
+
+		// One-number v-versions and episodic labels
+		{"Game [v5] [Dev]", "5"},
+		{"Game [v12b] [Dev]", "12b"},
+		{"Game [Ep. 3] [Dev]", "Ep. 3"},
+		{"Game [Episode 4 Remake] [Dev]", "Episode 4 Remake"[:9]},
+		{"Game [Ch.2] [Dev]", "Ch.2"},
+		{"Game [Build 123] [Dev]", "Build 123"},
+		{"Game [Season 1] [Dev]", "Season 1"},
 
 		// Not versions — ranges, days, chapters without embedded v
 		{"No Version Brackets", ""},
@@ -826,6 +1222,41 @@ func TestClientDo_ContextCancellation(t *testing.T) {
 	}
 }
 
+// TestClientDo_UnsafeDelayStaysZero verifies the success-path delay decay
+// does not clamp a zero delay (NewUnsafeClient, unpaced cache client) up to
+// minDelay after the first successful request.
+func TestClientDo_UnsafeDelayStaysZero(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := &Client{
+		http: &http.Client{
+			Timeout: defaultTimeout,
+			Transport: &cookieTransport{
+				inner:       srv.Client().Transport,
+				cookieValue: "",
+			},
+		},
+		pacer:     newHostPacer(0), // unsafe/unpaced mode
+		csrfToken: "",
+	}
+
+	req, err := http.NewRequest("GET", srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.do(req, 0); err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if d := client.Delay(); d != 0 {
+		t.Errorf("delay = %v after one successful request, want 0 (unsafe mode must stay unpaced)", d)
+	}
+}
+
 func TestClientDo_Cooldown(t *testing.T) {
 	t.Parallel()
 
@@ -837,7 +1268,7 @@ func TestClientDo_Cooldown(t *testing.T) {
 	client := NewClientWithHTTP("test=1", srv.Client())
 	// Force reqCount to cooldownInterval so the check
 	// cooldownInterval % cooldownInterval == 0 triggers on first call.
-	client.reqCount = cooldownInterval
+	client.pacer.reqCount = cooldownInterval
 
 	req, _ := http.NewRequest("GET", srv.URL, nil)
 	req.Header.Set("User-Agent", "test")
@@ -1151,5 +1582,320 @@ func TestExtractStoreLinks_FirstMatchWins(t *testing.T) {
 	// First link should be preserved.
 	if v != "https://store.steampowered.com/app/111/" {
 		t.Errorf("steam link = %q, want first link %q", v, "https://store.steampowered.com/app/111/")
+	}
+}
+
+func TestValidateThreadURL_AcceptsF95ZoneHTTPS(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		"https://f95zone.to/threads/some-game-slug.12345/",
+		"https://www.f95zone.to/threads/some-game-slug.12345/",
+		"https://f95zone.to/threads/12345/",
+		"https://f95zone.to/members/someone.678/",
+	}
+	for _, u := range cases {
+		if err := ValidateThreadURL(u); err != nil {
+			t.Errorf("ValidateThreadURL(%q) = %v, want nil", u, err)
+		}
+	}
+}
+
+func TestValidateThreadURL_RejectsNonF95ZoneHosts(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		"https://evil.example.com/threads/x.1/",
+		"https://f95zone.to.evil.com/threads/x.1/",
+		"https://f95zone.to@evil.com/threads/x.1/",
+		"http://f95zone.to/threads/x.1/",
+		"ftp://f95zone.to/threads/x.1/",
+		"https://evil.com/threads/f95zone.to.1/",
+		"https:///threads/x.1/",
+		"f95zone.to/threads/x.1/",
+		"",
+		"not a url",
+	}
+	for _, u := range cases {
+		if err := ValidateThreadURL(u); err == nil {
+			t.Errorf("ValidateThreadURL(%q) = nil, want error", u)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cookieTransport host scoping
+// ---------------------------------------------------------------------------
+
+// recordingTransport records the Cookie header seen on each request and
+// returns an empty 200 response without any network I/O.
+type recordingTransport struct {
+	cookies []string
+}
+
+func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.cookies = append(rt.cookies, req.Header.Get("Cookie"))
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    req,
+	}, nil
+}
+
+// TestCookieTransport_HostScoped verifies the session cookie is only
+// attached to F95Zone/F95Checker requests and never leaks to third-party
+// hosts (Google search fallback, external download hosts, redirects).
+func TestCookieTransport_HostScoped(t *testing.T) {
+	t.Parallel()
+
+	rt := &recordingTransport{}
+	ct := &cookieTransport{inner: rt, cookieValue: "xf_user=secret; xf_csrf=tok"}
+
+	allowed := []string{
+		"https://f95zone.to/threads/x/",
+		"https://www.f95zone.to/threads/x/",
+		"https://attachments.f95zone.to/cover.png",
+		"https://api.f95checker.dev/fast?ids=1",
+	}
+	for _, u := range allowed {
+		req, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ct.RoundTrip(req); err != nil {
+			t.Fatalf("RoundTrip(%s): %v", u, err)
+		}
+	}
+
+	blocked := []string{
+		"https://www.google.com/search?q=site%3Af95zone.to",
+		"https://drive.google.com/uc?export=download&id=1",
+		"https://api.f95checker.dev.evil.com/fast",
+		"https://f95zone.to.evil.com/threads/x/",
+	}
+	for _, u := range blocked {
+		req, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ct.RoundTrip(req); err != nil {
+			t.Fatalf("RoundTrip(%s): %v", u, err)
+		}
+	}
+
+	want := "xf_user=secret; xf_csrf=tok"
+	for i, got := range rt.cookies {
+		if i < len(allowed) {
+			if got != want {
+				t.Errorf("request %d: got cookie %q, want %q", i, got, want)
+			}
+		} else if got != "" {
+			t.Errorf("request %d: cookie leaked to third-party host: %q", i, got)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// hasAuthenticatedSession
+// ---------------------------------------------------------------------------
+
+func TestHasAuthenticatedSession(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		cookie string
+		want   bool
+	}{
+		{"empty", "", false},
+		{"guest cookie header", "xf_session=abc; xf_csrf=tok", false},
+		{"logged in cookie header", "xf_user=1%2Csecret; xf_csrf=tok", true},
+		{
+			"logged in netscape",
+			"f95zone.to\tFALSE\t/\tTRUE\t0\txf_user\t1%2Csecret",
+			true,
+		},
+		{
+			"guest netscape",
+			"f95zone.to\tFALSE\t/\tTRUE\t0\txf_csrf\ttok",
+			false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasAuthenticatedSession(tc.cookie); got != tc.want {
+				t.Errorf("hasAuthenticatedSession(%q) = %v, want %v", tc.cookie, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseRetryAfter
+// ---------------------------------------------------------------------------
+
+func TestParseRetryAfter(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{"empty", "", 0},
+		{"seconds", "5", 5 * time.Second},
+		{"zero seconds", "0", 0},
+		{"negative seconds", "-5", 0},
+		{"garbage", "not-a-date", 0},
+		{"future http-date", time.Now().Add(10 * time.Second).UTC().Format(http.TimeFormat), 0}, // checked below with tolerance
+	}
+	for _, tc := range cases[:len(cases)-1] {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseRetryAfter(tc.header); got != tc.want {
+				t.Errorf("parseRetryAfter(%q) = %v, want %v", tc.header, got, tc.want)
+			}
+		})
+	}
+
+	// HTTP-date case: allow a small tolerance since time.Until() is evaluated
+	// a moment after the header was formatted.
+	dateHeader := time.Now().Add(10 * time.Second).UTC().Format(http.TimeFormat)
+	got := parseRetryAfter(dateHeader)
+	if got <= 0 || got > 11*time.Second {
+		t.Errorf("parseRetryAfter(%q) = %v, want ~10s", dateHeader, got)
+	}
+}
+
+// TestClientDo_RetryAfterHeader verifies that a 429 response carrying a
+// Retry-After header sets the client's standing delay to that value rather
+// than the fixed exponential-backoff schedule.
+func TestClientDo_RetryAfterHeader(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	client := NewClientWithHTTP("test=1", srv.Client())
+
+	// Every attempt 429s, so do() exhausts its retries and returns an
+	// error — but the standing delay must reflect the server's Retry-After
+	// guidance, not the fixed exponential-backoff schedule.
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	if _, err := client.do(req, 0); err == nil {
+		t.Fatal("expected error after repeated 429 responses, got nil")
+	}
+
+	if d := client.Delay(); d != 5*time.Second {
+		t.Errorf("Delay() after 429 with Retry-After: 5 = %v, want 5s", d)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// JSON-LD supplemental extraction
+// ---------------------------------------------------------------------------
+
+func TestExtractJSONLD_MergesAndSkipsMalformed(t *testing.T) {
+	t.Parallel()
+
+	html := `<html><body>
+<script type="application/ld+json">{"@type":"BreadcrumbList","name":"forum"}</script>
+<script type="application/ld+json">not json</script>
+<script type="application/ld+json">{"image":"https://example.com/cover.jpg","datePublished":"2024-01-01T00:00:00Z"}</script>
+</body></html>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatalf("goquery: %v", err)
+	}
+
+	ld := extractJSONLD(doc)
+	if ld["name"] != "forum" {
+		t.Errorf("ld[name] = %v, want %q", ld["name"], "forum")
+	}
+	if ld["image"] != "https://example.com/cover.jpg" {
+		t.Errorf("ld[image] = %v, want cover URL", ld["image"])
+	}
+	if ld["datePublished"] != "2024-01-01T00:00:00Z" {
+		t.Errorf("ld[datePublished] = %v, want date", ld["datePublished"])
+	}
+}
+
+func TestParseThreadHTML_JSONLDFallback(t *testing.T) {
+	t.Parallel()
+
+	// No <img> in the body, so CoverURL can only come from JSON-LD.
+	html := `<html><body>
+<h1 class="p-title-value">JSON-LD Game [v1.0] [Studio]</h1>
+<script type="application/ld+json">{"image":"https://example.com/cover.jpg","datePublished":"2024-01-01T00:00:00Z","dateModified":"2024-06-01T00:00:00Z"}</script>
+<article class="message-content"><div class="bbWrapper">Overview
+A game with no post images.</div></article>
+</body></html>`
+
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/jsonld.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	if td.CoverURL != "https://example.com/cover.jpg" {
+		t.Errorf("CoverURL = %q, want JSON-LD fallback image", td.CoverURL)
+	}
+	if td.PublishedAt != "2024-01-01T00:00:00Z" {
+		t.Errorf("PublishedAt = %q, want JSON-LD datePublished", td.PublishedAt)
+	}
+	if td.UpdatedAt != "2024-06-01T00:00:00Z" {
+		t.Errorf("UpdatedAt = %q, want JSON-LD dateModified", td.UpdatedAt)
+	}
+}
+
+func TestParseThreadHTML_JSONLDDoesNotOverrideBodyCover(t *testing.T) {
+	t.Parallel()
+
+	// The body has a real cover image — JSON-LD's image must NOT override it.
+	html := `<html><body>
+<h1 class="p-title-value">Body Cover Game [v1.0] [Studio]</h1>
+<script type="application/ld+json">{"image":"https://example.com/wrong.jpg"}</script>
+<article class="message-content"><div class="bbWrapper">
+<img class="bbImage" src="https://example.com/real-cover.jpg" width="600">
+Overview
+A game with a real post image.</div></article>
+</body></html>`
+
+	td, err := parseThreadHTML(html, "https://f95zone.to/threads/bodycover.1/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	if td.CoverURL != "https://example.com/real-cover.jpg" {
+		t.Errorf("CoverURL = %q, want body image to win over JSON-LD", td.CoverURL)
+	}
+}
+
+// Condemned Bunker's OP: full build, an "Update Only" patch row and a mod
+// row. Each row's label must become the link's section so the updater can
+// tell the patch (and its version range) from the full build and the mod.
+func TestDownloadLinkSectionPatchRows(t *testing.T) {
+	t.Parallel()
+
+	body := `<b>DOWNLOAD</b><br />
+<b>All</b>: <a href="https://f95zone.to/masked/mega.nz/1/1">MEGA</a> - <a href="https://f95zone.to/masked/pixeldrain.com/1/2">PIXELDRAIN</a><br />
+<b>Update Only (v0.17 -&gt; v0.18)</b>: <a href="https://f95zone.to/masked/pixeldrain.com/1/3">PIXELDRAIN</a><br />
+<br />
+<b>Others</b><br />
+<b>Unofficial Mod</b>: <a href="https://f95zone.to/masked/gofile.io/1/4">GOFILE</a><br />`
+
+	td, err := parseThreadHTML(threadHTMLWith("Condemned Bunker [v0.18] [Testoviron]", body), "https://f95zone.to/threads/condemned-bunker.269869/")
+	if err != nil {
+		t.Fatalf("parseThreadHTML: %v", err)
+	}
+	want := []string{"All", "All", "Update Only (v0.17 -> v0.18)", "Unofficial Mod"}
+	if len(td.DownloadLinks) != len(want) {
+		t.Fatalf("got %d links: %+v", len(td.DownloadLinks), td.DownloadLinks)
+	}
+	for i, w := range want {
+		if got := td.DownloadLinks[i].Name; got != w {
+			t.Errorf("link[%d] name = %q, want %q", i, got, w)
+		}
 	}
 }

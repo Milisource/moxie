@@ -1,0 +1,351 @@
+<script>
+  // Presentational table row — extracted out of GameList.svelte's list-view
+  // branch. Owns only per-row markup/CSS; sort/filter/nav state stays in
+  // the parent, which supplies playControl/coverSrc/callbacks as props.
+  import {engineColor} from './engineColors.js'
+  import {library} from './viewState.svelte.js'
+  import {statusLabel} from './statuses.js'
+  import {hasUpdate, updateUnknown, lastPlayedDate, relativePlayed, tsVal} from './useLibrarySort.svelte.js'
+  import {initials} from './initials.js'
+  import {coverRev} from './cover.js'
+
+  let {
+    game,
+    playControl,
+    activity = null,
+    selectable = false,
+    selected = false,
+    isRoving = false,
+    top = 0,
+    height = 49,
+    coverBase,
+    coverSrc,
+    markFailed,
+    onOpenDetail = () => {},
+    onFocus = () => {},
+    onContextMenu = () => {},
+    onPlay = () => {},
+    onDragStart = () => {},
+    onDragEnd = () => {},
+  } = $props()
+
+  let ctl = $derived(playControl(game))
+</script>
+
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div
+  class="table-row"
+  class:row-selected={selected}
+  class:row-selecting={selectable}
+  style="height: {height}px; transform: translateY({top}px)"
+  data-game-id={game.id}
+  draggable={selectable ? 'false' : 'true'}
+  ondragstart={onDragStart}
+  ondragend={onDragEnd}
+  onclick={onOpenDetail}
+  onfocus={onFocus}
+  oncontextmenu={onContextMenu}
+  onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenDetail(); } }}
+  role="button"
+  aria-pressed={selectable ? selected : undefined}
+  tabindex={isRoving ? 0 : -1}
+>
+  <span class="col-cover">
+    {#if selectable}
+      <span class="select-check" class:checked={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
+    {/if}
+    {#if game.hasCover && coverBase && !library.failedCovers.has(game.id)}
+      <img
+        class="cover-thumb"
+        src={coverSrc(game.id, 'thumb', coverRev(game))}
+        alt="{game.title} cover"
+        loading="lazy"
+        decoding="async"
+        onerror={() => markFailed(game.id)}
+      />
+    {:else}
+      <span class="cover-placeholder" title={game.hasCover && coverBase
+        ? 'Cover unavailable — retries after the next sync or cover fetch'
+        : 'No cover — use Covers in the sidebar to fetch one'}>
+        <span class="cover-icon">{initials(game.title)}</span>
+      </span>
+    {/if}
+  </span>
+  <span class="col-title game-title">
+    <span class="title-text">{game.title}</span>
+    {#if activity}
+      <span class="row-activity" class:row-activity-error={activity.tone === 'error'} title={activity.detail}>
+        {activity.label}{#if activity.percent !== null}{' '}{activity.percent}%{/if}
+      </span>
+    {/if}
+  </span>
+  <span class="col-engine">
+    {#if game.engine}
+      <span class="engine-badge" style="--ec: {engineColor(game.engine)}">
+        <span class="engine-dot" aria-hidden="true"></span>{game.engine}
+      </span>
+    {:else}
+      <span class="text-muted">—</span>
+    {/if}
+  </span>
+  <span class="col-version">
+    {#if hasUpdate(game)}
+      <span class="version-old">{game.version}</span>
+      <span class="version-new" title="Latest: {game.latestVersion}">→ {game.latestVersion}</span>
+    {:else if updateUnknown(game)}
+      <span class="version-unknown" title="Installed version unknown">?</span>
+      <span class="version-latest" title="Latest: {game.latestVersion}">→ {game.latestVersion}</span>
+    {:else}
+      {game.version || '—'}
+    {/if}
+  </span>
+  <span class="col-size">{game.sizeLabel || '—'}</span>
+  <span class="col-status">
+    <span class="status-badge status-{game.status || 'unknown'}">
+      {statusLabel(game.status)}
+    </span>
+  </span>
+  <span class="col-wide col-played">
+    {lastPlayedDate(game) ? relativePlayed(lastPlayedDate(game)) : '—'}
+  </span>
+  <span class="col-wide col-added">
+    {tsVal(game, 'createdAt') !== null ? new Date(tsVal(game, 'createdAt')).toLocaleDateString() : '—'}
+  </span>
+  <span class="col-play">
+    <button
+      class="row-play"
+      class:state-launching={ctl.state === 'launching'}
+      class:state-playing={ctl.state === 'playing'}
+      class:state-error={ctl.state === 'error'}
+      disabled={ctl.state === 'launching'}
+      title={ctl.msg || 'Play'}
+      onclick={onPlay}
+    >
+      {#if ctl.state === 'launching'}
+        <span class="play-spinner small"></span>
+      {:else if ctl.state === 'playing'}
+        ‖
+      {:else if ctl.state === 'error'}
+        ↻
+      {:else}
+        ▶︎ Play
+      {/if}
+    </button>
+  </span>
+</div>
+
+<style>
+  .table-row {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: grid;
+    /* Shared with GameList.svelte's .table-header (--table-cols). */
+    grid-template-columns: var(--table-cols);
+    gap: 8px;
+    padding: 4px 12px;
+    font-size: var(--text-base);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.08s;
+    align-items: center;
+    box-sizing: border-box;
+  }
+  .table-row:hover { background: var(--bg-hover); }
+  .table-row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  :global(.density-compact) .table-row { padding: 2px 12px; font-size: var(--text-xs); }
+  :global(.density-compact) .cover-thumb,
+  :global(.density-compact) .cover-placeholder { width: 22px; height: 30px; }
+  :global(.density-compact) .cover-icon { font-size: var(--text-2xs); }
+
+  .game-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-weight: 500;
+  }
+  .row-selected { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .col-cover { position: relative; }
+  .select-check {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    z-index: 3;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--rule-strong);
+    background: var(--bg-primary);
+    color: var(--on-accent);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+  }
+  .select-check.checked { background: var(--accent); border-color: var(--accent); }
+
+  .title-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .row-activity {
+    flex-shrink: 0;
+    padding: 1px 5px;
+    border: 1px solid var(--accent-dim);
+    color: var(--accent);
+    font-family: var(--font-display);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    font-variant-numeric: tabular-nums;
+  }
+  .row-activity-error { border-color: var(--danger); color: var(--danger); }
+
+  .engine-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0;
+    border: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    line-height: 16px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-secondary);
+  }
+  .engine-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ec);
+    flex-shrink: 0;
+  }
+
+  .col-version, .col-size, .col-played, .col-added {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .col-played, .col-added { color: var(--text-secondary); }
+  .version-unknown { color: var(--text-muted); margin-right: 4px; }
+  .version-latest { color: var(--text-muted); }
+
+  .version-old {
+    text-decoration: line-through;
+    opacity: 0.7;
+    margin-right: 4px;
+  }
+  .version-new {
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  .col-size { color: var(--text-secondary); }
+
+  .col-play {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+  }
+  .row-play {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border: 1px solid var(--accent-dim);
+    border-radius: var(--radius-1);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    color: var(--accent);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.12s;
+    white-space: nowrap;
+  }
+  .row-selecting .row-play { display: none; }
+  .row-play:hover { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .row-play:disabled { opacity: 0.7; cursor: default; }
+  .row-play.state-playing { background: var(--success); color: #07140b; border-color: var(--success); }
+  .row-play.state-error { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+  .play-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(255, 255, 255, 0.5);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+  .play-spinner.small { width: 10px; height: 10px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Cover Column ───────────────────────────────────── */
+  .col-cover {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+  }
+
+  /* 3:4 to match F95Zone's native portrait cover art (was a 72x40 16:9 crop
+     that chewed off most of the artwork) — sized to the row's content
+     height (comfortable: 49px row - 2*4px padding = 41px, rounded to 40). */
+  .cover-thumb {
+    display: block;
+    width: 30px;
+    height: 40px;
+    object-fit: cover;
+    border-radius: var(--radius-1);
+    background: var(--bg-secondary);
+    flex-shrink: 0;
+  }
+
+  .cover-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 40px;
+    border-radius: var(--radius-1);
+    background: var(--bg-tertiary);
+    flex-shrink: 0;
+  }
+
+  .cover-icon {
+    font-family: var(--font-display);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+
+  .status-badge {
+    display: inline-block;
+    padding: 0 5px;
+    border: 1px solid currentColor;
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    line-height: 16px;
+    text-transform: uppercase;
+    background: transparent !important;
+  }
+  .status-active { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
+  .status-completed { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+  .status-abandoned { background: color-mix(in srgb, var(--text-muted) 15%, transparent); color: var(--text-muted); }
+  .status-on_hold { background: color-mix(in srgb, var(--warning) 15%, transparent); color: var(--warning); }
+  .status-unknown { background: color-mix(in srgb, var(--text-muted) 10%, transparent); color: var(--text-muted); }
+
+  .text-muted { color: var(--text-muted); }
+</style>

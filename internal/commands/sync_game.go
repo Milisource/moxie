@@ -11,6 +11,7 @@ import (
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/steam"
 	"github.com/mili/moxie/internal/util"
+	"github.com/mili/moxie/internal/version"
 )
 
 // SyncGameLogic performs the core sync logic for a single game and returns
@@ -27,6 +28,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 	scraper.LoadAssociationCache()
 
 	// Phase 1: Associate if needed.
+	var assocData *scraper.ThreadData
 	if game.F95URL == "" {
 		if client == nil {
 			return nil, fmt.Errorf("cannot search F95Zone: no scraper client available")
@@ -55,16 +57,21 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 			if interactive {
 				fmt.Fprintf(os.Stderr, "  Searching F95Zone for %q...\n", game.Title)
 			}
-			searchResults, err := client.SearchF95Zone(query)
-			if err != nil {
-				return nil, fmt.Errorf("search failed: %w", err)
+			// XenForo POST search needs a session; anonymously it costs a
+			// token GET + POST and cannot succeed, so skip it.
+			var searchResults []scraper.SearchResult
+			if client.Authenticated() {
+				res, err := client.SearchF95Zone(query)
+				if err != nil {
+					return nil, fmt.Errorf("search failed: %w", err)
+				}
+				searchResults = res
 			}
 			result.SearchResults = searchResults
 
 			if len(searchResults) == 0 {
 				return nil, fmt.Errorf("no F95Zone results found for %q", game.Title)
 			}
-
 			// Pre-detect engine so we can boost candidates whose titles
 			// contain matching engine keywords (e.g., "RPGM Completed
 			// Demons Roots" over "[Translation Request] Demons Roots").
@@ -116,14 +123,15 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 			return nil, fmt.Errorf("scrape failed: %w", err)
 		}
 		result.ThreadData = data
+		assocData = data
 
 		// Check engine consistency before associating (skip when
 		// using cached association — already verified previously).
 		if !fromCache {
-			if !engine.EngineMatchesThread(detEngine, data.Tags, best.Title) {
+			if !engine.EngineMatchesThread(detEngine, data.Prefixes, data.Tags, best.Title) {
 				result.EngineMismatch = true
 				if interactive {
-					fmt.Fprintf(os.Stderr, "  ⚠ Engine mismatch (scanner: %s, thread: %q, tags: %s)\n",
+					fmt.Fprintf(os.Stderr, "  ! Engine mismatch (scanner: %s, thread: %q, tags: %s)\n",
 						detEngine.Engine, util.Truncate(best.Title, 60), engine.FormatTagsBrief(data.Tags, 4))
 					fmt.Fprintf(os.Stderr, "  Associate anyway? [y/N]: ")
 					var answer string
@@ -155,7 +163,7 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 			}
 			if err := database.UpsertScrapedMeta(meta); err != nil {
 				if interactive {
-					fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", game.Title, err)
+					fmt.Fprintf(os.Stderr, "  ! Failed to save metadata for %q: %v\n", game.Title, err)
 				}
 			} else {
 				result.ScrapedMetadata = true
@@ -175,29 +183,49 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 	}
 
 	if game.F95URL != "" {
-		if client == nil {
+		if client == nil && assocData == nil {
 			return result, fmt.Errorf("scrape failed: no scraper client available")
 		}
 
-		// Use slug-agnostic URL from thread ID when available so version
-		// changes in the URL slug don't break future scrapes.
-		scrapeURL := scraper.ResolveScrapeURL(game.F95URL, game.F95ThreadID)
-		data, err := client.ScrapeThread(scrapeURL)
-		if err != nil {
-			return result, fmt.Errorf("scrape failed: %w", err)
+		// Reuse the scrape phase 1 just performed: the thread data is the
+		// same, and ApplyThreadData already copied LatestVersion/status.
+		// Avoids a second paced thread GET on every unassociated sync.
+		data := assocData
+		if data == nil {
+			// Use slug-agnostic URL from thread ID when available so version
+			// changes in the URL slug don't break future scrapes.
+			scrapeURL := scraper.ResolveScrapeURL(game.F95URL, game.F95ThreadID)
+			var err error
+			data, err = client.ScrapeThread(scrapeURL)
+			if err != nil {
+				return result, fmt.Errorf("scrape failed: %w", err)
+			}
 		}
 		result.ThreadData = data
 
 		// Signal: check engine consistency with freshly scraped metadata.
 		detEngine := engine.Detect(game.Path)
-		if !engine.EngineMatchesThread(detEngine, data.Tags, data.Title) {
+		if !engine.EngineMatchesThread(detEngine, data.Prefixes, data.Tags, data.Title) {
 			result.EngineMismatch = true
 		}
 
 		latest := data.Version
 		knownVer := game.Version
+		if knownVer == "" {
+			knownVer = game.LatestVersion
+		}
 		result.OldVersion = knownVer
 		result.NewVersion = latest
+
+		// Status and tags are scraped here too; persist them so status
+		// transitions are recorded on the update path, not just on
+		// association (where ApplyThreadData handles them). ResolveStatus
+		// defaults an unknown status to active (F95Zone has no "active"
+		// tag — absence of a completion tag means in development).
+		game.Status = scraper.ResolveStatus(data.Status, game.Status)
+		if len(data.Tags) > 0 {
+			game.Tags = data.Tags
+		}
 
 		game.LatestVersion = latest
 		game.VersionCheckedAt = time.Now()
@@ -214,8 +242,12 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 
 		if err := database.UpdateGame(game); err != nil {
 			if interactive {
-				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save version data for %q: %v\n", game.Title, err)
+				fmt.Fprintf(os.Stderr, "  ! Failed to save version data for %q: %v\n", game.Title, err)
 			}
+			// Nothing was persisted — the caller must not report an update
+			// as available. SyncGame exits on this error before printing
+			// the "Update available" line.
+			return result, fmt.Errorf("save failed: %w", err)
 		}
 
 		// Save scraped metadata (cover, developer, overview) from the scrape.
@@ -227,15 +259,18 @@ func SyncGameLogic(database *db.Database, game *db.Game, client *scraper.Client,
 				CoverURL:  data.CoverURL,
 			}); err != nil {
 				if interactive {
-					fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", game.Title, err)
+					fmt.Fprintf(os.Stderr, "  ! Failed to save metadata for %q: %v\n", game.Title, err)
 				}
 			} else {
 				result.ScrapedMetadata = true
 			}
 		}
 
-		if latest != "" && knownVer != "" && NormalizeVersion(latest) != NormalizeVersion(knownVer) {
-			result.VersionUpdated = true
+		if latest != "" && knownVer != "" {
+			switch version.Compare(latest, knownVer) {
+			case version.Newer, version.Changed:
+				result.VersionUpdated = true
+			}
 		}
 	}
 

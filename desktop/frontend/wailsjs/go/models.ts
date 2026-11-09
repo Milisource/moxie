@@ -1,0 +1,817 @@
+export namespace coverart {
+	
+	export class Candidate {
+	    url: string;
+	    thumb?: string;
+	    w: number;
+	    h: number;
+	    source: string;
+	    note?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Candidate(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.thumb = source["thumb"];
+	        this.w = source["w"];
+	        this.h = source["h"];
+	        this.source = source["source"];
+	        this.note = source["note"];
+	    }
+	}
+
+}
+
+export namespace db {
+	
+	export class DownloadLink {
+	    id: number;
+	    game_id: number;
+	    url: string;
+	    host: string;
+	    name: string;
+	    size: number;
+	    platform: string;
+	    is_dead: boolean;
+	    dead_reason?: string;
+	    // Go type: time
+	    last_checked?: any;
+	    // Go type: time
+	    created_at: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new DownloadLink(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.game_id = source["game_id"];
+	        this.url = source["url"];
+	        this.host = source["host"];
+	        this.name = source["name"];
+	        this.size = source["size"];
+	        this.platform = source["platform"];
+	        this.is_dead = source["is_dead"];
+	        this.dead_reason = source["dead_reason"];
+	        this.last_checked = this.convertValues(source["last_checked"], null);
+	        this.created_at = this.convertValues(source["created_at"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace main {
+	
+	export class CoverArtSettings {
+	    steam: boolean;
+	    vndb: boolean;
+	    sgdbKeySet: boolean;
+	    sgdbKeyHint: string;
+	    sgdbFromEnv: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CoverArtSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.steam = source["steam"];
+	        this.vndb = source["vndb"];
+	        this.sgdbKeySet = source["sgdbKeySet"];
+	        this.sgdbKeyHint = source["sgdbKeyHint"];
+	        this.sgdbFromEnv = source["sgdbFromEnv"];
+	    }
+	}
+	export class DependencyStatus {
+	    name: string;
+	    status: string;
+	    details: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DependencyStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.status = source["status"];
+	        this.details = source["details"];
+	    }
+	}
+	export class DesktopCollection {
+	    id: number;
+	    name: string;
+	    gameCount: number;
+	    coverIds: number[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopCollection(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.gameCount = source["gameCount"];
+	        this.coverIds = source["coverIds"];
+	    }
+	}
+	export class DesktopDownloadLink {
+	    id: number;
+	    url: string;
+	    host: string;
+	    name: string;
+	    platform: string;
+	    isDead: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopDownloadLink(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.url = source["url"];
+	        this.host = source["host"];
+	        this.name = source["name"];
+	        this.platform = source["platform"];
+	        this.isDead = source["isDead"];
+	    }
+	}
+	export class DesktopDownloadLinkWithGame {
+	    id: number;
+	    url: string;
+	    host: string;
+	    name: string;
+	    platform: string;
+	    isDead: boolean;
+	    gameId: number;
+	    gameTitle: string;
+	    gamePath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopDownloadLinkWithGame(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.url = source["url"];
+	        this.host = source["host"];
+	        this.name = source["name"];
+	        this.platform = source["platform"];
+	        this.isDead = source["isDead"];
+	        this.gameId = source["gameId"];
+	        this.gameTitle = source["gameTitle"];
+	        this.gamePath = source["gamePath"];
+	    }
+	}
+	export class DesktopPlayEntry {
+	    playedAt: string;
+	    platform: string;
+	    durationS: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopPlayEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.playedAt = source["playedAt"];
+	        this.platform = source["platform"];
+	        this.durationS = source["durationS"];
+	    }
+	}
+	export class DesktopGameDetail {
+	    id: number;
+	    title: string;
+	    engine: string;
+	    version: string;
+	    latestVersion: string;
+	    status: string;
+	    path: string;
+	    exePath: string;
+	    sizeBytes: number;
+	    sizeLabel: string;
+	    hasCover: boolean;
+	    coverW?: number;
+	    coverH?: number;
+	    coverTone?: string;
+	    coverSource?: string;
+	    wideW?: number;
+	    wideH?: number;
+	    createdAt?: string;
+	    lastPlayed?: string;
+	    updateState: string;
+	    developer: string;
+	    overview: string;
+	    coverUrl: string;
+	    f95Url: string;
+	    tags: string[];
+	    notes: string;
+	    storeLinks: Record<string, string>;
+	    steamAppId: number;
+	    winePrefix: string;
+	    downloadLinks: DesktopDownloadLink[];
+	    playHistory: DesktopPlayEntry[];
+	    coverLocked: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopGameDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.engine = source["engine"];
+	        this.version = source["version"];
+	        this.latestVersion = source["latestVersion"];
+	        this.status = source["status"];
+	        this.path = source["path"];
+	        this.exePath = source["exePath"];
+	        this.sizeBytes = source["sizeBytes"];
+	        this.sizeLabel = source["sizeLabel"];
+	        this.hasCover = source["hasCover"];
+	        this.coverW = source["coverW"];
+	        this.coverH = source["coverH"];
+	        this.coverTone = source["coverTone"];
+	        this.coverSource = source["coverSource"];
+	        this.wideW = source["wideW"];
+	        this.wideH = source["wideH"];
+	        this.createdAt = source["createdAt"];
+	        this.lastPlayed = source["lastPlayed"];
+	        this.updateState = source["updateState"];
+	        this.developer = source["developer"];
+	        this.overview = source["overview"];
+	        this.coverUrl = source["coverUrl"];
+	        this.f95Url = source["f95Url"];
+	        this.tags = source["tags"];
+	        this.notes = source["notes"];
+	        this.storeLinks = source["storeLinks"];
+	        this.steamAppId = source["steamAppId"];
+	        this.winePrefix = source["winePrefix"];
+	        this.downloadLinks = this.convertValues(source["downloadLinks"], DesktopDownloadLink);
+	        this.playHistory = this.convertValues(source["playHistory"], DesktopPlayEntry);
+	        this.coverLocked = source["coverLocked"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DesktopGameSavesSummary {
+	    gameId: number;
+	    title: string;
+	    sets: number;
+	    hasActive: boolean;
+	    livePath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopGameSavesSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.gameId = source["gameId"];
+	        this.title = source["title"];
+	        this.sets = source["sets"];
+	        this.hasActive = source["hasActive"];
+	        this.livePath = source["livePath"];
+	    }
+	}
+	export class DesktopGameSummary {
+	    id: number;
+	    title: string;
+	    engine: string;
+	    version: string;
+	    latestVersion: string;
+	    status: string;
+	    path: string;
+	    exePath: string;
+	    sizeBytes: number;
+	    sizeLabel: string;
+	    hasCover: boolean;
+	    coverW?: number;
+	    coverH?: number;
+	    coverTone?: string;
+	    coverSource?: string;
+	    wideW?: number;
+	    wideH?: number;
+	    createdAt?: string;
+	    lastPlayed?: string;
+	    updateState: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopGameSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.engine = source["engine"];
+	        this.version = source["version"];
+	        this.latestVersion = source["latestVersion"];
+	        this.status = source["status"];
+	        this.path = source["path"];
+	        this.exePath = source["exePath"];
+	        this.sizeBytes = source["sizeBytes"];
+	        this.sizeLabel = source["sizeLabel"];
+	        this.hasCover = source["hasCover"];
+	        this.coverW = source["coverW"];
+	        this.coverH = source["coverH"];
+	        this.coverTone = source["coverTone"];
+	        this.coverSource = source["coverSource"];
+	        this.wideW = source["wideW"];
+	        this.wideH = source["wideH"];
+	        this.createdAt = source["createdAt"];
+	        this.lastPlayed = source["lastPlayed"];
+	        this.updateState = source["updateState"];
+	    }
+	}
+	
+	export class DesktopSaveOpResult {
+	    notice: string;
+	    versionWarn: string;
+	    setName: string;
+	    targetPath: string;
+	    filesCopied: number;
+	    filesRemoved: number;
+	    autoSnapshot: string;
+	    replaced: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopSaveOpResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.notice = source["notice"];
+	        this.versionWarn = source["versionWarn"];
+	        this.setName = source["setName"];
+	        this.targetPath = source["targetPath"];
+	        this.filesCopied = source["filesCopied"];
+	        this.filesRemoved = source["filesRemoved"];
+	        this.autoSnapshot = source["autoSnapshot"];
+	        this.replaced = source["replaced"];
+	    }
+	}
+	export class DesktopSaveScanCandidate {
+	    path: string;
+	    files: number;
+	    newestFile: string;
+	    // Go type: time
+	    newestMod: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopSaveScanCandidate(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.files = source["files"];
+	        this.newestFile = source["newestFile"];
+	        this.newestMod = this.convertValues(source["newestMod"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DesktopSaveSet {
+	    name: string;
+	    label: string;
+	    source: string;
+	    active: boolean;
+	    gameVersion: string;
+	    files: number;
+	    bytes: number;
+	    // Go type: time
+	    createdAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopSaveSet(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.label = source["label"];
+	        this.source = source["source"];
+	        this.active = source["active"];
+	        this.gameVersion = source["gameVersion"];
+	        this.files = source["files"];
+	        this.bytes = source["bytes"];
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DesktopSavesState {
+	    gameId: number;
+	    gameTitle: string;
+	    gameVersion: string;
+	    livePath: string;
+	    liveNote: string;
+	    liveExists: boolean;
+	    liveFiles: number;
+	    manualPath: string;
+	    sets: DesktopSaveSet[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DesktopSavesState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.gameId = source["gameId"];
+	        this.gameTitle = source["gameTitle"];
+	        this.gameVersion = source["gameVersion"];
+	        this.livePath = source["livePath"];
+	        this.liveNote = source["liveNote"];
+	        this.liveExists = source["liveExists"];
+	        this.liveFiles = source["liveFiles"];
+	        this.manualPath = source["manualPath"];
+	        this.sets = this.convertValues(source["sets"], DesktopSaveSet);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DetectionResult {
+	    engine: string;
+	    version: string;
+	    title: string;
+	    sizeBytes: number;
+	    sizeLabel: string;
+	    path: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DetectionResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.engine = source["engine"];
+	        this.version = source["version"];
+	        this.title = source["title"];
+	        this.sizeBytes = source["sizeBytes"];
+	        this.sizeLabel = source["sizeLabel"];
+	        this.path = source["path"];
+	        this.error = source["error"];
+	    }
+	}
+	export class DuplicateGroup {
+	    title: string;
+	    count: number;
+	    games: DesktopGameSummary[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DuplicateGroup(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.count = source["count"];
+	        this.games = this.convertValues(source["games"], DesktopGameSummary);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class EditGameFields {
+	    title?: string;
+	    engine?: string;
+	    version?: string;
+	    exePath?: string;
+	    winePrefix?: string;
+	    notes?: string;
+	    status?: string;
+	    tags: string[];
+	    f95Url?: string;
+	    storeLinks: Record<string, string>;
+	    developer?: string;
+	    overview?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EditGameFields(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.engine = source["engine"];
+	        this.version = source["version"];
+	        this.exePath = source["exePath"];
+	        this.winePrefix = source["winePrefix"];
+	        this.notes = source["notes"];
+	        this.status = source["status"];
+	        this.tags = source["tags"];
+	        this.f95Url = source["f95Url"];
+	        this.storeLinks = source["storeLinks"];
+	        this.developer = source["developer"];
+	        this.overview = source["overview"];
+	    }
+	}
+	export class F95BrowseResult {
+	    title: string;
+	    url: string;
+	    threadId: number;
+	    version: string;
+	    creator: string;
+	    coverUrl: string;
+	    rating: number;
+	    views: number;
+	    likes: number;
+	    date: string;
+	    engine: string;
+	    isAICG: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new F95BrowseResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.url = source["url"];
+	        this.threadId = source["threadId"];
+	        this.version = source["version"];
+	        this.creator = source["creator"];
+	        this.coverUrl = source["coverUrl"];
+	        this.rating = source["rating"];
+	        this.views = source["views"];
+	        this.likes = source["likes"];
+	        this.date = source["date"];
+	        this.engine = source["engine"];
+	        this.isAICG = source["isAICG"];
+	    }
+	}
+	export class F95BrowsePage {
+	    results: F95BrowseResult[];
+	    page: number;
+	    totalPages: number;
+	    totalCount: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new F95BrowsePage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.results = this.convertValues(source["results"], F95BrowseResult);
+	        this.page = source["page"];
+	        this.totalPages = source["totalPages"];
+	        this.totalCount = source["totalCount"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class F95DownloadLink {
+	    url: string;
+	    name: string;
+	    host: string;
+	    platform: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new F95DownloadLink(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.name = source["name"];
+	        this.host = source["host"];
+	        this.platform = source["platform"];
+	    }
+	}
+	export class F95SearchResult {
+	    title: string;
+	    url: string;
+	    prefix: string;
+	    thumbnailUrl: string;
+	    matchScore: number;
+	    isAICG: boolean;
+	    views: number;
+	    likes: number;
+	    rating: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new F95SearchResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.url = source["url"];
+	        this.prefix = source["prefix"];
+	        this.thumbnailUrl = source["thumbnailUrl"];
+	        this.matchScore = source["matchScore"];
+	        this.isAICG = source["isAICG"];
+	        this.views = source["views"];
+	        this.likes = source["likes"];
+	        this.rating = source["rating"];
+	    }
+	}
+	export class InstallTarget {
+	    path: string;
+	    available: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new InstallTarget(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.available = source["available"];
+	    }
+	}
+	export class ThreadPreview {
+	    title: string;
+	    developer: string;
+	    version: string;
+	    overview: string;
+	    coverUrl: string;
+	    tags: string[];
+	    status: string;
+	    storeLinks: Record<string, string>;
+	    downloadLinks: F95DownloadLink[];
+	    prefix: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ThreadPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.developer = source["developer"];
+	        this.version = source["version"];
+	        this.overview = source["overview"];
+	        this.coverUrl = source["coverUrl"];
+	        this.tags = source["tags"];
+	        this.status = source["status"];
+	        this.storeLinks = source["storeLinks"];
+	        this.downloadLinks = this.convertValues(source["downloadLinks"], F95DownloadLink);
+	        this.prefix = source["prefix"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class UpdateInfo {
+	    hasUpdate: boolean;
+	    currentVersion: string;
+	    latestVersion: string;
+	    releaseUrl: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hasUpdate = source["hasUpdate"];
+	        this.currentVersion = source["currentVersion"];
+	        this.latestVersion = source["latestVersion"];
+	        this.releaseUrl = source["releaseUrl"];
+	        this.error = source["error"];
+	    }
+	}
+
+}
+

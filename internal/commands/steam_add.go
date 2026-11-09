@@ -40,7 +40,7 @@ func SteamAdd(args []string) {
 		os.Exit(1)
 	}
 	if running {
-		fmt.Fprintf(os.Stderr, "\n⚠  Steam is running.\n")
+		fmt.Fprintf(os.Stderr, "\n! Steam is running.\n")
 		fmt.Fprintln(os.Stderr, "Please close Steam before adding games.")
 		fmt.Fprintf(os.Stderr, "(Press Enter after closing Steam, or Ctrl+C to cancel): ")
 		fmt.Scanln()
@@ -52,7 +52,7 @@ func SteamAdd(args []string) {
 			os.Exit(1)
 		}
 		if running {
-			fmt.Fprintln(os.Stderr, "\n⚠  Steam is still running. Aborting.")
+			fmt.Fprintln(os.Stderr, "\n! Steam is still running. Aborting.")
 			fmt.Fprintln(os.Stderr, "Please fully close Steam and try again.")
 			os.Exit(1)
 		}
@@ -175,7 +175,7 @@ func SteamAdd(args []string) {
 				if err := steam.SetAllArtwork(steamRoot, uid, entry.AppID, meta.CoverURL); err == nil {
 					artDone = true
 				} else if !errors.Is(err, steam.ErrUnsupportedFormat) {
-					fmt.Fprintf(os.Stderr, "  ⚠ Artwork: %v\n", err)
+					fmt.Fprintf(os.Stderr, "  ! Artwork: %v\n", err)
 				}
 			}
 		}
@@ -186,7 +186,7 @@ func SteamAdd(args []string) {
 			if ext == ".exe" {
 				fmt.Fprintf(os.Stderr, "  Setting Proton: %s\n", *protonVer)
 				if err := steam.SetProtonVersion(steamRoot, entry.AppID, *protonVer); err != nil {
-					fmt.Fprintf(os.Stderr, "  ⚠ Proton: %v\n", err)
+					fmt.Fprintf(os.Stderr, "  ! Proton: %v\n", err)
 				}
 			}
 		}
@@ -202,5 +202,5 @@ func SteamAdd(args []string) {
 		fmt.Fprintf(os.Stderr, "  ✓ Added %q (AppID: %d / 0x%X) for user %d\n", name, entry.AppID, entry.AppID, uid)
 	}
 
-	fmt.Fprintln(os.Stderr, "\n⚠  Restart Steam to see the game in your library.")
+	fmt.Fprintln(os.Stderr, "\n! Restart Steam to see the game in your library.")
 }

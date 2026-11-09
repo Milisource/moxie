@@ -1,0 +1,200 @@
+<script>
+  // Presentational only — scan state and event subscriptions live in
+  // App.svelte (like syncState) so the running flag survives tab switches.
+  import ScanPaths from './ScanPaths.svelte'
+
+  let {
+    scanning = false,
+    currentPath = '',
+    progress = {dirsExamined: 0, gamesFound: 0, phase: ''},
+    showProgress = false,
+    lastResult = null,           // { gamesFound, inserted, updated, errors } or null
+    scanError = '',
+    onScan = (path, force) => {},
+  } = $props()
+
+  // Full rescan: overwrite scanner-owned fields (version/exe/engine) with
+  // fresh detection instead of only filling unset ones. Mirrors the CLI's
+  // `scan --force`.
+  let force = $state(false)
+
+  // ── Derived ─────────────────────────────────────────────────
+  let progressPct = $derived.by(() => {
+    if (!progress.dirsExamined) return 0
+    const estimate = progress.phase === 'walk'
+      ? Math.min(progress.dirsExamined / 200, 0.95) * 100
+      : 100
+    return Math.round(Math.min(estimate, 99))
+  })
+
+  let phaseLabel = $derived.by(() => {
+    if (!progress.phase) return 'Starting…'
+    return progress.phase === 'walk'
+      ? `Scanning directories… (${progress.dirsExamined} examined, ${progress.gamesFound} found)`
+      : `Detecting engines… (${progress.gamesFound} processed)`
+  })
+</script>
+
+<div class="scan-dialog">
+  <div class="scan-header">
+    <h2>Scan Directories</h2>
+    <p class="scan-subtitle">Add game folders to scan for new titles.</p>
+  </div>
+
+  <ScanPaths onScan={(path) => onScan(path, force)} {scanning} {currentPath} />
+
+  <!-- ── Scan Mode ─────────────────────────────────────────── -->
+  <label class="scan-force" title="Full rescan: re-detect every game and overwrite scan-owned fields (version, engine, exe path) with fresh detection. Off keeps manual corrections.">
+    <input type="checkbox" bind:checked={force} disabled={scanning} />
+    Full rescan (refresh version/exe/engine)
+  </label>
+
+  <!-- ── Scan Progress ──────────────────────────────────── -->
+  {#if showProgress && scanning}
+    <div class="progress-section">
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" style="width: {progressPct}%"></div>
+      </div>
+      <p class="progress-label">{phaseLabel}</p>
+    </div>
+  {/if}
+
+  <!-- ── Scan Result ────────────────────────────────────── -->
+  {#if lastResult}
+    <div class="result-section">
+      <h3 class="result-title">
+        Found {lastResult.gamesFound} game{lastResult.gamesFound !== 1 ? 's' : ''}
+        <span class="result-breakdown">
+          ({lastResult.inserted} new, {lastResult.updated} updated)
+        </span>
+      </h3>
+      {#if lastResult.errors?.length > 0}
+        <div class="result-errors">
+          <p class="error-title">{lastResult.errors.length} error{lastResult.errors.length !== 1 ? 's' : ''}:</p>
+          {#each lastResult.errors as err}
+            <p class="error-line">{err}</p>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- ── Scan Error ─────────────────────────────────────── -->
+  {#if scanError}
+    <div class="error-section">
+      <p class="error-title">Scan failed:</p>
+      <p class="error-line">{scanError}</p>
+    </div>
+  {/if}
+</div>
+
+<style>
+  .scan-dialog {
+    flex: 1;
+    overflow: auto;
+    padding: var(--space-8) var(--gutter);
+    width: 100%;
+    max-width: 1280px;
+  }
+
+  .scan-header {
+    margin-bottom: 24px;
+  }
+  .scan-header h2 {
+    font-size: var(--text-2xl);
+    font-weight: 700;
+    margin: 0 0 4px;
+  }
+  .scan-subtitle {
+    font-size: var(--text-base);
+    color: var(--text-secondary);
+    margin: 0;
+  }
+
+  .scan-force {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 14px 0 0;
+    font-size: var(--text-base);
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+  }
+  .scan-force input {
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .scan-force:has(input:disabled) {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* ── Progress ──────────────────────── */
+  .progress-section {
+    margin: 20px 0;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    background: var(--bg-secondary);
+  }
+  .progress-bar-bg {
+    height: 6px;
+    border-radius: var(--radius-1);
+    background: var(--bg-tertiary);
+    overflow: hidden;
+    margin-bottom: 8px;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    border-radius: var(--radius-1);
+    background: var(--accent);
+    transition: width 0.3s ease;
+  }
+  .progress-label {
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    margin: 0;
+  }
+
+  /* ── Result ──────────────────────────── */
+  .result-section {
+    margin: 16px 0;
+    padding: 16px;
+    border: 1px solid var(--success);
+    border-radius: var(--radius-1);
+    background: color-mix(in srgb, var(--success) 8%, transparent);
+  }
+  .result-title {
+    font-size: var(--text-lg);
+    font-weight: 600;
+    color: var(--success);
+    margin: 0 0 8px;
+  }
+  .result-breakdown {
+    font-size: var(--text-base);
+    font-weight: 400;
+    color: var(--text-secondary);
+  }
+  .result-errors { margin-top: 8px; }
+
+  .error-section {
+    margin: 16px 0;
+    padding: 16px;
+    border: 1px solid var(--danger);
+    border-radius: var(--radius-1);
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+  }
+  .error-title {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--danger);
+    margin: 0 0 4px;
+  }
+  .error-line {
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    margin: 0 0 2px;
+    font-family: var(--font-mono);
+  }
+</style>

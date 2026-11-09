@@ -1,13 +1,16 @@
 // Package archive provides extraction of common game archive formats.
-// Supports .zip, .tar.gz, .7z, and .rar files with progress reporting.
+// This is a high-level wrapper around the extractor package, providing the
+// Options/Result API used by the CLI commands and TUI.
 package archive
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/mili/moxie/internal/extractor"
 )
 
 // Format represents the type of archive file.
@@ -26,7 +29,7 @@ func (f Format) String() string {
 	case FormatZip:
 		return "zip"
 	case FormatTarGz:
-		return "tar.gz"
+		return "tar"
 	case FormatSevenZip:
 		return "7z"
 	case FormatRar:
@@ -36,77 +39,75 @@ func (f Format) String() string {
 	}
 }
 
-// DetectFormat determines the archive format from filename and file magic bytes.
+// DetectFormat determines the archive format from file magic bytes.
 func DetectFormat(path string) Format {
-	// Check extension first
-	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".zip":
-		return FormatZip
-	case ".gz", ".tgz":
-		if strings.HasSuffix(strings.ToLower(path), ".tar.gz") ||
-			strings.HasSuffix(strings.ToLower(path), ".tgz") {
-			return FormatTarGz
-		}
-		return FormatUnknown
-	case ".7z":
-		return FormatSevenZip
-	case ".rar":
-		return FormatRar
-	}
-
-	// Try to detect from magic bytes
-	f, err := os.Open(path)
+	typ, err := extractor.DetectArchiveType(path)
 	if err != nil {
 		return FormatUnknown
 	}
-	defer f.Close()
-
-	magic := make([]byte, 4)
-	if _, err := f.Read(magic); err != nil {
-		return FormatUnknown
-	}
-
-	// ZIP: 50 4B 03 04
-	if magic[0] == 0x50 && magic[1] == 0x4B && magic[2] == 0x03 && magic[3] == 0x04 {
+	switch typ {
+	case "zip":
 		return FormatZip
-	}
-	// 7z: 37 7A BC AF 27 1C
-	// Check first byte
-	if magic[0] == 0x37 {
-		magic2 := make([]byte, 2)
-		if _, err := f.Read(magic2); err == nil {
-			if magic2[0] == 0x7A && magic2[1] == 0xBC {
-				return FormatSevenZip
-			}
-		}
-	}
-	// RAR: 52 61 72 21
-	if magic[0] == 0x52 && magic[1] == 0x61 && magic[2] == 0x72 && magic[3] == 0x21 {
+	case "7z":
+		return FormatSevenZip
+	case "rar":
 		return FormatRar
-	}
-	// GZIP: 1F 8B
-	if magic[0] == 0x1F && magic[1] == 0x8B {
+	case "tar", "tar.gz", "tar.bz2", "tar.xz":
+		// All tar variants share one Format value; the extractor picks
+		// the decompressor from the magic bytes.
 		return FormatTarGz
 	}
 
 	return FormatUnknown
 }
 
+// IsArchiveFile returns true if the file appears to be a known archive format.
+func IsArchiveFile(path string) bool {
+	return DetectFormat(path) != FormatUnknown
+}
+
 // ProgressFunc is called during extraction to report progress.
-// totalFiles: total number of files in archive
-// extractedFiles: number of files extracted so far
-// currentFile: name of file currently being extracted
-// bytesProcessed: total bytes processed
-// bytesTotal: total bytes in archive (may be 0 if unknown)
 type ProgressFunc func(totalFiles, extractedFiles int, currentFile string, bytesProcessed, bytesTotal int64)
 
 // Options controls extraction behavior.
 type Options struct {
-	// Password for encrypted archives (optional)
-	Password string
 	// Progress callback (optional)
 	OnProgress ProgressFunc
+	// MaxTotalBytes caps the total uncompressed size an archive may produce
+	// (0 = unlimited). Extraction aborts with an error when the archive's
+	// declared total exceeds it, so a high-ratio "decompression bomb" cannot
+	// fill the disk. Game installs legitimately unpack to many gigabytes:
+	// callers that do not pass a budget are unaffected.
+	MaxTotalBytes int64
+	// MaxEntries caps the number of non-directory entries an archive may
+	// contain (0 = unlimited). Like MaxTotalBytes this is opt-in: zero keeps
+	// the previous unlimited behavior.
+	MaxEntries int
+}
+
+// errExtractBudget is the sentinel wrapped by every budget-exceeded error, so
+// callers can detect one with errors.Is.
+var errExtractBudget = errors.New("extraction budget exceeded")
+
+// checkListingBudget returns a budget error when a known archive total or entry
+// count exceeds the configured cap. A zero cap means unlimited.
+//
+// This is the whole of the size enforcement in this package: the natives in
+// internal/extractor own the write loop, and the sizes an archive declares are
+// authoritative for both of them — archive/zip's reader rejects an entry that
+// outruns its declared UncompressedSize64 (archive/zip: checksumReader.Read
+// errors with ErrFormat) and a tar entry body is exactly its header size — so a
+// pre-write check against the declared total bounds the write the same way a
+// bounded copy inside the loop would. ExtractWithContext checks it again after
+// extraction to catch an under-reported total.
+func checkListingBudget(totalBytes int64, entries int, opts Options) error {
+	if opts.MaxEntries > 0 && entries > opts.MaxEntries {
+		return fmt.Errorf("%w: archive has %d entries, limit is %d", errExtractBudget, entries, opts.MaxEntries)
+	}
+	if opts.MaxTotalBytes > 0 && totalBytes > opts.MaxTotalBytes {
+		return fmt.Errorf("%w: archive expands to %d bytes, limit is %d", errExtractBudget, totalBytes, opts.MaxTotalBytes)
+	}
+	return nil
 }
 
 // Result contains information about the extraction.
@@ -116,17 +117,24 @@ type Result struct {
 	Destination    string
 }
 
-// IsArchiveFile returns true if the file appears to be a known archive format.
-func IsArchiveFile(path string) bool {
-	return DetectFormat(path) != FormatUnknown
-}
-
 // Extract extracts an archive file to the specified destination directory.
 // The destination directory will be created if it doesn't exist.
+// Returns a Result with the extracted root path (handles single-folder wrapping).
 func Extract(archivePath, destDir string, opts Options) (*Result, error) {
-	format := DetectFormat(archivePath)
-	if format == FormatUnknown {
-		return nil, fmt.Errorf("unsupported or unknown archive format: %s", archivePath)
+	return ExtractWithContext(context.Background(), archivePath, destDir, opts)
+}
+
+// ExtractWithContext is Extract with a cancellable context. If ctx is
+// cancelled during extraction, the operation stops between entries and
+// only the extractor's temporary subdirectory is removed — destDir and
+// its pre-existing contents are never deleted.
+func ExtractWithContext(ctx context.Context, archivePath, destDir string, opts Options) (*Result, error) {
+	// Reject an over-budget archive before anything is written. This is
+	// best effort for the tool-listed formats (7z, rar); the extraction is
+	// verified afterwards so a hostile archive that slipped past this check
+	// still cannot end up over budget unnoticed.
+	if err := precheckArchiveBudget(archivePath, opts); err != nil {
+		return nil, err
 	}
 
 	// Ensure destination exists
@@ -134,102 +142,45 @@ func Extract(archivePath, destDir string, opts Options) (*Result, error) {
 		return nil, fmt.Errorf("create destination directory: %w", err)
 	}
 
-	// Create extraction subdirectory named after the archive (without extension)
-	base := filepath.Base(archivePath)
-	base = strings.TrimSuffix(base, filepath.Ext(base))
-	if strings.HasSuffix(strings.ToLower(base), ".tar") {
-		base = strings.TrimSuffix(base, ".tar")
-	}
-	extractDir := filepath.Join(destDir, base)
-	if err := os.MkdirAll(extractDir, 0755); err != nil {
-		return nil, fmt.Errorf("create extraction directory: %w", err)
+	// Map the archive-style progress callback to the extractor's callback
+	extractProgress := func(p extractor.Progress) {
+		if opts.OnProgress != nil {
+			opts.OnProgress(p.TotalFiles, p.FilesExtracted, p.CurrentFile, 0, 0)
+		}
 	}
 
-	var result *Result
-	var err error
-
-	switch format {
-	case FormatZip:
-		result, err = extractZip(archivePath, extractDir, opts)
-	case FormatTarGz:
-		result, err = extractTarGz(archivePath, extractDir, opts)
-	case FormatSevenZip:
-		result, err = extract7z(archivePath, extractDir, opts)
-	case FormatRar:
-		result, err = extractRar(archivePath, extractDir, opts)
-	default:
-		return nil, fmt.Errorf("unsupported archive format")
-	}
-
+	extractedRoot, err := extractor.Extract(ctx, archivePath, destDir, extractProgress)
 	if err != nil {
 		return nil, err
 	}
 
-	result.Destination = extractDir
-	return result, nil
-}
-
-// copyFileWithProgress copies src to dst while tracking bytes processed.
-func copyFileWithProgress(dst, src string, onProgress func(int64)) error {
-	sf, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer sf.Close()
-
-	info, err := sf.Stat()
-	if err != nil {
-		return err
-	}
-
-	df, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
-	if err != nil {
-		return err
-	}
-	defer df.Close()
-
-	buf := make([]byte, 32768)
-	var written int64
-	for {
-		n, err := sf.Read(buf)
-		if n > 0 {
-			wn, werr := df.Write(buf[:n])
-			if werr != nil {
-				return werr
-			}
-			written += int64(wn)
-			if onProgress != nil {
-				onProgress(written)
-			}
+	// The shell-out extractors (7z, unrar) copy archive link entries
+	// verbatim and cannot be bounded mid-write, so the extracted tree is
+	// verified afterwards: a symlink entry that leaves destDir is rejected.
+	if format := DetectFormat(archivePath); format == FormatSevenZip || format == FormatRar {
+		if err := verifyExtractedTree(extractedRoot); err != nil {
+			return nil, err
 		}
-		if err == io.EOF {
-			break
-		}
+	}
+
+	// Count extracted files and total bytes
+	result := &Result{Destination: extractedRoot}
+	filepath.Walk(extractedRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			return nil // skip inaccessible
 		}
-	}
-	return df.Sync()
-}
+		if !info.IsDir() {
+			result.FilesExtracted++
+			result.TotalBytes += info.Size()
+		}
+		return nil
+	})
 
-// cleanExtractPath ensures the extracted file path stays within the destination directory.
-// Prevents zip slip attacks.
-func cleanExtractPath(filePath, destDir string) (string, error) {
-	// Join and clean the path
-	path := filepath.Join(destDir, filePath)
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	absDest, err := filepath.Abs(destDir)
-	if err != nil {
-		return "", err
+	// Catch an archive whose headers under-reported its size: the pre-check
+	// above only knows what the archive (or its listing) declared.
+	if err := checkListingBudget(result.TotalBytes, result.FilesExtracted, opts); err != nil {
+		return nil, err
 	}
 
-	// Ensure the path is within the destination
-	if !strings.HasPrefix(absPath, absDest+string(filepath.Separator)) && absPath != absDest {
-		return "", fmt.Errorf("invalid file path: %s", filePath)
-	}
-
-	return absPath, nil
+	return result, nil
 }

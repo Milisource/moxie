@@ -55,9 +55,17 @@ Documentation lives in `docs/`. Keep it in sync with code changes — update the
 | `docs/architecture.md` | Package diagram, data flow, design decisions, future path |
 | `docs/scanner.md` | Directory walk algorithm, engine detection profiles |
 | `docs/scraper.md` | HTTP client, rate limiting, HTML parsing, auto-association |
+| `docs/downloader.md` | Download pipeline, host resolvers, gateway hooks, host limits |
+| `docs/updates.md` | Update queue, staged merge, version recording, auto-update, browser-verification handoff |
 | `docs/database.md` | SQLite schema, version tracking, migration strategy |
 | `docs/tui.md` | Bubble Tea model/update/view, keyboard shortcuts, filters |
+| `docs/f95zone-browser-design.md` | F95Zone `/sam/latest_alpha` design reference + Moxie F95Browser.svelte data flow, covers, recommendations status |
 | `docs/browser.md` | Cross-browser cookie extraction with kooky |
+| `docs/browserresolve.md` | Browser-backed download engine: Chrome (rod) + Firefox (raw-launch) engines, OS/browser discovery matrix |
+| `docs/research-buzzheavier-cloudflare.md` | Buzzheavier/Cloudflare deep-dive: Turnstile gate, token flow, fafda.to hybrid, uTLS verdict + live verification matrix |
+| `docs/desktop-ui-research.md` | What makes game-library UIs usable (Steam/Playnite/Heroic pattern matrix), evidence-based audit of the desktop frontend, prioritized P0/P1/P2 redesign recommendations |
+| `docs/research-f95zone-recaptcha.md` | F95Zone masked-URL reCAPTCHA reverse-engineered (sitekey, `captcha` POST param, masked.js), 2026-08-09 tool A/B round: tls-client no-win, solver design validated, stealth flag win |
+| `docs/cover-art.md` | Cover cache layout, thumbnail geometry, portrait sources (Steam/SteamGridDB/VNDB), matching and replacement rules, `moxie covers upgrade` |
 | `docs/steam-package-design.md` | Steam shortcut management, artwork, Proton, SteamGridDB |
 
 **When to update docs:**

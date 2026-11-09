@@ -76,7 +76,12 @@ func GetProtonVersion(steamRoot string, appID uint32) (string, error) {
 
 	configPath := filepath.Join(steamRoot, "config", "config.vdf")
 	cfg, err := readConfigVDF(configPath)
-	if err != nil || cfg == nil {
+	if err != nil {
+		// A corrupted config.vdf must not be mistaken for "no mapping" —
+		// surface it so the caller can warn.
+		return "", fmt.Errorf("steam: read config.vdf: %w", err)
+	}
+	if cfg == nil {
 		return "", nil // no config file → no mapping
 	}
 
@@ -112,8 +117,13 @@ func RemoveProtonVersion(steamRoot string, appID uint32) error {
 
 	configPath := filepath.Join(steamRoot, "config", "config.vdf")
 	cfg, err := readConfigVDF(configPath)
-	if err != nil || cfg == nil {
-		return nil // no config → nothing to remove
+	if err != nil {
+		// A corrupted config.vdf must not be mistaken for "no mapping" —
+		// surface it so the caller can warn (consistent with GetProtonVersion).
+		return fmt.Errorf("steam: read config.vdf: %w", err)
+	}
+	if cfg == nil {
+		return nil // no config file → nothing to remove
 	}
 
 	ctm := getCompatToolMapping(cfg)
@@ -149,9 +159,11 @@ func ListProtonVersions(steamRoot string) ([]string, error) {
 	if err == nil {
 		for _, e := range entries {
 			if e.IsDir() && strings.HasPrefix(e.Name(), "Proton ") {
+				// Official Proton tool IDs are lowercase
+				// (proton_experimental, proton_hotfix) even though the
+				// install directories are titled.
 				name := strings.TrimPrefix(e.Name(), "Proton ")
-				name = strings.ReplaceAll(name, " ", "_")
-				name = "proton_" + name
+				name = "proton_" + strings.ToLower(strings.ReplaceAll(name, " ", "_"))
 				if !seen[name] {
 					seen[name] = true
 					versions = append(versions, name)
@@ -239,14 +251,21 @@ func writeConfigVDF(path string, cfg map[string]interface{}) error {
 // encodeVDF serializes a map[string]interface{} as text VDF to w.
 func encodeVDF(w io.Writer, m map[string]interface{}) error {
 	buf := new(strings.Builder)
-	writeVDFMap(buf, m, 0)
+	if err := writeVDFMap(buf, m, 0); err != nil {
+		return err
+	}
 	_, err := io.WriteString(w, buf.String())
 	return err
 }
 
 // writeVDFMap recursively writes a VDF map with the given indentation level.
 // Keys are sorted for deterministic output.
-func writeVDFMap(buf *strings.Builder, m map[string]interface{}, indent int) {
+//
+// Returns an error for any value that is neither a nested map nor a string:
+// silently dropping such values when rewriting config.vdf would corrupt
+// Steam's configuration (andygrunwald/vdf only produces strings/maps in
+// practice, but anything else must fail loudly rather than be lost).
+func writeVDFMap(buf *strings.Builder, m map[string]interface{}, indent int) error {
 	tab := strings.Repeat("\t", indent)
 
 	// Sort keys for deterministic output.
@@ -262,13 +281,18 @@ func writeVDFMap(buf *strings.Builder, m map[string]interface{}, indent int) {
 		case map[string]interface{}:
 			// Nested map: output as block.
 			buf.WriteString(fmt.Sprintf("%s\"%s\"\n%s{\n", tab, vdfEscape(k), tab))
-			writeVDFMap(buf, val, indent+1)
+			if err := writeVDFMap(buf, val, indent+1); err != nil {
+				return err
+			}
 			buf.WriteString(fmt.Sprintf("%s}\n", tab))
 		case string:
 			// Simple key-value pair.
 			buf.WriteString(fmt.Sprintf("%s\"%s\"\t\t\"%s\"\n", tab, vdfEscape(k), vdfEscape(val)))
+		default:
+			return fmt.Errorf("unsupported value type %T for key %q", v, k)
 		}
 	}
+	return nil
 }
 
 // vdfEscape escapes special characters (backslash and double-quote)

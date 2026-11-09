@@ -49,6 +49,62 @@ func (db *Database) ListCollections() ([]Collection, error) {
 	return collections, rows.Err()
 }
 
+// CountGamesPerCollection returns collection ID -> number of active games in
+// it. Collections with no active games are absent from the map. One grouped
+// query so a list of N collections does not cost N queries.
+func (db *Database) CountGamesPerCollection() (map[int64]int, error) {
+	rows, err := db.conn.Query(`
+		SELECT gc.collection_id, COUNT(*)
+		FROM game_collections gc
+		JOIN games g ON g.id = gc.game_id
+		WHERE g.deleted_at IS NULL
+		  AND g.path NOT LIKE '%.old'
+		GROUP BY gc.collection_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[int64]int)
+	for rows.Next() {
+		var id int64
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		counts[id] = n
+	}
+	return counts, rows.Err()
+}
+
+// CollectionMemberGameIDs returns collection ID -> ordered list of active
+// member game IDs (by title). One grouped query so building cover-collage
+// previews for a list of collections does not cost an extra per-collection
+// query (mirrors CountGamesPerCollection's approach).
+func (db *Database) CollectionMemberGameIDs() (map[int64][]int64, error) {
+	rows, err := db.conn.Query(`
+		SELECT gc.collection_id, g.id
+		FROM game_collections gc
+		JOIN games g ON g.id = gc.game_id
+		WHERE g.deleted_at IS NULL
+		  AND g.path NOT LIKE '%.old'
+		ORDER BY gc.collection_id, g.title COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make(map[int64][]int64)
+	for rows.Next() {
+		var collectionID, gameID int64
+		if err := rows.Scan(&collectionID, &gameID); err != nil {
+			return nil, err
+		}
+		ids[collectionID] = append(ids[collectionID], gameID)
+	}
+	return ids, rows.Err()
+}
+
 // GetCollection retrieves a collection by ID. Returns nil, nil when no
 // matching row exists.
 func (db *Database) GetCollection(id int64) (*Collection, error) {
@@ -83,8 +139,9 @@ func (db *Database) DeleteCollection(id int64) error {
 	return nil
 }
 
-// AddGameToCollection adds a game to a collection. Returns an error if the
-// association already exists or either ID is invalid.
+// AddGameToCollection adds a game to a collection. The association is
+// idempotent: adding an already-existing pair is a no-op, and invalid IDs
+// are silently ignored (INSERT OR IGNORE) rather than reported.
 func (db *Database) AddGameToCollection(gameID, collectionID int64) error {
 	_, err := db.conn.Exec(
 		"INSERT OR IGNORE INTO game_collections (game_id, collection_id) VALUES (?, ?)",
@@ -132,10 +189,7 @@ func (db *Database) GetCollectionsForGame(gameID int64) ([]Collection, error) {
 // ordered by title.
 func (db *Database) GetGamesInCollection(collectionID int64) ([]*Game, error) {
 	rows, err := db.conn.Query(`
-		SELECT g.id, g.title, g.engine, g.path, g.exe_path, g.version, g.size_bytes,
-		       g.f95_url, g.f95_thread_id, g.tags, g.status, g.latest_version, g.version_checked_at, g.notes,
-		       g.store_links, g.steam_app_id, g.last_scanned_at, g.dir_mtime, g.series_id, g.series_order,
-		       g.deleted_at, g.created_at, g.updated_at
+		SELECT `+gameColumnsAs("g")+`
 		FROM games g
 		JOIN game_collections gc ON gc.game_id = g.id
 		WHERE gc.collection_id = ?

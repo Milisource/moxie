@@ -8,43 +8,116 @@ The scraper sends authenticated HTTP requests to F95Zone, parses XenForo thread 
 
 ### Cookie-Based Authentication
 
-The scraper authenticates via the `Cookie` header. No password, no API key, no OAuth. The `cookieTransport` wraps Go's `http.DefaultTransport` and injects the Cookie header on every request:
+The scraper authenticates via the `Cookie` header. No password, no API key, no OAuth. The `cookieTransport` wraps Go's `http.DefaultTransport` and injects the Cookie header **only on F95Zone and F95Checker hosts**:
 
 ```
 cookieTransport.RoundTrip(req)
+  → attaches cookie only when host is f95zone.to / *.f95zone.to / api.f95checker.dev
   → appends cookie to existing Cookie header
   → delegates to http.DefaultTransport
 ```
 
+Injection is host-scoped at the transport level: without this, the session cookie would be re-attached on every redirect hop and on the Google SERP fallback search — Go's cross-domain sensitive-header stripping only covers headers set on the initial request, not transport-level injection. (`NewClientWithHTTP`, the httptest-testing constructor, is explicitly unrestricted.)
+
 Cookie sources, in priority order:
 1. `--cookie` flag (explicit string from command line)
-2. `--cookie-file` path (file read)
-3. Firefox auto-detection via `browserutils/kooky` (reads binary cookie store)
+2. `--cookie-file` path (file read — Firefox `cookies.sqlite` via the read-only SQLite fallback)
+3. Browser auto-detection via `browserutils/kooky` (Firefox, Chrome, Chromium, Brave, Edge — reads cookie stores at the binary level; Firefox is the reliable default, see `docs/browser.md` for the Windows Chrome ≥127 caveat)
+
+`hasAuthenticatedSession()` checks whether the cookie carries a logged-in `xf_user` value (vs. guest-only) and logs it once at client creation (`log.Debug("scraper session", "authenticated", …)`) — purely diagnostic, so block/captcha rates can be compared between authenticated and guest sessions from the logs without a special build. Nothing in the client currently *behaves* differently based on this signal; it's instrumentation for a future decision, not a policy.
 
 ### Rate Limiting Design
 
 The scraper is designed to be a polite guest. The `Client.do()` method enforces:
 
 ```
-minDelay       = 3s       (thread reads)
-searchMinDelay = 5s       (searches are more expensive)
-maxJitter      = 0-2s     (randomized per request)
-cooldown       = pause 15s every 25 requests
+minDelay       = 1.5s     (thread reads)
+searchMinDelay = 3s       (searches are more expensive)
+maxJitter      = 0-1.5s   (randomized per request)
+cooldown       = pause 10s every 35 requests
 backoff        = delay × 2 on 429, cap at 2min
 ```
 
-On each successful request, the delay decays by 5% back to `minDelay`. On HTTP 429, it doubles (exponential backoff). The `--unsafe` flag sets delay to 0 — useful for testing but risks IP bans.
+**One pacer per host, shared process-wide** (`pacer.go`). Every safe client — `NewClient`, `PublicAPI.Client`, all the `PublicAPI` instances the desktop app builds for Discover, covers, sync and search — shares a single `hostPacer` for f95zone.to. Delay, 429 backoff, the cooldown counter and the circuit breaker live there, so a Discover load, a cover fetch and a sync running together are spaced as **one** request stream, and a 429 seen by any of them slows all of them. `NewUnsafeClient` (`--unsafe`) and the F95Checker `CacheClient` keep a private zero-delay pacer, deliberately outside the F95Zone budget; `NewClientWithHTTP` (tests) gets a private pacer too.
+
+**Slots are reserved under the lock.** A caller computes `slot = max(now, last + max(baseDelay, delay) + jitter)` — plus the cooldown when the slot is a multiple of 35 — and stores it as `last` *before* unlocking, then sleeps without holding the lock. N goroutines arriving together get N distinct slots `≥ minDelay` apart instead of all computing their wait from the same `last` and firing within one jitter window (the pre-fix bug: a 3-worker pool hit F95 in bursts of 3). The cooldown fires once per 35 requests process-wide, not once per worker. A caller cancelled mid-wait returns `ctx.Err()` promptly and hands its slot back only if nobody reserved a later one, so the schedule never moves backwards under another caller.
+
+On each successful request, the delay decays by 5% back to `minDelay` — but only when it is already above the floor, so `--unsafe` (delay 0) and the unpaced F95Checker `CacheClient` stay unpaced instead of snapping up to 1.5s after the first success. On HTTP 429, the standing delay prefers the server's own `Retry-After` header (`parseRetryAfter` — delta-seconds or an HTTP-date, RFC 9110) when present, since that's an explicit signal rather than a guess; only when the header is absent does it fall back to doubling (exponential backoff). Either way the delay is capped at `maxBackoff` (2 min) so a malicious or misconfigured header can't stall the client indefinitely. Non-2xx statuses surface as a typed `HTTPStatusError` (or `BlockedError` for 403/429/503) so callers can branch on the code instead of matching error strings.
+
+### Retries, Circuit Breaker, and Preflight
+
+`Client.do()` wraps each request in a retry loop (up to 3 attempts) with growing pauses (2s, 4s + jitter) so retries look human:
+
+- **Transient failures** (network errors, 5xx, 429, 503) are retried
+- **403** gets a single retry — Cloudflare challenges are sometimes per-request — then fails
+- **Cloudflare challenge pages** are never retried (the same challenge would recur)
+- **Context cancellation** aborts immediately, never retried
+
+After **3 consecutive blocking responses** the circuit breaker trips: every client of the host refuses further requests (fast-fail with a clear "refresh your F95Zone cookies" error) so a dead session doesn't waste a whole sync run failing game by game. A block is counted **once per logical request**, after its retry loop — a single 403 that was retried three times no longer counts as three blocks. A response carrying `Retry-After` is honoured but deliberately does **not** count toward the trip, so one rate-limit response cannot abort a run. A success resets the counter. Because the breaker is shared for the life of the process (the desktop app runs for hours), it heals on its own after `breakerCooldown` (10 min, then half-open: the next block run must start from zero), and a successful clearance refresh closes it immediately. Callers can check `Client.Blocked()` before scheduling more work.
+
+`Client.Preflight()` verifies the session before a long direct-scrape run by fetching the forum index — fail fast instead of wasting minutes on doomed requests.
+
+### Browser-Identical Headers
+
+`applyBrowserHeaders()` makes the HTTP layer look like a Firefox navigation (UA, Accept, Accept-Language, Upgrade-Insecure-Requests, and per-method `Sec-Fetch-*` headers).
+
+**The User-Agent must be the one the clearance was minted under.** Cloudflare binds `cf_clearance` to the UA that solved the challenge: the same cookie is a 200 with the minting browser's exact UA and a 403 challenge with any other (live 2026-11-01 — Firefox 159's clearance failed under the old hard-coded `rv:140.0`, which is what broke every thread fetch after Firefox updated). The UA therefore comes from `scraper.UserAgent()`, whose provider `internal/f95session` wires to `browser.F95UserAgent()`: the UA of the store that supplied the `cf_clearance` in use (Firefox version from the profile's `compatibility.ini`, Chromium major from `User Data/Last Version`), falling back to `platformUserAgent()` when unknown.
+
+**Clearance refresh.** On a Cloudflare challenge the client calls the clearance refresher once (`SetClearanceRefresher`), swaps in the returned cookie and retries instead of tripping the circuit breaker. `f95session.Refresh` mints a clearance with Camoufox or the system Firefox (headless, throwaway profile, `cf_clearance` read from its `cookies.sqlite`), keeps it with its UA in `browser.SetF95Clearance`, and persists it to `<config>/f95-clearance.json` (0600) for later runs. A clearance the user's own browser solves later wins automatically (newest wins). Disable minting with `moxie config set f95_clearance off` or `MOXIE_F95_CLEARANCE=off`.
 
 ### Block Detection
 
 The client checks every response for blocking signals:
 
 - **HTTP 429** — rate limited, backs off and returns `BlockedError`
-- **HTTP 403** — access denied, likely IP block or expired cookies
+- **HTTP 403** — access denied, likely IP block or expired cookies; the body is scanned for Cloudflare markers to distinguish a challenge from a plain block
 - **HTTP 503** — service unavailable, likely Cloudflare challenge
 - **Body content** — scanned for `cf-browser-verification`, `cf-challenge-running`, `_cf_chl_opt` markers
 
 When a block is detected, the scraper stops gracefully and surfaces the issue to the user rather than hammering the server.
+
+### Cookie-Free Endpoints (primary sync path)
+
+F95Zone exposes several JSON endpoints that require **no login and no cookies** — the same endpoints its own "Latest Updates" browser and the F95Checker indexer use. They are the primary data source for sync, making it work even when the browser session is expired or blocked:
+
+| Endpoint | Purpose | Response |
+|---|---|---|
+| `GET /sam/checker.php?threads={csv}` | **Bulk version lookup** — up to 100 IDs per request (101+ → `Invalid threads data or >100`) | `{"status":"ok","msg":{"106408":"v6.3"}}`; `"Unknown"` for untracked threads; untracked threads absent from `msg`. A chunk whose threads are ALL untracked answers `404 {"status":"error","msg":"Thread not found"}` — treated as an empty chunk, not a bulk-pass failure |
+| `GET /sam/latest_alpha/latest_data.php?cmd=list&cat=games&search={q}&sort=likes&rows=15` | **Title search** (Redis-backed full-text; needs stopword stripping + 30-char cap, see `SanitizeSearchQuery`) | `msg.data[]` rows — the full 16-field schema is in [latest-data-api.md](latest-data-api.md). `version` may arrive as a bare JSON number (e.g. `1.482`) or the literal `"Unknown"` — parsed leniently (`rawJSONString`), never allowed to invalidate the response |
+| `GET /sam/latest_alpha/latest_data.php?cmd=list&cat=games&page={n}&sort={date\|likes\|views\|title\|rating}&rows=30` | **Discover feed** — the same index with no `search` term, paged. `ListLatest` (F95-frnz) | `msg.data[]` rows (see [latest-data-api.md](latest-data-api.md) for the full schema and the server-side `prefixes[]`/`noprefixes[]`/`tags[]`/`notags[]`/`tagtype`/`creator`/`date` filter language we don't yet send); `msg.pagination{page,total}` (total = **pages**, so it shrinks as `rows` grows) and `msg.count` (total results). `rows` is honored only at multiples of 15 (15/30/45/60/90); anything else falls back to 30 |
+| `GET /sam/latest_alpha/latest_data.php?cmd=tags&cat=games&<filters>` | **Tag facets** — tag IDs with per-tag counts, scoped to the active filters (cookie-free, no names) | `msg.data[]` `{tag_id,count}`; names come from the authenticated page's `latestUpdates.tags` map ([latest-data-api.md](latest-data-api.md)) |
+| `GET /sam/latest_alpha/latest_data.php?cmd=rss&cat=games` | Recent-updates RSS | `<item>` with a `[NEW]`/`[UPDATE]` marker in `<title>`, `dc:creator`, `pubDate`, `link`/`guid` (thread URL), and the cover `<img>` in the CDATA `<description>` |
+| `GET https://api.f95checker.dev/fast?ids={csv}` | F95Checker cache API: last-change timestamps (10 IDs/request) | `{"106408":1786204423}` |
+| `GET https://api.f95checker.dev/full/{id}?ts=0` | F95Checker cache API: full thread data (version, status, developer, image, description, changelog) | Numeric fields arrive as **strings** (Redis); 403/404 → thread missing |
+
+`PublicAPI` (`latestapi.go`) wraps these with the same pacing/retry/breaker machinery: a **paced** client for F95Zone's own endpoints (politeness) and an **unpaced** client for api.f95checker.dev (that service exists to serve programmatic clients — F95Checker itself runs 10 concurrent connections).
+
+**Version normalization:** checker.php and cache versions carry qualifiers (`"v21.0.0 wip.7944"`, `"v1.03 + DLC"`, `"DX v5.0.5s"`). `StripVersionQualifier` reduces them to the numeric core before comparison so they don't surface as phantom updates against the cleaner versions the HTML parser stores. A string with no version-like token is not a version: `Final`/`Complete…` become `"Final"`, and status labels (`"Translation Request"`, `"Full Steam"`, `"English Ver."`) become `""` instead of being stored as the latest version. Schema migration v11 clears such labels already in the database.
+
+**Prefix & tag IDs:** search/feed rows carry F95Zone's internal `prefixes[]` and `tags[]` arrays, which use F95Zone's **own** taxonomy — **not** F95Checker's `Type`/`Tag` enums. `EngineNameFromPrefixes`/`HasNonGamePrefix` (F95Checker numbering, valid only for the cache API's `type` field) must never be applied to them; `EngineFromLatestPrefixes` decodes the engine IDs and `HasAICGTag` checks tag `2265` ("ai cg"). The complete taxonomy is published in the `latestUpdates.prefixes` / `latestUpdates.tags` globals on the authenticated `/sam/latest_alpha/` page — every prefix ID → name (engine, category *and* status groups: Completed=18, Onhold=20, Abandoned=22, VN=13) and 153 tag IDs → names. `cmd=tags` returns tag IDs + counts without a session but without names. See [latest-data-api.md](latest-data-api.md).
+
+**Fallback chain (sync):**
+
+```
+1. checker.php bulk versions            — 1-2 requests for the whole library
+2. api.f95checker.dev /full             — for threads checker.php doesn't track
+3. direct thread scrape (cookie path)   — last resort, per game
+```
+
+**Cookies vs. cookie-free: which source, when.** Cookies are optional on every path — both syncs work without a browser session. Which *source* is used depends on what the operation needs, not on whether cookies exist:
+
+| Operation | Preferred source | Why |
+|---|---|---|
+| Bulk association search | `latest_data.php` (cookie-free) | No login, no CSRF token, no Cloudflare challenge. The XenForo POST search, which needs a session, is the fallback |
+| Bulk version/metadata check | `checker.php` + cache API (cookie-free) | One request covers up to 100 threads; a per-thread scrape would be ~100 paced requests and risk a block |
+| Single-game sync | **direct thread scrape (cookie)** | Only the full page carries download links and the exact overview/tags; a session unmasks links at download time |
+| Forced/full sync | **direct thread scrape (cookie)** | Refreshes the Downloads tab; the cheap bulk/cache paths never see links |
+
+A session cookie is still attached to the cookie-free endpoints whenever one is available (`NewPublicAPIWithCookie`) — F95Zone rate-limits anonymous requests hard ("Anonymous users have a limited amount of requests per hour"), and the F95Checker cache API lifts its anonymous per-hour cap for a cookie-carrying client. So "cookies when set, cookie-free when not" is the rule for *authentication*; the table above is the rule for *which endpoint*.
+
+If a single-game sync has no session (or its scrape cannot complete), it falls back to the cache API and still refreshes version, status, developer, overview and cover — it just cannot refresh download links. This applies to both the desktop **Sync from F95Zone** button and `moxie sync <id>`. So the direct scrape is the *more complete* source (links + exact fields); the cookie-free endpoints are the *more robust and efficient* source for breadth (no challenge, batched). Preference: cookies attached whenever available, direct scrape for full-thread operations, cookie-free endpoints for bulk lookup and session-less single-game syncs.
+
+**Desktop sync throughput:** the desktop app runs auto-association (the per-game search phase) on **3 parallel workers**, each with its own `PublicAPI` client. The clients share the f95zone.to pacer, so the pool's requests are spaced as one stream; the workers still overlap their parsing and DB work with each other's waits. Two guards keep repeat runs cheap: unassociated games whose last search found nothing are skipped for 24h (`version_checked_at` cooldown), and the persistent association cache (`~/.config/moxie/associations.json`, shared with the CLI) short-circuits games whose thread was identified by an earlier run — no search round trip at all. A second sync start while one is running is rejected by a backend guard (the sync tab's state lives in the app shell, so it survives tab switches).
 
 ### Thread Parsing
 
@@ -52,22 +125,32 @@ When a block is detected, the scraper stops gracefully and surfaces the issue to
 
 | Field | Selector / Strategy |
 |---|---|
-| **Title** | `h1.p-title-value` text |
+| **Title** | `h1.p-title-value` text with the `span.p-title-prefix` labels removed (they become `Prefixes`: VN, RPGM, Completed, …) |
 | **Version** | Structured metadata block between "Overview" and next section heading, then regex `Version:`, `Ver.`, `v` patterns |
 | **Developer** | Same metadata block, `Developer:` or `Publisher:` fields |
 | **Tags** | `a.tagItem` elements |
-| **Cover URL** | First `img.bbImage` in the first post, falling back to first large `<img>` |
-| **Download Links** | All `<a href>` anchors hosting on 40+ approved file hosts |
-| **Thread ID** | Regex from URL: `/threads/slug.12345/` → `12345` |
+| **Cover URL** | The **first image in document order** in the first post (the OP banner): lightbox `data-src`, then a `thumb/` anchor's full-size href, then `data-src`, then `src`. A later gallery screenshot never outranks it. Non-http values (F95's literal `missing`) are dropped (`db.CleanCoverURL`) |
+| **Download Links** | All `<a href>` anchors hosting on 40+ approved file hosts, excluding the hidden duplicate anchor F95Zone renders in each row (`span.u-hidden[aria-hidden]`) |
+| **Thread ID** | Regex from URL: `/threads/slug.12345/` → `12345`, and the slug-agnostic `/threads/12345/` that `ThreadURL`/`ResolveScrapeURL` build |
+| **Cover URL (fallback)**, **Published/Updated at** | `script[type="application/ld+json"]` schema.org blocks (`extractJSONLD`), merged across multiple blocks (XenForo emits several small ones — breadcrumb, discussion posting, …) |
 
-The version extraction is three-tiered: first the structured metadata block (the "Overview" section with key: value pairs), then bracketed tags in the thread title, then free-form regex scanning of the full post body. The metadata block parser normalizes keys (`"Release Date"` → `release_date`, `"Ver"` → `version`) and only recognizes fields in a known allowlist.
+**Prefix labels are the engine/status signal.** F95Zone renders the engine, status and category labels inside `span.p-title-prefix`, separately from the title text. The parser strips them from the title (which becomes the game name only) and exposes them as `ThreadData.Prefixes`. Engine detection therefore goes through `EngineFromPrefixes`/`ThreadEngine` (labels first, title fallback for search-result titles that still carry the prefix inline), and engine-consistency checks (`EngineMatchesThread`) compare the scanner result against the labels, title and tags. `ThreadTitle` only applies legacy inline-prefix stripping when no labels were parsed, so a game genuinely titled "Unity of Command" keeps its name.
+
+**JSON-LD is supplemental only.** It never overrides title/version/tags/status — those already have F95Zone-specific sources (prefixes, tags, the Overview block) that outrank generic schema.org data. It fills in two things the BBCode parsing above doesn't produce at all: a cover-image fallback for threads whose first post has no usable `<img>`, and `PublishedAt`/`UpdatedAt` timestamps (`ThreadData`, raw ISO 8601 strings) independent of whether the OP filled in the `thread_updated` metadata field. Not every thread embeds JSON-LD; a missing or malformed block is treated as "nothing extra available," never an error.
+
+Version extraction is three-tiered, in descending order of reliability:
+
+1. **Structured metadata block** (`extractVersionFromMetaOnly`) — the "Overview" section's `key: value` pairs, which thread authors maintain. The parser normalizes keys (`"Release Date"` → `release_date`, `"Ver"` → `version`) and only recognizes fields in a known allowlist.
+2. **Bracketed tag in the thread title** (`extractVersionFromBrackets`) — the form F95Zone's posting rules mandate.
+3. **Regex scan of the post body** (`extractVersionFromBody`) — last resort. The scan prefers the region *before* the first `Changelog`/`Download`/`Installation`/`Developer Notes` heading, because a changelog lists every past release and `extractVersion`'s longest-match rule would otherwise happily return an older entry (or an engine string like `Unity 2019.4.31`). If that leading region yields nothing, the full body is scanned so no recall is lost on threads that open with a download section.
 
 The bracketed-title fallback (`extractVersionFromBrackets`) follows F95Zone's [official title format rules](https://f95zone.to/threads/game-uploading-rules-2024-02-29.524/) — `Game Name [Version] [Developer]` — and tries patterns in priority order:
 
 1. **`[vX.Y]` / `[ver X.Y]` / `[version X.Y]`** — explicit prefix, also matches embedded forms like `[Ch. 2 v3.0]` and `[v1.0 Alpha]`
 2. **`[YYYY-MM-DD]`** — date-based version for games without a version number
 3. **`[X.Y]`** — bare version without v/ver prefix (safe: `]` must be immediate, so `[Ch. 1.5]` is not a false positive)
-4. **`[Final]`** — sentinel for complete games with no version number
+4. **`[v5]`**, then episodic labels **`[Ep. 3]` / `[Ch.2]` / `[Part 2]` / `[Season 1]` / `[Build 123]`** — kept with their label (`"Ep. 3"`); ranges like `[Ch. 1-5]` are rejected
+5. **`[Final]`** — sentinel for complete games with no version number
 
 ### Auto-Association (`scrape --auto`)
 
@@ -75,14 +158,18 @@ The bracketed-title fallback (`extractVersionFromBrackets`) follows F95Zone's [o
 
 1. Filter games that have no `f95_url` set
 2. For each game, sanitize the title via `SanitizeTitle()` (strips version numbers, `[tags]`, `-PC`/`-Win`/`-Linux`, HG numeric prefixes, bracketed tags, platform suffixes)
-3. Search F95Zone via `https://f95zone.to/search/search?keywords=<query>&c[title_only]=1`
-4. Parse results with `parseSearchResults()` — extracts title, URL, snippet from `.contentRow` elements
+3. Search F95Zone — **primary:** the latest-updates search (`latest_data.php?cmd=list&search={q}`, with `SanitizeSearchQuery` stopword stripping), carrying the session cookie when one is available (lifts the hard anonymous per-hour quota); **fallback:** the XenForo POST search (`/search/search` with `_xfToken`) and then Google site search. The POST fallback is skipped entirely when the client has no `xf_user` session — it cannot succeed anonymously and would cost a token GET plus a POST. When the primary query returns no results, `PublicAPI.SearchTitleFirstHit` walks a **query-variant ladder** (`SearchQueryVariants`, F95-b6q5) — trailing noise tokens dropped ("Monster Black Market w DLC w Uncen" → "Monster Black Market"), trailing digits stripped ("SiNiSistar2" → "SiNiSistar"), camel-case split ("CyanBrain" → "Cyan Brain"), then progressive word drops from both ends (down to 2 words) — so real games with messy directory names still get found. Every variant result is still scored ≥ 0.3 against the local title and engine-checked, so recall improves without new false associations. The XenForo POST requires a fresh `_xfToken` fetched from page HTML (`GET /` + regex on the hidden `_xfToken` input): XenForo 2.3+ rejects the legacy `xf_csrf` cookie value with HTTP 400 ("Security error occurred"), which previously sent every search down the Google fallback. The fetched token is cached for 10 minutes **process-wide, keyed by a hash of the cookie string**, so every client built from the same session (the desktop constructs one per binding call) shares a single `GET /`; a 400 on the search POST invalidates the cache and retries once with a fresh token before falling back. HTTP 4xx responses are not retried (client errors), 5xx/429/network errors are. XenForo search result rows carry no game image — only the poster's avatar (`contentRow-figure`), which is deliberately NOT surfaced as a thumbnail; the desktop browser attaches real cover art from the F95Checker catalog (`PublicAPI.SearchCovers`, matched by `ThreadIDFromURL`), so unmatched rows (mods, requests) show the UI placeholder instead of a stranger's profile picture.
+4. Parse results into candidates with title, thread ID, version, prefixes
 5. Score each candidate with `ComputeMatchScore()`:
    - Exact match after sanitization: **1.0**
-   - One contains the other: **0.85**
+   - One contains the other **at word boundaries**: **0.85** — plain substring containment is NOT a match (`'Aurelia'` vs `'Aurelian Nostrum'` scores 0.0; the tokens don't nest, they're different games)
    - Word overlap: `shared_words / max(words_a, words_b)`
-6. Auto-accept the best match if score >= 0.3
-7. Scrape the winning thread and save metadata
+   - Both sides are camel-case split before tokenization (`camelSplitWords`), so directory names like `FreeEmberDoors` / `CyanBrain` score against their spaced thread titles instead of 0.0 (F95-b6q5)
+   - `VersionMatchBonus` (+0.3, capped) when the local version and a candidate's thread version share their leading release segments ("1.3.0" vs "v1.3.1") — breaks title-score ties between a game and its versioned sequel (`SiNiSistar2` local v1.3.0 picks "SiNiSistar 2" v1.3.1 over the original "SiNiSistar" v3.0.1, F95-b6q5)
+6. Auto-accept the best match if score >= 0.3. Non-game rejection is **title-based only** (`IsNonGameThread`) — the search API's `prefixes` array uses numbering unrelated to the F95Checker Type enum and must never drive classification or engine decisions (a real RenPy game returned prefix `[7]`, the enum's "Collection"). The winning title only replaces the local game title when the match is strong (score >= 0.7) **and** one title's tokens contain the other's — weak substring matches ('Aurelia' vs 'Aurelian Nostrum') never clobber a scanned title (F95-6duz, F95-sj8o)
+7. **Primary:** fetch full thread data from the F95Checker cache API (version, status, developer, cover, and engine via the `type` enum — the correct numbering, unlike latest_data.php's `prefixes`); **fallback:** scrape the winning thread page directly and save metadata. Engine consistency is checked against the cache `type` field first, prefix IDs second (F95-ytru). **Covers are fetched at full resolution:** the cache API's `image_url` and the thread scrape both point at `attachments.f95zone.to` originals (AVIF/WEBP/JPEG, 560px+), never the 400px `preview.f95zone.to` preview CDN — `PublicAPI.SearchCovers` rewrites preview URLs to the attachments host (same path, no extra request). Thread-page extraction (`extractCoverImage`) handles XenForo's lazy-loaded posts: the `<img src>` is an SVG placeholder, so the real URL is read from `data-src` / the `.lbContainer-zoomer` lightbox div, and gallery thumbnails (`thumb/` subpath) are replaced by the full-size original their anchor links to. Candidates are taken in document order, so the OP banner wins over gallery screenshots further down. The old scoring ranked a later full-size `thumb/` link above the lazy-loaded banner. Portrait replacements from Steam/SteamGridDB/VNDB are a separate, opt-in step (`docs/cover-art.md`).
+
+**Status inference (`ResolveStatus`, F95-v9lz):** F95Zone threads carry no "active" tag — a thread tagged Completed/Abandoned/On Hold is unambiguous, but the *absence* of those tags means the game is in active development (the same inference F95Checker makes). Every association/update path funnels the parsed status through `ResolveStatus(parsed, current)`: an explicit parsed status always wins; otherwise an empty/`unknown` stored status is defaulted to `active`; a stored non-unknown status (typically user-set via the TUI/desktop) is never clobbered by the inference. The cache-API metadata refresh additionally re-fetches full thread data for games whose status is still unknown even when their thread has not changed since the previous check — previously an unknown status could only be fixed by the thread changing (or a forced sync).
 
 The title sanitizer pipeline handles real-world download directory names:
 
@@ -95,7 +182,23 @@ The title sanitizer pipeline handles real-world download directory names:
 
 ### Host Detection
 
-Download links are classified against 40+ F95Zone-approved file hosts. Links from unrecognized hosts are excluded — only known hosts (MEGA, Keep2Share, Uploaded, MediaFire, GoFile, Pixeldrain, Google Drive, Dropbox, Workupload, etc.) are reported. The host string is matched case-insensitively against a flat switch block in `identifyHost()`.
+Download links are classified against 40+ F95Zone-approved file hosts. Links from unrecognized hosts are excluded — only known hosts (MEGA, Keep2Share, Uploaded, MediaFire, GoFile, Pixeldrain, Google Drive, Dropbox, Workupload, etc.) are reported. `identifyHost()` matches in two phases: **hostname needles are suffix-matched against the parsed URL host or the anchor's favicon domain**, with a fallback to link-text substring matching; F95Zone masked URLs (`f95zone.to/masked/<host>/…`) extract the real host from the path. All labels are single lowercase words (e.g. `googledrive`), and the downloader normalizes legacy space-variants.
+
+**Download-link format changed on 2026-10-24.** Thread posts no longer link straight to `/masked/<host>/…` (or to bare host URLs). Every download anchor is now
+
+```
+https://f95zone.to/dl/<postID>/?u=<userID>&k=<linkKey>&r=<unixTS>&t=<token>
+```
+
+The URL carries **no host**, so:
+
+- the host comes from the anchor's link-favicon style (`…/ip3/mega.nz.ico`) — this is why MEGA links (anchor text `MEGA`, no dot) are otherwise invisible to the text matcher;
+- each row starts with a hidden duplicate anchor inside `span.u-hidden[aria-hidden="true"]` that the endpoint rejects with *"That link is no longer in the post"* — those are skipped;
+- `/dl/` is **not a redirect**: it serves a check page (`button.js-f95dlContinue` + a script code). Since 2026-11 it is a timed script check without captcha, solved over plain HTTP by `internal/downloader/hosts_f95dl.go` (see [download-check-research.md](download-check-research.md#update-2026-11-01--the-check-is-now-a-timed-script-check)). Links **expire a few hours after the thread page was opened** (`r=` is that time); stale stored links trigger a re-scrape before downloading;
+- favicon domains seen 2026-11: Buzzheavier serves from `bzzhr.to` and Mixdrop from `mixdrop.ag` — both map by hostname, so a row whose anchor text is generic ("Mirror") still identifies;
+- `browserresolve.ResolveDownloadLinkURL` is the fallback when the check page asks for more than the script check (captcha markers, or the check page comes back after the POST): it clicks through in a real browser and hands the destination to the Go download path. When the check refuses an automated browser, `moxie download --open <id>` opens the fresh link in the user's own browser, where it passes normally — or `moxie download --extension <id>` pairs with the [moxie-bridge browser extension](../extensions/moxie-bridge/README.md) so the download continues automatically after the check. hCaptcha cannot be passed server-side; the options (including F95Zone's donor DDL endpoint) are analysed in [download-check-research.md](download-check-research.md).
+
+**Link names:** threads often list the same host once per part/platform row (`<b>Part 2</b> … <b>Win</b>: GOFILE - MEGA - …`), so the bare anchor text ("GOFILE") can't tell links apart. `downloadLinkName()` recovers the row context — the nearest preceding bold/h2-h5 section heading ("Part 2", "Update 26", "DOWNLOAD") and the row's platform label (Win/Mac/Linux/Android/Web) — and uses it as the link name (e.g. `"DOWNLOAD Part 2 · Win"`) whenever the anchor text is just the host. Real filenames in anchor text are kept as-is. The name also drives `DetectPlatform`, so labeled rows get correct platform classification. Row labels such as "All", "Unofficial Mod", "Walkthrough", "Translation" or "Extras" also count as headings and stop the walk. Without this, a mod row would inherit an "Update Only (v0.17 -> v0.18)" heading above it and be applied as a patch. The downloader classifies each name as full, patch or other (see `docs/downloader.md`).
 
 ## Why
 
@@ -105,4 +208,21 @@ Download links are classified against 40+ F95Zone-approved file hosts. Links fro
 
 **Structured metadata block parsing over full-text regex** — The structured block (key: value pairs in the Overview section) is more reliable than regex-scraping the entire post body. Release thread authors maintain this section; parsing it with known key normalization gives higher quality version and developer extraction. Full-text regex is the fallback for threads without a structured block.
 
-**Conservative rate limiting** — A full `scrape --auto` run of 80 games takes ~8 minutes. This is intentional. F95Zone runs behind Cloudflare and aggressive scraping gets you blocked. Slow is safe.
+**Conservative rate limiting** — a single `scrape --auto` run of 80 games takes ~8 minutes sequentially (all workers share one rate-limited client, so `--parallel` helps CPU/DB-bound work and fallback scrapes but does not multiply the request rate). The desktop sync instead gives each of its 3 workers its own client, which genuinely parallelizes search throughput. F95Zone runs behind Cloudflare and aggressive scraping gets you blocked — rate limiting per-worker is still enforced even in parallel mode.
+
+**Data sources considered and rejected** — F95Zone has no official public API: XenForo's REST API (`docs.xenforo.com/api`) exists but requires a super-administrator-issued key, which F95Zone doesn't offer third parties. `sam/latest_alpha/latest_data.php` (used above for search, Discover and RSS) is a real but **undocumented** endpoint: anonymous requests are hard rate-limited ("Anonymous users have a limited amount of requests per hour"), so the codebase attaches a session cookie whenever one is available and keeps it as a supplementary signal rather than a replacement for cookie-based scraping or the F95Checker cache API. It is nonetheless far richer than moxie currently uses — screenshot galleries (`screens[]`), per-thread `new`/`watched`/`ignored` flags, and a complete server-side filter/sort query language — see [latest-data-api.md](latest-data-api.md) for the full surface and the planned integrations. JSON-LD was the one genuine gap found by comparing against the reference F95API project; the latest-data query language was the next.
+
+## Bulk version check failure policy
+
+`BulkVersions` returns partial results: versions from successful chunks are
+preserved, and failed chunks are reported as `BulkChunkError` values classified
+as `blocked`, `rate_limited`, `transient`, or `endpoint_gone`.
+
+- `blocked` / `rate_limited`: stop the pass; no per-game fallback; failed-chunk
+  games are reported skipped and keep their previous `version_checked_at`.
+- `transient`: retry the chunk once with backoff; on second failure report the
+  chunk's games failed with no per-game fallback.
+- `endpoint_gone` (bare 404): the only case where per-game fallback runs,
+  capped at 25 games, with a warning naming the cause.
+
+CLI and desktop share this policy via the same `BulkVersions` classification.

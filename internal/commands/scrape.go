@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -21,7 +22,7 @@ func Scrape(args []string) {
 	cookieFile := fs.String("cookie-file", "", "File containing cookie header")
 	threadURL := fs.String("url", "", "F95Zone thread URL")
 	autoMode := fs.Bool("auto", false, "Auto-associate games using Firefox cookies + search")
-	unsafe := fs.Bool("unsafe", false, "⚠ Skip rate limiting (fast but risky — may get IP banned)")
+	unsafe := fs.Bool("unsafe", false, "Skip rate limiting (unsafe: fast but risky, may get IP banned)")
 	fs.Parse(args)
 
 	// Get cookie string — try Firefox auto-detect first.
@@ -68,7 +69,7 @@ func Scrape(args []string) {
 	data, err := client.ScrapeThread(url)
 	if err != nil {
 		if util.IsBlocked(err) {
-			fmt.Fprintf(os.Stderr, "\n⚠ BLOCKED: %v\n", err)
+			fmt.Fprintf(os.Stderr, "\n! BLOCKED: %v\n", err)
 			fmt.Fprintf(os.Stderr, "Try refreshing your F95Zone session in Firefox and running again.\n")
 			os.Exit(1)
 		}
@@ -109,19 +110,22 @@ func Scrape(args []string) {
 		}
 	}
 
-		// Save download links with platform detection.
+	// Save download links with platform detection.
 	if len(data.DownloadLinks) > 0 {
 		// Clear existing links for this game to avoid duplicates.
-		database.DeleteDownloadLinksByGameID(game.ID)
+		if err := database.DeleteDownloadLinksByGameID(game.ID); err != nil {
+			fmt.Fprintf(os.Stderr, "! Failed to clear stale download links: %v\n", err)
+		}
 
 		fmt.Printf("Download links: %d found\n", len(data.DownloadLinks))
 		for _, dl := range data.DownloadLinks {
-			linkPlatform := downloader.DetectPlatformFromLink(dl.Name, dl.URL)
+			linkPlatform := db.Platform(downloader.DetectPlatform(dl.Name, dl.URL))
 			link := &db.DownloadLink{
 				GameID:   game.ID,
 				URL:      dl.URL,
 				Host:     dl.Host,
 				Name:     dl.Name,
+				Size:     dl.Size,
 				Platform: db.Platform(linkPlatform),
 			}
 			if _, err := database.CreateDownloadLink(link); err != nil {
@@ -203,6 +207,9 @@ func ScrapeBatch(args []string) {
 	defer database.Close()
 
 	client := scraper.NewClient(cookie)
+	// Load the association cache once before the loop; SetCachedThreadID
+	// below only mutates the in-memory entries (saved once at the end).
+	scraper.LoadAssociationCache()
 	ok, failed := 0, 0
 
 	for i, e := range entries {
@@ -218,7 +225,7 @@ func ScrapeBatch(args []string) {
 		td, err := client.ScrapeThread(e.url)
 		if err != nil {
 			if util.IsBlocked(err) {
-				fmt.Fprintf(os.Stderr, "\n⚠ BLOCKED: %v\nStopping batch.\n", err)
+				fmt.Fprintf(os.Stderr, "\n! BLOCKED: %v\nStopping batch.\n", err)
 				os.Exit(1)
 			}
 			fmt.Fprintf(os.Stderr, "  ✗ %v\n", err)
@@ -235,7 +242,6 @@ func ScrapeBatch(args []string) {
 
 		// Persist to association cache.
 		if td.ThreadID > 0 {
-			scraper.LoadAssociationCache()
 			title := scraper.SanitizeTitle(game.Title)
 			if title == "" {
 				title = game.Title
@@ -251,7 +257,7 @@ func ScrapeBatch(args []string) {
 				CoverURL:  td.CoverURL,
 			}
 			if err := database.UpsertScrapedMeta(meta); err != nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ Failed to save metadata for %q: %v\n", game.Title, err)
+				fmt.Fprintf(os.Stderr, "  ! Failed to save metadata for %q: %v\n", game.Title, err)
 			}
 		}
 
@@ -299,7 +305,6 @@ func ResolveCookie(explicit, file string) string {
 	return cookie
 }
 
-
 // ScrapeAutoWrapper opens the database and runs auto-association.
 // This wrapper exists so Scrape can call it without already having a DB handle.
 func ScrapeAutoWrapper(cookie string, unsafe bool) {
@@ -313,7 +318,12 @@ func ScrapeAutoWrapper(cookie string, unsafe bool) {
 		client = scraper.NewClient(cookie)
 	}
 
-	if err := RunScrapeAuto(database, client, false, 1); err != nil {
+	if err := RunScrapeAuto(database, client, false, 3, scraper.NewPublicAPIWithCookie(cookie)); err != nil {
+		if errors.Is(err, ErrSyncInterrupted) {
+			fmt.Fprintln(os.Stderr, "\nsync interrupted — refresh session and retry")
+			os.Exit(1)
+			return
+		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

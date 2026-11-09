@@ -1,0 +1,87 @@
+package main
+
+import (
+	"embed"
+
+	"github.com/mili/moxie/internal/config"
+	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	"github.com/wailsapp/wails/v2/pkg/options/windows"
+)
+
+//go:embed all:frontend/dist
+var assets embed.FS
+
+// channel selects the release channel at build time via
+// -ldflags "-X main.channel=dev". It defaults to the stable "main" channel.
+// It routes the desktop app at the same per-channel data directory the CLI
+// uses (moxie vs moxie-dev), so a dev desktop and a stable install never share
+// a database or config.
+var channel = "main"
+
+func main() {
+	// Route to the per-channel data directory before any path is resolved (the
+	// staged-update swap agent below already reads config dirs).
+	config.SetChannel(channel)
+
+	// On Windows the staged-update swap agent runs inside this binary (the
+	// downloaded copy); it swaps binaries and relaunches, never opening the
+	// app. On every other platform this returns false immediately.
+	if applyPendingUpdateIfRequested() {
+		return
+	}
+
+	// A swap agent that died between moving the installed executable aside
+	// and installing the new one leaves the exe absent with the previous
+	// version in exe.bak. Restore it before the app starts so a stale marker
+	// can never block (or strand) a normal launch.
+	recoverStaleUpdate()
+
+	app := NewApp()
+
+	err := wails.Run(&options.App{
+		Title:     "Moxie",
+		Width:     1200,
+		Height:    800,
+		MinWidth:  900,
+		MinHeight: 600,
+		MaxWidth:  7680, // prevent Wayland/WebKitGTK max-size constraint
+		MaxHeight: 4320, // (issue wailsapp/wails#2431)
+
+		AssetServer: &assetserver.Options{
+			Assets: assets,
+		},
+
+		BackgroundColour: &options.RGBA{R: 18, G: 18, B: 24, A: 255},
+
+		OnStartup:  app.startup,
+		OnShutdown: app.shutdown,
+
+		Bind: []interface{}{
+			app,
+		},
+
+		// Platform-specific options
+		Windows: &windows.Options{
+			WebviewIsTransparent: false,
+			WindowIsTranslucent:  false,
+		},
+		Mac: &mac.Options{
+			TitleBar:             mac.TitleBarHiddenInset(),
+			Appearance:           mac.DefaultAppearance,
+			WebviewIsTransparent: false,
+			WindowIsTranslucent:  false,
+		},
+		Linux: &linux.Options{
+			WindowIsTranslucent: false,
+			WebviewGpuPolicy:    webviewGpuPolicy(),
+		},
+	})
+
+	if err != nil {
+		println("Error:", err.Error())
+	}
+}

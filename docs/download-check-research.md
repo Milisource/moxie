@@ -1,0 +1,240 @@
+# F95Zone download check — hCaptcha research (2026-10-24)
+
+> Why automated downloads stopped working, what the check actually is, and
+> every option found for getting past it — including one clean server-side
+> path (donor DDL) and why the shipped tools all choose a human-in-the-loop.
+
+Related: [`scraper.md`](scraper.md#host-detection) (link parsing),
+[`browserresolve.md`](browserresolve.md) (browser engines).
+
+---
+
+## Update 2026-11-01 — the check is now a timed script check
+
+Live-verified against threads 159108 and 21809203. **This supersedes the
+hCaptcha analysis below for the current site;** the rest of the document is
+kept as history and for the browser fallback, which stays wired in case the
+site brings a captcha back for risky sessions (`had_check` suggests it can).
+
+**The `/dl/` page.** Same URL shape (`/dl/<postID>/?u&k&r&t`). The page
+(`data-template="f95dl_check"`) carries no captcha widget any more:
+
+```html
+<div class="f95dl-page" data-xf-init="f95dl-page" data-auto="0"
+     data-code="c<base64(code reversed)>">
+<form action="/dl/…" method="post" class="block f95dl-box">
+  <input name="_xfToken"> <input name="had_check" value="0">
+  <input name="w" class="js-f95dlCode">
+  <button class="js-f95dlContinue">Continue to <host></button>
+```
+
+The site's script (`js/tb72ar/s0rm0/ng6597.js`, commented source) decodes
+`data-code` (strip `c`, base64, reverse) into `w` **2.1 s** after the page
+opens ("the server counts whole seconds and wants more than one") and submits.
+The POST answers `f95dl_go` with `data-xf-init="f95dl-go" data-url="<host
+URL>"`. All of this works over plain HTTP: moxie's native solver
+(`internal/downloader/hosts_f95dl.go`) resolved every mirror of a thread —
+pixeldrain, gofile, datanodes, mega, bzzhr.to, uploadhaven, mixdrop.ag,
+workupload — with no browser.
+
+**Links expire.** An old link answers `message_page`: *"This download link
+has expired: they work for a few hours after the page was opened."* `r=` is
+that page-open time, so `downloader.F95LinkStale` tells stale links apart
+without a request (90-minute budget) and the desktop/TUI re-scrape the thread
+first; an expired response triggers one re-scrape and retry.
+
+**Why everything 403'd from 2026-10-27.** Not a site change: Cloudflare binds
+`cf_clearance` to the User-Agent that solved the challenge. The user's
+Firefox updated to 159 on 2026-10-27; moxie still claimed Firefox 140, so
+every thread fetch got a challenge. Same cookie + `rv:159.0` → 200 from Go
+`net/http` (the TLS fingerprint is not checked on this zone). moxie now
+derives the UA from the browser store that supplied `cf_clearance`
+(`browser.F95UserAgent`: Firefox `compatibility.ini`, Chromium `Last Version`).
+
+**Minting a clearance (Camoufox).** When no borrowed clearance works,
+`internal/f95session` launches Camoufox — or the system Firefox — headless on
+a throwaway profile pointed at f95zone.to and reads `cf_clearance` from the
+profile's `cookies.sqlite`. Camoufox gets its UA pinned via `CAMOU_CONFIG_1`.
+Measured: Camoufox ~5 s, stock Firefox 159 ~4 s; the minted clearance plus the
+user's own `xf_*` login cookies gave a logged-in 200 from Go. rod-driven
+Chrome (headless and headful) stayed on "Just a moment..." for 2 minutes.
+No Python is involved: just a process launch and a SQLite read.
+
+## What the check is
+
+Every download anchor on a thread is now
+`https://f95zone.to/dl/<postID>/?u=<user>&k=<linkKey>&r=<ts>&t=<token>`.
+The page (`data-template="f95dl_check"`) stacks two independent checks:
+
+1. **hCaptcha** — the site's own widget (`/js/f95vibecoded/downloadlinks/captcha.js`)
+   renders a **visible** hCaptcha with sitekey `c3266d70-c784-4c86-9842-af98deb61432`.
+   The `?captcha=xenforo` alternative renders XenForo's **invisible** hCaptcha
+   (sitekey `f1592dee-67b6-4670-9062-649933011aa2`) plus a hidden
+   `h-captcha-response` field.
+2. **Script check** — `data-code` is a base64-encoded, reversed
+   `<pageTime>.<random>` string; `page.js` decodes it after ~2.1 s into the
+   hidden `w` field, then submits the form (`_xfToken`, `had_check=1`, `w`).
+
+Verified by direct POST:
+
+| Submitted | Result |
+|---|---|
+| `_xfToken` + `w` (decoded code) | `The check wasn't passed. Please try again.` |
+| `_xfToken` + `w` + `had_check=1` | same |
+| no `w`, no token | `The check couldn't be fetched…` |
+| hidden duplicate anchor's `k` | `That link is no longer in the post.` |
+
+So the script code is **not** a captcha bypass; an hCaptcha token is mandatory.
+`r`/`t` are request-time values, **not** an expiry: a 40-minute-old link still
+opens the check page correctly.
+
+### Automation result
+
+With a logged-in session, both Playwright (Chromium) and rod (user's Chrome
+profile) reach the page. Neither can obtain a token:
+
+- Playwright: clicking Continue → `The check wasn't passed`;
+  `hcaptcha.execute()` → `challenge-expired` immediately.
+- rod: the copied Chrome profile trips Cloudflare's managed challenge before
+  the check page even renders; headful/xvfb makes no difference.
+- The page's hCaptcha is a normal widget (not passive mode), so there is no
+  "invisible auto-pass" to inherit.
+
+This matches hCaptcha's own 2026 position: active challenges are explicitly
+built to stay effective against browser-use agents, and challenges rotate when
+solve rates rise ([hCaptcha blog, 2026-02](https://www.hcaptcha.com/blog/hcaptcha-captchas-are-highly-effective-against-bots-and-agents-in-2026)).
+
+---
+
+## What comparable tools do
+
+| Tool | Approach | Notes |
+|---|---|---|
+| **F95Checker** 11.2 (commits 2026-10-17…24) | Integrated **Qt WebEngine** window; user solves the captcha; cookies are harvested and the request retried automatically (`Solve captcha inline and retry automatically`) | Stores `/dl/` links as-is. Also strips attachment signing params (`?h=…`) and blackholes the attachments IP that enabled signed URLs |
+| **XLibrary** 3.2/3.3 | **Browser extension** + catalog server; "Download from this thread" runs in the user's logged-in browser | Human passes the check in their own browser; the app receives the resulting file/link |
+| **moxie** (this repo) | `download --open` opens the fresh `/dl/` link in the default browser; `--watch` picks up the finished archive | CLI prints this path when every automatic link fails |
+
+None of them solves the hCaptcha server-side. That is the signal: the
+maintained tools treat this as a human gate, not a scraping problem.
+
+---
+
+## Options evaluated
+
+### 1. Human-in-the-loop (recommended default)
+
+Open the link in the user's own browser, where the check passes normally:
+
+```bash
+moxie download --open <id>            # open best fresh link
+moxie download --open --watch <id>    # ...and auto-install the archive
+```
+
+Pros: reliable, no extra dependency, no ToS problem. Cons: one click per
+download. This is what F95Checker/XLibrary effectively do, with more UI.
+
+### 2. Donor DDL — the clean server-side path
+
+F95Zone runs a **Donor Direct Download** service at `/sam/dddl.php`. It is a
+cookie-authenticated JSON endpoint that returns direct file URLs, i.e. **no
+hCaptcha**:
+
+```http
+POST /sam/dddl.php?raw=1        (form-encoded, session cookie)
+thread_id=<threadID>
+→ {"status":"ok","msg":{
+     "session":"<id>",
+     "files":{"<section>":{"<title>":{"file_id":"…","filename":"…","size":"…","date":"…","hash":"…"}}}}}
+```
+
+```http
+POST /sam/dddl.php?raw=1
+thread_id=<threadID>&file=<file_id>&session=<session>
+→ {"status":"ok","msg":{"url":"https://…/file","cookie":"<cookie header>"}}
+```
+
+Non-donor accounts get `{"status":"error","msg":"Not a donor"}` (verified with
+the current test account). F95Checker uses this for its in-app download list.
+
+This is the only fully automated, officially-provided path. It is
+capability-gated on a paid donor subscription and should degrade cleanly to
+the human path. Tracked as a follow-up in beads.
+
+### 3. hCaptcha accessibility cookie
+
+hCaptcha's official accommodation: sign up once at
+`hcaptcha.com/accessibility`, receive an encrypted cookie, and "automatically
+pass or receive an accessibility challenge" on participating sites. The cookie
+is usable several times per day and must be refreshed periodically
+([hCaptcha accessibility](https://www.hcaptcha.com/accessibility)).
+
+This is a real per-account credential, not a bypass. moxie must not
+auto-provision it; a user who already has one could supply it as a normal
+browser cookie. Not implemented (eligibility/ToS are the user's call).
+
+### 4. Commercial solver APIs
+
+Services like 2Captcha, CapSolver and Anti-Captcha accept `sitekey` + page URL
+and return a token, which is injected into `h-captcha-response` before submit.
+Technically compatible with the page's form, but:
+
+- per-solve cost and an external account/API key;
+- hCaptcha actively profiles and rotates challenges against solver traffic;
+- almost certainly against F95Zone's rules and hCaptcha's terms.
+
+Not recommended, not implemented.
+
+### 5. Anti-detect browser + residential proxy
+
+The usual "avoid the captcha" stack (patched fingerprint, residential IP,
+human-like pacing). Since the account here is already a real, logged-in
+session on a residential IP and still gets the active widget, this would only
+reduce challenge frequency, not remove it. No advantage over option 1 for a
+single-user desktop tool.
+
+### 6. Browser-extension bridge (XLibrary model) — prototype implemented
+
+A small extension performs the check inside the user's real browser and hands
+the resolved URL back to moxie over a loopback callback. This is the best UX
+short of a full integrated webview: the human still passes the captcha, but
+moxie keeps its normal download pipeline (progress, resume, archive, install).
+
+Prototype: [`extensions/moxie-bridge/`](../extensions/moxie-bridge/README.md)
+(Chrome MV3 + Firefox MV2) and `moxie download --extension`.
+
+Flow:
+
+```
+moxie: loopback listener on 127.0.0.1:<port>, single-use token
+  → opens /dl/…?#moxie=<port>:<token>  (fragment never reaches F95Zone)
+extension: content script reads fragment → background watches that tab
+  → POST 127.0.0.1:<port>/resolved {token,url} once the tab leaves f95zone.to
+moxie: validates token + destination host, downloads the URL normally
+```
+
+Security: loopback bind, random single-use token per resolve, F95Zone-internal
+destinations rejected, 10-minute timeout, `127.0.0.1` only. The extension is
+loaded unpacked (no store listing) and matches only `https://f95zone.to/dl/*`.
+
+Trade-offs: a separate distribution surface (extension permissions/updates),
+and the user must install it once per browser profile. It is opt-in
+(`--extension`); the default remains browser attempt → `--open`.
+
+---
+
+## Decisions for moxie
+
+1. **Keep the browser attempt** (`browserresolve.ResolveDownloadLinkURL`): it
+   is the correct flow and will work on setups hCaptcha does not flag
+   (e.g. a real non-CDP browser, or when the user solves the widget).
+2. **Always offer `--open`** on failure with the exact command (implemented).
+3. **Offer `--extension`** for users who want the download to continue
+   automatically after they pass the check once (prototype implemented; see
+   option 6).
+4. **Add donor DDL** support behind a capability probe; it is the only clean
+   automated path with no human step. Filed as a follow-up (`F95-m8tz`).
+5. **Do not** ship captcha-solver integrations or accessibility-cookie
+   automation.
+6. **Strip attachment signatures** from stored cover/save URLs (implemented):
+   unsigned `attachments.f95zone.to` URLs still work, and stored signed URLs
+   would expire before a later fetch. F95Checker applies the same fix.

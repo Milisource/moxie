@@ -1,0 +1,1 @@
+# Keeps desktop/frontend/dist present for //go:embed all:frontend/dist on a fresh clone.

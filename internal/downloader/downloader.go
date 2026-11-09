@@ -1,24 +1,32 @@
 package downloader
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/mili/moxie/internal/archive"
+	"github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/log"
 )
 
 var blockedDownloadHosts = []string{
-	"169.254.169.254",
+	"169.254.169.254", // AWS/GCP/Azure IMDS (link-local)
+	"fd00:ec2::254",   // AWS IMDSv2 over IPv6
 	"metadata.google.internal",
-	"100.100.100.200",
+	"100.100.100.200", // Alibaba Cloud IMDS
+	"0.0.0.0",         // unspecified — routes to localhost on some systems
+	"::",              // IPv6 unspecified
 }
 
 // redactedURL strips query parameters from a URL for safe logging.
@@ -91,6 +99,13 @@ func (wc *writeCounter) Write(p []byte) (int, error) {
 // The host label enables specialized handling for hosts like Buzzheavier, Pixeldrain, etc.
 // f95Cookie is an optional F95Zone session cookie used to authenticate masked redirects.
 func DownloadWithHost(urlStr, host, destDir string, expectedTotal int64, onProgress func(Progress), f95Cookie string) error {
+	return DownloadWithContext(context.Background(), urlStr, host, destDir, expectedTotal, onProgress, f95Cookie)
+}
+
+// DownloadWithContext is DownloadWithHost with cancellation: the request and
+// the body read loop both honor ctx, so shutdown can interrupt an in-flight
+// transfer instead of waiting out the full download timeout.
+func DownloadWithContext(ctx context.Context, urlStr, host, destDir string, expectedTotal int64, onProgress func(Progress), f95Cookie string) error {
 	log.Debug("download start", "url", redactedURL(urlStr), "host", host, "dest", destDir)
 	resolver := NewHostResolver()
 	if f95Cookie != "" {
@@ -98,15 +113,96 @@ func DownloadWithHost(urlStr, host, destDir string, expectedTotal int64, onProgr
 	}
 	resolved, resolveErr := resolver.Resolve(urlStr, host)
 	if resolveErr != nil {
+		// Mega links are downloaded via the megatools subprocess: the
+		// encrypted protocol is not plain HTTP, so resolveMega returns
+		// ErrMegaNeedsMegatools when the binary is installed. Delegate the
+		// whole transfer to 'megatools dl' instead of resolving to a URL.
+		// The typed error carries the resolved mega.nz URL: the input may be
+		// an F95Zone /dl/ page, which megatools cannot parse.
+		var megaErr *MegaNeedsToolsError
+		if errors.As(resolveErr, &megaErr) {
+			megaURL := megaErr.URL
+			if megaURL == "" {
+				megaURL = urlStr
+			}
+			log.Info("mega download delegating to megatools", "url", redactedURL(megaURL), "dest", destDir)
+			return runMegatoolsDownload(ctx, megaURL, destDir, expectedTotal, onProgress)
+		}
+		if errors.Is(resolveErr, ErrMegaNeedsMegatools) {
+			log.Info("mega download delegating to megatools", "url", redactedURL(urlStr), "dest", destDir)
+			return runMegatoolsDownload(ctx, urlStr, destDir, expectedTotal, onProgress)
+		}
+		// The resolver stage hit a Cloudflare/captcha wall (vikingfile,
+		// datanodes, ...): the browser loads the page with its own
+		// fingerprint + clearance and performs the download itself.
+		// F95Zone session failures (challenge the clearance refresh could
+		// not clear, logged-out session) are excluded: the browser would hit
+		// the same wall, and the caller should stop instead of retrying.
+		if isChallengeFailure(resolveErr) && !IsF95SessionError(resolveErr) && resolver.browserFallback != nil {
+			path, fbErr := resolver.browserFallback(ctx, urlStr, destDir)
+			if fbErr == nil {
+				log.Info("browser fallback download complete (resolve challenge)", "host", host, "file", path)
+				return nil
+			}
+			log.Warn("browser fallback failed after resolve challenge", "host", host, "error", fbErr)
+			return fmt.Errorf("resolve %s URL: %w (browser fallback also failed: %v)", host, resolveErr, fbErr)
+		}
 		log.Info("download resolve failed", "host", host, "error", resolveErr)
 		return fmt.Errorf("resolve %s URL: %w", host, resolveErr)
 	}
-	if resolved.ExternalCommand != "" {
-		log.Debug("download delegated to external tool", "tool", resolved.ExternalCommand, "host", host)
-		return downloadWithExternal(resolved.ExternalCommand, resolved.URL, host, destDir, expectedTotal, onProgress)
-	}
 	log.Debug("download resolving via HTTP", "resolved_url", redactedURL(resolved.URL), "headers", len(resolved.Headers), "host", host)
-	return downloadWithHeaders(resolved.URL, resolved.Headers, host, destDir, expectedTotal, onProgress)
+	// A browser handoff carries a file, not a URL: skip the HTTP health
+	// probe (there is nothing to probe) and let downloadWithHeaders adopt it.
+	if !IsBrowserFileURL(resolved.URL) {
+		// Pre-download host health: some hosts (pixeldrain) serve a
+		// server-side speed cap instead of failing. Catch it here, before any
+		// bytes move, so the caller's link-fallback loop tries another host
+		// instead of grinding through a multi-hour 1 MiB/s transfer.
+		if err := resolver.checkHostThrottle(ctx, host, resolved.URL); err != nil {
+			log.Info("host download throttled; skipping to next link", "host", host, "error", err)
+			return err
+		}
+	}
+	// A capped host can start throttling mid-transfer. Give the download loop
+	// a probe for hosts whose cap is observable, so it aborts into the link
+	// fallback instead of finishing a multi-hour capped transfer. The resolved
+	// URL identifies the host: the input may be an F95Zone /dl/ page.
+	var throttleProbe func(context.Context) (*ThrottledError, bool)
+	if normalizeHostLabel(IdentifyHostInURL(resolved.URL)) == "pixeldrain" && !IsBrowserFileURL(resolved.URL) {
+		throttleProbe = func(pctx context.Context) (*ThrottledError, bool) {
+			limit, limited, err := resolver.probePixeldrainLimit(pctx, resolved.URL)
+			if err != nil || !limited {
+				return nil, false
+			}
+			MarkHostThrottled("pixeldrain", throttleTTL)
+			log.Warn("host started throttling mid-transfer; switching links",
+				"host", "pixeldrain", "limit_bytes_per_sec", limit)
+			return &ThrottledError{Host: "pixeldrain", Limit: limit}, true
+		}
+	}
+	return downloadWithHeaders(ctx, resolved.URL, resolved.Headers, urlStr, host, destDir, expectedTotal, onProgress, resolver.cookieSource, resolver.browserFallback, throttleProbe)
+}
+
+// challengeMarkers are error substrings that identify a Cloudflare/captcha
+// wall at the resolver stage — the trigger for the browser fallback. The
+// match is deliberately broad: a false positive only costs one browser
+// attempt, while a miss leaves a challenge-graded host undownloadable.
+var challengeMarkers = []string{
+	"captcha", "challenge", "turnstile", "cloudflare",
+	"http 403", "status 403", "403 forbidden",
+}
+
+// isChallengeFailure reports whether a resolver-stage error indicates a
+// bot wall the Go path cannot pass (as opposed to a dead link or a
+// host-specific protocol problem).
+func isChallengeFailure(err error) bool {
+	lower := strings.ToLower(err.Error())
+	for _, m := range challengeMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // Download downloads a file using standard HTTP, auto-detecting the host.
@@ -117,13 +213,77 @@ func Download(urlStr, destDir string, expectedTotal int64, onProgress func(Progr
 }
 
 // globalMaxDownloadSize is the absolute maximum size for any single download
-// regardless of host-specific limits. 50 GB.
-const globalMaxDownloadSize int64 = 50 * 1024 * 1024 * 1024
+// regardless of host-specific limits. 50 GB. A var so tests can lower it.
+var globalMaxDownloadSize int64 = 50 * 1024 * 1024 * 1024
+
+// checkGlobalSizeLimit rejects downloads whose total (existing partial +
+// new bytes) exceeds the global maximum. Used for both the Content-Length
+// pre-check and the post-body check — io.LimitReader reports EOF at the cap
+// without erroring, so the latter is what actually catches overflow.
+func checkGlobalSizeLimit(total int64) error {
+	if total > globalMaxDownloadSize {
+		return fmt.Errorf("download rejected: size %d bytes exceeds global maximum of %d bytes", total, globalMaxDownloadSize)
+	}
+	return nil
+}
+
+// checkHostSizeLimit rejects downloads whose size exceeds the limit for
+// the host being used. A limit <= 0 means the host is unlimited. It is
+// applied to the expected size before the request and to the actual bytes
+// written after the body loop, mirroring checkGlobalSizeLimit.
+func checkHostSizeLimit(total, limit int64, host string) error {
+	if limit > 0 && total > limit {
+		return fmt.Errorf("download rejected: size %d bytes exceeds host limit of %d bytes for %s", total, limit, host)
+	}
+	return nil
+}
+
+// minHTMLPayloadBytes is the size above which an unlabeled text/html
+// response is treated as a real HTML game file rather than a bot-challenge
+// page. Challenge/landing pages are tens of kilobytes; published HTML games
+// are megabytes.
+const minHTMLPayloadBytes = 512 * 1024
+
+// isHTMLFilename reports whether name (a URL path segment or a
+// Content-Disposition filename) declares an HTML document. Query strings and
+// fragments are ignored.
+func isHTMLFilename(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if i := strings.IndexAny(name, "?#"); i >= 0 {
+		name = name[:i]
+	}
+	return strings.HasSuffix(name, ".html") || strings.HasSuffix(name, ".htm")
+}
+
+// firstNonEmpty returns the first non-empty value (diagnostics).
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 // downloadTimeout is the maximum time allowed for a single download.
 const downloadTimeout = 6 * time.Hour
 
-func downloadWithHeaders(urlStr string, headers map[string]string, host string, destDir string, expectedTotal int64, onProgress func(Progress)) error {
+// sharedDownloadTransport is reused across downloads so connections are not
+// torn down and re-established for every file.
+var sharedDownloadTransport = &http.Transport{
+	ResponseHeaderTimeout: 30 * time.Second,
+	Proxy:                 http.ProxyFromEnvironment,
+	MaxIdleConns:          8,
+	IdleConnTimeout:       90 * time.Second,
+}
+
+func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]string, originalURL, host, destDir string, expectedTotal int64, onProgress func(Progress), cookieSource func(hostname string) string, browserFallback func(ctx context.Context, url, destDir string) (string, error), throttleProbe func(context.Context) (*ThrottledError, bool)) error {
+	// A file the browser already downloaded (human-assisted session) is
+	// adopted directly — fetching its URL again would double the transfer or
+	// fail on one-time links.
+	if path, name, ok := takeBrowserFile(urlStr); ok {
+		return adoptBrowserFile(ctx, path, name, destDir, host, onProgress)
+	}
 	if !isValidDownloadURL(urlStr) {
 		return fmt.Errorf("invalid or blocked URL: %s", urlStr)
 	}
@@ -135,12 +295,17 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 	if idx := strings.Index(base, "?"); idx >= 0 {
 		base = base[:idx]
 	}
+	// Percent-encoding in the URL path (e.g. "file%20name.zip") must not
+	// end up in the saved filename.
+	if decoded, err := url.PathUnescape(base); err == nil && decoded != "" {
+		base = decoded
+	}
 
 	// Check host-specific size limit BEFORE making the request.
 	// If expectedTotal is known (e.g., from scraped metadata), reject early.
 	hostLimit := HostSizeLimit(host)
-	if hostLimit > 0 && expectedTotal > hostLimit {
-		return fmt.Errorf("download rejected: expected size %d bytes exceeds host limit of %d bytes for %s", expectedTotal, hostLimit, host)
+	if err := checkHostSizeLimit(expectedTotal, hostLimit, host); err != nil {
+		return err
 	}
 	// Check global max early too.
 	if expectedTotal > globalMaxDownloadSize {
@@ -150,12 +315,18 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 	partPath := filepath.Join(destDir, base+".part")
 	finalPath := filepath.Join(destDir, base)
 
+	// The transfer runs on a cancellable child so a mid-transfer throttle
+	// probe can abort a capped download without cancelling the caller's work.
+	dlCtx, cancelDownload := context.WithCancel(ctx)
+	defer cancelDownload()
+	var throttleErr atomic.Pointer[ThrottledError]
+
 	existingSize := int64(0)
 	if fi, err := os.Stat(partPath); err == nil {
 		existingSize = fi.Size()
 	}
 
-	req, err := http.NewRequest("GET", urlStr, nil)
+	req, err := http.NewRequestWithContext(dlCtx, "GET", urlStr, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -167,6 +338,14 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 		req.Header.Set(k, v)
 	}
 
+	// Merge the browser's cookies for the final URL's hostname. Cloudflare-
+	// protected hosts (buzzheavier, datanodes, vikingfile, ...) accept
+	// requests that carry a valid cf_clearance from the user's own browser
+	// session; without it the request commonly 403s. Cookies are host-scoped
+	// to the URL's own domain (RFC 6265 domain match), so they are never
+	// sent to redirect targets on other hosts.
+	mergeBrowserCookies(req, cookieSource)
+
 	if existingSize > 0 {
 		// Don't send Range for host-specific resolvers (they may not support it)
 		if _, isResolved := headers["HX-Request"]; !isResolved {
@@ -174,10 +353,12 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 		}
 	}
 
-	// Total download timeout prevents runaway transfers.
-	client := &http.Client{Timeout: downloadTimeout, Transport: &http.Transport{
-		ResponseHeaderTimeout: 30 * time.Second,
-	}}
+	// Total download timeout prevents runaway transfers. The transport is
+	// shared across downloads so TCP/TLS connections are reused.
+	client := &http.Client{
+		Timeout:   downloadTimeout,
+		Transport: downloadTransport(),
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -185,40 +366,85 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 	}
 	defer resp.Body.Close()
 
-	// Prefer the server's filename when starting fresh. This gives real names
-	// and extensions for hosts whose URL path is just an ID (Pixeldrain /u/<id>,
-	// MEGA handles, etc.).
-	if existingSize == 0 {
-		if name := contentDispositionFilename(resp.Header.Get("Content-Disposition")); name != "" {
-			name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
-			if name != "" && name != "." && name != ".." && name != "/" {
-				base = name
-				partPath = filepath.Join(destDir, base+".part")
-				finalPath = filepath.Join(destDir, base)
+	// A Cloudflare challenge wall (Cf-Mitigated header, or a 403 body with
+	// challenge markers) is the browser fallback's trigger: the Go client —
+	// stdlib or uTLS — cannot produce a Turnstile proof, while the user's
+	// real browser can. Invoke the fallback once with the ORIGINAL URL so
+	// the browser walks the full host flow (page → token → download) under
+	// its own fingerprint and clearance.
+	if cfChallengeDetected(resp) {
+		resp.Body.Close()
+		if browserFallback != nil {
+			path, fbErr := browserFallback(ctx, originalURL, destDir)
+			if fbErr == nil {
+				log.Info("browser fallback download complete (challenge)", "url", redactedURL(originalURL), "file", path)
+				return nil
 			}
+			log.Warn("browser fallback failed after challenge", "url", redactedURL(originalURL), "error", fbErr)
+			return fmt.Errorf("download rejected: %w (browser fallback also failed: %v)", ErrCFChallengeStale, fbErr)
 		}
+		if UseUTLSTransport {
+			return fmt.Errorf("download rejected: %w", ErrCFChallengeStale)
+		}
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	log.Debug("download response", "url", redactedURL(urlStr), "status", resp.StatusCode, "content_length", resp.ContentLength, "content_type", resp.Header.Get("Content-Type"))
 
-	// Content-Type validation: reject HTML pages that indicate redirect/login
-	// pages, but allow genuine HTML games (Twine/SugarCube/etc.) which are a
-	// normal F95Zone release format. A real HTML game names itself in
-	// Content-Disposition (or the URL) and is far larger than a host
-	// interstitial. Missing Content-Type is allowed (some hosts omit it).
+	// Terminal statuses before the HTML heuristics: a 404/410 page is usually
+	// text/html, and treating it as a browser-gated landing page sends a human
+	// into a browser window for a file that no longer exists.
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return fmt.Errorf("download link is dead: HTTP %d", resp.StatusCode)
+	}
+
+	// Content-Type validation: reject HTML pages that indicate redirect/login pages.
+	// Missing Content-Type is allowed (some hosts omit it).
+	//
+	// An HTML payload is also a legitimate FILE for HTML games: F95Zone
+	// threads for engine=HTML often distribute a single .html file, and
+	// pixeldrain/datanodes serve it as text/html. The payload is recognized
+	// by the filename the server advertises (Content-Disposition) or by the
+	// URL path ending in .html/.htm. Only when neither is present do we
+	// treat text/html as a landing/challenge page, because those pages never
+	// carry an attachment filename.
+	//
+	// A 200 text/html from a known browser-gated file host (mixdrop,
+	// uploadnow, dropmefiles, googledrive, ...) is a landing/JS-driven
+	// download page, not a dead link: the Go client cannot run the page's
+	// script, but the user's real browser can drive the free-download flow.
+	// Route those into the same fallback as a Cloudflare challenge, using
+	// the ORIGINAL URL so the browser walks the host's full flow. Unknown
+	// hosts keep the fast hard reject so a dead/interstitial page never
+	// costs a multi-minute browser run, and terminal error statuses (404,
+	// ...) are never handed to the browser.
 	if ct := resp.Header.Get("Content-Type"); ct != "" && strings.HasPrefix(ct, "text/html") {
-		name := contentDispositionFilename(resp.Header.Get("Content-Disposition"))
-		if name == "" {
-			name = filepath.Base(urlStr)
-		}
-		lowerName := strings.ToLower(strings.TrimSuffix(name, "/"))
-		isHTMLGame := (strings.HasSuffix(lowerName, ".html") || strings.HasSuffix(lowerName, ".htm") || strings.HasSuffix(lowerName, ".swf")) &&
-			resp.ContentLength >= 64*1024
-		if !isHTMLGame {
+		cdName := contentDispositionFilename(resp.Header.Get("Content-Disposition"))
+		gated := browserFallback != nil && resp.StatusCode == http.StatusOK &&
+			(isBrowserGatedHost(host) || isBrowserGatedURL(urlStr))
+		switch {
+		case isHTMLFilename(cdName) || isHTMLFilename(base):
+			// A named .html/.htm file: HTML game payload, not a challenge.
+			log.Info("accepting text/html payload as an HTML game file",
+				"url", redactedURL(urlStr), "filename", firstNonEmpty(cdName, base))
+		case gated:
+			resp.Body.Close()
+			path, fbErr := browserFallback(ctx, originalURL, destDir)
+			if fbErr == nil {
+				log.Info("browser fallback download complete (browser-gated HTML landing)", "url", redactedURL(originalURL), "file", path)
+				return nil
+			}
+			log.Warn("browser fallback failed after browser-gated HTML landing", "url", redactedURL(originalURL), "error", fbErr)
+			return fmt.Errorf("download rejected: server returned HTML instead of file (Content-Type: %s) (browser fallback also failed: %v)", ct, fbErr)
+		case resp.ContentLength >= minHTMLPayloadBytes:
+			// No filename signal, but far larger than any challenge page:
+			// treat it as an HTML game distributed without Content-Disposition.
+			log.Info("accepting large text/html payload as an HTML game file",
+				"url", redactedURL(urlStr), "bytes", resp.ContentLength)
+		default:
 			log.Warn("download rejected: Content-Type is text/html", "url", redactedURL(urlStr), "content_type", ct)
 			return fmt.Errorf("download rejected: server returned HTML instead of file (Content-Type: %s)", ct)
 		}
-		log.Debug("allowing HTML game download", "file", name, "size", resp.ContentLength)
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
@@ -233,22 +459,43 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
+	// Compute the resume base FIRST (it determines whether the response was
+	// a resumable 206 or a fresh 200), then enforce size limits so a
+	// server that ignored Range cannot double-count the existing partial.
+	writeMode := os.O_CREATE | os.O_WRONLY
+	if existingSize > 0 && resp.StatusCode == http.StatusPartialContent {
+		writeMode |= os.O_APPEND
+	} else {
+		existingSize = 0
+		writeMode |= os.O_TRUNC
+	}
+
+	// The exact final byte count the server promised. Prefer the scraped size,
+	// but fall back to Content-Length so a short transfer is still caught when
+	// the scraped size is unknown (every F95Zone link stores size 0). A 206
+	// resume body carries only the remaining bytes, so add the existing
+	// partial back.
+	expectedFinal := expectedTotal
+	if expectedFinal <= 0 && resp.ContentLength > 0 {
+		expectedFinal = existingSize + resp.ContentLength
+	}
+
 	// Enforce size limits based on Content-Length.
 	reportedLength := resp.ContentLength
 	if reportedLength > 0 {
 		totalWithExisting := reportedLength + existingSize
-		// Check global max.
-		if totalWithExisting > globalMaxDownloadSize {
-			return fmt.Errorf("download rejected: Content-Length %d bytes exceeds global maximum of %d bytes", totalWithExisting, globalMaxDownloadSize)
+		if err := checkGlobalSizeLimit(totalWithExisting); err != nil {
+			return err
 		}
 		// Check host-specific limit.
-		if hostLimit > 0 && totalWithExisting > hostLimit {
-			return fmt.Errorf("download rejected: Content-Length %d bytes exceeds host limit of %d bytes for %s", totalWithExisting, hostLimit, host)
+		if err := checkHostSizeLimit(totalWithExisting, hostLimit, host); err != nil {
+			return err
 		}
 	}
 
 	// Defense-in-depth: wrap response body with a LimitReader that caps
-	// reads at globalMaxDownloadSize + 1 so any overflow causes an error.
+	// reads at globalMaxDownloadSize + 1. LimitReader returns EOF at the
+	// cap without erroring, so the total is re-checked after the loop.
 	reader := io.LimitReader(resp.Body, globalMaxDownloadSize+1)
 
 	var totalBytes int64
@@ -258,24 +505,11 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 		totalBytes = reportedLength + existingSize
 	}
 
-	writeMode := os.O_CREATE | os.O_WRONLY
-	if existingSize > 0 && resp.StatusCode == http.StatusPartialContent {
-		writeMode |= os.O_APPEND
-	} else {
-		existingSize = 0
-		writeMode |= os.O_TRUNC
-	}
-
 	f, err := os.OpenFile(partPath, writeMode, 0600)
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
 	defer f.Close()
-
-	if existingSize == 0 {
-		if err := os.Remove(partPath + ".tmp"); err == nil {
-		}
-	}
 
 	wc := &writeCounter{
 		total:     existingSize,
@@ -292,9 +526,41 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 		},
 	}
 
+	// A host's speed cap can appear mid-transfer: pixeldrain starts
+	// throttling the moment the 24h quota is crossed, after the pre-download
+	// probe already saw a clean file-info response. Re-probe while the bytes
+	// move and abort into the caller's link fallback instead of grinding at
+	// 1 MiB/s for hours.
+	if throttleProbe != nil {
+		probeCtx, stopProbe := context.WithCancel(ctx)
+		defer stopProbe()
+		go func() {
+			ticker := time.NewTicker(throttleProbeInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-probeCtx.Done():
+					return
+				case <-ticker.C:
+					te, ok := throttleProbe(probeCtx)
+					if !ok || te == nil {
+						continue
+					}
+					throttleErr.Store(te)
+					cancelDownload()
+					return
+				}
+			}
+		}()
+	}
+
 	buf := make([]byte, 32768)
 	var finalErr error
 	for {
+		if cerr := ctx.Err(); cerr != nil {
+			finalErr = cerr
+			break
+		}
 		n, readErr := reader.Read(buf)
 		if n > 0 {
 			wn, writeErr := f.Write(buf[:n])
@@ -318,7 +584,43 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 	}
 	if finalErr != nil {
 		f.Close()
+		if te := throttleErr.Load(); te != nil {
+			// The partial belongs to the capped host; the next mirror writes
+			// a different filename, so keeping it would only leak disk.
+			os.Remove(partPath)
+			return te
+		}
 		return finalErr
+	}
+
+	// The LimitReader caps at globalMaxDownloadSize+1 and reports EOF at
+	// the cap; without this check an oversized download would be silently
+	// truncated and renamed to the final file as a "success".
+	if err := checkGlobalSizeLimit(wc.total); err != nil {
+		f.Close()
+		os.Remove(partPath)
+		return err
+	}
+	// Host-specific limit: the pre-request checks only see the expected or
+	// Content-Length sizes, but a server that ignores Range or misreports
+	// the length can still stream past the limit. Re-check the actual bytes
+	// written and reject (removing the .part file) if the host limit is hit.
+	if err := checkHostSizeLimit(wc.total, hostLimit, host); err != nil {
+		f.Close()
+		os.Remove(partPath)
+		return err
+	}
+
+	// Truncation detection: the bytes written must match the size the server
+	// promised — the scraped size when known, else Content-Length. A mismatch
+	// means the server cut the transfer short, returned an interstitial page,
+	// or a host that ignores Range re-served the file from zero. The .part
+	// file is removed so a later retry starts clean instead of trusting a
+	// partial as a resume base.
+	if expectedFinal > 0 && wc.total != expectedFinal {
+		f.Close()
+		os.Remove(partPath)
+		return fmt.Errorf("download truncated: wrote %d bytes, expected %d", wc.total, expectedTotal)
 	}
 
 	if err := f.Sync(); err != nil {
@@ -329,6 +631,12 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 		return fmt.Errorf("close: %w", err)
 	}
 
+	// Prefer the server's filename (Content-Disposition) over the URL's
+	// last path segment: hosts like pixeldrain serve /api/file/<id>, which
+	// would otherwise save an extension-less "<id>" and hide the format.
+	if name := contentDispositionFilename(resp.Header.Get("Content-Disposition")); name != "" && name != base {
+		finalPath = filepath.Join(destDir, name)
+	}
 	if err := os.Rename(partPath, finalPath); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
@@ -352,6 +660,29 @@ func downloadWithHeaders(urlStr string, headers map[string]string, host string, 
 	return nil
 }
 
+// mergeBrowserCookies attaches the browser's cookies for the request URL's
+// hostname to req, preserving any existing Cookie header (e.g. a session
+// cookie a host-specific resolver obtained). A nil cookieSource or a host
+// with no stored cookies leaves the request untouched.
+func mergeBrowserCookies(req *http.Request, cookieSource func(hostname string) string) {
+	if cookieSource == nil {
+		return
+	}
+	hostname := req.URL.Hostname()
+	if hostname == "" {
+		return
+	}
+	browserCookie := cookieSource(hostname)
+	if browserCookie == "" {
+		return
+	}
+	if existing := req.Header.Get("Cookie"); existing != "" {
+		req.Header.Set("Cookie", existing+"; "+browserCookie)
+	} else {
+		req.Header.Set("Cookie", browserCookie)
+	}
+}
+
 // IsValidGameFile returns true if the downloaded file appears to be a real game
 // file (archive, executable, etc.) rather than an interstitial HTML page or ad.
 func IsValidGameFile(path string) bool {
@@ -364,12 +695,35 @@ func IsValidGameFile(path string) bool {
 	}
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
-	case ".exe", ".sh", ".x86_64", ".bin", ".run", ".AppImage", ".apk", ".swf":
+	case ".exe", ".sh", ".x86_64", ".bin", ".run", ".AppImage":
 		return true
 	case ".html", ".htm":
-		// Standalone HTML games (Twine/SugarCube/RPG Maker MV web builds) are
-		// legitimate. Interstitial/captcha pages are much smaller.
-		return fi.Size() >= 64*1024
+		// A single-file HTML game, not a host's landing/interstitial page
+		// that a passthrough resolve saved under an .html name.
+		return engine.IsHTMLGameFile(path)
 	}
 	return false
+}
+
+// contentDispositionFilename returns a safe base filename from a
+// Content-Disposition header ("" when absent or unusable). The RFC 5987
+// filename* form is decoded by mime.ParseMediaType.
+func contentDispositionFilename(header string) string {
+	if header == "" {
+		return ""
+	}
+	_, params, err := mime.ParseMediaType(header)
+	if err != nil {
+		return ""
+	}
+	name := params["filename"]
+	if name == "" {
+		return ""
+	}
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = filepath.Base(name)
+	if name == "." || name == "/" || name == ".." || strings.HasPrefix(name, ".") {
+		return ""
+	}
+	return name
 }

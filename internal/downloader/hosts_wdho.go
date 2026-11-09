@@ -21,13 +21,12 @@ import (
 //  1. GET https://wdho.ru/<id> with a Referer header. Without a Referer the
 //     AntiBot.Cloud colour-button interstitial is served; with one, the real
 //     file page (with its countdown) is returned.
-//  2. The page embeds the signed download URL as base64 in
-//     `e='aHR0cHM6...'`. The token is single-use and only becomes valid after
-//     the page's 4–8 second countdown, so the resolver waits, then hands the
-//     URL (plus the page's cookies and Referer) to the normal downloader.
+//  2. The page embeds the signed download URL as base64 in `e='aHR0cHM6...'`.
+//     The token is single-use and only becomes valid after the page's 4–8
+//     second countdown, so the resolver waits, then hands the URL (plus the
+//     page's filehosting cookie and Referer) to the normal downloader.
 //
-// The colour-button challenge only appears for direct/no-referer visits; when
-// it does, the browser resolver can wait for a human to clear it.
+// The colour-button challenge only appears for direct/no-referer visits.
 var (
 	wdhoTokenPattern = regexp.MustCompile(`e='([A-Za-z0-9+/=]{20,})'`)
 	// wdhoTokenDelay is a variable so tests can shorten the countdown wait.
@@ -37,21 +36,6 @@ var (
 const wdhoUserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
 
 func (r *HostResolver) resolveWDHO(rawURL string) (*ResolveResult, error) {
-	res, err := r.resolveWDHOHTTP(rawURL)
-	if err == nil {
-		return res, nil
-	}
-	log.Debug("wdho HTTP flow failed", "error", err)
-	if BrowserResolverEnabled() {
-		return r.resolveWDHOBrowser(rawURL)
-	}
-	if strings.Contains(err.Error(), "colour") {
-		return nil, fmt.Errorf("wdho requires an interactive colour-button check — retry with --browser and clear it in the opened window")
-	}
-	return nil, err
-}
-
-func (r *HostResolver) resolveWDHOHTTP(rawURL string) (*ResolveResult, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, fmt.Errorf("wdho: create cookie jar: %w", err)
@@ -82,7 +66,7 @@ func (r *HostResolver) resolveWDHOHTTP(rawURL string) (*ResolveResult, error) {
 		return nil, fmt.Errorf("wdho: HTTP %d", resp.StatusCode)
 	}
 	if strings.Contains(string(body), "btn-color") || strings.Contains(string(body), `name="antibot"`) {
-		return nil, fmt.Errorf("wdho requires an interactive colour-button check")
+		return nil, fmt.Errorf("wdho requires an interactive colour-button check — use --open for this link")
 	}
 	m := wdhoTokenPattern.FindStringSubmatch(string(body))
 	if len(m) < 2 {
@@ -122,15 +106,24 @@ func (r *HostResolver) resolveWDHOHTTP(rawURL string) (*ResolveResult, error) {
 	for _, name := range names {
 		parts = append(parts, name+"="+cookieValues[name])
 	}
-	cookieHeader := strings.Join(parts, "; ")
+
 	headers := map[string]string{
 		"User-Agent": wdhoUserAgent,
 		"Referer":    rawURL,
 	}
-	if cookieHeader != "" {
+	if cookieHeader := strings.Join(parts, "; "); cookieHeader != "" {
 		headers["Cookie"] = cookieHeader
 	}
+	log.Debug("wdho signed URL ready", "url", redactQuery(direct))
 	// The signed URL is single-use and tied to this cookie session, so it is
 	// deliberately not cached.
 	return &ResolveResult{URL: direct, Headers: headers}, nil
+}
+
+// redactQuery drops the ?pt= token from log lines.
+func redactQuery(raw string) string {
+	if i := strings.IndexByte(raw, '?'); i >= 0 {
+		return raw[:i] + "?pt=<redacted>"
+	}
+	return raw
 }

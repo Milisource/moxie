@@ -2,7 +2,6 @@ package downloader
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -18,47 +17,62 @@ func IsOnlineOnly(name, url string) bool {
 
 // ScoreLinkHost adjusts a download link's priority score based on host reliability.
 // Higher scores are preferred. Callers should add this to their platform priority score.
+//
+// Tiers (calibrated 2026-08-09, F95-ugim host-tier research):
+//
+//	 +25  plain HTTP works (pixeldrain, catbox, mediafire)
+//	 +10  intermittent challenges or solvable puzzles (buzzheavier, workupload);
+//	      googledrive keeps +10 (working resolver, unchanged)
+//	  +5  fragile (gofile — premium-gated API, free path is a web scrape)
+//	   0   browser-gated or unproven (datanodes, mixdrop, hexload, uploadhaven,
+//	       bunkrr, 1cloudfile, ...)
+//	-200  hard walls (vikingfile, krakenfiles; mega until megatools lands)
+//
+// A host that is currently serving server-side-capped downloads (detected by
+// the pre-download probe, e.g. pixeldrain past its free quota) is penalised by
+// throttlePenalty so any working alternative outranks it.
 func ScoreLinkHost(host string) int {
+	return hostTierScore(host) - throttlePenaltyFor(host)
+}
+
+// hostTierScore is the static host-reliability tier table (see ScoreLinkHost).
+func hostTierScore(host string) int {
 	switch strings.ToLower(host) {
-	case "pixeldrain", "gofile", "catbox", "mediafire", "bunkrr", "dropbox", "wdho":
+	case "pixeldrain", "catbox", "mediafire":
 		return 25
-	case "buzzheavier":
-		if BrowserResolverEnabled() {
-			return 25
-		}
-		// Cloudflare frequently rejects plain HTTP clients; keep it usable
-		// but below hosts that do not need a browser here.
-		return 5
-	case "google drive", "workupload":
+	case "buzzheavier", "googledrive", "workupload":
 		return 10
-	case "mixdrop", "uploadhaven":
-		if BrowserResolverEnabled() {
-			return 10
-		}
-		return -50
-	case "mega":
-		if _, err := exec.LookPath("megatools"); err == nil {
-			return 10
-		}
-		return -200
-	case "datanodes":
-		if BrowserResolverEnabled() {
-			return 10
-		}
-		return -50
+	case "gofile":
+		return 5
+	case "wdho":
+		// Verified HTTP flow: Referer gets the file page, base64 e='…'
+		// yields a signed single-use URL valid after the countdown.
+		return 25
 	case "vikingfile":
-		if BrowserResolverEnabled() {
-			return 10
-		}
-		return -50
-	case "krakenfiles":
-		if BrowserResolverEnabled() {
-			return 10
-		}
-		return -50
+		// Cloudflare Turnstile rejects the rod/CDP browser ("Verification
+		// failed", live-verified 2026-10-04; see F95-ob9m), so the Turnstile
+		// solver is dormant and the host stays a hard wall.
+		return -200
+	case "mega", "krakenfiles":
+		return -200
+	case "uploadhaven":
+		// No resolver: the link is a landing page (timer + button), so a
+		// passthrough fetch yields HTML, never the archive. Kept above the
+		// hard walls only as a last resort.
+		return -100
 	default:
 		return 0
 	}
+}
+
+// throttlePenaltyFor sinks a host currently serving capped downloads (e.g.
+// pixeldrain past its free 24h quota) below every working alternative, so
+// ranking tries another host instead of a 1 MiB/s grind. See hosthealth.go.
+func throttlePenaltyFor(host string) int {
+	if HostThrottled(host) {
+		return throttlePenalty
+	}
+	return 0
 }
 
 // ScoreDownloadLink returns a composite score for a download link combining

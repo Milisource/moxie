@@ -1,9 +1,12 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,33 +25,43 @@ type Database struct {
 	conn *sql.DB
 }
 
+// dsnForPath builds the SQLite DSN for path.
+//
+// It is built by hand rather than with url.URL because url.URL puts a Windows
+// drive-qualified path ("C:\...") in the URI *authority* ("file://C:/...");
+// the WASM VFS then resolves "//C:/..." instead of the database, so every
+// command failed on Windows with a GetFileAttributesEx error. "file:" plus the
+// escaped path keeps the drive letter in the path component ("file:/home/..."
+// on POSIX, "file:C:/..." on Windows), which SQLite hands to the VFS verbatim.
+func dsnForPath(path string) string {
+	p := (&url.URL{Path: filepath.ToSlash(path)}).EscapedPath()
+	return "file:" + p + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+}
+
 // Open creates or opens the SQLite database at the given path, runs
 // migrations, and returns a Database handle.
 func Open(path string) (*Database, error) {
-	conn, err := sql.Open("sqlite3", path)
+	// foreign_keys and busy_timeout are per-connection settings, so they
+	// are applied via DSN _pragma options: every connection the pool
+	// opens gets them, not just the first one.
+	dsn := dsnForPath(path)
+	conn, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err
 	}
 
-	// Restrict database file permissions (sensitive data: game paths,
-	// F95Zone metadata).
-	os.Chmod(path, 0600)
-
-	// Enable WAL mode and foreign keys.
+	// Enable WAL mode; this persists in the database file itself, so
+	// setting it once on the initial connection is sufficient.
 	if _, err := conn.Exec("PRAGMA journal_mode = WAL"); err != nil {
 		conn.Close()
 		return nil, err
 	}
-	if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		conn.Close()
-		return nil, err
-	}
 
-	// Set a busy timeout so lock contention waits instead of immediately
-	// failing with SQLITE_BUSY. 5000 ms is generous for single-user CLI use.
-	if _, err := conn.Exec("PRAGMA busy_timeout = 5000"); err != nil {
-		conn.Close()
-		return nil, err
+	// Restrict database file permissions (sensitive data: game paths,
+	// F95Zone metadata). This must run after the first statement — sql.Open
+	// is lazy and the file is only created by the WAL pragma above.
+	if err := os.Chmod(path, 0600); err != nil {
+		log.Warn("cannot restrict database file permissions", "path", path, "error", err)
 	}
 
 	// Run schema migration.
@@ -76,16 +89,68 @@ func (db *Database) Close() error {
 // Version history:
 //  1. Core tables (games, scraped_meta, downloads, download_links) with all
 //     current columns including latest_version, version_checked_at,
-//     store_links, steam_app_id, last_scanned_at, dir_mtime.
+//     store_links, steam_app_id, wine_prefix, last_scanned_at, dir_mtime.
 //  2. FTS5 virtual table (games_fts) for full-text search across title, tags,
 //     developer, and overview, with content sync triggers and initial population.
 //  3. Play history (play_history table) and game series (game_series table)
 //     with series_id and series_order on games.
 //  4. Soft delete support: deleted_at TEXT column on games (NULL = active).
 //  5. Game collections: collections table + game_collections join table.
-//  6. Repair pass for games columns added by older migrations.
-//  7. Cached F95Zone masked-link resolutions (resolved_urls table).
-const currentSchemaVersion = 7
+//  7. Per-game wine prefix: wine_prefix TEXT on games table.
+//  8. Godot engine: 'Godot' added to the games.engine CHECK constraint
+//     (games table rebuilt; FTS triggers and indexes recreated).
+//  9. Scraped size: size INTEGER DEFAULT 0 on download_links (bytes;
+//     0 = unknown). The downloader uses it as the expected total to
+//     verify completed downloads and enforce host caps.
+//  10. Masked-URL unwrap cache: resolved_urls table mapping f95zone.to
+//     /masked/ URLs to their unwrapped download URLs, so repeated
+//     resolves of the same link skip the rate-limited unwrap endpoint.
+//     created_at is unix seconds; entries older than ResolvedURLTTL
+//     (7 days) are auto-pruned — unwraps can go stale.
+//  12. Engine/version provenance: engine_source and version_source TEXT NOT
+//     NULL DEFAULT ” on games. Records who last set each field (”/scanner,
+//     f95, or user) so a normal rescan can self-correct scanner-owned
+//     mis-detections without clobbering manual edits or F95Zone associations.
+//  13. Scan exclusions: excluded_paths table. Paths the user resolved away
+//     as duplicates are skipped by the scan upsert so the directory on disk
+//     cannot resurrect the row or insert a fresh one. Restoring the game
+//     from Trash clears its exclusion.
+//  14. Save manager: save_sets (named per-game save sets, at most one of
+//     them active per game via a partial unique index) and save_configs
+//     (per-game live save-path override plus cached resolution).
+const currentSchemaVersion = 14
+
+// gamesTableColumns is the games table column definition, shared between the
+// fresh-DB CREATE TABLE and the v8 rebuild (the engine CHECK constraint
+// gains 'Godot'). Keep the column list in sync with both uses.
+const gamesTableColumns = `(
+		id          INTEGER PRIMARY KEY,
+		title       TEXT NOT NULL,
+		engine      TEXT NOT NULL CHECK (engine IN ('ADRIFT','Flash','Godot','HTML','Java','Others','QSP','RAGS','RPGM','RenPy','Tads','Unity','UnrealEngine','WebGL','WolfRPG','Unknown')),
+		path        TEXT NOT NULL UNIQUE,
+		exe_path    TEXT,
+		version     TEXT,
+		size_bytes  INTEGER DEFAULT 0,
+		f95_url     TEXT,
+		f95_thread_id INTEGER,
+		tags        TEXT DEFAULT '[]',
+		status      TEXT DEFAULT 'unknown' CHECK (status IN ('active','completed','abandoned','on_hold','unknown')),
+		notes       TEXT DEFAULT '',
+		latest_version   TEXT,
+		version_checked_at TEXT,
+		store_links TEXT DEFAULT '{}',
+		steam_app_id INTEGER,
+		wine_prefix TEXT,
+		last_scanned_at TEXT,
+		dir_mtime TEXT,
+		series_id    INTEGER REFERENCES game_series(id),
+		series_order INTEGER DEFAULT 0,
+		deleted_at  TEXT,
+		engine_source  TEXT NOT NULL DEFAULT '',
+		version_source TEXT NOT NULL DEFAULT '',
+		created_at  TEXT DEFAULT (datetime('now')),
+		updated_at  TEXT DEFAULT (datetime('now'))
+	)`
 
 // fts5Setup creates the FTS5 virtual table, content sync triggers, and populates
 // existing games. Safe to run multiple times via IF NOT EXISTS and idempotent
@@ -141,49 +206,9 @@ func migrate(conn *sql.DB) error {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 
-	// Ensure the masked-link resolution cache exists regardless of schema
-	// version. Some builds advanced user_version past this migration before
-	// the table existed, and the cache is safe/idempotent to create.
-	if _, err := conn.Exec(`
-		CREATE TABLE IF NOT EXISTS resolved_urls (
-			masked_url    TEXT PRIMARY KEY,
-			resolved_url  TEXT NOT NULL,
-			resolved_host TEXT,
-			created_at    INTEGER NOT NULL,
-			hits          INTEGER DEFAULT 0
-		);
-		CREATE INDEX IF NOT EXISTS idx_resolved_urls_created ON resolved_urls(created_at);
-	`); err != nil {
-		return fmt.Errorf("ensure resolved_urls: %w", err)
-	}
-
 	// Core tables definition — includes all current columns.
 	coreTables := `
-		CREATE TABLE IF NOT EXISTS games (
-			id          INTEGER PRIMARY KEY,
-			title       TEXT NOT NULL,
-			engine      TEXT NOT NULL CHECK (engine IN ('ADRIFT','Flash','HTML','Java','Others','QSP','RAGS','RPGM','RenPy','Tads','Unity','UnrealEngine','WebGL','WolfRPG','Unknown')),
-			path        TEXT NOT NULL UNIQUE,
-			exe_path    TEXT,
-			version     TEXT,
-			size_bytes  INTEGER DEFAULT 0,
-			f95_url     TEXT,
-			f95_thread_id INTEGER,
-			tags        TEXT DEFAULT '[]',
-			status      TEXT DEFAULT 'unknown' CHECK (status IN ('active','completed','abandoned','on_hold','unknown')),
-			notes       TEXT DEFAULT '',
-			latest_version   TEXT,
-			version_checked_at TEXT,
-			store_links TEXT DEFAULT '{}',
-			steam_app_id INTEGER,
-			last_scanned_at TEXT,
-			dir_mtime TEXT,
-			series_id    INTEGER REFERENCES game_series(id),
-			series_order INTEGER DEFAULT 0,
-			deleted_at  TEXT,
-			created_at  TEXT DEFAULT (datetime('now')),
-			updated_at  TEXT DEFAULT (datetime('now'))
-		);
+		CREATE TABLE IF NOT EXISTS games ` + gamesTableColumns + `;
 		CREATE INDEX IF NOT EXISTS idx_games_engine ON games(engine);
 		CREATE INDEX IF NOT EXISTS idx_games_title ON games(title COLLATE NOCASE);
 		CREATE INDEX IF NOT EXISTS idx_games_path ON games(path);
@@ -222,6 +247,7 @@ func migrate(conn *sql.DB) error {
 			url TEXT NOT NULL,
 			host TEXT,
 			name TEXT,
+			size INTEGER DEFAULT 0,
 			platform TEXT DEFAULT 'unknown',
 			is_dead INTEGER DEFAULT 0,
 			dead_reason TEXT,
@@ -231,15 +257,6 @@ func migrate(conn *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_download_links_game_id ON download_links(game_id);
 		CREATE INDEX IF NOT EXISTS idx_download_links_platform ON download_links(platform);
 		CREATE INDEX IF NOT EXISTS idx_download_links_is_dead ON download_links(is_dead);
-
-		CREATE TABLE IF NOT EXISTS resolved_urls (
-			masked_url    TEXT PRIMARY KEY,
-			resolved_url  TEXT NOT NULL,
-			resolved_host TEXT,
-			created_at    INTEGER NOT NULL,
-			hits          INTEGER DEFAULT 0
-		);
-		CREATE INDEX IF NOT EXISTS idx_resolved_urls_created ON resolved_urls(created_at);
 
 		CREATE TABLE IF NOT EXISTS play_history (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -266,6 +283,48 @@ func migrate(conn *sql.DB) error {
 			game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
 			collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
 			PRIMARY KEY (game_id, collection_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS resolved_urls (
+			masked_url    TEXT PRIMARY KEY,
+			resolved_url  TEXT NOT NULL,
+			resolved_host TEXT,
+			created_at    INTEGER NOT NULL,
+			hits          INTEGER DEFAULT 0
+		);
+		CREATE INDEX IF NOT EXISTS idx_resolved_urls_created_at ON resolved_urls(created_at);
+
+		CREATE TABLE IF NOT EXISTS excluded_paths (
+			path       TEXT PRIMARY KEY,
+			reason     TEXT NOT NULL DEFAULT '',
+			created_at TEXT DEFAULT (datetime('now'))
+		);
+
+		CREATE TABLE IF NOT EXISTS save_sets (
+			id INTEGER PRIMARY KEY,
+			game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			label TEXT NOT NULL DEFAULT '',
+			source TEXT NOT NULL DEFAULT 'import'
+				CHECK (source IN ('snapshot','import','f95_attachment','f95_link')),
+			source_url TEXT,
+			game_version TEXT,
+			apply_root TEXT NOT NULL DEFAULT '',
+			size_bytes INTEGER NOT NULL DEFAULT 0,
+			file_count INTEGER NOT NULL DEFAULT 0,
+			active INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT DEFAULT (datetime('now')),
+			UNIQUE(game_id, name)
+		);
+		CREATE INDEX IF NOT EXISTS idx_save_sets_game ON save_sets(game_id);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_save_sets_one_active
+			ON save_sets(game_id) WHERE active = 1;
+
+		CREATE TABLE IF NOT EXISTS save_configs (
+			game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+			manual_path TEXT,
+			resolved_path TEXT,
+			updated_at TEXT DEFAULT (datetime('now'))
 		);
 	`
 
@@ -330,6 +389,16 @@ func migrate(conn *sql.DB) error {
 	// New version-gated migrations: run all steps from userVersion+1
 	// up to currentSchemaVersion.
 	for v := userVersion + 1; v <= currentSchemaVersion; v++ {
+		if v == 8 {
+			// v8 rebuilds the games table (CHECK constraint change), which
+			// needs PRAGMA foreign_keys=OFF on the raw connection — a
+			// connection-level setting that is a no-op inside a transaction,
+			// so it cannot run inside migrateVersionStep's wrapper.
+			if err := migrateGodotEngine(conn); err != nil {
+				return fmt.Errorf("migration v8: %w", err)
+			}
+			continue
+		}
 		if err := migrateVersionStep(conn, v); err != nil {
 			return fmt.Errorf("migration v%d: %w", v, err)
 		}
@@ -343,6 +412,142 @@ func migrate(conn *sql.DB) error {
 		log.Warn("auto-purge failed", "error", err)
 	}
 
+	// Auto-prune expired masked-URL unwrap cache entries (ResolvedURLTTL).
+	if _, err := conn.Exec(
+		"DELETE FROM resolved_urls WHERE created_at < strftime('%s', 'now') - ?",
+		int64(ResolvedURLTTL.Seconds()),
+	); err != nil {
+		// Non-fatal — log and continue.
+		log.Warn("resolved_urls auto-prune failed", "error", err)
+	}
+
+	// Scrapes once stored F95's literal "missing" placeholder as a cover URL;
+	// clear anything that isn't an http(s) URL so cover fetching retries.
+	if _, err := conn.Exec(
+		"UPDATE scraped_meta SET cover_url = NULL WHERE cover_url IS NOT NULL AND cover_url NOT LIKE 'http%'",
+	); err != nil {
+		log.Warn("scraped_meta cover cleanup failed", "error", err)
+	}
+
+	return nil
+}
+
+// migrateGodotEngine rebuilds the games table with 'Godot' added to the
+// engine CHECK constraint. SQLite cannot alter a CHECK constraint, so the
+// table is rebuilt via the create-new → copy → drop-old → rename dance.
+// Child tables' REFERENCES clauses keep pointing at "games" throughout and
+// resolve to the new table after the rename. PRAGMA foreign_keys must be
+// OFF for the drop and is a connection-level setting (a no-op inside a
+// transaction), so this runs on the raw connection instead of inside
+// migrateVersionStep's wrapper. The games indexes and FTS sync triggers,
+// which are dropped with the old table, are recreated afterwards.
+func migrateGodotEngine(db *sql.DB) error {
+	// Pin a single connection for the whole rebuild: PRAGMA foreign_keys is
+	// a per-connection setting, so the OFF/ON toggles and the transaction
+	// must land on the same connection — otherwise DROP TABLE games fails
+	// with an FK constraint error, or FK is left disabled on the pooled
+	// connection.
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("pin connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys: %w", err)
+	}
+	restoreFK := func() {
+		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+			log.Warn("re-enabling foreign keys failed", "error", err)
+		}
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		restoreFK()
+		return fmt.Errorf("begin rebuild: %w", err)
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+		restoreFK()
+	}
+
+	if _, err := tx.ExecContext(ctx, "CREATE TABLE games_new "+gamesTableColumns); err != nil {
+		rollback()
+		return fmt.Errorf("create games_new: %w", err)
+	}
+	// Copy the old rows by their own column names. gamesTableColumns grows over
+	// time (game_new is created from it), while an old games table has only the
+	// columns that existed then — a bare `SELECT *` would break on the column
+	// count. Naming the old columns lets new ones take their defaults.
+	oldCols, err := tableColumnsTx(ctx, tx, "games")
+	if err != nil {
+		rollback()
+		return fmt.Errorf("read games columns: %w", err)
+	}
+	colList := strings.Join(oldCols, ", ")
+	if _, err := tx.ExecContext(ctx, "INSERT INTO games_new ("+colList+") SELECT "+colList+" FROM games"); err != nil {
+		rollback()
+		return fmt.Errorf("copy games: %w", err)
+	}
+	// The scraped_meta_* FTS triggers reference games in their bodies; they
+	// must go before the table does, or the subsequent rename fails on the
+	// dangling reference. fts5Setup below recreates them.
+	if _, err := tx.ExecContext(ctx, `
+		DROP TRIGGER IF EXISTS scraped_meta_ai;
+		DROP TRIGGER IF EXISTS scraped_meta_ad;
+		DROP TRIGGER IF EXISTS scraped_meta_au;
+	`); err != nil {
+		rollback()
+		return fmt.Errorf("drop scraped_meta triggers: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DROP TABLE games"); err != nil {
+		rollback()
+		return fmt.Errorf("drop old games: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "ALTER TABLE games_new RENAME TO games"); err != nil {
+		rollback()
+		return fmt.Errorf("rename games_new: %w", err)
+	}
+	// Recreate what the drop took with it: indexes and FTS sync triggers.
+	for _, idx := range []string{
+		"CREATE INDEX idx_games_engine ON games(engine)",
+		"CREATE INDEX idx_games_title ON games(title COLLATE NOCASE)",
+		"CREATE INDEX idx_games_path ON games(path)",
+	} {
+		if _, err := tx.ExecContext(ctx, idx); err != nil {
+			rollback()
+			return fmt.Errorf("recreate index: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, fts5Setup); err != nil {
+		rollback()
+		return fmt.Errorf("recreate FTS triggers: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "PRAGMA user_version = 8"); err != nil {
+		rollback()
+		return fmt.Errorf("set user_version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		restoreFK()
+		return fmt.Errorf("commit rebuild: %w", err)
+	}
+	restoreFK()
+
+	// The rebuild must leave every foreign key intact.
+	rows, err := conn.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("foreign key check: %w", err)
+	}
+	defer rows.Close()
+	var violations int
+	for rows.Next() {
+		violations++
+	}
+	if violations > 0 {
+		return fmt.Errorf("foreign key check found %d violations after games rebuild", violations)
+	}
 	return nil
 }
 
@@ -432,8 +637,26 @@ func migrateVersionStep(conn *sql.DB, version int) error {
 			}
 		}
 	case 7:
-		// Cached F95Zone masked-link resolutions. Avoids re-hitting F95Zone's
-		// rate-limited unmask endpoint on every download.
+		if !columnExists(tx, "games", "wine_prefix") {
+			if _, err := tx.Exec("ALTER TABLE games ADD COLUMN wine_prefix TEXT"); err != nil {
+				return fmt.Errorf("add wine_prefix: %w", err)
+			}
+		}
+	case 9:
+		// Scraped size in bytes for download links (0 = unknown). The
+		// downloader passes it as the expected total so truncated
+		// downloads error out and host caps are enforced before the
+		// request. Existing rows default to 0 (unknown).
+		if !columnExists(tx, "download_links", "size") {
+			if _, err := tx.Exec("ALTER TABLE download_links ADD COLUMN size INTEGER DEFAULT 0"); err != nil {
+				return fmt.Errorf("add download_links.size: %w", err)
+			}
+		}
+	case 10:
+		// Masked-URL unwrap cache: caches f95zone.to /masked/ unwrap
+		// results so repeated resolves of the same link skip the
+		// rate-limited JSON endpoint. Rows are auto-pruned after
+		// ResolvedURLTTL (7 days) and read as misses past it.
 		if _, err := tx.Exec(`
 			CREATE TABLE IF NOT EXISTS resolved_urls (
 				masked_url    TEXT PRIMARY KEY,
@@ -441,12 +664,93 @@ func migrateVersionStep(conn *sql.DB, version int) error {
 				resolved_host TEXT,
 				created_at    INTEGER NOT NULL,
 				hits          INTEGER DEFAULT 0
-			)
+			);
+			CREATE INDEX IF NOT EXISTS idx_resolved_urls_created_at ON resolved_urls(created_at);
 		`); err != nil {
 			return fmt.Errorf("create resolved_urls: %w", err)
 		}
-		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_resolved_urls_created ON resolved_urls(created_at)`); err != nil {
-			return fmt.Errorf("index resolved_urls: %w", err)
+	case 11:
+		// Data repair: older syncs stored F95 status labels as the latest
+		// version ("Translation Request", "Full Steam", "English Ver.")
+		// because StripVersionQualifier passed digitless strings through.
+		// Clear them (keeping the "Final" sentinel) and reset the check
+		// time so the next sync refetches a real value.
+		if !columnExists(tx, "games", "latest_version") {
+			break // bare/partial schemas (tests) have nothing to repair
+		}
+		if _, err := tx.Exec(`
+			UPDATE games SET latest_version = NULL, version_checked_at = NULL
+			WHERE latest_version IS NOT NULL
+			  AND latest_version NOT GLOB '*[0-9]*'
+			  AND lower(latest_version) <> 'final'
+		`); err != nil {
+			return fmt.Errorf("clear digitless latest_version: %w", err)
+		}
+	case 12:
+		// Engine/version provenance columns. Existing rows default to ''
+		// (treated as scanner-owned), so the first rescan can self-correct
+		// historical mis-detections; going forward, manual edits set 'user'
+		// and F95Zone associations set 'f95', both of which a normal scan
+		// leaves alone.
+		if !columnExists(tx, "games", "id") {
+			break // bare/partial schemas (tests) have no games table
+		}
+		if !columnExists(tx, "games", "engine_source") {
+			if _, err := tx.Exec("ALTER TABLE games ADD COLUMN engine_source TEXT NOT NULL DEFAULT ''"); err != nil {
+				return fmt.Errorf("add engine_source: %w", err)
+			}
+		}
+		if !columnExists(tx, "games", "version_source") {
+			if _, err := tx.Exec("ALTER TABLE games ADD COLUMN version_source TEXT NOT NULL DEFAULT ''"); err != nil {
+				return fmt.Errorf("add version_source: %w", err)
+			}
+		}
+	case 13:
+		// Scan exclusions: paths resolved away as duplicates are skipped by
+		// the scan upsert so the directory on disk cannot resurrect the row.
+		if _, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS excluded_paths (
+				path       TEXT PRIMARY KEY,
+				reason     TEXT NOT NULL DEFAULT '',
+				created_at TEXT DEFAULT (datetime('now'))
+			)
+		`); err != nil {
+			return fmt.Errorf("create excluded_paths: %w", err)
+		}
+	case 14:
+		// Save manager: named per-game save sets plus the per-game live
+		// save-path config. UNIQUE(game_id, name) keeps set names unique
+		// within a game; the partial unique index keeps at most one active
+		// set per game.
+		if _, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS save_sets (
+				id INTEGER PRIMARY KEY,
+				game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+				name TEXT NOT NULL,
+				label TEXT NOT NULL DEFAULT '',
+				source TEXT NOT NULL DEFAULT 'import'
+					CHECK (source IN ('snapshot','import','f95_attachment','f95_link')),
+				source_url TEXT,
+				game_version TEXT,
+				apply_root TEXT NOT NULL DEFAULT '',
+				size_bytes INTEGER NOT NULL DEFAULT 0,
+				file_count INTEGER NOT NULL DEFAULT 0,
+				active INTEGER NOT NULL DEFAULT 0,
+				created_at TEXT DEFAULT (datetime('now')),
+				UNIQUE(game_id, name)
+			);
+			CREATE INDEX IF NOT EXISTS idx_save_sets_game ON save_sets(game_id);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_save_sets_one_active
+				ON save_sets(game_id) WHERE active = 1;
+
+			CREATE TABLE IF NOT EXISTS save_configs (
+				game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+				manual_path TEXT,
+				resolved_path TEXT,
+				updated_at TEXT DEFAULT (datetime('now'))
+			);
+		`); err != nil {
+			return fmt.Errorf("create save tables: %w", err)
 		}
 	default:
 		return fmt.Errorf("unknown migration version %d", version)
@@ -551,6 +855,30 @@ func columnExists(tx *sql.Tx, table, column string) bool {
 	return false
 }
 
+// tableColumnsTx returns the column names of table in declaration order, via
+// PRAGMA table_info. Used to copy a table by its own columns (see
+// migrateGodotEngine): the source table may be older than the destination.
+func tableColumnsTx(ctx context.Context, tx *sql.Tx, table string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cols []string
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dfltValue *string
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return nil, err
+		}
+		cols = append(cols, name)
+	}
+	return cols, rows.Err()
+}
+
 // ---------------------------------------------------------------------------
 // Null-value helpers
 // ---------------------------------------------------------------------------
@@ -594,16 +922,19 @@ func nullableTime(t time.Time) any {
 // Aggregates
 // ---------------------------------------------------------------------------
 
-// GameCount returns the total number of active (non-deleted) games in the library.
+// GameCount returns the total number of active (non-deleted) games in the
+// library. Like every other listing, updater Merge() backup directories
+// (.old) are excluded so the count agrees with ListActiveGames.
 func (db *Database) GameCount() (int, error) {
 	var n int
-	err := db.conn.QueryRow("SELECT COUNT(*) FROM games WHERE deleted_at IS NULL").Scan(&n)
+	err := db.conn.QueryRow("SELECT COUNT(*) FROM games WHERE deleted_at IS NULL AND path NOT LIKE '%.old'").Scan(&n)
 	return n, err
 }
 
-// TotalSize returns the sum of size_bytes across all active (non-deleted) games.
+// TotalSize returns the sum of size_bytes across all active (non-deleted)
+// games, excluding .old backup directories for symmetry with GameCount.
 func (db *Database) TotalSize() (int64, error) {
 	var total int64
-	err := db.conn.QueryRow("SELECT COALESCE(SUM(size_bytes), 0) FROM games WHERE deleted_at IS NULL").Scan(&total)
+	err := db.conn.QueryRow("SELECT COALESCE(SUM(size_bytes), 0) FROM games WHERE deleted_at IS NULL AND path NOT LIKE '%.old'").Scan(&total)
 	return total, err
 }

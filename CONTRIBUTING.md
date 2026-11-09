@@ -12,6 +12,9 @@ cd f95-game-manager
 # Build
 go build -ldflags="-s -w" -o moxie .
 
+# Build + install the CLI and desktop from this checkout (into ~/.local/bin)
+./scripts/install-local.sh
+
 # Run tests
 go test ./...
 
@@ -37,7 +40,10 @@ moxie/
 │
 ├── scripts/
 │   ├── build.sh         # Cross-compilation (linux/mac/windows)
-│   └── install.sh       # Build + install to ~/.local/bin/
+│   ├── install-local.sh # Build + install the CLI and desktop from this checkout
+│   ├── install-desktop.sh # Register the desktop app (Linux .desktop, macOS .app)
+│   ├── install-dev.sh   # Build the CLI only as moxie-dev (separate data dir)
+│   └── install.sh       # Download + install a prebuilt release binary
 │
 ├── docs/
 │   ├── architecture.md  # System design and rationale

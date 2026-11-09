@@ -1,0 +1,1113 @@
+package scraper
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/mili/moxie/internal/db"
+)
+
+func TestSanitizeSearchQuery(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"taimanin", "taimanin"},
+		{"Taimanin Asagi", "Taimanin Asagi"},
+		{"corruption of champions", "corruption champions"},
+		{"the trials of tainted space", "trials tainted space"},
+		{"Barely Working", "Barely Working"},
+		{"HG755 The Inn, Tavern and Halberd", "HG755 Inn Tavern Halberd"},
+		{"Queen's Brothel", "Queen Brothel"},
+		{"a is the of and", ""},
+		{"", ""},
+		{"  spaced   out  ", "spaced out"},
+		{"this is a very long title that exceeds thirty characters easily", "very long title exceeds"},
+		{"Sphilia's Familiar", "Sphilia Familiar"},
+		{"Ren’Py game", "RenPy game"},
+		// Long titles cut at word boundaries — never mid-token ("Chronicl").
+		{"Suzuka's Sexual Battle Chronicle", "Suzuka Sexual Battle"},
+	}
+	for _, tt := range tests {
+		got := SanitizeSearchQuery(tt.in)
+		if got != tt.want {
+			t.Errorf("SanitizeSearchQuery(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestEngineNameFromPrefixes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		prefixes []int
+		want     string
+	}{
+		{[]int{13}, "RPGM"},
+		{[]int{14}, "RenPy"},
+		{[]int{13, 14, 18}, "RPGM"}, // first known engine wins
+		{[]int{19}, "Unity"},
+		{[]int{5}, "HTML"},
+		{[]int{22}, "WolfRPG"},
+		{[]int{31}, "Godot"},
+		{[]int{116}, ""}, // unknown IDs are ignored
+		{[]int{999}, ""}, // unknown
+		{nil, ""},        // no prefixes
+		{[]int{18}, ""},  // only unknown
+	}
+	for _, tt := range tests {
+		got := EngineNameFromPrefixes(tt.prefixes)
+		if got != tt.want {
+			t.Errorf("EngineNameFromPrefixes(%v) = %q, want %q", tt.prefixes, got, tt.want)
+		}
+	}
+}
+
+// TestEngineFromLatestPrefixes: the feed's prefix IDs carry the forum's own
+// taxonomy (engine + category + status + misc), so engine extraction must use
+// the latestEnginePrefixes table and ignore the non-engine IDs.
+func TestEngineFromLatestPrefixes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		prefixes []int
+		want     string
+	}{
+		{[]int{7}, "RenPy"},
+		{[]int{13, 7}, "RenPy"},       // VN category + Ren'Py engine
+		{[]int{3, 18}, "Unity"},       // Unity + Completed
+		{[]int{13, 14, 18}, "Others"}, // VN + Others + Completed
+		{[]int{13, 116}, "Godot"},     // VN + Godot
+		{[]int{1}, "QSP"},
+		{[]int{31}, "UnrealEngine"},
+		{[]int{30}, "WolfRPG"},
+		{[]int{47}, "WebGL"},
+		{[]int{13}, ""},  // category only
+		{[]int{18}, ""},  // status only
+		{[]int{999}, ""}, // unknown
+		{nil, ""},        // none
+	}
+	for _, tt := range tests {
+		if got := EngineFromLatestPrefixes(tt.prefixes); got != tt.want {
+			t.Errorf("EngineFromLatestPrefixes(%v) = %q, want %q", tt.prefixes, got, tt.want)
+		}
+	}
+}
+
+// TestHasAICGTag: the "ai cg" tag is ID 2265 in the feed's tag array.
+func TestHasAICGTag(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		tags []int
+		want bool
+	}{
+		{[]int{130, 2265, 817}, true},
+		{[]int{2265}, true},
+		{[]int{130, 817}, false},
+		{nil, false},
+	}
+	for _, tt := range tests {
+		if got := HasAICGTag(tt.tags); got != tt.want {
+			t.Errorf("HasAICGTag(%v) = %v, want %v", tt.tags, got, tt.want)
+		}
+	}
+}
+
+// TestHasNonGamePrefix documents the prefix-table lookup itself. NOTE: this
+// numbering is not the F95Checker Type enum and must not be applied to
+// latest_data.php search prefixes — sync rejects non-games by title
+// (IsNonGameThread) only. The function is retained for the desktop UI's
+// candidate filtering.
+func TestHasNonGamePrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		prefixes []int
+		want     bool
+	}{
+		{[]int{13}, false},   // RPGM game
+		{[]int{14}, false},   // RenPy game
+		{[]int{8}, true},     // Mod
+		{[]int{24}, true},    // Comics
+		{[]int{15}, true},    // Request
+		{[]int{3}, true},     // Cheat Mod
+		{[]int{13, 8}, true}, // game + mod prefix still non-game
+		{[]int{116}, false},  // unknown ID: tolerant, treated as game
+		{nil, false},
+	}
+	for _, tt := range tests {
+		got := HasNonGamePrefix(tt.prefixes)
+		if got != tt.want {
+			t.Errorf("HasNonGamePrefix(%v) = %v, want %v", tt.prefixes, got, tt.want)
+		}
+	}
+}
+
+// newTestPublicAPI starts an httptest server that routes by path and returns
+// a PublicAPI pointed at it.
+func newTestPublicAPI(t *testing.T, handler http.Handler) (*PublicAPI, *httptest.Server) {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	api := NewPublicAPI()
+	// A private pacer: the shared f95zone.to one would serialise every
+	// parallel test in the package behind real 1.5s+ gaps.
+	api.Client.pacer = newHostPacer(minDelay)
+	api.Host = srv.URL
+	api.CacheHost = srv.URL
+	return api, srv
+}
+
+func TestStripVersionQualifier(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"v21.0.0 wip.7944", "21"},
+		{"v1.03 + DLC", "1.03"},
+		{"v0.4.11.3 Hotfix", "0.4.11.3 hotfix"},
+		{"v0.5.2 EA", "0.5.2"},
+		{"DX v5.0.5s", "dx 5.0.5s"},
+		{"2025-06-20 Cracked", "2025-06-20"},
+		{"v0.9.3", "0.9.3"},
+		{"Final", "Final"},
+		{"B.0.10.8.12", "b.0.10.8.12"},
+		{"", ""},
+		{"  v1.0  ", "1"},
+		{"[Completed]", "Final"},
+		{"Translation Request", ""},
+		{"[Translation Request", ""},
+		{"Full Steam", ""},
+		{"English Ver.", ""},
+		{"Ep. 3", "ep. 3"},
+	}
+	for _, tt := range tests {
+		got := StripVersionQualifier(tt.in)
+		if got != tt.want {
+			t.Errorf("StripVersionQualifier(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestBulkVersions(t *testing.T) {
+	t.Parallel()
+
+	var gotQuery string
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		fmt.Fprint(w, `{"status":"ok","msg":{"106408":"v6.3","300333":"v0.02","69497":"Unknown"}}`)
+	}))
+
+	versions, _, err := api.BulkVersions(context.Background(), []int64{106408, 300333, 69497})
+	if err != nil {
+		t.Fatalf("BulkVersions failed: %v", err)
+	}
+	if gotQuery != "threads=106408,300333,69497" {
+		t.Errorf("query = %q, want threads=106408,300333,69497", gotQuery)
+	}
+	if len(versions) != 3 {
+		t.Fatalf("got %d versions, want 3", len(versions))
+	}
+	if versions[106408] != "6.3" {
+		t.Errorf("versions[106408] = %q, want 6.3", versions[106408])
+	}
+	if versions[300333] != "0.02" {
+		t.Errorf("versions[300333] = %q, want 0.02", versions[300333])
+	}
+	// "Unknown" is mapped to empty — untracked version.
+	if versions[69497] != "" {
+		t.Errorf("versions[69497] = %q, want empty for Unknown", versions[69497])
+	}
+}
+
+func TestBulkVersions_Chunking(t *testing.T) {
+	t.Parallel()
+
+	var queries []string
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		fmt.Fprint(w, `{"status":"ok","msg":{}}`)
+	}))
+
+	var ids []int64
+	for i := 0; i < maxBulkVersionIDs+5; i++ {
+		ids = append(ids, int64(1000+i))
+	}
+	_, _, err := api.BulkVersions(context.Background(), ids)
+	if err != nil {
+		t.Fatalf("BulkVersions failed: %v", err)
+	}
+	if len(queries) != 2 {
+		t.Fatalf("expected 2 chunked requests, got %d", len(queries))
+	}
+	if queries[1] != "threads=1100,1101,1102,1103,1104" {
+		t.Errorf("second chunk = %q, want threads=1100..1104", queries[1])
+	}
+}
+
+func TestBulkVersions_ErrorStatus(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"error","msg":"You have been temporarily blocked because of a large amount of requests, please try again later"}`)
+	}))
+
+	_, chunkErrs, err := api.BulkVersions(context.Background(), []int64{1})
+	if err != nil {
+		t.Fatalf("unexpected top-level error: %v", err)
+	}
+	if len(chunkErrs) == 0 {
+		t.Fatal("expected chunk error for error status, got none")
+	}
+}
+
+func TestSearchTitle(t *testing.T) {
+	t.Parallel()
+
+	var gotQuery string
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		fmt.Fprint(w, `{"status":"ok","msg":{"data":[
+			{"thread_id":32778,"title":"Taimanin Asagi Premium Box","creator":"PinkTea","version":"vFinal","prefixes":[19,13,14,18],"cover":"https://preview.f95zone.to/x.jpg"},
+			{"thread_id":36774,"title":"Taimanin Asagi .ZERO","creator":"PinkTea","version":"v1.0.3","prefixes":[13,14,18]}
+		]}}`)
+	}))
+
+	results, err := api.SearchTitle(context.Background(), "taimanin")
+	if err != nil {
+		t.Fatalf("SearchTitle failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+
+	r := results[0]
+	if r.ThreadID != 32778 || r.Version != "vFinal" || r.Title != "Taimanin Asagi Premium Box" {
+		t.Errorf("unexpected first result: %+v", r)
+	}
+	if r.URL != "https://f95zone.to/threads/32778/" {
+		t.Errorf("URL = %q, want thread URL", r.URL)
+	}
+	if len(r.Prefixes) != 4 {
+		t.Errorf("prefixes = %v, want 4 entries", r.Prefixes)
+	}
+
+	// Sanitized query must be used in the request.
+	if got := queryParam(gotQuery, "search"); got != "taimanin" {
+		t.Errorf("search param = %q, want taimanin", got)
+	}
+	if got := queryParam(gotQuery, "cmd"); got != "list" {
+		t.Errorf("cmd param = %q, want list", got)
+	}
+}
+
+func TestSearchTitle_EmptyResult(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"ok","msg":{"data":[]}}`)
+	}))
+	results, err := api.SearchTitle(context.Background(), "zzzz nonexistent")
+	if err != nil {
+		t.Fatalf("SearchTitle failed: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("got %d results, want 0", len(results))
+	}
+}
+
+func TestSearchTitle_EmptyQuery(t *testing.T) {
+	t.Parallel()
+	api := NewPublicAPI()
+	_, err := api.SearchTitle(context.Background(), "the of a is")
+	if err == nil {
+		t.Fatal("expected error for fully-stopword query")
+	}
+}
+
+// TestSearchCovers: the catalog search yields a thread-ID → cover map;
+// entries without a cover URL are omitted, and preview.f95zone.to covers
+// are rewritten to the full-resolution attachments host.
+func TestSearchCovers(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"ok","msg":{"data":[
+			{"thread_id":6004,"title":"Meltys Quest","cover":"https://preview.f95zone.to/2017/10/41433_RJ207427_img_main.jpg"},
+			{"thread_id":5000,"title":"No Cover Game"},
+			{"thread_id":0,"title":"Bad Row","cover":"https://preview.f95zone.to/x.jpg"}
+		]}}`)
+	}))
+
+	covers, err := api.SearchCovers(context.Background(), "Meltys Quest")
+	if err != nil {
+		t.Fatalf("SearchCovers failed: %v", err)
+	}
+	if len(covers) != 1 {
+		t.Fatalf("got %d covers, want 1 (no-cover and invalid-id rows dropped)", len(covers))
+	}
+	if got := covers[6004]; got != "https://attachments.f95zone.to/2017/10/41433_RJ207427_img_main.jpg" {
+		t.Errorf("covers[6004] = %q, want the full-res attachments URL", got)
+	}
+}
+
+// TestSearchCatalog: the full-row catalog view keeps each thread's prefixes,
+// tags and stats (the Browser filters need them) while still rewriting covers
+// to the full-res host.
+func TestSearchCatalog(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"ok","msg":{"data":[
+			{"thread_id":6004,"title":"Meltys Quest","prefixes":[7],"tags":[2265],"views":10,"likes":3,"rating":4.5,"cover":"https://preview.f95zone.to/x.jpg"},
+			{"thread_id":0,"title":"Bad Row"}
+		]}}`)
+	}))
+
+	catalog, err := api.SearchCatalog(context.Background(), "Meltys Quest")
+	if err != nil {
+		t.Fatalf("SearchCatalog failed: %v", err)
+	}
+	if len(catalog) != 1 {
+		t.Fatalf("got %d rows, want 1 (invalid-id row dropped)", len(catalog))
+	}
+	r, ok := catalog[6004]
+	if !ok {
+		t.Fatal("thread 6004 missing from catalog")
+	}
+	if r.CoverURL != "https://attachments.f95zone.to/x.jpg" {
+		t.Errorf("CoverURL = %q, want the full-res attachments URL", r.CoverURL)
+	}
+	if r.Views != 10 || r.Likes != 3 || r.Rating != 4.5 || len(r.Tags) != 1 || !HasAICGTag(r.Tags) {
+		t.Errorf("row not retained: %+v", r)
+	}
+}
+
+func TestCacheFastCheck(t *testing.T) {
+	t.Parallel()
+
+	var gotQuery string
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		fmt.Fprint(w, `{"106408":1786204423,"300333":1786206277}`)
+	}))
+
+	lastChanged, err := api.CacheFastCheck(context.Background(), []int64{106408, 300333})
+	if err != nil {
+		t.Fatalf("CacheFastCheck failed: %v", err)
+	}
+	if gotQuery != "ids=106408,300333" {
+		t.Errorf("query = %q, want ids=106408,300333", gotQuery)
+	}
+	if lastChanged[106408] != 1786204423 || lastChanged[300333] != 1786206277 {
+		t.Errorf("unexpected timestamps: %v", lastChanged)
+	}
+}
+
+func TestCacheFullThread(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Real-world response: numeric fields arrive as strings (Redis).
+		fmt.Fprint(w, `{"version":"v6.3","name":"Double Perception","developer":"Zett","status":"1",
+			"image_url":"https://attachments.f95zone.to/x.gif","description":"desc","changelog":"log",
+			"last_updated":"1786190400","score":"3.4","INDEX_ERROR":""}`)
+	}))
+
+	ct, err := api.CacheFullThread(context.Background(), 106408)
+	if err != nil {
+		t.Fatalf("CacheFullThread failed: %v", err)
+	}
+	if ct.Version != "6.3" || ct.Name != "Double Perception" || ct.Developer != "Zett" {
+		t.Errorf("unexpected thread data: %+v", ct)
+	}
+	if ct.Status != "active" {
+		t.Errorf("status = %q, want active (status 1)", ct.Status)
+	}
+	if ct.LastUpdated != 1786190400 {
+		t.Errorf("last_updated = %d, want 1786190400", ct.LastUpdated)
+	}
+	if ct.Score != 3.4 {
+		t.Errorf("score = %f, want 3.4", ct.Score)
+	}
+}
+
+func TestCacheFullThread_Downloads(t *testing.T) {
+	t.Parallel()
+
+	// The live API double-encodes `downloads` (a JSON string holding the
+	// array) and mixes real masked URLs with XPath selectors for hosts it
+	// could not pre-resolve.
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"version":"Ch.27","name":"FurrHouse","downloads":
+			"[[\"Win/Linux\",[[\"MEGA\",\"https://f95zone.to/masked/mega.nz/180466/8240571/tok\"],[\"BUZZHEAVIER\",\"//a[starts-with(@href,'https://bzzhr.to/')][1]\"]]],[\"Mac\",[[\"PIXELDRAIN\",\"https://f95zone.to/masked/pixeldrain.com/180466/8240571/tok2\"]]]]"}`)
+	}))
+
+	ct, err := api.CacheFullThread(context.Background(), 180466)
+	if err != nil {
+		t.Fatalf("CacheFullThread failed: %v", err)
+	}
+	got := ct.Downloads
+	if len(got) != 2 {
+		t.Fatalf("Downloads = %d entries, want 2 (XPath selector skipped): %+v", len(got), got)
+	}
+	if got[0].Platform != "Win/Linux" || got[0].Host != "MEGA" || !strings.Contains(got[0].URL, "/masked/mega.nz/") {
+		t.Errorf("Downloads[0] = %+v", got[0])
+	}
+	if got[1].Platform != "Mac" || got[1].Host != "PIXELDRAIN" {
+		t.Errorf("Downloads[1] = %+v", got[1])
+	}
+	for _, d := range got {
+		if strings.HasPrefix(d.URL, "//a[") {
+			t.Errorf("XPath selector was kept as a URL: %+v", d)
+		}
+	}
+}
+
+func TestParseCacheDownloads_PlainArray(t *testing.T) {
+	t.Parallel()
+
+	raw := json.RawMessage(`[["Win",[["MEGA","https://f95zone.to/masked/mega.nz/1/2/x"]]]]`)
+	got := parseCacheDownloads(raw)
+	if len(got) != 1 || got[0].Host != "MEGA" {
+		t.Fatalf("parseCacheDownloads = %+v", got)
+	}
+	if got := parseCacheDownloads(json.RawMessage(`not json`)); got != nil {
+		t.Errorf("garbage should yield nil, got %+v", got)
+	}
+}
+
+func TestCacheFullThread_EngineType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		typ  string // JSON value for "type" ("" = omit the field)
+		want string
+	}{
+		{"renpy string", `"14"`, "RenPy"},
+		{"renpy number", `14`, "RenPy"},
+		{"java string", `"6"`, "Java"},
+		{"godot type", `"31"`, "Godot"}, // Godot is a first-class engine
+		{"unknown type", `"999"`, ""},
+		{"type omitted", ``, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			body := `{"version":"v1","name":"X","status":"1"`
+			if tt.typ != "" {
+				body += `,"type":` + tt.typ
+			}
+			body += `}`
+			api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, body)
+			}))
+			ct, err := api.CacheFullThread(context.Background(), 1)
+			if err != nil {
+				t.Fatalf("CacheFullThread failed: %v", err)
+			}
+			if ct.Engine != tt.want {
+				t.Errorf("type %s → Engine %q, want %q", tt.typ, ct.Engine, tt.want)
+			}
+		})
+	}
+}
+
+func TestCacheFullThread_StatusMapping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		status int
+		want   string
+	}{
+		{1, "active"},
+		{2, "completed"},
+		{3, "on_hold"},
+		{4, "abandoned"},
+		{5, ""},
+		{0, ""},
+		{99, ""},
+	}
+	for _, tt := range tests {
+		api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, `{"version":"v1","name":"X","status":%d}`, tt.status)
+		}))
+		ct, err := api.CacheFullThread(context.Background(), 1)
+		if err != nil {
+			t.Fatalf("CacheFullThread failed: %v", err)
+		}
+		if ct.Status != tt.want {
+			t.Errorf("status %d → %q, want %q", tt.status, ct.Status, tt.want)
+		}
+	}
+}
+
+func TestCacheFullThread_NotFound(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	_, err := api.CacheFullThread(context.Background(), 999999)
+	if err != ErrThreadNotFound {
+		t.Errorf("err = %v, want ErrThreadNotFound", err)
+	}
+}
+
+// Regression: a Cloudflare-challenge 403 means WE are blocked, not that the
+// thread is gone. CacheFullThread must return the BlockedError so callers
+// trip block detection (desktop isBlockedErr, CLI circuit breaker) instead
+// of silently skipping every game as "not found".
+func TestCacheFullThread_Cloudflare403_NotThreadNotFound(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `<html><body>cf-browser-verification challenge</body></html>`)
+	}))
+	_, err := api.CacheFullThread(context.Background(), 1)
+	if err == nil {
+		t.Fatal("expected BlockedError for Cloudflare 403, got nil")
+	}
+	if err == ErrThreadNotFound {
+		t.Fatal("Cloudflare 403 must not map to ErrThreadNotFound")
+	}
+	var blockedErr *BlockedError
+	if !errors.As(err, &blockedErr) {
+		t.Fatalf("err = %v, want *BlockedError", err)
+	}
+	if blockedErr.StatusCode != 403 {
+		t.Errorf("BlockedError.StatusCode = %d, want 403", blockedErr.StatusCode)
+	}
+}
+
+// TestErrIsThreadGone covers the CacheFullThread error mapping directly
+// (constructed errors — the HTTP round-trip would burn the retry backoff).
+func TestErrIsThreadGone(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"404 HTTPStatusError", &HTTPStatusError{StatusCode: 404}, true},
+		{"403 HTTPStatusError", &HTTPStatusError{StatusCode: 403}, false},
+		{"404 BlockedError", &BlockedError{StatusCode: 404}, true},
+		{"403 BlockedError no Cloudflare", &BlockedError{Reason: "access denied (HTTP 403) — possible IP block or missing cookies", StatusCode: 403}, true},
+		{"403 BlockedError Cloudflare", &BlockedError{Reason: "Cloudflare challenge (HTTP 403) — refresh your browser session and re-import cookies", StatusCode: 403}, false},
+		{"503 BlockedError", &BlockedError{Reason: "service unavailable (HTTP 503)", StatusCode: 503}, false},
+		{"429 BlockedError", &BlockedError{Reason: "rate limited", StatusCode: 429}, false},
+		{"tripped circuit breaker", &BlockedError{Reason: "repeated blocking responses", StatusCode: 0}, false},
+		{"wrapped BlockedError", fmt.Errorf("outer: %w", &BlockedError{StatusCode: 404}), true},
+		{"plain error", fmt.Errorf("boom"), false},
+		{"nil", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := errIsThreadGone(tt.err); got != tt.want {
+				t.Errorf("errIsThreadGone(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCacheFullThread_IndexError(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"version":"","name":"","INDEX_ERROR":"F95ZONE_RATELIMIT"}`)
+	}))
+	_, err := api.CacheFullThread(context.Background(), 1)
+	if err == nil {
+		t.Fatal("expected error for INDEX_ERROR response")
+	}
+}
+
+func TestApplyCacheThreadData_TitleRename(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		localTitle string
+		threadName string
+		score      float64
+		wantTitle  string
+	}{
+		{
+			name:       "weak match keeps local title",
+			localTitle: "Aurelia",
+			threadName: "Aurelian Nostrum",
+			score:      0.4,
+			wantTitle:  "Aurelia",
+		},
+		{
+			// The Aurelia bug: ComputeMatchScore("Aurelia", "Aurelian
+			// Nostrum") used to be 0.85 via substring containment, though
+			// the tokens don't nest — the thread is a different game.
+			// ComputeMatchScore now rejects it outright (word-boundary
+			// containment); the titlesContain guard below is the
+			// association layer's second line of defense.
+			name:       "strong substring without token containment keeps title",
+			localTitle: "Aurelia",
+			threadName: "Aurelian Nostrum",
+			score:      0.85,
+			wantTitle:  "Aurelia",
+		},
+		{
+			name:       "strong match with token containment renames",
+			localTitle: "Aurelia",
+			threadName: "Aurelia Nostrum",
+			score:      0.85,
+			wantTitle:  "Aurelia Nostrum",
+		},
+		{
+			name:       "exact match renames",
+			localTitle: "Aurelia",
+			threadName: "Aurelia",
+			score:      1.0,
+			wantTitle:  "Aurelia",
+		},
+		{
+			name:       "containment without strong score keeps title",
+			localTitle: "Aurelia",
+			threadName: "Aurelia Nostrum",
+			score:      0.6,
+			wantTitle:  "Aurelia",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			game := &db.Game{Title: tt.localTitle}
+			ct := &CacheThread{Name: tt.threadName}
+			ApplyCacheThreadData(game, ct, 42, nil, tt.score)
+			if game.Title != tt.wantTitle {
+				t.Errorf("title = %q, want %q", game.Title, tt.wantTitle)
+			}
+		})
+	}
+}
+
+func TestApplyCacheThreadData_Engine(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		current string // game.Engine before the call
+		ctEng   string // ct.Engine (cache API type)
+		prefix  int    // single prefix ID (0 = none)
+		want    string
+	}{
+		{"empty engine takes cache type", "", "RenPy", 0, "RenPy"},
+		// latest_data.php prefix numbering is NOT the F95Checker Type enum,
+		// so ApplyCacheThreadData ignores prefixes entirely — engine comes
+		// only from ct.Engine.
+		{"empty engine ignores prefixes when type absent", "", "", 13, ""},
+		{"engine from type ignores contradicting prefixes", "", "RenPy", 19, "RenPy"},
+		{"unknown engine takes cache type", "Unknown", "Unity", 0, "Unity"},
+		{"others engine ignores prefixes", "Others", "", 19, "Others"},
+		// Known engines are never flipped to a different one.
+		{"known engine never flipped by type", "Unity", "RenPy", 0, "Unity"},
+		{"known engine never flipped by prefixes", "RenPy", "", 19, "RenPy"},
+		{"no signals leaves engine untouched", "Unity", "", 0, "Unity"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			game := &db.Game{Engine: tt.current}
+			ct := &CacheThread{Engine: tt.ctEng}
+			var prefixes []int
+			if tt.prefix != 0 {
+				prefixes = []int{tt.prefix}
+			}
+			ApplyCacheThreadData(game, ct, 42, prefixes, 1.0)
+			if game.Engine != tt.want {
+				t.Errorf("engine = %q, want %q", game.Engine, tt.want)
+			}
+		})
+	}
+}
+
+func TestBulkVersions_AllUnknownChunkNotFatal(t *testing.T) {
+	t.Parallel()
+
+	// checker.php answers "Thread not found" when EVERY requested thread is
+	// absent from its index — as an HTTP 404 carrying that JSON body. That
+	// must not error the bulk pass — it just means those threads have no
+	// tracked version.
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"status":"error","msg":"Thread not found"}`)
+	}))
+
+	versions, _, err := api.BulkVersions(context.Background(), []int64{43384, 13160})
+	if err != nil {
+		t.Fatalf("BulkVersions errored on all-unknown chunk: %v", err)
+	}
+	if len(versions) != 0 {
+		t.Errorf("got %d versions, want 0 for an all-unknown chunk", len(versions))
+	}
+}
+
+func TestBulkVersions_MixedChunkSkipsUnknownThreads(t *testing.T) {
+	t.Parallel()
+
+	// A mixed chunk keeps the known threads and omits the unknown ones —
+	// the response shape the live API actually produces.
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"ok","msg":{"26":"v0.4.16","177028":"Patch 4.1 Pre"}}`)
+	}))
+
+	versions, _, err := api.BulkVersions(context.Background(), []int64{26, 43384, 177028})
+	if err != nil {
+		t.Fatalf("BulkVersions failed: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("got %d versions, want 2", len(versions))
+	}
+	if versions[26] != "0.4.16" {
+		t.Errorf("versions[26] = %q, want v0.4.16", versions[26])
+	}
+	if versions[177028] != "patch 4.1 pre" {
+		t.Errorf("versions[177028] = %q, want patch 4.1 pre", versions[177028])
+	}
+}
+
+func TestSearchTitle_NumericVersion(t *testing.T) {
+	t.Parallel()
+
+	// The latest-updates API sometimes emits versions as bare JSON numbers
+	// instead of strings. A single numeric version used to invalidate the
+	// whole search response; it must now parse and carry on.
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"ok","msg":{"data":[
+			{"thread_id":1001,"title":"Game A","creator":"Dev","version":1.2,"prefixes":[14]},
+			{"thread_id":1002,"title":"Game B","creator":"Dev","version":"v0.5","prefixes":[14]}
+		]}}`)
+	}))
+
+	results, err := api.SearchTitle(context.Background(), "games")
+	if err != nil {
+		t.Fatalf("SearchTitle failed on numeric version: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2 (numeric version must not drop the response)", len(results))
+	}
+	if results[0].Version != "1.2" {
+		t.Errorf("numeric version = %q, want 1.2", results[0].Version)
+	}
+	if results[1].Version != "v0.5" {
+		t.Errorf("string version = %q, want v0.5", results[1].Version)
+	}
+}
+
+func TestResolveStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		parsed  string
+		current string
+		want    string
+	}{
+		// An explicit parsed status always wins.
+		{"parsed completed beats unknown", "completed", "unknown", "completed"},
+		{"parsed abandoned beats active", "abandoned", "active", "abandoned"},
+		{"parsed on_hold beats completed", "on_hold", "completed", "on_hold"},
+		// No explicit status: unknown defaults to active (F95Zone has no
+		// "active" tag — no completion tag means in development).
+		{"unknown defaults to active", "", "unknown", "active"},
+		{"empty defaults to active", "", "", "active"},
+		// A known stored status is never clobbered by the active inference
+		// (a user-set status survives a scrape that finds no status tags).
+		{"user-set completed preserved", "", "completed", "completed"},
+		{"user-set on_hold preserved", "", "on_hold", "on_hold"},
+		{"user-set abandoned preserved", "", "abandoned", "abandoned"},
+		{"user-set active preserved", "", "active", "active"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ResolveStatus(tt.parsed, tt.current); got != tt.want {
+				t.Errorf("ResolveStatus(%q, %q) = %q, want %q", tt.parsed, tt.current, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyThreadData_StatusResolution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		data    string // data.Status
+		current string // game.Status before the call
+		want    string
+	}{
+		{"parsed status wins", "completed", "unknown", "completed"},
+		{"unknown defaults to active", "", "unknown", "active"},
+		{"empty defaults to active", "", "", "active"},
+		{"user-set status preserved", "", "completed", "completed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			game := &db.Game{Status: tt.current}
+			ApplyThreadData(game, &ThreadData{Status: tt.data}, "https://f95zone.to/threads/1/")
+			if game.Status != tt.want {
+				t.Errorf("status = %q, want %q", game.Status, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyThreadData_EngineFromPrefixes(t *testing.T) {
+	t.Parallel()
+
+	// The engine now arrives as a separate prefix label, not glued onto the
+	// title ("RPGM Completed Noxian Nights" → Title "Noxian Nights").
+	game := &db.Game{Engine: "Unknown", EngineSource: "scan"}
+	ApplyThreadData(game, &ThreadData{
+		Title:    "Noxian Nights",
+		Prefixes: []string{"RPGM", "Completed"},
+	}, "https://f95zone.to/threads/2/")
+	if game.Engine != "RPGM" || game.EngineSource != "f95" {
+		t.Errorf("engine = %q (%s), want RPGM (f95)", game.Engine, game.EngineSource)
+	}
+	if game.Title != "Noxian Nights" {
+		t.Errorf("title = %q, want Noxian Nights", game.Title)
+	}
+
+	// A confident scanner result is never overridden by a prefix.
+	game = &db.Game{Engine: "Unity", EngineSource: "scan"}
+	ApplyThreadData(game, &ThreadData{Title: "X", Prefixes: []string{"RPGM"}}, "u")
+	if game.Engine != "Unity" {
+		t.Errorf("engine = %q, want Unity (scan result preserved)", game.Engine)
+	}
+}
+
+func TestApplyCacheThreadData_StatusResolution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		data    string // ct.Status
+		current string // game.Status before the call
+		want    string
+	}{
+		{"parsed status wins", "completed", "unknown", "completed"},
+		{"unknown defaults to active", "", "unknown", "active"},
+		{"empty defaults to active", "", "", "active"},
+		{"user-set status preserved", "", "completed", "completed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			game := &db.Game{Status: tt.current}
+			ApplyCacheThreadData(game, &CacheThread{Status: tt.data}, 42, nil, 1.0)
+			if game.Status != tt.want {
+				t.Errorf("status = %q, want %q", game.Status, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewPublicAPIWithCookie(t *testing.T) {
+	t.Parallel()
+
+	api := NewPublicAPIWithCookie("xf_user=abc")
+	if api == nil {
+		t.Fatal("NewPublicAPIWithCookie returned nil")
+	}
+	if api.Client == nil || api.CacheClient == nil {
+		t.Fatal("NewPublicAPIWithCookie left a client nil")
+	}
+	if api.Host != "https://f95zone.to" || api.CacheHost != cacheAPIHost {
+		t.Errorf("unexpected hosts: %q / %q", api.Host, api.CacheHost)
+	}
+	if api.CheckerPath != checkerPath || api.SearchPath != latestDataPath {
+		t.Errorf("unexpected paths: %q / %q", api.CheckerPath, api.SearchPath)
+	}
+	// NewPublicAPI is the cookie-free form of the same constructor.
+	plain := NewPublicAPI()
+	if plain == nil || plain.Client == nil || plain.CacheClient == nil {
+		t.Fatal("NewPublicAPI returned nil or incomplete client")
+	}
+}
+
+// TestListLatest: the Discover feed request carries no search term, names the
+// requested page/sort, and maps the stats + pagination the endpoint returns.
+func TestListLatest(t *testing.T) {
+	t.Parallel()
+
+	var gotQuery string
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		fmt.Fprint(w, `{"status":"ok","msg":{"data":[
+			{"thread_id":93340,"title":"Eternum","creator":"Caribdis","version":"v0.9.5 Public","views":28661376,"likes":6670,"prefixes":[13,7],"tags":[130,2265],"rating":4.82,"cover":"https://preview.f95zone.to/a.jpg","date":"9 months","ts":1766768400},
+			{"thread_id":317461,"title":"Escape From Blackwood Manor","creator":"Someone","version":"v0.1.1","views":1508,"likes":2,"rating":0,"cover":"https://preview.f95zone.to/b.jpg","date":"51 mins","ts":1791148980}
+		],"pagination":{"page":2,"total":917},"count":27503}}`)
+	}))
+
+	page, err := api.ListLatest(context.Background(), 2, "rating")
+	if err != nil {
+		t.Fatalf("ListLatest failed: %v", err)
+	}
+	if len(page.Results) != 2 {
+		t.Fatalf("got %d results, want 2", len(page.Results))
+	}
+	if page.Page != 2 || page.TotalPages != 917 || page.TotalCount != 27503 {
+		t.Errorf("pagination = page %d / %d pages / %d results, want 2 / 917 / 27503",
+			page.Page, page.TotalPages, page.TotalCount)
+	}
+
+	r := page.Results[0]
+	if r.Title != "Eternum" || r.ThreadID != 93340 || r.Creator != "Caribdis" {
+		t.Errorf("unexpected first result: %+v", r)
+	}
+	if r.Views != 28661376 || r.Likes != 6670 || r.Rating != 4.82 || r.Date != "9 months" || r.Ts != 1766768400 {
+		t.Errorf("stats not mapped: %+v", r)
+	}
+	if len(r.Tags) != 2 || r.Tags[0] != 130 || !HasAICGTag(r.Tags) {
+		t.Errorf("tags not mapped: %+v", r.Tags)
+	}
+	if r.URL != "https://f95zone.to/threads/93340/" {
+		t.Errorf("URL = %q, want thread URL", r.URL)
+	}
+
+	// The Discover request must NOT carry a search term.
+	if got := queryParam(gotQuery, "search"); got != "" {
+		t.Errorf("search param = %q, want empty for the Discover feed", got)
+	}
+	if got := queryParam(gotQuery, "cmd"); got != "list" {
+		t.Errorf("cmd param = %q, want list", got)
+	}
+	if got := queryParam(gotQuery, "cat"); got != "games" {
+		t.Errorf("cat param = %q, want games", got)
+	}
+	if got := queryParam(gotQuery, "sort"); got != "rating" {
+		t.Errorf("sort param = %q, want rating", got)
+	}
+	if got := queryParam(gotQuery, "page"); got != "2" {
+		t.Errorf("page param = %q, want 2", got)
+	}
+	if want := fmt.Sprintf("%d", browseRows); queryParam(gotQuery, "rows") != want {
+		t.Errorf("rows param = %q, want %q", queryParam(gotQuery, "rows"), want)
+	}
+}
+
+// TestListLatest_SortAndPageClamp: unknown sorts and non-positive pages are
+// coerced to safe defaults, and a response without a pagination block still
+// reports the page that was requested.
+func TestListLatest_SortAndPageClamp(t *testing.T) {
+	t.Parallel()
+
+	var gotQuery string
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		fmt.Fprint(w, `{"status":"ok","msg":{"data":[]}}`)
+	}))
+
+	if _, err := api.ListLatest(context.Background(), 0, "DROP TABLE"); err != nil {
+		t.Fatalf("ListLatest failed: %v", err)
+	}
+	if got := queryParam(gotQuery, "sort"); got != "date" {
+		t.Errorf("sort param = %q, want date fallback", got)
+	}
+	if got := queryParam(gotQuery, "page"); got != "1" {
+		t.Errorf("page param = %q, want 1 fallback", got)
+	}
+
+	page, err := api.ListLatest(context.Background(), 3, "date")
+	if err != nil {
+		t.Fatalf("ListLatest failed: %v", err)
+	}
+	if page.Page != 3 {
+		t.Errorf("page = %d, want requested page 3 when pagination is absent", page.Page)
+	}
+}
+
+func TestListLatest_ApiError(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"error","msg":"You have been temporarily blocked"}`)
+	}))
+	if _, err := api.ListLatest(context.Background(), 1, "date"); err == nil {
+		t.Fatal("expected error for error status, got nil")
+	}
+}
+
+func TestCacheFastCheck_Chunking(t *testing.T) {
+	t.Parallel()
+
+	var queries []string
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		fmt.Fprint(w, `{}`)
+	}))
+
+	var ids []int64
+	for i := 0; i < maxFastCheckIDs+1; i++ {
+		ids = append(ids, int64(i+1))
+	}
+	if _, err := api.CacheFastCheck(context.Background(), ids); err != nil {
+		t.Fatalf("CacheFastCheck failed: %v", err)
+	}
+	if len(queries) != 2 {
+		t.Fatalf("expected 2 chunked requests, got %d", len(queries))
+	}
+}
+
+func TestBulkVersions_BlocksOn404(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newTestPublicAPI(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	_, chunkErrs, err := api.BulkVersions(context.Background(), []int64{1})
+	if err != nil {
+		t.Fatalf("unexpected top-level error: %v", err)
+	}
+	if len(chunkErrs) == 0 || chunkErrs[0].Kind != "endpoint_gone" {
+		t.Fatalf("expected endpoint_gone chunk error, got %v", chunkErrs)
+	}
+}
+
+// queryParam extracts a query parameter value for assertions.
+func queryParam(rawQuery, key string) string {
+	vals := parseQuery(rawQuery)
+	return vals[key]
+}
+
+func parseQuery(rawQuery string) map[string]string {
+	out := map[string]string{}
+	// Minimal parser sufficient for tests.
+	start := 0
+	for i := 0; i <= len(rawQuery); i++ {
+		if i == len(rawQuery) || rawQuery[i] == '&' {
+			pair := rawQuery[start:i]
+			start = i + 1
+			for j := 0; j < len(pair); j++ {
+				if pair[j] == '=' {
+					out[pair[:j]] = pair[j+1:]
+					break
+				}
+			}
+		}
+	}
+	return out
+}

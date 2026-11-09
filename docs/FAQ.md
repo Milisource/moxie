@@ -63,9 +63,17 @@ If the backup approach doesn't work, the Steam client's own `steam://flushconfig
 
 ### Why is scraping slow?
 
-moxie deliberately rate-limits HTTP requests to F95Zone to avoid being blocked. Each thread scrape inserts a 1-second delay between requests. For a library with 100 associated games, a full `check-updates` or `sync` takes at least 100 seconds.
+moxie deliberately rate-limits HTTP requests to F95Zone to avoid being blocked. Each thread scrape waits at least 1.5s between requests (searches wait 3s), plus random jitter. The cookie-free sync path avoids most of this: version checks for the whole library are a single bulk request (`checker.php`, ~100 thread IDs each — 100 games complete in ~2s), and repeat syncs skip games already searched/checked within 24h.
 
-**Bypassing the rate limit** is possible but not recommended:
+The slow parts are per-game operations: auto-association (one search per game) and the cookie-based direct-scrape fallback. Both are parallelized:
+
+```bash
+moxie sync --parallel 3  # up to 3 workers concurrently (default is 3)
+```
+
+Note that all workers share one rate-limited client, so parallelism helps with CPU-bound work and fallback scrapes but does not multiply the request rate. The desktop app takes a different approach: each of its 3 sync workers owns its own client, which does multiply search throughput.
+
+**Bypassing the rate limit entirely** is possible but not recommended:
 
 ```bash
 moxie sync --unsafe  # removes delays — may get your IP blocked
@@ -102,13 +110,14 @@ If you type a search term and the table goes empty, check:
 
 1. **Engine filter** — Press `Ctrl+E` to cycle through engine types. If you're filtering for "Ren'Py" but all your games are "Unity," nothing will show. The active engine filter is shown in the header.
 2. **Status filter** — Press `Ctrl+S` to cycle through game statuses (Playing, Completed, Dropped, etc.). An active status filter combined with a title search can produce no results.
-3. **Reset everything** — Clear the search with `Esc`, then cycle engine/status filters back to "All" by pressing `Ctrl+E` / `Ctrl+S` until the header shows no active filter.
+3. **Collection filter** — Press `c` to cycle through your collections. If you're filtering by a collection that doesn't match any visible games, the table will be empty. The active collection name appears in the header.
+4. **Reset everything** — Clear the search with `Esc`, then cycle engine/status/collection filters back to "All" by pressing `Ctrl+E` / `Ctrl+S` / `c` until the header shows no active filter.
 
 ## Troubleshooting
 
 ### `moxie sync` fails with a block error
 
-F95Zone uses Cloudflare's anti-bot protection. moxie authenticates via browser cookies — if your session cookie expires, the scraping layer gets a Cloudflare challenge page instead of real content.
+Sync runs cookie-free through F95Zone's public JSON endpoints, so it works without a browser session. The cookie-based layers (XenForo search fallback, direct thread scraping) sit behind Cloudflare's anti-bot protection — if your session cookie expires, those fallback layers get a Cloudflare challenge page instead of real content, and a run that relies on them will abort with a block error.
 
 **Resolution steps:**
 

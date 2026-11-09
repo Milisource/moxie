@@ -3,166 +3,193 @@ package downloader
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
 
 // --- Gofile ---
-// Current API flow (2026):
+// Free flow (2026): gofile's API requires a guest account token plus a
+// dynamic X-Website-Token header derived from the site's own JS
+// (wt.obf.js): wt = sha256(UA "::" lang "::" token "::" 4h-slot "::" secret).
+// Without a correct wt the contents API answers error-notPremium — a
+// missing/invalid wt, not actual premium gating. Flow:
 //
-//  1. POST https://api.gofile.io/accounts → anonymous account token
-//  2. GET https://api.gofile.io/contents/<id> with Authorization: Bearer
-//     <token>, X-Website-Token and X-BL headers. The website token is a
-//     SHA-256 of userAgent::language::token::timeBucket::salt where the
-//     time bucket is floor(unix/14400); it is what the site's own
-//     /js/wt.obf.js generates.
-//  3. The response's data.children map contains file entries with a direct
-//     "link" field. Folders are traversed one level.
+//  1. POST https://api.gofile.io/accounts            -> guest token
+//  2. GET  https://api.gofile.io/contents/<contentId> (with Authorization,
+//     X-Website-Token, X-BL)                          -> child file's "link"
+//  3. That link is the direct download URL.
 //
-// The legacy <id>.gofile.io host is gone; it is kept only as a last resort
-// because DNS for it no longer resolves.
-const (
-	gofileUserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
-	gofileLanguage  = "en-US"
-	gofileWTSalt    = "12af056dacea0b"
-	gofileWTBucket  = 14400
-)
+// gofileAPIBase is the gofile API origin. A var so tests can point it at an
+// httptest server.
+var gofileAPIBase = "https://api.gofile.io"
 
-func (r *HostResolver) resolveGofile(url string) (*ResolveResult, error) {
-	re := regexp.MustCompile(`gofile\.io/(?:d|download)/([a-zA-Z0-9-]+)`)
-	matches := re.FindStringSubmatch(url)
-	if len(matches) < 2 {
-		if strings.Contains(url, ".gofile.io") {
-			return &ResolveResult{URL: url, Headers: gofileHeaders("")}, nil
-		}
-		return nil, fmt.Errorf("could not extract Gofile file ID from: %s", url)
-	}
-	contentID := matches[1]
+// gofileWTSecret is the static suffix extracted from the site's obfuscated
+// wt.obf.js (verified against generateWT's runtime output, 2026-08-09;
+// re-verified 2026-11-08 after rotation).
+const gofileWTSecret = "12af056dacea0b"
 
-	token := r.gofileToken()
-	if token == "" {
-		return nil, fmt.Errorf("gofile: could not create a guest account (api.gofile.io unreachable)")
-	}
-	direct, err := r.gofileContents(contentID, token)
+// gofileSlotSeconds is the time window (4h) used in the wt derivation.
+const gofileSlotSeconds = 4 * 60 * 60
+
+// gofileLanguage mirrors navigator.language for the wt derivation and X-BL.
+const gofileLanguage = "en-US"
+
+// gofileUserAgent must match the literal UA the site's JS embeds in the wt
+// derivation; the browser cookie path may send a different UA, so always use
+// this exact string for the wt computation itself.
+const gofileUserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
+
+// gofileToken computes the X-Website-Token header value for a guest token
+// using the current 4-hour slot.
+func gofileToken(accountToken string) string {
+	return gofileTokenWithSlot(accountToken, time.Now().Unix()/gofileSlotSeconds)
+}
+
+// gofileTokenWithSlot is the gofileToken derivation with an injectable slot
+// (exposed for golden-vector tests; production uses gofileToken).
+func gofileTokenWithSlot(accountToken string, slot int64) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s::%s::%s::%d::%s", gofileUserAgent, gofileLanguage, accountToken, slot, gofileWTSecret)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// gofileAPIClient is a short-timeout client for the gofile API calls.
+var gofileAPIClient = &http.Client{Timeout: 20 * time.Second}
+
+// gofileGuestToken creates a guest account and returns its token.
+func gofileGuestToken() (string, error) {
+	req, err := http.NewRequest(http.MethodPost, gofileAPIBase+"/accounts", nil)
 	if err != nil {
-		return nil, fmt.Errorf("gofile: %w", err)
+		return "", fmt.Errorf("gofile create account request: %w", err)
 	}
-	if direct == "" {
-		return nil, fmt.Errorf("gofile: no downloadable file found in %s", contentID)
-	}
-	return &ResolveResult{URL: direct, Headers: gofileHeaders(token)}, nil
-}
-
-func gofileHeaders(token string) map[string]string {
-	h := map[string]string{
-		"User-Agent":      gofileUserAgent,
-		"Accept-Language": gofileLanguage,
-		"Referer":         "https://gofile.io/",
-	}
-	if token != "" {
-		h["Cookie"] = "accountToken=" + token
-	}
-	return h
-}
-
-// gofileWebsiteToken mirrors /js/wt.obf.js generateWT(). The server rotates
-// the salt occasionally; when it does, content requests start returning 401
-// and this constant has to be refreshed from the live script.
-func gofileWebsiteToken(accountToken string) string {
-	return gofileWebsiteTokenAt(accountToken, time.Now())
-}
-
-func gofileWebsiteTokenAt(accountToken string, now time.Time) string {
-	bucket := strconv.FormatInt(now.Unix()/gofileWTBucket, 10)
-	sum := sha256.Sum256([]byte(gofileUserAgent + "::" + gofileLanguage + "::" + accountToken + "::" + bucket + "::" + gofileWTSalt))
-	return hex.EncodeToString(sum[:])
-}
-
-// gofileToken creates an anonymous Gofile account and returns its token.
-// The API switched from GET to POST /accounts in 2026; the GET form now
-// returns 404, which used to make every resolution fall back to the dead
-// <id>.gofile.io host.
-func (r *HostResolver) gofileToken() string {
-	req, err := http.NewRequest("POST", "https://api.gofile.io/accounts", nil)
+	req.Header.Set("User-Agent", gofileUserAgent)
+	req.Header.Set("Origin", "https://gofile.io")
+	req.Header.Set("Referer", "https://gofile.io/")
+	resp, err := gofileAPIClient.Do(req)
 	if err != nil {
-		return ""
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
-	req.Header.Set("Accept", "application/json")
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return ""
+		return "", fmt.Errorf("gofile create account: %w", err)
 	}
 	defer resp.Body.Close()
-
-	var out struct {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("gofile create account read: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("gofile create account: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct {
 		Status string `json:"status"`
 		Data   struct {
 			Token string `json:"token"`
+			Tier  string `json:"tier"`
 		} `json:"data"`
 	}
-	if err := decodeJSON(resp.Body, &out); err != nil {
-		return ""
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("gofile create account: bad JSON: %w", err)
 	}
-	return out.Data.Token
+	if result.Status != "ok" || result.Data.Token == "" {
+		return "", fmt.Errorf("gofile create account: status %q, no token", result.Status)
+	}
+	return result.Data.Token, nil
 }
 
-// gofileContents returns the first direct file link under a content ID,
-// descending up to two folder levels.
-func (r *HostResolver) gofileContents(contentID, token string) (string, error) {
-	return r.gofileContentAt(contentID, token, 0)
-}
-
-func (r *HostResolver) gofileContentAt(contentID, token string, depth int) (string, error) {
-	apiURL := fmt.Sprintf("https://api.gofile.io/contents/%s?page=1&pageSize=100", contentID)
-	req, err := http.NewRequest("GET", apiURL, nil)
+// gofileContents fetches the contents JSON for a content ID using the guest
+// token and returns the first direct download link found in its children
+// (the free single-file flow; the bulk directlinks endpoint is premium).
+func gofileContents(contentID, token string) (string, error) {
+	u := gofileAPIBase + "/contents/" + url.PathEscape(contentID) +
+		"?contentFilter=&page=1&pageSize=100&sortField=name&sortDirection=asc"
+	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
-		return "", fmt.Errorf("gofile request: %w", err)
+		return "", fmt.Errorf("gofile contents request: %w", err)
 	}
 	req.Header.Set("User-Agent", gofileUserAgent)
-	req.Header.Set("Accept-Language", gofileLanguage)
-	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Website-Token", gofileWebsiteToken(token))
+	req.Header.Set("X-Website-Token", gofileToken(token))
 	req.Header.Set("X-BL", gofileLanguage)
-	resp, err := r.client.Do(req)
+	req.Header.Set("Origin", "https://gofile.io")
+	req.Header.Set("Referer", "https://gofile.io/")
+	resp, err := gofileAPIClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("gofile contents: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("gofile contents: HTTP %d", resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("gofile contents read: %w", err)
 	}
-
-	var out struct {
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("gofile contents: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct {
 		Status string `json:"status"`
 		Data   struct {
-			Type     string `json:"type"`
+			Link     string `json:"link"`
 			Children map[string]struct {
-				Type string `json:"type"`
 				Link string `json:"link"`
+				Type string `json:"type"`
 			} `json:"children"`
 		} `json:"data"`
 	}
-	if err := decodeJSON(resp.Body, &out); err != nil {
-		return "", fmt.Errorf("gofile decode: %w", err)
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("gofile contents: bad JSON: %w", err)
 	}
-	if out.Status != "ok" {
-		return "", fmt.Errorf("gofile status: %s", out.Status)
+	if result.Status != "ok" {
+		return "", fmt.Errorf("gofile contents: status %q", result.Status)
 	}
-	for id, child := range out.Data.Children {
+	// A file share exposes the file in children with its download link;
+	// prefer the first file-type child, then a top-level link.
+	for _, child := range result.Data.Children {
 		if child.Link != "" {
 			return child.Link, nil
 		}
-		if child.Type == "folder" && depth < 2 {
-			if link, err := r.gofileContentAt(id, token, depth+1); err == nil && link != "" {
-				return link, nil
-			}
-		}
 	}
-	return "", fmt.Errorf("gofile: no direct link in contents")
+	if result.Data.Link != "" {
+		return result.Data.Link, nil
+	}
+	return "", fmt.Errorf("gofile contents: no downloadable link found in response")
+}
+
+// resolveGofile resolves a gofile URL to a direct download URL via the
+// guest token + dynamic website-token flow.
+func (r *HostResolver) resolveGofile(url string) (*ResolveResult, error) {
+	re := regexp.MustCompile(`gofile\.io/(?:d|download)/([a-zA-Z0-9]+)`)
+	matches := re.FindStringSubmatch(url)
+	if len(matches) < 2 {
+		// A direct download subdomain URL (e.g. from a previously resolved
+		// link) needs no further resolution.
+		if strings.Contains(url, ".gofile.io") {
+			return &ResolveResult{
+				URL:     url,
+				Headers: map[string]string{"User-Agent": gofileUserAgent},
+			}, nil
+		}
+		return nil, fmt.Errorf("could not extract Gofile content ID from: %s", url)
+	}
+	contentID := matches[1]
+
+	token, err := gofileGuestToken()
+	if err != nil {
+		return nil, err
+	}
+	directURL, err := gofileContents(contentID, token)
+	if err != nil {
+		return nil, err
+	}
+	return &ResolveResult{
+		URL: directURL,
+		Headers: map[string]string{
+			"User-Agent": gofileUserAgent,
+			// The downloadweb CDN hop serves the file only when the guest
+			// token is presented as a cookie (Bearer alone redirects to the
+			// share page — verified live 2026-08-09).
+			"Cookie": "accountToken=" + token,
+		},
+	}, nil
 }

@@ -1,0 +1,307 @@
+// Package version compares game version strings scraped from F95Zone
+// against locally-known versions.
+//
+// F95Zone versions are not semver. Real-world values include "v0.12.0",
+// "0.8.1b", "Ch.4 Free", "Ep.6", "2018-07-18" (the date form mandated for
+// games without a version number), and "Final". Comparison therefore has
+// to answer three questions, not one: are they the same, is the remote one
+// newer, or are the two simply not comparable?
+package version
+
+import (
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+// Diff is the result of comparing a remote version against a known one.
+type Diff int
+
+const (
+	// Same means the two versions are equivalent after normalization.
+	Same Diff = iota
+	// Newer means the remote version is unambiguously ahead — a real update.
+	Newer
+	// Older means the remote version is behind the known one. This usually
+	// signals a parse regression or an edited thread, not a downgrade.
+	Older
+	// Changed means the versions differ but no ordering can be established
+	// (e.g. a date-form version replacing a numeric one).
+	Changed
+)
+
+func (d Diff) String() string {
+	switch d {
+	case Same:
+		return "same"
+	case Newer:
+		return "newer"
+	case Older:
+		return "older"
+	default:
+		return "changed"
+	}
+}
+
+var (
+	// digitSepRe matches a separator between two digits, so directory-derived
+	// versions like "0_8_1" and "0-8-1" collapse to the canonical "0.8.1".
+	digitSepRe = regexp.MustCompile(`(\d)[ _-]+(\d)`)
+
+	// dateRe matches the ISO date form F95Zone mandates for games with no
+	// version number, e.g. "2018-07-18".
+	dateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+	// numRe extracts the digit runs used for element-wise comparison.
+	numRe = regexp.MustCompile(`\d+`)
+
+	// buildLetterRe matches a build letter attached to a number, as in
+	// "1.5b". The trailing letter orders builds within a release.
+	buildLetterRe = regexp.MustCompile(`\d([a-z])(?:[^a-z0-9]|$)`)
+)
+
+// Normalize reduces a version string to a canonical comparable form: it
+// trims whitespace, drops a leading "v"/"V", lowercases, collapses digit
+// separators to dots, and strips trailing ".0" segments so "1.0.0" and "1"
+// compare equal. Date-form versions are returned with their dashes intact.
+func Normalize(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(strings.TrimPrefix(v, "v"), "V")
+	v = strings.ToLower(strings.TrimSpace(v))
+
+	// Dates are canonical as-is; collapsing their dashes would make them
+	// indistinguishable from a three-segment version number.
+	if dateRe.MatchString(v) {
+		return v
+	}
+
+	// Repeat until stable: each pass consumes the digit that would start
+	// the next match, so "0_8_1" needs two passes.
+	for i := 0; i < 8; i++ {
+		out := digitSepRe.ReplaceAllString(v, "$1.$2")
+		if out == v {
+			break
+		}
+		v = out
+	}
+
+	for strings.HasSuffix(v, ".0") {
+		v = strings.TrimSuffix(v, ".0")
+	}
+	return v
+}
+
+type kind int
+
+const (
+	kindEmpty kind = iota
+	kindDate
+	kindFinal
+	kindNumeric
+	kindChapter
+	kindOther
+)
+
+func classify(v string) kind {
+	switch {
+	case v == "":
+		return kindEmpty
+	case dateRe.MatchString(v):
+		return kindDate
+	case v == "final":
+		return kindFinal
+	case strings.ContainsAny(v, "0123456789"):
+		// Chapter-style versions ("Ch.4 Free") are not orderable against
+		// plain numeric versions — classifying them numeric would compare
+		// "4" against "0.12.0" and report a nonsense Newer. They remain
+		// comparable among themselves (Ch.5 > Ch.4).
+		lv := strings.ToLower(v)
+		if strings.HasPrefix(lv, "ch.") || strings.HasPrefix(lv, "ep.") ||
+			strings.HasPrefix(lv, "chapter") || strings.HasPrefix(lv, "episode") {
+			return kindChapter
+		}
+		return kindNumeric
+	default:
+		return kindOther
+	}
+}
+
+// Compare reports how the remote version relates to the known one.
+//
+// A missing trailing numeric segment counts as zero, so formatting-only
+// differences — "1" vs "1.0", "1.13" vs "1.13.0", "v0.17.0" vs "0.17" —
+// compare Same rather than Changed. Chapter-style versions remain
+// incomparable with plain numerics.
+//
+// Only a Newer result should be treated as an update available without
+// qualification. Callers that surface Changed to users should mark it as
+// uncertain, and Older is a signal that something upstream went wrong.
+func Compare(remote, known string) Diff {
+	r, k := strings.TrimSpace(remote), strings.TrimSpace(known)
+	if r == "" && k == "" {
+		return Same
+	}
+	if r == "" || k == "" {
+		return Changed
+	}
+	if strings.EqualFold(r, k) {
+		return Same
+	}
+	// Date form: lexicographic.
+	if dateRe.MatchString(r) && dateRe.MatchString(k) {
+		if r > k {
+			return Newer
+		}
+		if r < k {
+			return Older
+		}
+		return Same
+	}
+	res := CompareStructured(Parse(remote), Parse(known))
+	if res == Same && Canonical(remote) != Canonical(known) {
+		return Changed
+	}
+	if res == Same && strings.TrimSpace(remote) != strings.TrimSpace(known) && Canonical(remote) == Canonical(known) {
+		// canonical equal but raw differ only in case/whitespace? treat same
+	}
+	return res
+}
+
+// IsNewer reports whether remote is unambiguously ahead of known.
+func IsNewer(remote, known string) bool {
+	return Compare(remote, known) == Newer
+}
+
+// NeedsUpdate reports whether latest should replace current in the download
+// queue. Only Newer and Changed qualify: Changed means the two strings differ
+// in a way that cannot be ordered, so surfacing it lets a person decide, while
+// Same and Older are never updates. Formatting-only differences (a missing
+// trailing segment, a leading "v") are Same, so they do not queue a game. A
+// thread that reverts to an earlier version therefore stops re-queuing the
+// game.
+//
+// Automatic installation must be stricter: it should call IsNewer, because a
+// Changed comparison is not evidence of a newer build.
+func NeedsUpdate(latest, current string) bool {
+	if strings.TrimSpace(latest) == "" || strings.TrimSpace(current) == "" {
+		return false
+	}
+	switch Compare(latest, current) {
+	case Newer, Changed:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsNewerRelease reports whether the moxie release version latest is newer
+// than current. This is for the project's own release tags (dotted numerics,
+// optionally with a leading "v" and a "-prerelease"/"+build" suffix), not for
+// F95Zone game versions — use Compare/IsNewer for those. Prerelease and build
+// suffixes are ignored so a release and its own prerelease compare equal.
+// Missing segments count as zero, so two-part tags ("1.1" vs "1.0") order
+// correctly rather than being treated as unparseable.
+//
+// Desktop (CheckForUpdate) and the CLI (commands.Update) both call this so
+// their update checks cannot drift apart.
+func IsNewerRelease(latest, current string) bool {
+	a, b := releaseParts(latest), releaseParts(current)
+	n := len(a)
+	if len(b) > n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		x, y := 0, 0
+		if i < len(a) {
+			x = a[i]
+		}
+		if i < len(b) {
+			y = b[i]
+		}
+		if x != y {
+			return x > y
+		}
+	}
+	return false
+}
+
+// releaseParts parses a release version into numeric segments, ignoring a
+// leading "v" and any "-prerelease"/"+build" suffix. Non-numeric segments
+// parse as zero.
+func releaseParts(v string) []int {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(strings.TrimPrefix(v, "v"), "V")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	out := make([]int, 0, 3)
+	for _, p := range strings.Split(v, ".") {
+		n, _ := strconv.Atoi(strings.TrimSpace(p))
+		out = append(out, n)
+	}
+	return out
+}
+
+// compareNumeric compares the digit runs of two versions element-wise,
+// treating a missing segment as zero so "0.8" < "0.8.1". When every
+// segment matches it falls back to the build letter ("1.5a" < "1.5b").
+func compareNumeric(r, k string) Diff {
+	rn := numRe.FindAllString(r, -1)
+	kn := numRe.FindAllString(k, -1)
+
+	n := len(rn)
+	if len(kn) > n {
+		n = len(kn)
+	}
+	for i := 0; i < n; i++ {
+		a := segment(rn, i)
+		b := segment(kn, i)
+		if a != b {
+			if a > b {
+				return Newer
+			}
+			return Older
+		}
+	}
+
+	// Numbers are identical — the strings differ only in their text, e.g.
+	// "0.8 extra" vs "0.8", or "1.5a" vs "1.5b".
+	rl, rok := buildLetter(r)
+	kl, kok := buildLetter(k)
+	if rok != kok {
+		// Exactly one side carries a build letter: a hotfix bump
+		// ("0.8.1" → "0.8.1b") is the most common F95 release pattern.
+		if rok {
+			return Newer
+		}
+		return Older
+	}
+	if rok && kok && rl != kl {
+		if rl > kl {
+			return Newer
+		}
+		return Older
+	}
+	return Changed
+}
+
+func segment(parts []string, i int) int {
+	if i >= len(parts) {
+		return 0
+	}
+	// Digit runs are bounded in practice; an overflowing run compares as 0
+	// rather than crashing the update check.
+	n, err := strconv.Atoi(parts[i])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func buildLetter(v string) (string, bool) {
+	m := buildLetterRe.FindAllStringSubmatch(v, -1)
+	if len(m) == 0 {
+		return "", false
+	}
+	return m[len(m)-1][1], true
+}

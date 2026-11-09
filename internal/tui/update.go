@@ -34,6 +34,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.detailViewport, _ = m.detailViewport.Update(msg)
 			return m, nil
 		}
+		// Forward mouse events to table in library view for click-to-select and scroll
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
+		return m, cmd
 
 	case tea.KeyMsg:
 		key := msg.String()
@@ -70,12 +74,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleEditKey(msg, key)
 		}
 
+		if m.savesConfirmDelete {
+			return m.handleSavesDeleteConfirm(key)
+		}
+
+		if m.savesEditingPath {
+			return m.handleSavesPathInput(msg, key)
+		}
+
+		if m.viewMode == SavesView {
+			return m.handleSavesKey(key)
+		}
+
 		if m.viewMode == DetailView {
 			return m.handleDetailKey(key)
 		}
 
 		if m.filterInput.Focused() {
 			return m.handleFilterInput(msg, key)
+		}
+
+		// File picker mode — forward all events to the picker.
+		// We intercept esc here so it cleanly cancels the picker without
+		// also triggering the filepicker's own "go up directory" Back binding.
+		if m.showFilePicker {
+			if msg.String() == "esc" {
+				m.showFilePicker = false
+				return m, nil
+			}
+
+			var fpCmd tea.Cmd
+			m.filePicker, fpCmd = m.filePicker.Update(msg)
+
+			// When a directory is selected (enter on a directory)
+			if didSelect, _ := m.filePicker.DidSelectFile(msg); didSelect {
+				selectedPath := m.filePicker.Path
+				m.showFilePicker = false
+				return m, m.scanDirectory(selectedPath)
+			}
+
+			return m, fpCmd
 		}
 
 		switch key {
@@ -90,6 +128,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cycleSort()
 			m.rebuildFiltered()
 			return m, nil
+		case "r":
+			m.sortDesc = !m.sortDesc
+			m.rebuildFiltered()
+			return m, nil
 		case "ctrl+e":
 			m.cycleEngineFilter()
 			return m, nil
@@ -102,6 +144,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.cycleCollectionFilter()
 			return m, tea.Batch(m.loadGames(), m.loadCollections())
+		case "b":
+			m.showFilePicker = true
+			m.filePicker.CurrentDirectory = os.Getenv("HOME")
+			return m, m.filePicker.Init()
 		case "d":
 			cursor := m.table.Cursor()
 			if cursor >= 0 && cursor < len(m.filtered) {
@@ -155,15 +201,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case detailGameLoadedMsg:
+		msg.game.Tags = sortedTags(msg.game.Tags)
 		m.detailGame = msg.game
+		return m, nil
+
+	case savesLoadedMsg:
+		// Drop a load that belongs to a game the user has since left; otherwise
+		// the previous game's sets would render under the current game's title.
+		if m.detailGame == nil || m.detailGame.ID != msg.gameID {
+			return m, nil
+		}
+		m.savesLoading = false
+		if msg.err != nil {
+			m.err = fmt.Errorf("saves: %v", msg.err)
+			m.savesSets = nil
+			m.savesCursor = 0
+			return m, nil
+		}
+		m.applySavesState(msg.state)
+		return m, nil
+
+	case savesOpMsg:
+		// Drop a completed mutation for a game the user has since left; applying
+		// its state would clobber the current game's screen.
+		if m.detailGame == nil || m.detailGame.ID != msg.gameID {
+			return m, nil
+		}
+		m.savesLoading = false
+		if msg.err != nil {
+			m.err = fmt.Errorf("saves: %v", msg.err)
+			return m, nil
+		}
+		m.err = nil
+		if msg.notice != "" {
+			m.notice = msg.notice
+		}
+		m.applySavesState(msg.state)
 		return m, nil
 
 	case gameDeletedMsg:
 		if msg.err != nil {
 			m.err = fmt.Errorf("delete failed: %w", msg.err)
 		} else {
-			m.allGames = msg.games
-			m.rebuildFiltered()
+			// Games will be reloaded by the Sequence continuation
 			m.err = nil
 		}
 		return m, nil
@@ -193,6 +273,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cycleCollectionFilter()
 		return m, tea.Batch(m.loadGames())
 
+	case scanCompletedMsg:
+		m.notice = fmt.Sprintf("Scan complete: %d new, %d updated, %d total", msg.saved, msg.updated, msg.total)
+		return m, m.loadGames()
+
 	case startupTipExpiredMsg:
 		m.showStartupTip = false
 		return m, nil
@@ -209,15 +293,73 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// ── Download messages ─────────────────────────────────────────
 	case downloadStartedMsg:
 		if msg.err != nil {
+			// CreateDownload failed inside startDownloadCmd, so the map
+			// still holds only our Pending reservation — release it.
+			m.releasePendingReservation(msg.gameID)
 			m.err = fmt.Errorf("download failed: %v", msg.err)
 			return m, nil
 		}
 		m.notice = fmt.Sprintf("Download started for game %d", msg.gameID)
+		// Only start the 500ms poll loop from the first downloadStartedMsg.
+		// A second download arriving while the spinner is already active
+		// must not chain a duplicate poll loop. armPump is CAS-guarded, so
+		// a second download cannot arm a second message pump either.
 		if !m.spinnerActive && m.hasActiveDownloads() {
 			m.spinnerActive = true
-			return m, tea.Batch(m.pollDownloads(), func() tea.Msg { return m.spinner.Tick() })
+			return m, tea.Batch(m.pollDownloads(), m.spinner.Tick, m.armPump())
 		}
-		return m, m.pollDownloads()
+		return m, nil
+
+	case downloadLinksMsg:
+		if msg.err != nil {
+			// Link resolution failed — remove the Pending reservation so
+			// the game can be retried.
+			m.releasePendingReservation(msg.gameID)
+			m.err = fmt.Errorf("Cannot find download link: %v", msg.err)
+			return m, nil
+		}
+		m.notice = fmt.Sprintf("Downloading from %s...", msg.links[0].Host)
+		return m, m.startDownloadCmd(msg.gameID, msg.links, msg.destDir, msg.gamePath, msg.engine, m.f95Cookie)
+
+	case downloadFinishedMsg:
+		// The download goroutine exhausted every link — offer the browser
+		// fallback so the user can open the best link in their real browser.
+		if msg.summary != "" {
+			m.browserFallbacks[msg.gameID] = &browserFallback{
+				gameID:   msg.gameID,
+				url:      msg.url,
+				destDir:  msg.destDir,
+				gamePath: msg.gamePath,
+				engine:   msg.engine,
+			}
+		}
+		if m.hasWatchers() {
+			return m, m.armPump()
+		}
+		return m, nil
+
+	case watcherFoundMsg:
+		// A browser-saved archive appeared in the game's download dir —
+		// run the validate → extract → merge pipeline. The pump is
+		// re-armed here (not in watcherInstalledMsg) so exactly one pump
+		// stays in flight while the install runs.
+		return m, tea.Batch(m.installBrowserArchiveCmd(msg), m.armPump())
+
+	case watcherInstalledMsg:
+		if msg.err != nil {
+			m.err = fmt.Errorf("auto-install: %v", msg.err)
+		} else {
+			m.notice = fmt.Sprintf("✓ Browser download installed for game %d", msg.gameID)
+		}
+		return m, nil
+
+	case watcherIdleMsg:
+		// Pump heartbeat: keep it alive while downloads or watchers are
+		// active, otherwise let it die.
+		if m.hasWatchers() || m.hasActiveDownloads() {
+			return m, m.armPump()
+		}
+		return m, nil
 
 	case downloadProgressMsg:
 		if m.hasActiveDownloads() {
@@ -335,6 +477,19 @@ func (m model) handleUrlInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
+	// Browser fallback: when every download link failed, y opens the best
+	// link in the user's real browser and starts watching the game's
+	// download dir for the browser-saved file.
+	if fb := m.browserFallbacks[m.selectedID]; fb != nil && !fb.watching {
+		switch key {
+		case "y", "Y":
+			return m.confirmBrowserOpen(fb)
+		case "n", "N", "esc":
+			delete(m.browserFallbacks, m.selectedID)
+			return m, nil
+		}
+	}
+
 	switch key {
 	case "esc", "left", "backspace":
 		m.viewMode = LibraryView
@@ -403,6 +558,17 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		}
 		m.notice = game.Path
 		return m, nil
+	case "v":
+		// Open the saves screen for this game.
+		if m.detailGame == nil {
+			return m, nil
+		}
+		m.viewMode = SavesView
+		m.resetSavesState()
+		m.err = nil
+		m.notice = ""
+		m.detailViewport.YOffset = 999999 // auto-scroll so returning shows the bottom
+		return m, m.loadSaves()
 	case "ctrl+u":
 		game, err := m.db.GetGame(m.selectedID)
 		if err != nil || game == nil {
@@ -445,7 +611,7 @@ func (m model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("No executable found in %s", game.Path)
 			return m, nil
 		}
-		if err := launcher.Launch(exe, game.Path); err != nil {
+		if err := launcher.Launch(exe, game.Path, game.WinePrefix); err != nil {
 			m.err = fmt.Errorf("Failed to launch: %v", err)
 		} else {
 			m.notice = fmt.Sprintf("Launching: %s", filepath.Base(exe))
@@ -464,34 +630,42 @@ func (m model) handleDownloadKey() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Check if already downloading
+	// Check if already downloading. The check and the reservation below
+	// happen in the same critical section (and Update is single-threaded),
+	// so a second keypress while link resolution is still in flight sees
+	// the Pending entry and is rejected instead of starting a second
+	// resolve → download flow into the same directory.
 	m.activeDownloadsMu.Lock()
 	ad, ok := m.activeDownloads[m.selectedID]
-	m.activeDownloadsMu.Unlock()
 	if ok {
 		ad.mu.Lock()
 		status := ad.status
 		ad.mu.Unlock()
 		if status == db.DownloadStatusDownloading || status == db.DownloadStatusPending {
+			m.activeDownloadsMu.Unlock()
 			m.err = fmt.Errorf("Download already in progress")
 			return m, nil
 		}
 	}
+	// Reserve the game synchronously. startDownloadCmd upgrades this
+	// entry once links are resolved; downloadLinksMsg/downloadStartedMsg
+	// error paths release it.
+	m.activeDownloads[m.selectedID] = &activeDownload{
+		gameID:  m.selectedID,
+		status:  db.DownloadStatusPending,
+		stepMsg: "Resolving download links...",
+	}
+	m.activeDownloadsMu.Unlock()
 
 	destDir := filepath.Join(filepath.Dir(game.Path), "downloads")
 	if err := os.MkdirAll(destDir, 0755); err != nil {
+		m.releasePendingReservation(m.selectedID)
 		m.err = fmt.Errorf("Cannot create download directory: %v", err)
 		return m, nil
 	}
 
-	links, resolveErr := m.resolveDownloadLinks(game)
-	if resolveErr != nil {
-		m.err = fmt.Errorf("Cannot find download link: %v", resolveErr)
-		return m, nil
-	}
-
-	m.notice = fmt.Sprintf("Downloading from %s...", links[0].Host)
-	return m, m.startDownloadCmd(m.selectedID, links, destDir, game.Path, game.Engine, m.f95Cookie)
+	m.notice = "Resolving download links..."
+	return m, m.resolveLinksCmd(game, destDir)
 }
 
 func (m model) handleFilterInput(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
@@ -537,7 +711,7 @@ func (m *model) cycleSort() {
 }
 
 func (m *model) cycleEngineFilter() {
-	engines := []string{"", "Unity", "RenPy", "RPGM", "UnrealEngine", "HTML", "Java", "Flash", "Others", "ADRIFT", "QSP", "RAGS", "Tads", "WebGL", "WolfRPG"}
+	engines := []string{"", "Unity", "RenPy", "RPGM", "UnrealEngine", "HTML", "Java", "Godot", "Flash", "Others", "ADRIFT", "QSP", "RAGS", "Tads", "WebGL", "WolfRPG"}
 	for i, e := range engines {
 		if e == m.engineFilter {
 			m.engineFilter = engines[(i+1)%len(engines)]

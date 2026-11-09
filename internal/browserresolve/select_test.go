@@ -1,0 +1,337 @@
+package browserresolve
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"github.com/mili/moxie/internal/config"
+)
+
+// fakeBin creates an executable file at dir/<name> so binary detection finds
+// it on PATH. On Windows the .exe extension is required for exec.LookPath.
+func fakeBin(t *testing.T, dir, name string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	script := filepath.Join(dir, name)
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pathWith returns PATH consisting only of dir (plus the original PATH when
+// includeOrig, which keeps real binaries visible).
+func pathWith(t *testing.T, dir string, includeOrig bool) {
+	t.Helper()
+	path := dir
+	if includeOrig {
+		path += string(os.PathListSeparator) + os.Getenv("PATH")
+	}
+	t.Setenv("PATH", path)
+}
+
+// isolateBrowserDiscovery hides the per-OS standard install locations so a
+// real Chrome/Firefox on the machine (or a CI runner) cannot leak into
+// engine selection. Callers still scrub PATH, and HOME to hide the Playwright
+// cache.
+func isolateBrowserDiscovery(t *testing.T) {
+	t.Helper()
+	oldFirefox := firefoxInstallCandidates
+	oldBrowser := browserInstallCandidates
+	firefoxInstallCandidates = func() []string { return nil }
+	browserInstallCandidates = func() []string { return nil }
+	t.Cleanup(func() {
+		firefoxInstallCandidates = oldFirefox
+		browserInstallCandidates = oldBrowser
+	})
+}
+
+// TestSelectEngine_FirefoxOnly picks the firefox engine when only a firefox
+// binary exists.
+func TestSelectEngine_FirefoxOnly(t *testing.T) {
+	isolateBrowserDiscovery(t)
+	old := cookieBrowsersForHost
+	defer func() { cookieBrowsersForHost = old }()
+	cookieBrowsersForHost = func(string) []string { return nil }
+	binDir := t.TempDir()
+	fakeBin(t, binDir, "firefox")
+	pathWith(t, binDir, false)
+	t.Setenv("HOME", t.TempDir()) // hide playwright-cached chromium
+
+	eng, err := selectEngine(&Options{}, "https://vikingfile.com/f/abc")
+	if err != nil {
+		t.Fatalf("selectEngine: %v", err)
+	}
+	if _, ok := eng.(*firefoxEngine); !ok {
+		t.Fatalf("engine = %T, want *firefoxEngine", eng)
+	}
+}
+
+// TestSelectEngine_ChromePreferredOverFirefox verifies the design order:
+// Chrome-family beats Firefox when both are installed.
+func TestSelectEngine_ChromePreferredOverFirefox(t *testing.T) {
+	isolateBrowserDiscovery(t)
+	old := cookieBrowsersForHost
+	defer func() { cookieBrowsersForHost = old }()
+	cookieBrowsersForHost = func(string) []string { return nil }
+	binDir := t.TempDir()
+	fakeBin(t, binDir, "google-chrome")
+	fakeBin(t, binDir, "firefox")
+	pathWith(t, binDir, false)
+
+	eng, err := selectEngine(&Options{}, "https://vikingfile.com/f/abc")
+	if err != nil {
+		t.Fatalf("selectEngine: %v", err)
+	}
+	if _, ok := eng.(*rodEngine); !ok {
+		t.Fatalf("engine = %T, want *rodEngine (chrome preferred)", eng)
+	}
+}
+
+// TestSelectEngine_CookieHolderWins verifies the browser holding cookies
+// for the host is chosen even when another browser is installed.
+func TestSelectEngine_CookieHolderWins(t *testing.T) {
+	isolateBrowserDiscovery(t)
+	binDir := t.TempDir()
+	fakeBin(t, binDir, "google-chrome")
+	fakeBin(t, binDir, "firefox")
+	pathWith(t, binDir, false)
+
+	old := cookieBrowsersForHost
+	defer func() { cookieBrowsersForHost = old }()
+	cookieBrowsersForHost = func(string) []string { return []string{"firefox"} }
+
+	eng, err := selectEngine(&Options{}, "https://vikingfile.com/f/abc")
+	if err != nil {
+		t.Fatalf("selectEngine: %v", err)
+	}
+	if _, ok := eng.(*firefoxEngine); !ok {
+		t.Fatalf("engine = %T, want *firefoxEngine (cookie holder)", eng)
+	}
+}
+
+// TestSelectEngine_ChromeCookieHolderWins similarly for chrome cookies.
+func TestSelectEngine_ChromeCookieHolderWins(t *testing.T) {
+	isolateBrowserDiscovery(t)
+	binDir := t.TempDir()
+	fakeBin(t, binDir, "firefox")
+	pathWith(t, binDir, false)
+
+	old := cookieBrowsersForHost
+	defer func() { cookieBrowsersForHost = old }()
+	cookieBrowsersForHost = func(string) []string { return []string{"brave"} }
+
+	eng, err := selectEngine(&Options{}, "https://vikingfile.com/f/abc")
+	if err != nil {
+		t.Fatalf("selectEngine: %v", err)
+	}
+	if _, ok := eng.(*rodEngine); !ok {
+		t.Fatalf("engine = %T, want *rodEngine (brave cookie holder)", eng)
+	}
+}
+
+// TestSelectEngine_NoBrowser verifies ErrNoBrowser when nothing is
+// installed and no cookies point at a browser.
+func TestSelectEngine_NoBrowser(t *testing.T) {
+	isolateBrowserDiscovery(t)
+	pathWith(t, t.TempDir(), false)
+	t.Setenv("HOME", t.TempDir()) // hide playwright-cached chromium
+	old := cookieBrowsersForHost
+	defer func() { cookieBrowsersForHost = old }()
+	cookieBrowsersForHost = func(string) []string { return nil }
+
+	_, err := selectEngine(&Options{}, "https://vikingfile.com/f/abc")
+	if !errors.Is(err, ErrNoBrowser) {
+		t.Fatalf("expected ErrNoBrowser, got %v", err)
+	}
+}
+
+// TestSelectEngine_ForcedBrowser verifies explicit WithBrowser overrides
+// auto-selection.
+func TestSelectEngine_ForcedBrowser(t *testing.T) {
+	binDir := t.TempDir()
+	fakeBin(t, binDir, "google-chrome")
+	fakeBin(t, binDir, "firefox")
+	pathWith(t, binDir, false)
+
+	eng, err := selectEngine(&Options{Browser: BrowserFirefox}, "https://vikingfile.com/f/abc")
+	if err != nil {
+		t.Fatalf("selectEngine: %v", err)
+	}
+	if _, ok := eng.(*firefoxEngine); !ok {
+		t.Fatalf("engine = %T, want *firefoxEngine (forced)", eng)
+	}
+}
+
+// TestEffectiveBrowserMode covers MOXIE_BROWSER/config parsing: unset =
+// auto-detect, 1/true/auto = auto, explicit engines force, off/unknown
+// values disable.
+func TestEffectiveBrowserMode(t *testing.T) {
+	tests := []struct {
+		env  string
+		want string
+	}{
+		{"", BrowserAuto}, // unset = auto-detect
+		{"off", ""},
+		{"0", ""},
+		{"false", ""},
+		{"1", BrowserAuto},
+		{"true", BrowserAuto},
+		{"auto", BrowserAuto},
+		{"chrome", BrowserChrome},
+		{"firefox", BrowserFirefox},
+		{"bogus", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.env, func(t *testing.T) {
+			config.SetConfigDirForTest(t.TempDir())
+			t.Setenv(browserEnvVar, tt.env)
+			if got := effectiveBrowserMode(""); got != tt.want {
+				t.Errorf("effectiveBrowserMode = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEffectiveBrowserMode_ConfigKey verifies the browser_fallback config
+// key is honored when the env var is unset.
+func TestEffectiveBrowserMode_ConfigKey(t *testing.T) {
+	t.Setenv(browserEnvVar, "")
+	config.SetConfigDirForTest(t.TempDir())
+	cfg, err := config.ReadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Set(browserConfigKey, "firefox")
+	if err := config.WriteConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := effectiveBrowserMode(""); got != BrowserFirefox {
+		t.Errorf("effectiveBrowserMode = %q, want firefox (from config)", got)
+	}
+}
+
+// TestInstallDownloaderFallback_ExplicitOff verifies off disables the hook
+// without touching the downloader's global state.
+func TestInstallDownloaderFallback_ExplicitOff(t *testing.T) {
+	t.Setenv(browserEnvVar, "off")
+	installed, why := InstallDownloaderFallback()
+	if installed {
+		t.Fatal("off must not install the fallback")
+	}
+	if !strings.Contains(why, "disabled") {
+		t.Errorf("reason = %q, want disabled mention", why)
+	}
+}
+
+// TestInstallDownloaderFallback_InvalidMode verifies invalid MOXIE_BROWSER
+// values are rejected without touching the downloader's global hook.
+func TestInstallDownloaderFallback_InvalidMode(t *testing.T) {
+	t.Setenv(browserEnvVar, "netscape")
+	installed, why := InstallDownloaderFallback()
+	if installed {
+		t.Fatal("invalid mode must not install the fallback")
+	}
+	if !strings.Contains(why, "invalid") {
+		t.Errorf("reason = %q, want invalid-value mention", why)
+	}
+}
+
+// A /dl/ browser fallback exists to solve the hCaptcha/script check, which
+// requires click automation: the click-capable engine must win even when
+// Firefox holds the session and is the default browser.
+func TestSelectEngine_DLRequiresClickCapableEngine(t *testing.T) {
+	isolateBrowserDiscovery(t)
+	binDir := t.TempDir()
+	fakeBin(t, binDir, "google-chrome")
+	fakeBin(t, binDir, "firefox")
+	pathWith(t, binDir, false)
+	t.Setenv("HOME", t.TempDir())
+
+	oldCookies := cookieBrowsersForHost
+	cookieBrowsersForHost = func(string) []string { return []string{"firefox"} }
+	t.Cleanup(func() { cookieBrowsersForHost = oldCookies })
+
+	oldDefault := detectDefaultBrowser
+	detectDefaultBrowser = func() string { return BrowserFirefox }
+	t.Cleanup(func() { detectDefaultBrowser = oldDefault })
+
+	eng, err := selectEngine(&Options{}, "https://f95zone.to/dl/123/?u=1")
+	if err != nil {
+		t.Fatalf("selectEngine: %v", err)
+	}
+	if _, ok := eng.(*rodEngine); !ok {
+		t.Fatalf("engine = %T, want *rodEngine (click automation)", eng)
+	}
+}
+
+// Non-click flows still prefer the user's default browser over Chrome.
+func TestSelectEngine_HostPagePrefersDefaultBrowser(t *testing.T) {
+	isolateBrowserDiscovery(t)
+	binDir := t.TempDir()
+	fakeBin(t, binDir, "google-chrome")
+	fakeBin(t, binDir, "firefox")
+	pathWith(t, binDir, false)
+	t.Setenv("HOME", t.TempDir())
+
+	oldCookies := cookieBrowsersForHost
+	cookieBrowsersForHost = func(string) []string { return nil }
+	t.Cleanup(func() { cookieBrowsersForHost = oldCookies })
+
+	oldDefault := detectDefaultBrowser
+	detectDefaultBrowser = func() string { return BrowserFirefox }
+	t.Cleanup(func() { detectDefaultBrowser = oldDefault })
+
+	eng, err := selectEngine(&Options{}, "https://buzzheavier.com/abc")
+	if err != nil {
+		t.Fatalf("selectEngine: %v", err)
+	}
+	if _, ok := eng.(*firefoxEngine); !ok {
+		t.Fatalf("engine = %T, want *firefoxEngine (default browser)", eng)
+	}
+}
+
+// Masked-URL interstitials need clicks, so the rod engine still wins there.
+func TestSelectEngine_MaskedStillPrefersChromeForClicks(t *testing.T) {
+	isolateBrowserDiscovery(t)
+	binDir := t.TempDir()
+	fakeBin(t, binDir, "google-chrome")
+	fakeBin(t, binDir, "firefox")
+	pathWith(t, binDir, false)
+	t.Setenv("HOME", t.TempDir())
+
+	oldCookies := cookieBrowsersForHost
+	cookieBrowsersForHost = func(string) []string { return []string{"firefox"} }
+	t.Cleanup(func() { cookieBrowsersForHost = oldCookies })
+
+	eng, err := selectEngine(&Options{}, "https://f95zone.to/masked/abc")
+	if err != nil {
+		t.Fatalf("selectEngine: %v", err)
+	}
+	if _, ok := eng.(*rodEngine); !ok {
+		t.Fatalf("engine = %T, want *rodEngine (click automation)", eng)
+	}
+}
+
+func TestBrowserFamilyFromName(t *testing.T) {
+	cases := map[string]string{
+		"firefox.desktop":             BrowserFirefox,
+		"/usr/bin/firefox":            BrowserFirefox,
+		"google-chrome.desktop":       BrowserChrome,
+		"brave-browser.desktop":       BrowserChrome,
+		"FirefoxURL-308046B0AF4A39CB": BrowserFirefox,
+		"msedge.exe":                  BrowserChrome,
+		"librewolf.desktop":           "",
+		"":                            "",
+	}
+	for in, want := range cases {
+		if got := browserFamilyFromName(in); got != want {
+			t.Errorf("browserFamilyFromName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

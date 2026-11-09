@@ -8,13 +8,14 @@ An embedded SQLite database that stores game metadata, scraped F95Zone enrichmen
 
 ### Package Structure
 
-The database package is split across 6 files in `internal/db/`:
+The database package is split across 8 files in `internal/db/`:
 - `db.go` — `Database` struct, connection (`Open`/`Close`), schema migration (`migrate`), stats (`GameCount`, `TotalSize`), nullable helpers
-- `models.go` — `Game`, `Download`, `DownloadLink`, `ScrapedMeta` structs
-- `games.go` — Game CRUD (`InsertGame`, `GetGame`, `ListGames`, `SearchGames`, `UpdateGame`, `DeleteGame`)
+- `models.go` — `Game`, `GameSummary`, `PlayHistory`, `PlayHistoryWithGame`, `GameSeries`, `Collection`, `Download`, `DownloadLink`, `ScrapedMeta` structs
+- `games.go` — Game CRUD (`InsertGame`, `GetGame`, `ListGames`, `SearchGames`, `UpdateGame`, `DeleteGame`, `DeleteGamePermanent`, `RestoreGame`), dedicated query methods (`GamesNeedingUpdate`, `GamesWithF95URL`, `GamesWithoutF95URL`, `GamesByStatus`, `GamesByEngine`), targeted column updates (`UpdateGameTitle`, `UpdateGameStatus`, `UpdateGameF95URL`, `UpdateGameExePath`), play history CRUD (`RecordPlay`, `RecentPlays`), series CRUD (`CreateSeries`, `SetGameSeries`), lightweight queries (`ListGameSummaries`, `ListDeletedSummaries`)
 - `downloads.go` — Download job CRUD
-- `download_links.go` — Download link CRUD including dead-link marking
+- `download_links.go` — Download link CRUD including `AllDownloadLinks` (JOIN query), dead-link marking
 - `scraped_meta.go` — Scraped metadata CRUD (`UpsertScrapedMeta`, `GetScrapedMeta`)
+- `collections.go` — Collection CRUD (`CreateCollection`, `ListCollections`, `GetCollection`, `DeleteCollection`, `AddGameToCollection`, `RemoveGameFromCollection`, `GetGamesInCollection`, `ListGameSummariesInCollection`)
 
 ### Driver
 
@@ -22,10 +23,16 @@ Uses `ncruces/go-sqlite3` — a pure Go SQLite driver (no CGO). This means the b
 
 ### Connection Setup
 
+`foreign_keys` and `busy_timeout` are **per-connection** SQLite settings, so they are applied through the DSN as `_pragma` options — every connection the pool opens gets them, not just the first one:
+
 ```
-PRAGMA journal_mode = WAL     -- concurrent reads allowed
-PRAGMA foreign_keys = ON       -- cascading deletes work
+sql.Open("sqlite3", "file:<path>?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
+PRAGMA journal_mode = WAL     -- persistent, set once on the initial connection
 ```
+
+**Open-time data fixes.** Opening the database also clears `scraped_meta.cover_url` values that aren't http(s) URLs. Older scrapes stored F95's literal `missing` placeholder, which blocked cover fetching. `CleanCoverURL` applies the same rule on every read and write. This is an idempotent `UPDATE`, not a schema migration, so the schema version is unchanged.
+
+Foreign key enforcement on every pooled connection matters because desktop workers, the TUI, and the downloader run concurrently — a connection without `foreign_keys=ON` would silently skip cascade deletes and orphan rows (`scraped_meta`, `downloads`, `play_history`). The DB file is chmod 0600 **after** the first statement creates it (`sql.Open` is lazy).
 
 ### Schema
 
@@ -34,7 +41,7 @@ PRAGMA foreign_keys = ON       -- cascading deletes work
 games (
     id          INTEGER PRIMARY KEY,
     title       TEXT NOT NULL,
-    engine      TEXT NOT NULL CHECK (engine IN (...14 canonical names..., 'Unknown')),
+    engine      TEXT NOT NULL CHECK (engine IN ('ADRIFT','Flash','Godot','HTML','Java','Others','QSP','RAGS','RPGM','RenPy','Tads','Unity','UnrealEngine','WebGL','WolfRPG','Unknown')),
     path        TEXT NOT NULL UNIQUE,
     exe_path    TEXT,
     version     TEXT,
@@ -48,6 +55,14 @@ games (
     version_checked_at TEXT,             -- last check-updates timestamp
     store_links TEXT DEFAULT '{}',       -- store URLs as JSON map: {"steam":"https://...","itch":"https://..."}
     steam_app_id INTEGER,                -- Steam App ID extracted from store_links["steam"]
+    wine_prefix  TEXT,                    -- custom Wine prefix path (WINEPREFIX)
+    last_scanned_at TEXT,                -- last incremental scan time
+    dir_mtime TEXT,                      -- directory modification time for incremental scan
+    series_id    INTEGER REFERENCES game_series(id),  -- FK to game series
+    series_order INTEGER DEFAULT 0,      -- order within series
+    deleted_at TEXT,                     -- soft delete timestamp (NULL = active)
+    engine_source  TEXT NOT NULL DEFAULT '',  -- ''/scanner | f95 | user (who set engine)
+    version_source TEXT NOT NULL DEFAULT '',  -- ''/scanner | f95 | user (who set version)
     created_at  TEXT DEFAULT (datetime('now')),
     updated_at  TEXT DEFAULT (datetime('now'))
 )
@@ -93,9 +108,87 @@ download_links (
     last_checked TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 )
+
+-- Play history — records each time a game is launched
+play_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    played_at TEXT NOT NULL DEFAULT (datetime('now')),
+    duration_s INTEGER DEFAULT 0,
+    platform TEXT DEFAULT ''
+)
+
+-- Game series — groups related games (e.g. episodic)
+game_series (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+)
+
+-- User-created collections for custom grouping
+collections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT DEFAULT (datetime('now'))
+)
+
+-- Game-to-collection mapping (many-to-many)
+game_collections (
+    game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    PRIMARY KEY (game_id, collection_id)
+)
+
+-- Masked-URL unwrap cache (v10): maps f95zone.to /masked/ links to their
+-- unwrapped download URLs so repeated resolves skip the rate-limited
+-- endpoint. created_at is unix seconds; entries are auto-pruned after
+-- ResolvedURLTTL (7 days) and read as misses past it.
+resolved_urls (
+    masked_url    TEXT PRIMARY KEY,
+    resolved_url  TEXT NOT NULL,
+    resolved_host TEXT,
+    created_at    INTEGER NOT NULL,
+    hits          INTEGER DEFAULT 0
+)
+
+-- Scan exclusions (v13): absolute paths the user resolved away as duplicate
+-- copies. The scan upsert skips these paths, so the directory still on disk
+-- cannot resurrect the row or re-insert a fresh one. Restoring the game from
+-- Trash deletes its exclusion row. reason is informational ("duplicate").
+excluded_paths (
+    path       TEXT PRIMARY KEY,
+    reason     TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+)
 ```
 
-Indexes: `idx_games_engine`, `idx_games_title` (NOCASE), `idx_games_path`, `idx_downloads_game_id`, `idx_downloads_status`, `idx_download_links_game_id`, `idx_download_links_platform`, `idx_download_links_is_dead`.
+Indexes:
+- `idx_games_engine`, `idx_games_title` (NOCASE), `idx_games_path`,
+- `idx_downloads_game_id`, `idx_downloads_status`,
+- `idx_download_links_game_id`, `idx_download_links_platform`, `idx_download_links_is_dead`,
+- `idx_play_history_game`, `idx_play_history_played`
+- `idx_resolved_urls_created_at` (pruning)
+
+`excluded_paths` needs no secondary index — lookups are by primary key (`path`).
+
+### Scan Exclusions
+
+Resolving a duplicate in the desktop Duplicates view soft-deletes the copy **and** records its absolute path in `excluded_paths` (via `App.RemoveDuplicate` → `db.SoftDeleteAndExclude`, one transaction). `commands.UpsertDetected` loads the excluded set once per scan and skips any detected game whose path is excluded, so the directory still present on disk cannot resurrect the soft-deleted row (the normal rescan path deliberately resurrects soft-deleted games) or insert a fresh row. The scan is unchanged for every other path.
+
+`RestoreGame` clears the exclusion for the restored game's path in the same transaction, so a user who changes their mind can bring the copy back and have it scanned again. Regular library deletes (Game list / Game detail → Trash) do **not** create exclusions and keep the existing resurrection behavior. Exclusions are path-keyed and survive `PurgeDeleted` (emptying the trash), so a purged duplicate still stays gone.
+
+### FTS5 Full-Text Search
+
+A virtual FTS5 table provides full-text search across title, tags, developer, and overview:
+
+```sql
+CREATE VIRTUAL TABLE games_fts USING fts5(
+    title, tags, developer, overview,
+    content='games',
+    content_rowid='id'
+);
+```
+
+Content sync triggers on `games` (INSERT/UPDATE/DELETE) and `scraped_meta` (INSERT/UPDATE/DELETE) keep the FTS index in sync automatically. For simple multi-word queries, the `SearchGames()` method auto-wraps each word as a prefix query (`"term"*`). Advanced FTS5 syntax (operators, phrases) is passed through. A `LIKE` substring fallback handles queries that produce no FTS5 results — **and** queries whose FTS syntax is malformed (a stray quote or unbalanced operator raises a MATCH error, which now falls through to the same LIKE path instead of failing the search).
 
 ### Version Tracking
 
@@ -111,23 +204,47 @@ This means `latest_version` is the "last known F95Zone version," distinct from `
 
 ### Migration Strategy
 
-Migrations use `ALTER TABLE ADD COLUMN` statements and `CREATE TABLE IF NOT EXISTS` that are safe to run repeatedly:
+Migrations use version-gated steps via `PRAGMA user_version`:
 
 ```go
-// SQLite ignores errors on ALTER TABLE for columns that already exist
-conn.Exec("ALTER TABLE games ADD COLUMN latest_version TEXT")
-conn.Exec("ALTER TABLE games ADD COLUMN version_checked_at TEXT")
-conn.Exec("ALTER TABLE games ADD COLUMN store_links TEXT DEFAULT '{}'")
-conn.Exec("ALTER TABLE games ADD COLUMN steam_app_id INTEGER")
+const currentSchemaVersion = 13
 
-// New tables use IF NOT EXISTS
-conn.Exec(`
-    CREATE TABLE IF NOT EXISTS downloads (...);
-    CREATE TABLE IF NOT EXISTS download_links (...);
-`)
+// Query current version
+var userVersion int
+conn.QueryRow("PRAGMA user_version").Scan(&userVersion)
+
+// For pre-migration databases, apply old ALTER TABLE steps
+// with column-existence checks (idempotent)
+if userVersion < 1 {
+    upgradeOldDB(conn)
+}
+
+// Apply version-gated migrations from userVersion+1 up to currentSchemaVersion
+for v := userVersion + 1; v <= currentSchemaVersion; v++ {
+    migrateVersionStep(conn, v)  // each step wrapped in a transaction
+}
 ```
 
-This pattern allows adding new schema without versioned migration tracking. The `PRAGMA user_version` is set but not actively used for migration gating — the approach is idempotent and simpler for a single-user hobby project.
+Each `migrateVersionStep` handles a specific version:
+- **v1**: Core tables (CREATE TABLE IF NOT EXISTS with all current columns)
+- **v2**: FTS5 virtual table + triggers + initial population
+- **v3**: play_history, game_series tables; series_id/series_order ALTER TABLE
+- **v4**: Soft delete (`deleted_at` column)
+- **v5**: Game collections (collections + game_collections tables)
+- **v6**: Repair step — ensures all schema columns exist (handles old DBs that bumped past migration steps)
+- **v7**: Per-game Wine prefix (`wine_prefix TEXT` column on games)
+- **v8**: Godot engine — `games.engine` CHECK constraint gains `'Godot'` (table rebuilt; indexes + FTS triggers recreated). The rebuild pins a single pooled connection: `PRAGMA foreign_keys` is per-connection, so the OFF/ON toggles and the rebuild transaction must land on the same connection or `DROP TABLE games` fails with an FK constraint error. A `PRAGMA foreign_key_check` runs after the rebuild.
+- **v9**: Scraped size (`size INTEGER DEFAULT 0` on `download_links`; 0 = unknown)
+- **v10**: Masked-URL unwrap cache (`resolved_urls` table + `idx_resolved_urls_created_at`; see schema above)
+- **v11**: Data repair — clears digitless `latest_version` values (F95 status labels like "Translation Request" stored by older syncs), keeping `Final`, and resets `version_checked_at` so the next sync refetches
+- **v12**: Engine/version provenance — `engine_source` and `version_source TEXT NOT NULL DEFAULT ''` on games. Records who last set each field: `''`/`scanner` (scanner-owned, correctable by a rescan), `f95` (authoritative F95Zone association), or `user` (manual edit). A normal (non-force) scan overwrites engine/version unless the source is `user`/`f95`, so historical mis-detections self-correct while manual edits and associations survive. `--force` overwrites regardless (explicit full-rescan contract).
+- **v13**: Scan exclusions — `excluded_paths` table. Duplicate resolutions record the removed copy's path so `UpsertDetected` skips it; see "Scan Exclusions" above.
+
+The v8 table rebuild copies rows by the old table's own column names (`PRAGMA table_info`) rather than `SELECT *`, so columns added to `gamesTableColumns` after v8 (e.g. the v12 source columns) don't break the rebuild on an old database.
+
+This replaces the earlier approach of running bare `ALTER TABLE` statements that ignored errors. All migration steps are idempotent (use `columnExists` checks for ALTER TABLE, `CREATE TABLE IF NOT EXISTS` for new tables).
+
+An auto-purge step at the end of migration deletes games soft-deleted more than 30 days and expired `resolved_urls` cache entries (older than `ResolvedURLTTL`).
 
 ## Why
 
@@ -135,6 +252,8 @@ This pattern allows adding new schema without versioned migration tracking. The 
 
 **ncruces/go-sqlite3 over mattn/go-sqlite3** — pure Go means `CGO_ENABLED=0` works. Cross-compilation is `GOOS=windows go build` with no extra toolchain. The mattn driver requires CGO and a C compiler for each target platform.
 
+**FTS5 over LIKE** — for libraries of 1,000+ games, `LIKE '%query%'` on title-only is too slow and misses tags/developer/overview. FTS5 provides ranked results with phrase and prefix search, indexed via triggers for zero-maintenance sync.
+
 **JSON in a TEXT column** — tags are stored as `'["rpg","fantasy","3d"]'`. This avoids a join table for a field that's almost always read/written as a unit. The `marshalTags`/`unmarshalTags` helpers serialize to/from `[]string`. This would be wrong for query-heavy tag filtering, but for a local library under 10,000 games, it's fine — filtering is done in-memory by the TUI anyway.
 
-**No FTS5** — `LIKE '%query%'` on the title column is sufficient for libraries under 1,000 games. FTS5 full-text search can be added later (it's a SQLite compile-time option supported by ncruces/go-sqlite3).
+**Version-gated migrations over bare ALTER TABLE** — bare `ALTER TABLE` with error-swallowing makes it impossible to distinguish "column already exists" (benign) from "disk full" (fatal). Version-gated steps with `PRAGMA user_version`, transactions, and `columnExists()` checks provide atomic upgrades, clear diagnostics, and safe re-runs.

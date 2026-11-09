@@ -5,6 +5,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -171,26 +172,71 @@ var (
 	multiSpace         = regexp.MustCompile(`\s{2,}`)
 )
 
+// MinMatchScore is the auto-association threshold shared by the CLI and the
+// desktop app. Candidates below it are reported, never accepted.
+const MinMatchScore = 0.3
+
+// ScoreCandidate scores one search candidate against a local game using the
+// rules every frontend must agree on:
+//
+//   - title similarity via ComputeMatchScore;
+//   - version-alignment bonus only when the base title score already clears
+//     MinMatchScore. An unconditional bonus lifts a meaningful-diff candidate
+//     (ComputeMatchScore returns 0.25 for a sequel/remaster) to 0.55 and
+//     auto-associates the wrong thread;
+//   - +0.15 engine-keyword boost when the candidate title carries a variant of
+//     the detected engine;
+//   - non-game threads are rejected outright (ok=false).
+//
+// score is meaningful even when ok=false, so callers can print rejected rows.
+func ScoreCandidate(gameTitle, gameVersion, candidateTitle, candidateVersion string, engineVariants []string) (score float64, ok bool) {
+	score = ComputeMatchScore(gameTitle, candidateTitle)
+	if score >= MinMatchScore {
+		score += VersionMatchBonus(gameVersion, candidateVersion)
+	}
+	if len(engineVariants) > 0 {
+		titleLower := strings.ToLower(candidateTitle)
+		for _, variant := range engineVariants {
+			if strings.Contains(titleLower, variant) {
+				score += 0.15
+				break
+			}
+		}
+	}
+	if score > 1.0 {
+		score = 1.0
+	}
+	if IsNonGameThread(candidateTitle) {
+		return score, false
+	}
+	return score, true
+}
+
 // ComputeMatchScore returns a confidence score (0.0-1.0) for how well a
 // search result title matches a game title.
 func ComputeMatchScore(gameTitle, resultTitle string) float64 {
-	a := strings.ToLower(SanitizeTitle(gameTitle))
-	b := strings.ToLower(SanitizeTitle(resultTitle))
+	// camelSplitWords before lowercasing so camelCase directory names
+	// ("FreeEmberDoors") tokenize like their thread titles ("Ember Doors")
+	// instead of scoring 0.0 against them.
+	a := strings.ToLower(camelSplitWords(SanitizeTitle(gameTitle)))
+	b := strings.ToLower(camelSplitWords(SanitizeTitle(resultTitle)))
 	if a == "" || b == "" {
 		return 0.0
 	}
 	if a == b {
 		return 1.0
 	}
-	if strings.Contains(b, a) {
-		// Result contains game title — check if the extra words are
-		// meaningful (sequel, remaster, etc.) or just noise (version, studio).
+	if wordBoundaryContains(b, a) {
+		// Result contains game title at word boundaries — check if the
+		// extra words are meaningful (sequel, remaster, etc.) or just
+		// noise (version, studio). Substring containment ("Aurelia" in
+		// "Aurelian Nostrum") is NOT a match: those are different games.
 		if hasMeaningfulDiff(a, b) {
 			return 0.25 // below the 0.3 auto-accept threshold
 		}
 		return 0.85
 	}
-	if strings.Contains(a, b) {
+	if wordBoundaryContains(a, b) {
 		// Game title contains result — always a good match
 		// (e.g., "Corruption of Champions II" matching "Corruption of Champions").
 		return 0.85
@@ -251,4 +297,77 @@ func hasMeaningfulDiff(a, b string) bool {
 		}
 	}
 	return false
+}
+
+// wordBoundaryContains reports whether sub appears in s as a contiguous
+// sequence of whole words. Plain substring containment would score
+// "Aurelia" against "Aurelian Nostrum" as a match, though the tokens do
+// not nest and the titles are different games.
+func wordBoundaryContains(s, sub string) bool {
+	if sub == "" || len(sub) > len(s) {
+		return false
+	}
+	words := strings.Fields(s)
+	subWords := strings.Fields(sub)
+	if len(subWords) > len(words) {
+		return false
+	}
+outer:
+	for i := 0; i+len(subWords) <= len(words); i++ {
+		for j := range subWords {
+			if words[i+j] != subWords[j] {
+				continue outer
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// VersionMatchBonus returns a scoring bonus when the locally installed
+// version and a candidate thread's version belong to the same release
+// line: their leading numeric segments match ("1.3.0" vs "1.3.1"). It
+// breaks title-score ties between a game and its versioned sequel — e.g.
+// "SiNiSistar2" (local v1.3.0) scores 0.5 against "SiNiSistar 2"
+// (v1.3.1) but 0.67 against the original "SiNiSistar" (v3.0.1); the
+// version bonus flips the pick to the right thread. Returns 0 when
+// either side has no usable version ("Final", "Steam", dates vs numbers).
+func VersionMatchBonus(localVersion, threadVersion string) float64 {
+	lv := versionSegments(StripVersionQualifier(localVersion))
+	tv := versionSegments(StripVersionQualifier(threadVersion))
+	if len(lv) == 0 || len(tv) == 0 || lv[0] != tv[0] {
+		return 0
+	}
+	if len(lv) >= 2 && len(tv) >= 2 && lv[1] != tv[1] {
+		return 0
+	}
+	return 0.3
+}
+
+// versionSegments extracts the leading numeric segments of a version
+// string: "1.3.1a" → [1 3 1], "v0.1.7" → [0 1 7], "2024-08-17" →
+// [2024], "Final" → nil.
+func versionSegments(v string) []int64 {
+	var out []int64
+	for i, part := range strings.Split(v, ".") {
+		if i == 0 {
+			part = strings.TrimLeft(part, "vV")
+		}
+		var digits strings.Builder
+		for _, r := range part {
+			if r >= '0' && r <= '9' {
+				digits.WriteRune(r)
+			} else if digits.Len() > 0 {
+				break
+			} else if r != '-' {
+				break
+			}
+		}
+		if digits.Len() == 0 {
+			break
+		}
+		n, _ := strconv.ParseInt(digits.String(), 10, 64)
+		out = append(out, n)
+	}
+	return out
 }

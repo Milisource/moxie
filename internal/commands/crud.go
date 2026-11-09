@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -9,8 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dustin/go-humanize"
+
 	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/db"
+	engines "github.com/mili/moxie/internal/engine"
 	"github.com/mili/moxie/internal/scanner"
 	"github.com/mili/moxie/internal/scraper"
 	"github.com/mili/moxie/internal/util"
@@ -69,7 +74,9 @@ func Scan(args []string) {
 	cookieStr := fs.String("cookie", "", "Cookie header (required with --sync/--scrape)")
 	cookieFile := fs.String("cookie-file", "", "Read cookie from file")
 	unsafe := fs.Bool("unsafe", false, "Skip rate limiting")
-	fs.Parse(args)
+	// hoistFlags keeps flags written after the directory (e.g. `scan <dir>
+	// --force`) from being swallowed as directories by stdlib flag parsing.
+	fs.Parse(hoistFlags(args, scanValueFlags))
 
 	var dirs []string
 	if fs.NArg() < 1 {
@@ -104,6 +111,11 @@ func Scan(args []string) {
 	}
 
 	if err := RunScan(database, runCfg); err != nil {
+		if errors.Is(err, ErrSyncInterrupted) {
+			fmt.Fprintln(os.Stderr, "\nsync interrupted — refresh session and retry")
+			os.Exit(1)
+			return
+		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -144,7 +156,7 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 	}
 	fmt.Fprintf(os.Stderr, "\n")
 	scanStart := time.Now()
-	games, err := scanner.ScanFiltered(absDir, skipPaths, func(dirsExamined, gamesFound int, phase string) {
+	games, err := scanner.ScanFiltered(context.Background(), absDir, skipPaths, func(dirsExamined, gamesFound int, phase string) {
 		if phase == "walk" {
 			fmt.Fprintf(os.Stderr, "\r  Directories examined: %d  •  Games found: %d  ", dirsExamined, gamesFound)
 		} else {
@@ -177,7 +189,7 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 
 	fmt.Printf("Found %d games:\n\n", len(games))
 	for _, g := range games {
-		sizeStr := util.FormatSize(g.SizeBytes)
+		sizeStr := humanize.IBytes(uint64(g.SizeBytes))
 		fmt.Printf("  %-30s %-12s %8s", g.Title, g.Engine, sizeStr)
 		if g.ExePath != "" {
 			fmt.Printf("  %s", g.ExePath)
@@ -203,72 +215,27 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 		return nil
 	}
 
-	saved := 0
-	updated := 0
-	for _, g := range games {
-		// Check if already exists by path.
-		existing, err := database.GetGameByPath(g.Path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  Error checking %s: %v\n", g.Path, err)
-			return fmt.Errorf("checking game path %q: %w", g.Path, err)
-		}
-		if existing != nil {
-			// Update existing record with newly detected scan data.
-			// Only overwrite fields the user may have curated if they're
-			// still empty or set to fallback values — preserves manual
-			// corrections (engine re-classification, custom exe, etc.).
-			if existing.Version == "" {
-				existing.Version = g.Version
-			}
-			if existing.Engine == "" || existing.Engine == "Unknown" {
-				existing.Engine = string(g.Engine)
-			}
-			if existing.ExePath == "" {
-				existing.ExePath = g.ExePath
-			}
-			existing.SizeBytes = g.SizeBytes
-			existing.LastScannedAt = time.Now().UTC()
-			existing.DirMTime = dirModTime(g.Path)
-			if err := database.UpdateGame(existing); err != nil {
-				return fmt.Errorf("updating %q: %w", g.Title, err)
-			}
-			fmt.Fprintf(os.Stderr, "  Updated: %s (%s, v%s)\n", g.Title, g.Engine, g.Version)
-			updated++
-			continue
-		}
-
-		cleanTitle := scraper.SanitizeTitle(g.Title)
-		if cleanTitle == "" {
-			cleanTitle = g.Title
-		}
-
-		now := time.Now().UTC()
-		newGame := &db.Game{
-			Title:         cleanTitle,
-			Engine:        string(g.Engine),
-			Path:          g.Path,
-			ExePath:       g.ExePath,
-			Version:       g.Version,
-			SizeBytes:     g.SizeBytes,
-			Status:        "unknown",
-			LastScannedAt: now,
-			DirMTime:      dirModTime(g.Path),
-		}
-		if _, err := database.InsertGame(newGame); err != nil {
-			fmt.Fprintf(os.Stderr, "  Error saving %s: %v\n", cleanTitle, err)
-		} else {
-			fmt.Fprintf(os.Stderr, "  Saved: %s (%s)\n", cleanTitle, g.Engine)
-			saved++
-		}
+	// Relocate rows whose directory moved within this scan root before
+	// upserting, so a renamed game keeps its row (and user curation) instead
+	// of being duplicated under the new path. Only the confirmed save path
+	// mutates the library — a declined save must not delete anything.
+	removed := RemoveMissingUnder(database, absDir)
+	saved, updated, errs := UpsertDetected(database, games, cfg.Force)
+	pruned := PruneSuperseded(database, absDir, games)
+	for _, e := range errs {
+		fmt.Fprintf(os.Stderr, "  Error: %s\n", e)
 	}
 	fmt.Fprintf(os.Stderr, "\nSaved %d games, updated %d.\n", saved, updated)
+	if removed > 0 {
+		fmt.Fprintf(os.Stderr, "Removed %d game directories missing from disk.\n", removed)
+	}
+	if pruned > 0 {
+		fmt.Fprintf(os.Stderr, "Pruned %d superseded rows (stale wrappers/containers/downloads).\n", pruned)
+	}
 
 	// Post-scan action hooks: auto-sync or auto-scrape.
 	if cfg.DoSync || cfg.DoScrape {
 		cookie := ResolveCookie(cfg.CookieStr, cfg.CookieFile)
-		if cookie == "" {
-			return fmt.Errorf("cookie required for --sync/--scrape. Log into f95zone.to in Firefox")
-		}
 
 		var client *scraper.Client
 		if cfg.Unsafe {
@@ -276,11 +243,17 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 		} else {
 			client = scraper.NewClient(cookie)
 		}
+		public := scraper.NewPublicAPIWithCookie(cookie)
 
 		if cfg.DoSync {
 			// Phase 1: Auto-associate.
 			fmt.Fprintln(os.Stderr, "\n=== Post-scan: Auto-associating games with F95Zone threads ===")
-			if err := RunScrapeAuto(database, client, false, 1); err != nil {
+			if err := RunScrapeAuto(database, client, false, 3, public); err != nil {
+				// Blocked: stop the whole post-scan flow — Phase 2 would
+				// hammer the just-blocked IP.
+				if errors.Is(err, ErrSyncInterrupted) {
+					return err
+				}
 				return fmt.Errorf("auto-association: %w", err)
 			}
 
@@ -291,13 +264,19 @@ func runScanDir(database *db.Database, dir string, cfg RunScanConfig) error {
 				return fmt.Errorf("querying games with F95 URLs: %w", err)
 			}
 			if len(trackable) > 0 {
-				updatesFound, _ := RunUpdateCheck(database, client, trackable, false)
+				updatesFound, _ := RunUpdateCheck(database, client, trackable, false, public)
 				fmt.Fprintf(os.Stderr, "\n=== %d updates available ===\n", updatesFound)
+				if updatesFound > 0 {
+					runAutoUpdateIfEnabled(database, cookie, client, autoUpdateOptions{Extract: true}, false)
+				}
 			}
 		} else {
 			// Scrape only (no update check).
 			fmt.Fprintln(os.Stderr, "\n=== Post-scan: Auto-associating games with F95Zone threads ===")
-			if err := RunScrapeAuto(database, client, false, 1); err != nil {
+			if err := RunScrapeAuto(database, client, false, 3, public); err != nil {
+				if errors.Is(err, ErrSyncInterrupted) {
+					return err
+				}
 				return fmt.Errorf("auto-association: %w", err)
 			}
 		}
@@ -398,7 +377,7 @@ func List(args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to compute total size: %v\n", err)
 	}
-	fmt.Fprintf(os.Stderr, "\n%d games, %s total.\n", count, util.FormatSize(size))
+	fmt.Fprintf(os.Stderr, "\n%d games, %s total.\n", count, humanize.IBytes(uint64(size)))
 }
 
 // Info shows detailed information about a game.
@@ -423,7 +402,7 @@ func Info(args []string) {
 	fmt.Printf("Version:    %s\n", game.Version)
 	fmt.Printf("Path:       %s\n", game.Path)
 	fmt.Printf("Exe:        %s\n", game.ExePath)
-	fmt.Printf("Size:       %s\n", util.FormatSize(game.SizeBytes))
+	fmt.Printf("Size:       %s\n", humanize.IBytes(uint64(game.SizeBytes)))
 	fmt.Printf("Status:     %s\n", game.Status)
 	fmt.Printf("F95Zone:    %s\n", game.F95URL)
 	fmt.Printf("Tags:       %s\n", strings.Join(game.Tags, ", "))
@@ -491,13 +470,19 @@ func Add(args []string) {
 	database := OpenDB()
 	defer database.Close()
 
+	versionSource := ""
+	if *version != "" {
+		versionSource = "user"
+	}
 	game := &db.Game{
-		Title:   *title,
-		Engine:  *engine,
-		Path:    absPath,
-		Version: *version,
-		Tags:    tagList,
-		Status:  "unknown",
+		Title:         *title,
+		Engine:        string(engines.Normalize(*engine)),
+		Path:          absPath,
+		Version:       *version,
+		Tags:          tagList,
+		Status:        "unknown",
+		EngineSource:  "user",
+		VersionSource: versionSource,
 	}
 
 	id, err := database.InsertGame(game)
@@ -505,7 +490,7 @@ func Add(args []string) {
 		fmt.Fprintf(os.Stderr, "Error adding game: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Added game with ID %d: %s (%s)\n", id, *title, *engine)
+	fmt.Printf("Added game with ID %d: %s (%s)\n", id, *title, game.Engine)
 }
 
 // SetExe sets the executable path for a game.
@@ -635,6 +620,39 @@ func SetStatus(args []string) {
 	assumeYes := fs.Bool("y", false, "Skip confirmation prompt")
 	fs.Parse(args)
 
+	database := OpenDB()
+	defer database.Close()
+
+	hasEngine := *engineFilter != ""
+	hasAll := *all
+
+	// Single game: positional args are <id|name> <status>.
+	if !hasEngine && !hasAll {
+		if fs.NArg() < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: moxie set-status <id|name> <status>\n")
+			os.Exit(1)
+		}
+		status := fs.Arg(1)
+		if !isValidStatus(status) {
+			fmt.Fprintf(os.Stderr, "Invalid status %q. Valid: %s\n", status, strings.Join(validStatuses, ", "))
+			os.Exit(1)
+		}
+		// fs.Arg(0) is the game identifier — flags before the ID are parsed
+		// away, so raw args would misread them as the identifier.
+		game := ResolveGame(database, fs.Arg(0))
+		if game == nil {
+			fmt.Fprintf(os.Stderr, "Cancelled.\n")
+			os.Exit(1)
+		}
+		oldStatus := game.Status
+		if err := database.UpdateGameStatus(game.ID, status); err != nil {
+			fmt.Fprintf(os.Stderr, "Error updating status: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Updated %q: %s → %s\n", game.Title, oldStatus, status)
+		return
+	}
+
 	if fs.NArg() < 1 {
 		fmt.Fprintf(os.Stderr, "Usage: moxie set-status [flags] <status>\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
@@ -647,33 +665,6 @@ func SetStatus(args []string) {
 	if !isValidStatus(status) {
 		fmt.Fprintf(os.Stderr, "Invalid status %q. Valid: %s\n", status, strings.Join(validStatuses, ", "))
 		os.Exit(1)
-	}
-
-	database := OpenDB()
-	defer database.Close()
-
-	hasEngine := *engineFilter != ""
-	hasAll := *all
-
-	// Single game: positional arg is ID or name.
-	if !hasEngine && !hasAll {
-		if len(args) < 2 {
-			fmt.Fprintf(os.Stderr, "Usage: moxie set-status <id|name> <status>\n")
-			os.Exit(1)
-		}
-		// Re-parse: first arg is the game identifier, second is status.
-		game := ResolveGame(database, args[0])
-		if game == nil {
-			fmt.Fprintf(os.Stderr, "Cancelled.\n")
-			os.Exit(1)
-		}
-		oldStatus := game.Status
-		if err := database.UpdateGameStatus(game.ID, status); err != nil {
-			fmt.Fprintf(os.Stderr, "Error updating status: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Updated %q: %s → %s\n", game.Title, oldStatus, status)
-		return
 	}
 
 	// Batch operations require confirmation.

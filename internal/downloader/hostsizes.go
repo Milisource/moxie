@@ -49,10 +49,8 @@ func HostSizeLimit(host string) int64 {
 		return 2 * 1024 * 1024 * 1024 // 2 GB
 	case "gofile":
 		return 30 * 1024 * 1024 * 1024 // 30 GB
-	case "googledrive", "google drive":
+	case "googledrive":
 		return 15 * 1024 * 1024 * 1024 // 15 GB
-	case "dropbox":
-		return 0 // account-dependent
 	case "hexload":
 		return 2 * 1024 * 1024 * 1024 // 2 GB
 	case "krakenfiles":

@@ -1,12 +1,13 @@
 package commands
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/mili/moxie/internal/archive"
+	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/updater"
 )
@@ -46,12 +47,20 @@ func Install(args []string) {
 		os.Exit(1)
 	}
 
-	// Determine destination extraction directory
-	destDir := filepath.Join(filepath.Dir(game.Path), "downloads")
-	if err := os.MkdirAll(destDir, 0755); err != nil {
+	// Extract into a fresh per-run dir under moxie's work dir. A shared
+	// "downloads" folder next to the games accumulated every past update, and
+	// Merge would then copy those stale files into this game too.
+	if err := os.MkdirAll(config.WorkDir(), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating work directory: %v\n", err)
+		os.Exit(1)
+	}
+	destDir, err := os.MkdirTemp(config.WorkDir(), "install-*")
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating extraction directory: %v\n", err)
 		os.Exit(1)
 	}
+	// os.Exit skips defers, so the failure paths below clean up explicitly.
+	defer os.RemoveAll(destDir)
 
 	fmt.Fprintf(os.Stderr, "Extracting archive...\n")
 
@@ -66,16 +75,22 @@ func Install(args []string) {
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nExtraction failed: %v\n", err)
+		os.RemoveAll(destDir)
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "\n  Extracted %d files to: %s\n", result.FilesExtracted, result.Destination)
 
 	// Merge extracted files into game directory, preserving saves/configs
 	fmt.Fprintf(os.Stderr, "\nMerging update into %s...\n", game.Path)
-	mergeResult, mergeErr := updater.Merge(game.Path, string(game.Engine), result.Destination, true)
+	mergeResult, mergeErr := updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
 	filesCopied, filesPreserved := 0, 0
 	if mergeErr != nil {
-		fmt.Fprintf(os.Stderr, "  Merge warning: %v\n", mergeErr)
+		// Don't record the new version: the files on disk are still the old
+		// build (Merge rolls back), and claiming otherwise hides the update.
+		fmt.Fprintf(os.Stderr, "  Merge failed: %v\n", mergeErr)
+		fmt.Fprintf(os.Stderr, "  Version left at %q. Fix the problem above and re-run the install.\n", game.Version)
+		os.RemoveAll(destDir)
+		os.Exit(1)
 	} else {
 		filesCopied = mergeResult.FilesCopied
 		filesPreserved = mergeResult.FilesPreserved
@@ -92,15 +107,14 @@ func Install(args []string) {
 	}
 	fmt.Fprintf(os.Stderr, "\n")
 
-	// Update version in DB — if the game has a latest_version from F95Zone, use it;
-	// otherwise prompt the user to enter a version (non-interactive, just note it).
-	if game.LatestVersion != "" && game.LatestVersion != game.Version {
-		game.Version = game.LatestVersion
-		if err := database.UpdateGame(game); err != nil {
-			log.Warn("failed to update game version", "game_id", game.ID, "error", err)
-		} else {
-			fmt.Fprintf(os.Stderr, "  Version updated to: %s\n", game.Version)
-		}
+	// Update version in DB — the thread version or the archive name,
+	// whichever is genuinely newer. Older candidates are never written.
+	previousVersion := game.Version
+	if installed, err := recordInstalledVersion(database, game, archivePath); err != nil {
+		log.Warn("failed to update game version", "game_id", game.ID, "error", err)
+		fmt.Fprintf(os.Stderr, "  Warning: could not record version: %v\n", err)
+	} else if installed != previousVersion {
+		fmt.Fprintf(os.Stderr, "  Version updated to: %s\n", installed)
 	} else {
 		fmt.Fprintf(os.Stderr, "  Run 'moxie info %d' to see details, or set version with 'moxie config'\n", game.ID)
 	}

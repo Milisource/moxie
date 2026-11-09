@@ -1,0 +1,164 @@
+name: Dev build
+
+# Rolling dev-channel artifacts. Every push to `dev` rebuilds the CLI for all
+# six targets plus the combined Windows desktop+CLI installer, and refreshes a
+# single prerelease tagged `dev`. The CLI binaries are named
+# `moxie-dev-<os>-<arch>` and built with `-X main.channel=dev`, so they use the
+# moxie-dev data directory and never collide with a stable install. The Windows
+# installer installs `Moxie Dev` (moxie-dev CLI + desktop) side by side with a
+# stable `Moxie` install.
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  NODE_OPTIONS: "--max-old-space-size=4096"
+
+jobs:
+  # ── CLI: six dev binaries ──────────────────────────────────────────────────
+  cli:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.version.outputs.sha }}
+      date: ${{ steps.version.outputs.date }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Set dev version
+        id: version
+        run: |
+          SHA="$(git rev-parse --short HEAD)"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "version=dev-${SHA}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build dev binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          VERSION="${{ steps.version.outputs.version }}"
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.channel=dev"
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            OS="${target%%/*}"; ARCH="${target##*/}"
+            EXT=""
+            [ "$OS" = "windows" ] && EXT=".exe"
+            OUT="dist/moxie-dev-${OS}-${ARCH}${EXT}"
+            echo "-> ${OUT}"
+            CGO_ENABLED=0 GOOS="$OS" GOARCH="$ARCH" go build -ldflags="$LDFLAGS" -o "$OUT" .
+          done
+
+      - name: Verify binaries
+        run: |
+          ls -lh dist/
+          file dist/moxie-dev-linux-amd64
+
+      - name: Upload CLI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-dist
+          path: dist/*
+          if-no-files-found: error
+
+  # ── Windows desktop + CLI: combined dev installer ──────────────────────────
+  desktop-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set dev version
+        id: version
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse --short HEAD).Trim()
+          $date = (Get-Date -AsUTC -Format "yyyy-MM-ddTHH:mm:ssZ")
+          "sha=$sha" | Out-File -Append $env:GITHUB_OUTPUT
+          "version=dev-$sha" | Out-File -Append $env:GITHUB_OUTPUT
+          "date=$date" | Out-File -Append $env:GITHUB_OUTPUT
+
+      - name: Install Wails CLI
+        shell: pwsh
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+          "$(go env GOPATH)\bin" | Out-File -Append $env:GITHUB_PATH
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          "C:\Program Files (x86)\NSIS" | Out-File -Append $env:GITHUB_PATH
+
+      - name: Build combined dev installer
+        shell: pwsh
+        run: |
+          ./scripts/package-windows.ps1 -Version "${{ steps.version.outputs.version }}" -Channel dev
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-desktop-dist
+          path: dist/*
+          if-no-files-found: error
+
+  # ── Publish rolling dev prerelease ─────────────────────────────────────────
+  release:
+    needs: [cli, desktop-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List release assets
+        run: ls -lh dist/
+
+      - name: Publish rolling dev prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          name: moxie dev (rolling)
+          prerelease: true
+          make_latest: false
+          body: |
+            Rolling dev build from `dev` @ `${{ needs.cli.outputs.sha }}` — these are development binaries, not a release: expect rough edges.
+
+            **Windows (desktop + CLI):** download **`Moxie-Dev-Setup.exe`**. It installs
+            `Moxie Dev` (desktop + `moxie-dev` CLI) side by side with any stable install,
+            using `%APPDATA%\moxie-dev` so it never touches stable data.
+
+            | Platform | Arch | File |
+            |----------|------|------|
+            | Windows | amd64 + arm64 | `Moxie-Dev-Setup.exe` (desktop + CLI) |
+            | Linux | amd64 | `moxie-dev-linux-amd64` |
+            | Linux | arm64 | `moxie-dev-linux-arm64` |
+            | macOS | amd64 | `moxie-dev-macos-amd64` |
+            | macOS | arm64 | `moxie-dev-macos-arm64` |
+            | Windows | amd64 | `moxie-dev-windows-amd64.exe` |
+            | Windows | arm64 | `moxie-dev-windows-arm64.exe` |
+
+            Installed as `moxie-dev`, with data in `%APPDATA%\moxie-dev` so it never
+            touches a stable install.
+          files: dist/*
+          fail_on_unmatched_files: true

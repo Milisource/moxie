@@ -1,12 +1,17 @@
 package downloader
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // ---------------------------------------------------------------------------
@@ -23,6 +28,7 @@ func TestIdentifyHostInURL_MajorHosts(t *testing.T) {
 		{"https://mega.co.nz/file/abc123", "mega"},
 		{"https://pixeldrain.com/u/abc123", "pixeldrain"},
 		{"https://buzzheavier.com/file", "buzzheavier"},
+		{"https://bzzhr.to/1nbctx9", "buzzheavier"},
 		{"https://gofile.io/d/abc123", "gofile"},
 		{"https://vikingfile.com/file", "vikingfile"},
 		{"https://www.mediafire.com/file/abc123", "mediafire"},
@@ -50,7 +56,7 @@ func TestIdentifyHostInURL_MajorHosts(t *testing.T) {
 		{"https://files.dp.ua/file/abc123", "filesdpua"},
 		{"https://files.fm/file/abc123", "filesfm"},
 		{"https://fromsmash.com/file/abc123", "fromsmash"},
-		{"https://drive.google.com/file/d/abc123", "google drive"},
+		{"https://drive.google.com/file/d/abc123", "googledrive"},
 		{"https://hexload.com/file/abc123", "hexload"},
 		{"https://mixdrop.co/file/abc123", "mixdrop"},
 		{"https://qu.ax/file/abc123", "quax"},
@@ -186,15 +192,6 @@ func TestResolveMega_ReturnsError(t *testing.T) {
 	t.Parallel()
 	r := NewHostResolver()
 	result, err := r.Resolve("https://mega.nz/file/abc123", "mega")
-	if _, lookErr := exec.LookPath("megatools"); lookErr == nil {
-		if err != nil {
-			t.Fatalf("expected megatools delegation, got error: %v", err)
-		}
-		if result == nil || result.ExternalCommand == "" {
-			t.Fatalf("expected ExternalCommand for mega, got %+v", result)
-		}
-		return
-	}
 	if err == nil {
 		t.Fatal("expected error for mega URL, got nil")
 	}
@@ -940,48 +937,71 @@ func TestIdentifyHostInURL_MixDropDomains(t *testing.T) {
 	}
 }
 
-func TestResolveMixdrop_RequiresBrowser(t *testing.T) {
+func TestResolveMixdrop_ReturnsURLAsIs(t *testing.T) {
+	t.Parallel()
 	r := NewHostResolver()
-	_, err := r.Resolve("https://mixdrop.co/file/abc123", "mixdrop")
-	if err == nil {
-		t.Fatal("expected an error without --browser")
-	}
-	if !strings.Contains(err.Error(), "requires a browser") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestResolveMixdrop_UsesCachedResolution(t *testing.T) {
-	store := &fakeResolutionStore{getHit: true, url: "https://a-delivery38.mxcontent.net/d/abc/token", host: "mixdrop"}
-	SetResolutionStore(store)
-	defer SetResolutionStore(nil)
-
-	r := NewHostResolver()
-	result, err := r.Resolve("https://mixdrop.co/file/abc123", "mixdrop")
+	inputURL := "https://mixdrop.co/file/abc123"
+	result, err := r.Resolve(inputURL, "mixdrop")
 	if err != nil {
-		t.Fatalf("Resolve mixdrop cached failed: %v", err)
+		t.Fatalf("Resolve mixdrop failed: %v", err)
 	}
-	if result.URL != store.url {
-		t.Errorf("expected cached URL %q, got %q", store.url, result.URL)
+	if result.URL != inputURL {
+		t.Errorf("expected URL %q, got %q", inputURL, result.URL)
 	}
 	if result.Headers == nil {
 		t.Fatal("expected non-nil headers")
 	}
+	if ua, ok := result.Headers["User-Agent"]; !ok || ua == "" {
+		t.Error("expected User-Agent header")
+	}
 }
 
-func TestResolveMixdrop_AllDomainsRequireBrowser(t *testing.T) {
+func TestResolveMixdrop_AllDomains(t *testing.T) {
+	t.Parallel()
 	r := NewHostResolver()
 	domains := []string{
 		"https://mixdrop.co/file/abc123",
 		"https://mixdrop.ag/file/xyz789",
-		"https://mxdrop.click/file/def456",
+		"https://mixdrop.net/file/def456",
 		"https://m1xdrop.click/file/ghi012",
 	}
 	for _, url := range domains {
-		_, err := r.Resolve(url, "mixdrop")
-		if err == nil || !strings.Contains(err.Error(), "requires a browser") {
-			t.Errorf("Resolve mixdrop(%q) error = %v, want browser requirement", url, err)
-		}
+		t.Run(url, func(t *testing.T) {
+			result, err := r.Resolve(url, "mixdrop")
+			if err != nil {
+				t.Fatalf("Resolve mixdrop(%q) failed: %v", url, err)
+			}
+			if result.URL != url {
+				t.Errorf("expected URL to pass through unchanged, got %q", result.URL)
+			}
+			if ua := result.Headers["User-Agent"]; ua == "" {
+				t.Error("expected User-Agent header")
+			}
+		})
+	}
+}
+
+func TestResolveMixdrop_MockServerVerifyPassThrough(t *testing.T) {
+	// Verify that MixDrop does NOT make any HTTP requests — the resolver
+	// returns the URL as-is without contacting any server.
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("resolver must not make HTTP requests for mixdrop pass-through")
+	}))
+	defer server.Close()
+
+	r := NewHostResolver()
+	// Use a mixdrop-style URL (the mock server is never contacted).
+	result, err := r.Resolve("https://mixdrop.co/file/abc123", "mixdrop")
+	if err != nil {
+		t.Fatalf("Resolve mixdrop failed: %v", err)
+	}
+	if result.URL != "https://mixdrop.co/file/abc123" {
+		t.Errorf("expected URL to pass through unchanged, got %q", result.URL)
+	}
+	if result.Headers == nil {
+		t.Fatal("expected non-nil headers")
 	}
 }
 
@@ -1126,6 +1146,20 @@ func TestExtractGoogleDriveConfirm_Missing(t *testing.T) {
 func TestResolveGoogleDrive_InvalidURL(t *testing.T) {
 	t.Parallel()
 	r := NewHostResolver()
+	_, err := r.Resolve("https://example.com/file", "googledrive")
+	if err == nil {
+		t.Fatal("expected error for invalid google drive URL")
+	}
+	if !strings.Contains(err.Error(), "could not extract Google Drive file ID") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// TestResolveGoogleDrive_LegacyLabel ensures labels stored by older scrapes
+// ("google drive" with a space) still route to the Drive resolver.
+func TestResolveGoogleDrive_LegacyLabel(t *testing.T) {
+	t.Parallel()
+	r := NewHostResolver()
 	_, err := r.Resolve("https://example.com/file", "google drive")
 	if err == nil {
 		t.Fatal("expected error for invalid google drive URL")
@@ -1138,7 +1172,7 @@ func TestResolveGoogleDrive_InvalidURL(t *testing.T) {
 func TestResolveGoogleDrive_EmptyURL(t *testing.T) {
 	t.Parallel()
 	r := NewHostResolver()
-	_, err := r.Resolve("", "google drive")
+	_, err := r.Resolve("", "googledrive")
 	if err == nil {
 		t.Fatal("expected error for empty URL")
 	}
@@ -1181,7 +1215,7 @@ func TestResolveGoogleDrive_MockServer_SmallFile(t *testing.T) {
 	})
 
 	testURL := fmt.Sprintf("https://drive.google.com/file/d/%s/view", fileID)
-	result, err := r.Resolve(testURL, "google drive")
+	result, err := r.Resolve(testURL, "googledrive")
 	if err != nil {
 		t.Fatalf("Resolve google drive small file failed: %v", err)
 	}
@@ -1243,7 +1277,7 @@ func TestResolveGoogleDrive_MockServer_LargeFileWithConfirm(t *testing.T) {
 	})
 
 	testURL := fmt.Sprintf("https://drive.google.com/open?id=%s", fileID)
-	result, err := r.Resolve(testURL, "google drive")
+	result, err := r.Resolve(testURL, "googledrive")
 	if err != nil {
 		t.Fatalf("Resolve google drive large file failed: %v", err)
 	}
@@ -1289,7 +1323,7 @@ func TestResolveGoogleDrive_MockServer_MissingConfirmToken(t *testing.T) {
 	})
 
 	testURL := fmt.Sprintf("https://drive.google.com/file/d/%s/view", fileID)
-	result, err := r.Resolve(testURL, "google drive")
+	result, err := r.Resolve(testURL, "googledrive")
 	if err != nil {
 		t.Fatalf("Resolve google drive missing confirm failed: %v", err)
 	}
@@ -1339,7 +1373,7 @@ func TestResolveGoogleDrive_MockServer_HTMLErrorWithoutConfirm(t *testing.T) {
 	})
 
 	testURL := fmt.Sprintf("https://drive.google.com/file/d/%s/view", fileID)
-	result, err := r.Resolve(testURL, "google drive")
+	result, err := r.Resolve(testURL, "googledrive")
 	if err != nil {
 		t.Fatalf("expected fallback to UC URL on error HTML, got error: %v", err)
 	}
@@ -1382,12 +1416,527 @@ func TestResolveGoogleDrive_MockServer_NonHTMLContent(t *testing.T) {
 	})
 
 	testURL := fmt.Sprintf("https://drive.google.com/file/d/%s/view", fileID)
-	result, err := r.Resolve(testURL, "google drive")
+	result, err := r.Resolve(testURL, "googledrive")
 	if err != nil {
 		t.Fatalf("expected UC URL for JSON response, got error: %v", err)
 	}
 	expectedURL := fmt.Sprintf("https://drive.google.com/uc?export=download&id=%s", fileID)
 	if result.URL != expectedURL {
 		t.Errorf("expected URL %q, got %q", expectedURL, result.URL)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Browser cookies on resolver requests
+// ---------------------------------------------------------------------------
+
+// rewriteToServer returns a roundTripFunc that redirects requests for
+// hostname to the test server, preserving method, body, and headers. The
+// original DefaultTransport is captured at definition time (before tests
+// replace DefaultTransport) so the rewrite does not recurse into itself.
+func rewriteToServer(hostname, serverURL string) roundTripFunc {
+	orig := http.DefaultTransport
+	return func(req *http.Request) (*http.Response, error) {
+		if req.URL.Hostname() == hostname {
+			testURL := serverURL + req.URL.Path
+			if req.URL.RawQuery != "" {
+				testURL += "?" + req.URL.RawQuery
+			}
+			newReq, err := http.NewRequest(req.Method, testURL, req.Body)
+			if err != nil {
+				return nil, err
+			}
+			// Preserve the caller's context so cancellation (and deadlines)
+			// reach the rewritten request, exactly as the real transport does.
+			newReq = newReq.WithContext(req.Context())
+			newReq.Header = req.Header.Clone()
+			return orig.RoundTrip(newReq)
+		}
+		return orig.RoundTrip(req)
+	}
+}
+
+func TestResolveDatanodes_AttachesBrowserCookiesToGETAndPOST(t *testing.T) {
+	// NOT parallel — replaces http.DefaultTransport which is global state.
+
+	var getCookie, postCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getCookie = r.Header.Get("Cookie")
+			http.SetCookie(w, &http.Cookie{Name: "xfss", Value: "sess"})
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<html><form method="POST">
+				<input type="hidden" name="op" value="download">
+				<input type="hidden" name="id" value="code123">
+				<input type="hidden" name="rand" value="r">
+				<input type="hidden" name="method_free" value="1">
+				<input type="hidden" name="file_code" value="code123">
+			</form></html>`)
+		case http.MethodPost:
+			postCookie = r.Header.Get("Cookie")
+			w.Header().Set("Location", "https://cdn.datanodes.to/game.zip")
+			w.WriteHeader(http.StatusFound)
+		}
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = rewriteToServer("datanodes.to", srv.URL)
+	defer func() { http.DefaultTransport = origTransport }()
+
+	r := NewHostResolver()
+	r.cookieSource = func(hostname string) string {
+		if strings.Contains(hostname, "datanodes") {
+			return "cf_clearance=ccc"
+		}
+		return ""
+	}
+
+	_, err := r.Resolve("https://datanodes.to/download/code123", "datanodes")
+	if err != nil {
+		t.Fatalf("Resolve datanodes failed: %v", err)
+	}
+	if !strings.Contains(getCookie, "cf_clearance=ccc") {
+		t.Errorf("GET missing browser cookie, got %q", getCookie)
+	}
+	if !strings.Contains(postCookie, "cf_clearance=ccc") {
+		t.Errorf("POST missing browser cookie, got %q", postCookie)
+	}
+	if !strings.Contains(postCookie, "xfss=sess") {
+		t.Errorf("POST missing session cookie from GET response, got %q", postCookie)
+	}
+}
+
+func TestResolveVikingFile_AttachesBrowserCookiesToGETAndPOST(t *testing.T) {
+	// NOT parallel — replaces http.DefaultTransport which is global state.
+
+	var getCookie, postCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getCookie = r.Header.Get("Cookie")
+			http.SetCookie(w, &http.Cookie{Name: "PHPSESSID", Value: "sess"})
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<html><form method="POST">
+				<input type="hidden" name="op" value="download1">
+				<input type="hidden" name="id" value="hash123">
+				<input type="hidden" name="rand" value="r">
+				<input type="hidden" name="method_free" value="1">
+			</form></html>`)
+		case http.MethodPost:
+			postCookie = r.Header.Get("Cookie")
+			w.Header().Set("Location", "https://cdn.vikingfile.com/game.zip")
+			w.WriteHeader(http.StatusFound)
+		}
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = rewriteToServer("vikingfile.com", srv.URL)
+	defer func() { http.DefaultTransport = origTransport }()
+
+	r := NewHostResolver()
+	r.cookieSource = func(hostname string) string {
+		if strings.Contains(hostname, "vikingfile") {
+			return "cf_clearance=vvv"
+		}
+		return ""
+	}
+
+	_, err := r.Resolve("https://vikingfile.com/f/hash123", "vikingfile")
+	if err != nil {
+		t.Fatalf("Resolve vikingfile failed: %v", err)
+	}
+	if !strings.Contains(getCookie, "cf_clearance=vvv") {
+		t.Errorf("GET missing browser cookie, got %q", getCookie)
+	}
+	if !strings.Contains(postCookie, "cf_clearance=vvv") {
+		t.Errorf("POST missing browser cookie, got %q", postCookie)
+	}
+	if !strings.Contains(postCookie, "PHPSESSID=sess") {
+		t.Errorf("POST missing session cookie from GET response, got %q", postCookie)
+	}
+}
+
+func TestResolve_NoCookieSourceSkipsAttachment(t *testing.T) {
+	t.Parallel()
+	// A resolver without a cookieSource (zero-value) must not panic and must
+	// resolve normally — covers callers constructing HostResolver directly.
+	r := &HostResolver{}
+	result, err := r.Resolve("https://example.com/file.zip", "unknown")
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	if result.URL != "https://example.com/file.zip" {
+		t.Errorf("expected pass-through URL, got %q", result.URL)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Masked URL unwrap (JSON endpoint)
+// ---------------------------------------------------------------------------
+
+func TestUnwrapMasked_OK(t *testing.T) {
+	// NOT parallel — replaces http.DefaultTransport which is global state.
+	const realURL = "https://pixeldrain.com/u/BYzajuVk"
+	var gotBody, gotXHR, gotCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotXHR = r.Header.Get("X-Requested-With")
+		gotCookie = r.Header.Get("Cookie")
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"ok","msg":"%s"}`, realURL)
+	}))
+	defer srv.Close()
+
+	// The unwrap target must be a genuine F95Zone host for the session cookie
+	// to be attached, so route f95zone.to to the test server.
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = rewriteToServer("f95zone.to", srv.URL)
+	defer func() { http.DefaultTransport = origTransport }()
+
+	r := NewHostResolver()
+	r.SetF95Cookie("xf_session=abc123")
+	got, err := r.unwrapMasked("https://f95zone.to/masked/pixeldrain.com/x")
+	if err != nil {
+		t.Fatalf("unwrapMasked failed: %v", err)
+	}
+	if got != realURL {
+		t.Errorf("unwrapMasked = %q, want %q", got, realURL)
+	}
+	if gotBody != "xhr=1&download=1" && gotBody != "download=1&xhr=1" {
+		t.Errorf("POST body = %q, want xhr=1&download=1", gotBody)
+	}
+	if gotXHR != "XMLHttpRequest" {
+		t.Errorf("X-Requested-With = %q, want XMLHttpRequest", gotXHR)
+	}
+	if gotCookie != "xf_session=abc123" {
+		t.Errorf("POST cookie = %q, want explicit f95 cookie", gotCookie)
+	}
+}
+
+func TestUnwrapMasked_BrowserCookieFallback(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"ok","msg":"https://example.com/file.zip"}`)
+	}))
+	defer srv.Close()
+
+	// No explicit f95 cookie — the browser's f95zone.to cookies must be
+	// attached by the resolver instead.
+	r := NewHostResolver()
+	r.cookieSource = func(hostname string) string {
+		if hostname == "127.0.0.1" {
+			return "xf_session=browser"
+		}
+		return ""
+	}
+	got, err := r.unwrapMasked(srv.URL + "/masked/example.com/x")
+	if err != nil {
+		t.Fatalf("unwrapMasked failed: %v", err)
+	}
+	if got != "https://example.com/file.zip" {
+		t.Errorf("unwrapMasked = %q", got)
+	}
+}
+
+func TestUnwrapMasked_CaptchaStatus(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"captcha","msg":"challenge"}`)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	r.unwrapBackoff = nil // single attempt — the retry path is covered separately
+	_, err := r.unwrapMasked(srv.URL + "/masked/example.com/x")
+	if err == nil {
+		t.Fatal("expected error for captcha status")
+	}
+	if !strings.Contains(err.Error(), "captcha") {
+		t.Errorf("expected captcha error, got: %v", err)
+	}
+}
+
+// TestResolveMasked_CaptchaPropagates verifies a captcha-walled masked
+// unwrap surfaces the real (challenge-marked) error instead of falling
+// through to host resolution with the masked URL — the misleading
+// "could not extract file ID" error would also lose the challenge marker
+// the browser fallback depends on.
+func TestResolveMasked_CaptchaPropagates(t *testing.T) {
+	// NOT parallel — replaces http.DefaultTransport which is global state.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"captcha","msg":"challenge"}`)
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = rewriteToServer("f95zone.to", srv.URL)
+	defer func() { http.DefaultTransport = origTransport }()
+
+	r := NewHostResolver()
+	r.unwrapBackoff = nil // single attempt — the retry path is covered separately
+	_, err := r.Resolve("https://f95zone.to/masked/pixeldrain.com/6004/6265512/abc/def/ghi", "pixeldrain")
+	if err == nil {
+		t.Fatal("expected error for captcha-walled masked unwrap")
+	}
+	if !strings.Contains(err.Error(), "captcha") {
+		t.Errorf("error = %v, want the captcha wall to propagate", err)
+	}
+	if !isChallengeFailure(err) {
+		t.Errorf("error = %v, want challenge marker (browser fallback trigger)", err)
+	}
+	if strings.Contains(err.Error(), "could not extract") {
+		t.Errorf("error = %v, must not fall through to host resolution", err)
+	}
+}
+
+// TestUnwrapMasked_CaptchaRetries verifies a transient captcha wall is
+// ridden out by the backoff retries instead of failing the unwrap.
+func TestUnwrapMasked_CaptchaRetries(t *testing.T) {
+	t.Parallel()
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.Header().Set("Content-Type", "application/json")
+		if posts < 3 {
+			fmt.Fprint(w, `{"status":"captcha","msg":"Please complete the CAPTCHA to continue"}`)
+			return
+		}
+		fmt.Fprint(w, `{"status":"ok","msg":"https://pixeldrain.com/u/retried"}`)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	r.unwrapBackoff = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
+	got, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	if err != nil {
+		t.Fatalf("unwrapMasked with retries: %v", err)
+	}
+	if got != "https://pixeldrain.com/u/retried" {
+		t.Errorf("unwrap = %q, want the retried destination", got)
+	}
+	if posts != 3 {
+		t.Errorf("unwrap POSTs = %d, want 3 (2 walled + 1 ok)", posts)
+	}
+}
+
+// TestUnwrapMasked_CaptchaExhaustsSolver verifies that when the retry
+// budget is exhausted, the browser solver hook is invoked and its result
+// is used as the destination.
+func TestUnwrapMasked_CaptchaExhaustsSolver(t *testing.T) {
+	t.Parallel()
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"captcha","msg":"wall"}`)
+	}))
+	defer srv.Close()
+
+	solverCalled := false
+	r := NewHostResolver()
+	r.unwrapBackoff = []time.Duration{time.Millisecond}
+	r.SetMaskedSolver(func(ctx context.Context, maskedURL string) (string, error) {
+		solverCalled = true
+		if maskedURL != srv.URL+"/masked/pixeldrain.com/x" {
+			t.Errorf("solver received %q, want the masked URL", maskedURL)
+		}
+		return "https://pixeldrain.com/u/solved", nil
+	})
+	got, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	if err != nil {
+		t.Fatalf("unwrapMasked with solver: %v", err)
+	}
+	if got != "https://pixeldrain.com/u/solved" {
+		t.Errorf("unwrap = %q, want the solver destination", got)
+	}
+	if !solverCalled {
+		t.Error("browser solver was not invoked after the retry budget was exhausted")
+	}
+}
+
+// TestUnwrapMasked_CaptchaExhaustsNoSolver verifies the fallback behavior
+// when no solver is installed: the challenge-marked captcha error, which
+// the caller's challenge detection converts into the browser-download
+// fallback.
+func TestUnwrapMasked_CaptchaExhaustsNoSolver(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"captcha","msg":"wall"}`)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	r.unwrapBackoff = []time.Duration{time.Millisecond}
+	_, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	if err == nil {
+		t.Fatal("expected the captcha error after retries exhausted")
+	}
+	if !isChallengeFailure(err) {
+		t.Errorf("error = %v, want challenge marker (browser fallback trigger)", err)
+	}
+}
+
+// TestUnwrapMasked_Pacing verifies unwrap POSTs are spaced by the minimum
+// interval (F95Zone rate-budgets the endpoint; bursts trip the wall).
+// Server-arrival gaps carry first-request connection-setup skew, so the
+// steady-state gaps (after the first request) are what the rate limit
+// sees; the first gap only gets a sanity bound.
+func TestUnwrapMasked_Pacing(t *testing.T) {
+	t.Parallel()
+	var times []time.Time
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		times = append(times, time.Now())
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"ok","msg":"https://pixeldrain.com/u/paced"}`)
+	}))
+	defer srv.Close()
+
+	const wantInterval = 120 * time.Millisecond
+	r := NewHostResolver()
+	r.unwrapBackoff = nil
+	r.unwrapLimiter = rate.NewLimiter(rate.Every(wantInterval), 1)
+	start := time.Now()
+	for i := 0; i < 4; i++ {
+		if _, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x"); err != nil {
+			t.Fatalf("unwrap %d: %v", i, err)
+		}
+	}
+	elapsed := time.Since(start)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(times) != 4 {
+		t.Fatalf("POSTs = %d, want 4", len(times))
+	}
+	if gap := times[1].Sub(times[0]); gap <= 0 {
+		t.Errorf("first gap = %v, want positive (sanity)", gap)
+	}
+	// Per-gap floor: server-arrival gaps are noisy downward — a request that
+	// should land second can trail by a scheduling hiccup, which `-race` on a
+	// loaded runner widens (observed ~8ms below the interval). A missing sleep
+	// collapses every gap to ~0, so half the interval still fails loudly.
+	for i := 2; i < len(times); i++ {
+		if gap := times[i].Sub(times[i-1]); gap < wantInterval/2 {
+			t.Errorf("unwrap gap %d = %v, want >= %v (pacing not enforced)", i, gap, wantInterval/2)
+		}
+	}
+	// End-to-end span: the three pacing sleeps must account for most of the
+	// wall time. Unlike a single arrival gap, the span can only grow under
+	// load, so per-request jitter cannot shave it.
+	if want := 3*wantInterval - 20*time.Millisecond; elapsed < want {
+		t.Errorf("4 paced unwraps spanned %v, want >= %v", elapsed, want)
+	}
+}
+
+func TestUnwrapMasked_ErrorStatus(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"error","msg":"file not found"}`)
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	_, err := r.unwrapMasked(srv.URL + "/masked/example.com/x")
+	if err == nil {
+		t.Fatal("expected error for error status")
+	}
+	if !strings.Contains(err.Error(), "file not found") {
+		t.Errorf("expected server error message, got: %v", err)
+	}
+}
+
+func TestUnwrapMasked_NonJSONFallsBackToRedirect(t *testing.T) {
+	t.Parallel()
+	const realURL = "https://pixeldrain.com/u/xyz789"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			// Legacy deployment: the POST returns the interstitial page.
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprint(w, "<html>Continue to Pixeldrain</html>")
+		case http.MethodGet:
+			http.Redirect(w, r, realURL, http.StatusFound)
+		}
+	}))
+	defer srv.Close()
+
+	r := NewHostResolver()
+	got, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	if err != nil {
+		t.Fatalf("unwrapMasked fallback failed: %v", err)
+	}
+	if got != realURL {
+		t.Errorf("unwrapMasked = %q, want %q", got, realURL)
+	}
+}
+
+func TestResolve_MaskedURLUnwrapsThenResolves(t *testing.T) {
+	// NOT parallel — replaces http.DefaultTransport which is global state.
+	const realURL = "https://pixeldrain.com/u/BYzajuVk"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"ok","msg":"%s"}`, realURL)
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = rewriteToServer("f95zone.to", srv.URL)
+	defer func() { http.DefaultTransport = origTransport }()
+
+	r := NewHostResolver()
+	r.SetF95Cookie("xf_session=abc123")
+	// The masked URL is a genuine f95zone.to endpoint (routed to our test
+	// server); after unwrap the pixeldrain resolver runs on the real URL
+	// (no HTTP request — pure URL rewrite).
+	result, err := r.Resolve("https://f95zone.to/masked/pixeldrain.com/123/x", "pixeldrain")
+	if err != nil {
+		t.Fatalf("Resolve masked pixeldrain failed: %v", err)
+	}
+	if result.URL != "https://pixeldrain.com/api/file/BYzajuVk" {
+		t.Errorf("Resolve = %q, want pixeldrain API URL", result.URL)
+	}
+}
+
+// The /dl/ resolve paths (native solver, browser fallback, missing-browser
+// hint) are covered against a fake F95Zone in hosts_f95dl_test.go — these
+// tests must never reach the real site.
+
+// TestIsF95DownloadLink pins the /dl/ recognizer's host/path gating: only a
+// genuine F95Zone /dl/ path counts, never a lookalike.
+func TestIsF95DownloadLink(t *testing.T) {
+	t.Parallel()
+
+	yes := []string{
+		"https://f95zone.to/dl/12120217/?u=1&k=abc&r=1&t=tok",
+		"https://f95zone.to/dl/2/",
+		"https://www.f95zone.to/dl/2/",
+	}
+	for _, u := range yes {
+		if !IsF95DownloadLink(u) {
+			t.Errorf("IsF95DownloadLink(%q) = false, want true", u)
+		}
+	}
+	no := []string{
+		"https://f95zone.to/masked/mega.nz/1/2/3",
+		"https://f95zone.to/threads/180466/",
+		"https://evil.example/dl/2/",
+		"https://f95zone.to.evil.example/dl/2/",
+		"not a url",
+	}
+	for _, u := range no {
+		if IsF95DownloadLink(u) {
+			t.Errorf("IsF95DownloadLink(%q) = true, want false", u)
+		}
 	}
 }

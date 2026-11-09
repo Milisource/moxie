@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"testing"
@@ -59,6 +60,40 @@ func TestOpenClose(t *testing.T) {
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
+	}
+}
+
+// TestForeignKeysEnabledOnAllConnections verifies that foreign key
+// enforcement is active on every pooled connection, not just the first
+// one opened. PRAGMA foreign_keys is a per-connection setting; if it is
+// only applied to one connection, concurrent workers silently lose
+// cascade deletes (orphaned rows) once the pool opens a second one.
+func TestForeignKeysEnabledOnAllConnections(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	c1, err := db.conn.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("pin first connection: %v", err)
+	}
+	defer c1.Close()
+
+	var fkFirst int
+	if err := c1.QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&fkFirst); err != nil {
+		t.Fatalf("query first connection: %v", err)
+	}
+
+	// c1 is checked out, so this must open a second pooled connection.
+	var fkSecond int
+	if err := db.conn.QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&fkSecond); err != nil {
+		t.Fatalf("query second connection: %v", err)
+	}
+
+	if fkFirst != 1 {
+		t.Errorf("foreign_keys = %d on the initial connection, want 1", fkFirst)
+	}
+	if fkSecond != 1 {
+		t.Errorf("foreign_keys = %d on a second pooled connection, want 1", fkSecond)
 	}
 }
 
@@ -178,6 +213,63 @@ func TestInsertGameEmptyTags(t *testing.T) {
 	}
 	if len(got.Tags) != 0 {
 		t.Errorf("Tags = %v, want empty slice", got.Tags)
+	}
+}
+
+func TestInsertGameEmptyEngineDefaultsToUnknown(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	g := &Game{Title: "No Engine", Path: "/no-engine"}
+	id, err := db.InsertGame(g)
+	if err != nil {
+		t.Fatalf("InsertGame with empty engine failed: %v", err)
+	}
+
+	got, err := db.GetGame(id)
+	if err != nil {
+		t.Fatalf("GetGame failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetGame returned nil")
+	}
+	if got.Engine != "Unknown" {
+		t.Errorf("Engine = %q, want %q", got.Engine, "Unknown")
+	}
+}
+
+func TestIsCanonicalEngine(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{in: "RenPy", want: true},
+		{in: "renpy", want: false},
+		{in: "ren'py", want: false},
+		{in: "", want: false},
+		{in: "Godot", want: true},
+		{in: "UnrealEngine5", want: false},
+	}
+	for _, tt := range tests {
+		if got := IsCanonicalEngine(tt.in); got != tt.want {
+			t.Errorf("IsCanonicalEngine(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestCanonicalEnginesSatisfyConstraint(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	for i, eng := range CanonicalEngines {
+		g := &Game{
+			Title:  "Engine " + eng,
+			Engine: eng,
+			Path:   fmt.Sprintf("/engine-%d", i),
+		}
+		if _, err := db.InsertGame(g); err != nil {
+			t.Errorf("InsertGame with canonical engine %q failed: %v", eng, err)
+		}
 	}
 }
 
@@ -394,12 +486,12 @@ func TestUpdateGame(t *testing.T) {
 	defer db.Close()
 
 	g := &Game{
-		Title:    "Original Title",
-		Engine:   "Unity",
-		Path:     "/update-test",
+		Title:     "Original Title",
+		Engine:    "Unity",
+		Path:      "/update-test",
 		SizeBytes: 500,
-		Tags:     []string{"original"},
-		Status:   "active",
+		Tags:      []string{"original"},
+		Status:    "active",
 	}
 	id, err := db.InsertGame(g)
 	if err != nil {
@@ -649,6 +741,79 @@ func TestScrapedMeta(t *testing.T) {
 	})
 }
 
+// SetScrapedMetaFields is a manual edit, so it must not disturb the cover or
+// the last_scraped timestamp that a real scrape owns.
+func TestSetScrapedMetaFieldsPreservesCoverAndTimestamp(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	id, err := db.InsertGame(&Game{Title: "Manual Edit", Engine: "Unity", Path: "/manual-edit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.UpsertScrapedMeta(&ScrapedMeta{
+		GameID:    id,
+		Developer: "OldDev",
+		Overview:  "Old overview",
+		CoverURL:  "https://example.com/cover.jpg",
+	}); err != nil {
+		t.Fatalf("UpsertScrapedMeta: %v", err)
+	}
+
+	// UpsertScrapedMeta stamps LastScraped itself; capture what it stored so
+	// the assertion is about "unchanged by the manual edit", not a fixed time.
+	before, err := db.GetScrapedMeta(id)
+	if err != nil || before == nil {
+		t.Fatalf("GetScrapedMeta (before): %v (meta=%v)", err, before)
+	}
+
+	if err := db.SetScrapedMetaFields(id, "NewDev", "New overview"); err != nil {
+		t.Fatalf("SetScrapedMetaFields: %v", err)
+	}
+
+	got, err := db.GetScrapedMeta(id)
+	if err != nil || got == nil {
+		t.Fatalf("GetScrapedMeta: %v (meta=%v)", err, got)
+	}
+	if got.Developer != "NewDev" || got.Overview != "New overview" {
+		t.Errorf("developer/overview = %q/%q, want NewDev/New overview", got.Developer, got.Overview)
+	}
+	if got.CoverURL != "https://example.com/cover.jpg" {
+		t.Errorf("CoverURL = %q, want preserved", got.CoverURL)
+	}
+	if !got.LastScraped.Equal(before.LastScraped) {
+		t.Errorf("LastScraped = %v, want preserved %v", got.LastScraped, before.LastScraped)
+	}
+}
+
+// Editing developer/overview for a game with no scraped_meta row yet creates
+// one instead of failing.
+func TestSetScrapedMetaFieldsInsertsWhenMissing(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	id, err := db.InsertGame(&Game{Title: "No Meta", Engine: "Unity", Path: "/no-meta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.SetScrapedMetaFields(id, "Dev", "Overview"); err != nil {
+		t.Fatalf("SetScrapedMetaFields: %v", err)
+	}
+
+	got, err := db.GetScrapedMeta(id)
+	if err != nil || got == nil {
+		t.Fatalf("GetScrapedMeta: %v (meta=%v)", err, got)
+	}
+	if got.Developer != "Dev" || got.Overview != "Overview" {
+		t.Errorf("developer/overview = %q/%q, want Dev/Overview", got.Developer, got.Overview)
+	}
+	if got.CoverURL != "" {
+		t.Errorf("CoverURL = %q, want empty on insert", got.CoverURL)
+	}
+}
+
 func TestScrapedMetaCascadeDelete(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping cascade delete test in short mode")
@@ -679,6 +844,86 @@ func TestScrapedMetaCascadeDelete(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatal("scraped_meta should be cascade-deleted with the game")
+	}
+}
+
+// TestRecentPlays_ParseSQLiteTimestamp verifies play history timestamps
+// round-trip: RecordPlay writes SQLite datetime('now') ("2006-01-02 15:04:05",
+// space-separated), and RecentPlays/PlaysForGame must parse that format —
+// RFC3339-only parsing yields zero times in the UI.
+func TestRecentPlays_ParseSQLiteTimestamp(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	game := &Game{Title: "Timestamp Game", Path: "/tmp/timestamp-game", Engine: "RenPy"}
+	id, err := db.InsertGame(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordPlay(id, "linux"); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := db.RecentPlays(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 play entry, got %d", len(entries))
+	}
+	if entries[0].PlayedAt.IsZero() {
+		t.Error("RecentPlays: played_at parsed as zero time (SQLite format not handled)")
+	}
+	if entries[0].PlayedAt.Year() != time.Now().Year() {
+		t.Errorf("RecentPlays: unexpected year %d", entries[0].PlayedAt.Year())
+	}
+
+	one, err := db.PlaysForGame(id, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one) != 1 || one[0].PlayedAt.IsZero() {
+		t.Error("PlaysForGame: played_at parsed as zero time")
+	}
+}
+
+// TestLastPlayedTimes verifies the grouped per-game query the desktop
+// backend uses to populate DesktopGameSummary.LastPlayed for an entire list
+// in one query — a game with multiple plays must report its latest, a game
+// with none must be absent from the map, and it must parse the SQLite
+// datetime format like RecentPlays/PlaysForGame do (see the test above).
+func TestLastPlayedTimes(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	played := &Game{Title: "Played Game", Path: "/tmp/played-game", Engine: "RenPy"}
+	playedID, err := db.InsertGame(played)
+	if err != nil {
+		t.Fatal(err)
+	}
+	neverPlayed := &Game{Title: "Never Played", Path: "/tmp/never-played", Engine: "RenPy"}
+	neverPlayedID, err := db.InsertGame(neverPlayed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.RecordPlay(playedID, "linux"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordPlay(playedID, "linux"); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := db.LastPlayedTimes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, ok := m[playedID]
+	if !ok || last.IsZero() {
+		t.Error("LastPlayedTimes: expected a non-zero entry for the played game")
+	}
+	if _, ok := m[neverPlayedID]; ok {
+		t.Error("LastPlayedTimes: never-played game should not appear in the map")
 	}
 }
 

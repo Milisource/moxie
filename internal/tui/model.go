@@ -1,9 +1,13 @@
 package tui
 
 import (
+	"fmt"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -13,6 +17,7 @@ import (
 
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
+	"github.com/mili/moxie/internal/saves"
 	"github.com/mili/moxie/internal/scraper"
 )
 
@@ -23,6 +28,7 @@ type ViewMode int
 const (
 	LibraryView ViewMode = iota
 	DetailView
+	SavesView
 )
 
 // ─── Sort Field ────────────────────────────────────────────────────────────
@@ -100,31 +106,101 @@ type collectionsLoadedMsg struct {
 	collections []db.Collection
 }
 
-type downloadProgressMsg struct {
-	gameID   int64
-	progress downloader.Progress
-	status   db.DownloadStatus
-	err      string
+type scanCompletedMsg struct {
+	saved   int
+	updated int
+	total   int
 }
+
+// downloadProgressMsg is a periodic tick sent by pollDownloads to trigger
+// re-renders while a download is active. All progress data lives in the
+// model's activeDownloads map (written by the download goroutine), so the
+// message itself carries no payload.
+type downloadProgressMsg struct{}
 
 type downloadStartedMsg struct {
 	gameID int64
 	err    error
 }
 
+// savesLoadedMsg carries a refreshed Saves-screen state (the game's set list
+// plus its resolved live save location). gameID identifies the game the state
+// belongs to so a load that finishes after the user has navigated to another
+// game is dropped instead of rendered under the wrong title.
+type savesLoadedMsg struct {
+	gameID int64
+	state  savesState
+	err    error
+}
+
+// savesOpMsg reports a completed Saves-screen mutation (apply, snapshot,
+// restore, remove, path pin) together with a freshly reloaded state. gameID
+// identifies the game the mutation targeted so an in-flight op for a game the
+// user has since left cannot overwrite the current game's screen.
+type savesOpMsg struct {
+	gameID int64
+	notice string
+	state  savesState
+	err    error
+}
+
+// downloadLinksMsg carries the result of resolving a game's download links.
+// Resolution runs in a background goroutine: the fallback path scrapes
+// F95Zone, which must never block the Update layer.
+type downloadLinksMsg struct {
+	gameID   int64
+	links    []db.DownloadLink
+	destDir  string
+	gamePath string
+	engine   string
+	err      error
+}
+
+// downloadFinishedMsg is sent by the download goroutine after it finishes.
+// A non-empty summary means every link failed; the payload then carries the
+// best link URL so the TUI can offer the browser fallback.
+type downloadFinishedMsg struct {
+	gameID   int64
+	url      string
+	summary  string
+	destDir  string
+	gamePath string
+	engine   string
+}
+
+// watcherFoundMsg reports that a new archive appeared in a game's download
+// dir (a browser-saved download picked up by the ArchiveWatcher).
+type watcherFoundMsg struct {
+	gameID   int64
+	path     string
+	destDir  string
+	gamePath string
+	engine   string
+}
+
+// watcherInstalledMsg reports the result of installing a watcher-picked
+// archive through the validate → extract → merge pipeline.
+type watcherInstalledMsg struct {
+	gameID int64
+	err    error
+}
+
+// watcherIdleMsg is the pump's heartbeat: it re-arms the pump while
+// downloads/watchers are active and stops it when none remain.
+type watcherIdleMsg struct{}
+
 // ─── Active Download ───────────────────────────────────────────────────────
 
 type activeDownload struct {
-	mu          sync.Mutex
-	gameID      int64
-	url         string
-	host        string
-	destDir     string
-	status      db.DownloadStatus
-	progress    downloader.Progress
-	err         string
-	stepMsg     string // "Finding suitable host...", "Trying Pixeldrain...", etc.
-	completedAt time.Time // set when status becomes Completed or Failed
+	mu       sync.Mutex
+	gameID   int64
+	url      string
+	host     string
+	destDir  string
+	status   db.DownloadStatus
+	progress downloader.Progress
+	err      string
+	stepMsg  string // "Finding suitable host...", "Trying Pixeldrain...", etc.
 }
 
 // ─── Model ─────────────────────────────────────────────────────────────────
@@ -134,21 +210,22 @@ type model struct {
 	table       table.Model
 	filterInput textinput.Model
 
-	allGames     []db.GameSummary
-	filtered     []db.GameSummary
-	viewMode     ViewMode
-	selectedID   int64
-	filterText   string
-	sortBy       SortField
-	showHelp     bool
-	width        int
-	height       int
+	allGames      []db.GameSummary
+	filtered      []db.GameSummary
+	viewMode      ViewMode
+	selectedID    int64
+	filterText    string
+	sortBy        SortField
+	sortDesc      bool // r toggles: reverse the current sort direction
+	showHelp      bool
+	width         int
+	height        int
 	err           error
 	notice        string
 	filterDirty   bool
 	confirmDelete bool
-	deleteID     int64
-	deleteTitle  string
+	deleteID      int64
+	deleteTitle   string
 
 	// detail view
 	detailGame     *db.Game
@@ -167,6 +244,20 @@ type model struct {
 	setUrl   bool
 	urlInput textinput.Model
 
+	// saves screen
+	savesEngine        *saves.Engine
+	savesSets          []db.SaveSet
+	savesLocation      saves.Location
+	savesCandidates    []saves.Location
+	savesManualPath    string
+	savesCursor        int
+	savesLoading       bool
+	savesConfirmDelete bool
+	savesDeleteName    string
+	savesDeleteLabel   string
+	savesEditingPath   bool
+	savesPathInput     textinput.Model
+
 	// scraper
 	scraperClient *scraper.Client
 
@@ -174,22 +265,40 @@ type model struct {
 	f95Cookie string
 
 	// filters
-	engineFilter      string
-	statusFilter      string
-	collectionFilter  int64  // 0 = no filter
-	collectionName    string // name of the currently selected collection
-	collections       []db.Collection
+	engineFilter     string
+	statusFilter     string
+	collectionFilter int64  // 0 = no filter
+	collectionName   string // name of the currently selected collection
+	collections      []db.Collection
 
 	// active downloads
 	activeDownloadsMu *sync.Mutex
 	activeDownloads   map[int64]*activeDownload
 
+	// browser fallback: gameID -> pending/active fallback after all links failed
+	browserFallbacks map[int64]*browserFallback
+
+	// download-dir watchers: gameID -> ArchiveWatcher picking up
+	// browser-saved archives in the game's download dir
+	gameWatchers map[int64]*downloader.ArchiveWatcher
+
+	// watcherMsgCh carries download terminal messages and watcher events
+	// into the Update loop; armPump's pump cmd is the only reader.
+	watcherMsgCh chan tea.Msg
+
+	// pumpArmed guards the single watcher-message pump goroutine.
+	pumpArmed *atomic.Bool
+
 	// startup tip (auto-dismissed)
 	showStartupTip bool
 
 	// spinner for background operations
-	spinner        spinner.Model
-	spinnerActive  bool
+	spinner       spinner.Model
+	spinnerActive bool
+
+	// file picker mode
+	showFilePicker bool
+	filePicker     filepicker.Model
 }
 
 // startupTipExpiredMsg is sent when the startup tip timer completes.
@@ -203,7 +312,11 @@ func dismissStartupTip() tea.Cmd {
 }
 
 // initialModel creates the root model with default Bubble Tea components.
-func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) model {
+// savesEngine may be nil; savesErr carries why the saves engine could not be
+// built so the Saves screen can surface it instead of crashing.
+func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string, savesEngine *saves.Engine, savesErr error) model {
+	initStyles()
+
 	cols := []table.Column{
 		{Title: "ID", Width: 5},
 		{Title: "Title", Width: 48},
@@ -234,7 +347,7 @@ func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) m
 
 	fi := textinput.New()
 	fi.Placeholder = "filter by title…"
-	fi.Prompt = "🔍 "
+	fi.Prompt = "/ "
 	fi.CharLimit = 60
 	fi.PromptStyle = lipgloss.NewStyle().Foreground(purple)
 	fi.PlaceholderStyle = lipgloss.NewStyle().Foreground(subtle)
@@ -243,19 +356,51 @@ func initialModel(database *db.Database, sc *scraper.Client, f95Cookie string) m
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(purple)
 
-	return model{
+	fp := filepicker.New()
+	fp.AllowedTypes = []string{}
+	fp.DirAllowed = true
+	fp.FileAllowed = false
+	fp.CurrentDirectory = os.Getenv("HOME")
+	fp.Height = 15
+	fp.AutoHeight = false
+	fp.Styles = filepicker.Styles{
+		File:             lipgloss.NewStyle().Foreground(white),
+		DisabledFile:     lipgloss.NewStyle().Foreground(subtle),
+		Directory:        lipgloss.NewStyle().Foreground(purple).Bold(true),
+		Symlink:          lipgloss.NewStyle().Foreground(cyan),
+		Selected:         lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(purpleBg).Bold(true),
+		Cursor:           lipgloss.NewStyle().Foreground(purple),
+		DisabledCursor:   lipgloss.NewStyle().Foreground(subtle),
+		DisabledSelected: lipgloss.NewStyle().Foreground(subtle),
+		Permission:       lipgloss.NewStyle().Foreground(subtle),
+		FileSize:         subtleStyle.Copy(),
+		EmptyDirectory:   lipgloss.NewStyle().Foreground(subtle).PaddingLeft(2).SetString("  No directories found."),
+	}
+
+	m := model{
 		db:                database,
 		table:             t,
 		filterInput:       fi,
 		sortBy:            SortID,
 		scraperClient:     sc,
 		f95Cookie:         f95Cookie,
+		savesEngine:       savesEngine,
 		activeDownloadsMu: &sync.Mutex{},
-		activeDownloads:    make(map[int64]*activeDownload),
-		detailViewport:     viewport.New(0, 0),
-		showStartupTip:     true,
-		spinner:            sp,
+		activeDownloads:   make(map[int64]*activeDownload),
+		browserFallbacks:  make(map[int64]*browserFallback),
+		gameWatchers:      make(map[int64]*downloader.ArchiveWatcher),
+		watcherMsgCh:      make(chan tea.Msg, 16),
+		pumpArmed:         &atomic.Bool{},
+		detailViewport:    viewport.New(0, 0),
+		showStartupTip:    true,
+		spinner:           sp,
+		showFilePicker:    false,
+		filePicker:        fp,
 	}
+	if savesErr != nil {
+		m.err = fmt.Errorf("saves unavailable: %w", savesErr)
+	}
+	return m
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────────
@@ -270,8 +415,12 @@ func (m model) View() string {
 	switch {
 	case m.showHelp:
 		return m.helpView()
+	case m.showFilePicker:
+		return m.filePickerView()
 	case m.viewMode == DetailView:
 		return m.detailView()
+	case m.viewMode == SavesView:
+		return m.savesView()
 	default:
 		return m.libraryView()
 	}

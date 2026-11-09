@@ -1,418 +1,397 @@
 # Downloader
 
-> **Status: beta, with 11 verified host paths and optional browser resolvers.** HTTP-only downloads are verified for Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload, Gofile and WDHO; MEGA is verified through the `megatools` subprocess. Buzzheavier, MixDrop, UploadHaven, VikingFile and DataNodes are fully automated with the optional headed-browser resolver (`--browser`). F95Zone masked links work with cookies imported from Chromium-family browsers; a pending reCAPTCHA still needs a human. See [Host support matrix](#host-support-matrix) for the per-host evidence.
+> **Beta Feature** — The downloader works reliably for Pixeldrain and Buzzheavier. Most other hosts have anti-bot protection that HTTP clients cannot bypass. Downloaded files are validated and rejected if they aren't actual archives/executables. See [Host Feasibility](#host-feasibility) for per-host support levels.
 
 ## What
 
-The downloader package (`internal/downloader/`) fetches game files from F95Zone-approved file hosts. It handles URL resolution, F95Zone link unmasking, progress reporting, resume support, SSRF protection, dead-link validation, and optional delegation to external downloaders.
+The downloader package (`internal/downloader/`) provides HTTP download capabilities for game files from F95Zone approved file hosts. It handles URL resolution, progress reporting, resume support, SSRF protection, and dead link validation. The companion `internal/updater/` package handles post-download merging into existing game directories.
 
-Package files:
-
-| File | Purpose |
-|------|---------|
-| `types.go` | `Status`, `Progress`, `Job`, `ProgressEvent` |
-| `downloader.go` | `Download`, `DownloadWithHost`, resume, validation, HTML-game handling |
-| `platform.go` | Platform enum and OS-priority matching |
-| `hosts.go` | Resolver dispatch, F95 masked link unmasking, host identification, in-memory resolution cache |
-| `hosts_cloud.go` | MediaFire, Bunkr, Dropbox resolvers |
-| `hosts_workupload.go` | WorkUpload proof-of-work + direct-link resolver |
-| `hosts_f95dl.go` | F95Zone `/dl/` wrapper links |
-| `browser.go` | Optional chromedp headed-browser resolver (VikingFile Turnstile) |
-| `resolution_store.go` | Persistent masked-link cache interface |
-| `hosts_*.go` | Per-host resolvers (Pixeldrain, Buzzheavier, Gofile, DataNodes, Google Drive, MixDrop, VikingFile, MEGA) |
-| `external.go` | External downloader adapters (megatools) |
-| `hosts_helpers.go` | Shared parsing helpers (`decodeJSON`, Content-Disposition, link extraction) |
-| `hostsizes.go` | Per-host size limits |
-| `links.go` | `IsOnlineOnly`, `ScoreDownloadLink`, host scoring, newest-file lookup |
-| `detect.go` | Platform detection from link text |
-| `validator.go` | SSRF protection and dead-link checks |
+Package files: `types.go` (Status/Progress/Job types), `downloader.go` (Download, DownloadWithHost), `platform.go` (Platform enum, priority matching), `hosts.go` (HostResolver dispatch, followRedirect, IdentifyHostInURL), 8 per-host resolver files (`hosts_pixeldrain.go`, `hosts_buzzheavier.go`, etc.), `hosts_helpers.go` (shared URL utilities), `hostsizes.go` (size limits), `links.go` (IsOnlineOnly, ScoreDownloadLink, FindMostRecentFile), `detect.go` (DetectPlatformFromLink), `validator.go` (SSRF protection).
 
 ## How
 
-### Download flow
+### Types
+
+```go
+type Status int          // Pending, Downloading, Paused, Completed, Failed, Cancelled
+type Progress struct {    // BytesDownloaded, TotalBytes, SpeedBytesPerSec, Percent
+    BytesDownloaded  int64
+    TotalBytes      int64
+    SpeedBytesPerSec float64
+    Percent         float64
+}
+type Job struct { ID, GameID, URL, Host, DestPath, Status, Progress, Error, timestamps }
+type ProgressEvent struct { JobID, GameID, Status, Progress, Error }
+```
+
+### Download Flow
 
 ```go
 downloader.Download(urlStr, destDir, expectedTotal, onProgress, f95Cookie)
-// or with an explicit host:
+// or with explicit host:
 downloader.DownloadWithHost(urlStr, host, destDir, expectedTotal, onProgress, f95Cookie)
+// cancellable variant (desktop uses this so shutdown can interrupt a transfer):
+downloader.DownloadWithContext(ctx, urlStr, host, destDir, expectedTotal, onProgress, f95Cookie)
 ```
 
-1. **SSRF check** — HTTPS only; private, loopback, link-local and cloud-metadata hosts are blocked (`isValidDownloadURL`).
-2. **Link resolution** — `HostResolver.Resolve()`:
-   - F95Zone masked links (`/masked/...`) are unmasked through the site's JSON endpoint.
-   - F95Zone `/dl/...` wrapper links are followed; a plain redirect is used, an hCaptcha interstitial produces a clear error.
-   - Host-specific resolvers handle APIs, cookies, POST forms and signing.
-   - MEGA links return `ExternalCommand: megatools` and are downloaded by `downloadWithExternal`.
-3. **Resume** — an existing `.part` file produces `Range: bytes=<size>-`; a `206 Partial Content` response is appended.
-4. **Transfer** — 32 KiB read loop with 500 ms progress callbacks, 50 GB hard cap, 6 hour timeout.
-5. **Content validation** — HTML responses are rejected unless they are genuine HTML games (see below).
-6. **Filename** — `Content-Disposition` is preferred for fresh downloads, so Pixeldrain `/u/<id>` links get their real name/extension.
-7. **Finalize** — `fsync`, rename `.part` → final, `chmod 0600`.
+The `f95Cookie` parameter is an optional F95Zone session cookie string used to authenticate HEAD requests when resolving F95Zone masked redirect URLs (`f95zone.to/masked/...`). Pass `""` if no cookie is available; masked URLs will still be attempted but may fail on hosts that require authentication.
 
-### F95Zone masked links
+1. **SSRF check**: `isValidDownloadURL()` verifies HTTPS-only, blocks private/loopback IPs and cloud metadata endpoints (169.254.169.254, metadata.google.internal, 100.100.100.200, AWS IMDSv6 `fd00:ec2::254`, `0.0.0.0`, `::`).
 
-Masked links used to be treated as redirects. They are not: the site serves a
-JavaScript page and exposes a JSON endpoint. `masked.js` performs:
+2. **URL resolution**: `HostResolver.Resolve()` handles host-specific protocols. Resolve is recursion-bounded (masked→masked chains cap at depth 5) and normalizes host labels (legacy `"google drive"` → canonical `googledrive`, matching the scraper's labels).
+   - F95Zone masked URLs (`f95zone.to/masked/...`) are first unwrapped via the site's JSON endpoint (`unwrapMasked`, see [Masked F95Zone URLs](#masked-f95zone-urls)) to get the real download URL, using the optional `f95Cookie` for authentication, then host-specific resolution is applied on the real URL.
+   - Host-specific resolvers handle each provider's protocol (API calls, cookie exchange, POST forms, confirm tokens).
+   - **Browser cookies** (`cf_clearance`): every resolver request and the final download request merge in the browser's cookies for the request's own hostname (see [Browser Cookie Reuse](#browser-cookie-reuse)).
 
-```http
-POST https://f95zone.to/masked/<host>/...
-Cookie: xf_user=...; cf_clearance=...
-X-Requested-With: XMLHttpRequest
-Content-Type: application/x-www-form-urlencoded
+3. **Resume**: If a `.part` file exists, sends `Range: bytes=<existingSize>-` header. On 206 Partial Content, appends to the file. Resume is skipped for host-specific resolvers that don't support range requests. Size limits are computed **after** the resume-mode decision so a server that ignores `Range` (returns a full 200 while a `.part` exists) can't double-count the existing bytes.
 
-xhr=1&download=1
+4. **Download**: Reads response body in 32KB chunks (honoring `ctx` cancellation), writes to a `.part` temp file. The body is wrapped in a LimitReader at 50 GB+1; the total is re-checked after the loop so an oversized download is **rejected** rather than silently truncated at the cap. The HTTP transport is shared across downloads (connection reuse).
+
+5. **Progress**: `writeCounter` reports progress via callback every 500ms (speed, bytes, percentage).
+
+6. **Validation**: After download completes, the caller calls `IsValidGameFile(path)` to reject files smaller than 4096 bytes or that aren't archives/executables (or `.html`/`.htm` entry pages — see [HTML game payloads](#html-game-payloads)). This catches interstitial HTML pages that some hosts serve instead of real files.
+
+7. **Finalize**: `fsync()` + rename `.part` → final filename. The saved filename percent-decodes the URL path (`file%20name.zip` → `file name.zip`).
+
+### Host-Specific Resolvers (`hosts.go`)
+
+The `HostResolver.Resolve()` dispatches to per-host resolvers based on the host label:
+
+| Host | Strategy | Status |
+|------|----------|--------|
+| **Pixeldrain** | API: `pixeldrain.com/api/file/<ID>` — direct download via API endpoint | Verified |
+| **Buzzheavier** | Token flow (live-verified 2026-08-09): share page (`hx-get` server-signed `t=`) → HTMX `/download?t=&alt=true` → `hx-redirect` → **fafda.to** file URL (probe-validated; 503 origin outages retried with backoff) | Verified |
+| **Gofile** | Content API + direct download to `{fileID}.gofile.io/{fileID}` | Verified |
+| **Google Drive** | Two-step: `GET /uc?export=download&id=<ID>` → parse HTML for `confirm=` token (for >100 MB virus-scan interstitial) → re-request with `&confirm=<TOKEN>` | Verified |
+| **DataNodes** | Cookie + POST: `GET /download/<CODE>` for session cookies → parse hidden form fields → `POST` with cookies → follow 302 redirect to CDN | May work |
+| **MixDrop** | Pass-through with User-Agent (no API call; some file pages may serve interstitial instead of direct download) | May work |
+| **VikingFile** | Form POST: `GET /f/<HASH>` for hidden fields → `POST op=download1` → follow 302 redirect (blocked by Cloudflare Turnstile captcha) | Beta (blocked) |
+| **Mega** | Unsupported — encrypted protocol not HTTP-accessible. Deprioritized to -200 in host scoring; auto-fallbacks to next-best link. Manual workaround: `moxie install <id> <path>` | Unsupported |
+
+All other detected hosts (40+) pass through for standard HTTP download. See [Host Feasibility](#host-feasibility) below for the full breakdown of which hosts work.
+
+### Host Scoring (`links.go`)
+
+Download links are scored by combining platform priority with host reliability:
+
+| Score | Hosts | Meaning |
+|-------|-------|---------|
+| **+25** | Pixeldrain, Catbox, MediaFire, WDHO | Verified — these resolvers reliably produce downloadable URLs |
+| **+10** | Buzzheavier, Google Drive, WorkUpload | Intermittent challenges or solvable puzzles |
+| **+5** | Gofile | Fragile — premium-gated API, free path is a web scrape |
+| **0** | All other recognized hosts | Unknown — passed through for standard HTTP download; no specialized resolver |
+| **-200** | Mega, VikingFile, KrakenFiles | Hard walls — encrypted, captcha-gated, or browser-only; tried last |
+
+A host that is currently serving server-side-capped downloads is penalised
+further — see [Throttled hosts](#throttled-hosts-hosthealthgo).
+
+### Throttled hosts (`hosthealth.go`)
+
+Some hosts do not fail when you exceed their free quota — they silently cap the
+transfer rate. **Pixeldrain** is the notable case: past its 24h free transfer
+quota (5 GB regular / 6 GB filesystem) it serves files at exactly
+**1 MiB/s**, so a 1 GB release takes ~17 minutes. Grinding through that is
+worse than trying the next host, so moxie detects it before any bytes move.
+
+`DownloadWithContext` runs `resolver.checkHostThrottle` after a successful
+resolve. For pixeldrain it queries `GET /api/file/<id>/info` and reads
+`download_speed_limit` (bytes/sec; `0` = unlimited). A positive value — or one
+of the API limit errors `transfer_limit_exceeded`, `download_limit_exceeded`,
+`ip_download_limited_captcha_required`, `max_concurrent_downloads`,
+`file_rate_limited_captcha_required` — is treated as a cap:
+
+- the host is marked throttled (`MarkHostThrottled`, 30-minute TTL), and
+- the attempt returns `ErrHostThrottled` (a `*ThrottledError`), so the caller's
+  existing link-fallback loop moves on to the next-best host.
+
+`ScoreLinkHost` subtracts `throttlePenalty` (1000) for a throttled host, so
+every entry point — CLI `download`, TUI, desktop `rankDownloadLinksFor`, and
+multi-part ordering — deprioritises it for the rest of the batch (this also
+avoids wasting a rate-limited F95Zone masked unwrap on a host that will be
+skipped). The probe is best-effort: a network/parse failure is treated as
+"unknown" and the download proceeds.
+
+To force the slow download anyway — e.g. the rare game whose **only** source is
+pixeldrain — set **`MOXIE_ALLOW_THROTTLED=1`**.
+
+### Host Feasibility
+
+Comprehensive research of all 44 F95Zone approved file hosts and their downloadability via HTTP:
+
+#### Direct (standard HTTP GET with User-Agent, no interstitial)
+
+These hosts serve files directly at the URL — no download page, no ads, no timers.
+
+| Host | Notes |
+|------|-------|
+| **Catbox** | `files.catbox.moe/<id>.<ext>` — direct GET. 200 MB limit. Rate-limited for uploads only |
+| **Transfer.sh** | `transfer.sh/<hash>/<filename>` — direct GET (service may have reliability issues) |
+| **Quax** | `qu.ax/<code>.<ext>` — direct GET. 256 MB limit. Blocks Tor exit nodes |
+| **Vern** | `vern.cc/<path>` — direct GET from user directory. 256 MB limit |
+| **YourFileStore** | Direct file serving. 500 MB limit. Optional password protection |
+| **Files.dp.ua** | `files.dp.ua/<code>` — direct GET. 100 GB limit. 25-day retention |
+
+#### Interstitial / Download Page
+
+These are NOT direct — the URL returns an HTML page with a download button, timer, or ad. Simple HTTP GET downloads the HTML, not the file. These require a browser or JDownloader.
+
+| Host | Obstacle |
+|------|----------|
+| **VikingFile** | Cloudflare anti-bot + possible captcha. Our scraper attempted form POST flow but CF blocks unauthenticated requests |
+| **FromSmash** | Download button page + JavaScript. Also requires API key for programmatic access |
+| **SendGB** | Download page UI. Behind Cloudflare |
+| **DropMeFiles** | Must click DOWNLOAD button on page |
+| **Bowfile** | 7-second countdown timer + ad block detection. Behind Cloudflare |
+| **UploadNow** | Download page with registration UI |
+| **Anontransfer** | Download page. Behind Cloudflare |
+| **Files.fm** | Web-based folder UI. Account-based with API keys |
+
+Hosts already covered in other sections: WorkUpload (captcha), MediaFire (captcha), MixDrop (API), DataNodes (API), Anonymfile (Cloudflare).
+
+#### API (needs API call, cookie, or header exchange for real URL)
+
+| Host | Flow |
+|------|------|
+| **Pixeldrain** | Already implemented. Note: rate-limited files may trigger captcha at 3× views/downloads ratio. API key bypasses |
+| **Buzzheavier** | Token flow — share page `t=` token → `/download?t=&alt=true` (HTMX) → `hx-redirect` to fafda.to, probe-validated |
+| **Gofile** | Already implemented. Breaking change March 2026: API may restrict to premium accounts |
+| **MixDrop** | Official API at `api.mixdrop.ag`. For zips/archives direct; for MP4 add `?download`. Domains: m1xdrop.click, mixdrop.co, etc. |
+| **DataNodes** | POST flow: visit `/download/<ID>` → acquire `file_code` cookie → POST for download URL. Has Cloudflare |
+| **Google Drive** | Two-step: `drive.google.com/uc?export=download&id=<ID>` → parse HTML for `confirm=` token → request with `&confirm=<token>`. Large files (>100MB) have virus-scan interstitial |
+| **WeTransfer** | Unofficial: POST `api/ui/transfers/<ID>/<hash>/download` → get S3 presigned URL. Official API deprecated. Free tier now limits to 10 transfers/month |
+| **Dropbox** | Shared link with `?dl=1` → redirect follows to direct file. ~20 GB/day bandwidth limit for free accounts |
+
+#### Difficult (captcha, login, Cloudflare, JS execution, or multi-step flow needed)
+
+| Host | Obstacle |
+|------|----------|
+| **VikingFile** | Cloudflare anti-bot blocks unauthenticated requests. Form POST scraper cannot bypass CF challenge |
+| **MediaFire** | Captcha + Cloudflare. Free users get periodic reCAPTCHA. Larger files (>4 GB) need premium |
+| **WorkUpload** | reCAPTCHA required for every free download. "Checking for robots" interstitial page |
+| **Bunkrr/Bunkr** | Multi-domain extraction. Album → item → CDN URL chain. DDoS-Guard anti-bot. Domains change frequently |
+| **KrakenFiles** | 90-second wait timer for free users + Cloudflare Turnstile captcha. Has official API (requires account) |
+| **Bowfile** | 7-second countdown timer + anti-adblock scripts. Behind Cloudflare |
+| **UploadHaven** | Captcha + ads + wait timers. Premium link generator target (heavily restricted free tier) |
+| **1CloudFile** | Standard premium host pattern with restrictions |
+| **CyberFile** | Password-protected folders. May have captchas for free downloads |
+| **EasyUpload** | Google reCAPTCHA on upload; download likely has timer |
+| **HexLoad/HexUpload** | Captcha + wait timer pattern |
+| **SendGB** | Download page UI behind Cloudflare |
+| **Anonymfile** | Behind Cloudflare proxy — may serve CF challenge page instead of file |
+| **Anontransfer** | Download page behind Cloudflare |
+| **Files.fm** | Web-based folder UI, account-based with API keys |
+| **FromSmash** | Requires API key (account-based) or clicking download button |
+| **DropMeFiles** | Download button on page must be clicked first |
+| **WDHO** | Free download is a Referer-gated page with a base64 `e='…'` signed URL; the token is single-use and valid after the 4–8 s countdown. Resolver waits and downloads the file. Colour-button page only appears without a Referer. 3 MB/s speed cap |
+
+#### Impossible (encrypted protocol, premium-walled, or requires auth)
+
+| Host | Reason |
+|------|--------|
+| **Mega** | Encrypted protocol (RSA key exchange + AES-CTR). Cannot be HTTP-downloaded. Requires MEGA SDK |
+| **Keep2Share (K2S)** | Premium-walled. Free downloads blocked by reCAPTCHA + throttling. API requires paid account |
+| **Uploaded (ul.to)** | Premium-walled. Free users face extreme speed limits, long waits, hourly quotas. Effectively unusable free |
+| **ProtonDrive** | E2E encrypted, requires Proton account + browser SSO session. Not feasible |
+| **Apkadmin** | Premium host pattern. Unclear if free downloads work |
+| **UploadNow** | Download page with registration/account requirements |
+| **Terminal** | Invite-only uploader system, unclear download flow |
+
+### F95Zone `/dl/` links (`hosts_f95dl.go`)
+
+Thread posts link every mirror through `f95zone.to/dl/<postID>/?u&k&r&t`. `resolveDepth` solves them natively before anything else: GET the check page, decode `data-code` into the form's `w` field, wait out the site's 2.1 s script-check delay (measured from the page load), POST the Continue button's own form (an ad block can carry another form), and read the host URL from the `f95dl_go` page's `data-url` (or an off-site redirect). The destination then goes through the normal host resolver. Requests carry the F95 cookie and `f95UserAgent()` — the UA matching the clearance (see `docs/scraper.md`, Browser-Identical Headers).
+
+Failures are typed so callers can react without string matching:
+
+| Error | Meaning | Caller reaction |
+|---|---|---|
+| `ErrF95Challenge` | Cloudflare challenge; the clearance refresher already ran once | session-level: stop the mirror loop |
+| `ErrF95LoginRequired` | logged-out session | session-level: stop the mirror loop |
+| `ErrF95LinkGone` | "This download link has expired" / "no longer in the post" | stale: re-scrape the thread once, retry with fresh links |
+| `errF95NeedsBrowser` | captcha markers, or the check page returned after the POST | browser `/dl/` solver (`SetDefaultDLSolver`), when installed |
+
+`downloader.IsF95SessionError` / `IsF95StaleLinkError` expose the classes. The desktop (`tryDownloadLinks`), CLI (`download`) and TUI mirror loops stop on either instead of walking every mirror into the same wall (on 2026-10-24 that cost ~40 s per mirror per attempt). Session errors also skip the rod-browser download fallback, which cannot pass the same Cloudflare check.
+
+**Stale links.** `F95LinkStale(url, now)` reports a `/dl/` link whose `r=` timestamp is older than 90 minutes. The desktop update/install pipelines (`freshRankedDownloadLinks`) and the TUI re-scrape the thread before downloading stale links, and the desktop retries once with fresh links if the site reports them expired. The CLI already re-scrapes before every download.
+
+### Masked F95Zone URLs
+
+F95Zone wraps external download links in redirect endpoints:
+```
+https://f95zone.to/masked/pixeldrain.com/210467/... → https://pixeldrain.com/u/L3sayv61
 ```
 
-Successful response:
+The `HostResolver.Resolve()` handles this transparently:
+1. `IdentifyHostInURL` matches the masked URL against the host table using embedded domain hints
+2. `Resolve` detects `/masked/` in the URL → calls `unwrapMasked()`: POST `{xhr:1, download:1}` to the masked path with the F95Zone session cookie and `X-Requested-With: XMLHttpRequest`
+3. The endpoint answers JSON — `{"status":"ok","msg":"https://pixeldrain.com/u/..."}` — giving the real download URL without needing the browser
+4. Re-identifies the host from the real URL
+5. Recursively calls `Resolve` with the real URL and correct host
 
-```json
-{"status":"ok","msg":"https://pixeldrain.com/u/f9USE4aK"}
+**Why the POST endpoint:** F95Zone's masked page itself is now a JS + reCAPTCHA interstitial ("Continue to <host>") that serves no redirect to plain HTTP clients. The page's own AJAX handler is what reveals the destination — and that same POST works from Go with a valid session cookie (verified live: masked → `pixeldrain.com/u/…` → `api/file/<id>` → 200 with the real archive). A `captcha` status means the session is stale; the error tells the user to re-import cookies or open the link in a browser. If the POST returns non-JSON (legacy deployment), the resolver falls back to `followRedirect()` (GET redirect chain).
+
+**Cookie-based authentication**: The caller sets the F95Zone session cookie via `HostResolver.SetF95Cookie(cookie)` before resolving. When set, `unwrapMasked()` includes the `Cookie` header in the POST; when unset, the browser's own f95zone.to cookies are attached instead (host-scoped). The cookie flows through the pipeline: `Download() → DownloadWithHost() → HostResolver.SetF95Cookie() → unwrapMasked()`.
+
+**Resolved-URL cache**: the unwrap endpoint rate-limits after repeated hits (captcha rotation kicks in), so successful unwrap results are cached in the SQLite `resolved_urls` table (7-day TTL, `ResolvedURLTTL` in `internal/db/resolved_urls.go`). On `Resolve()`, the masked branch consults the cache first (`GetResolvedURL`) and only POSTs to the endpoint on a miss; a successful unwrap is stored via `PutResolvedURL` (upsert, one row per masked URL). The DB-backed pair is attached by the app entry points that hold a `*db.Database` — `tui/commands.go` (`startDownloadCmd`) and `internal/commands/download.go` — via `downloader.SetDefaultResolvedCache(get, put)`, which every `NewHostResolver()` (including the one constructed inside `DownloadWithContext`) picks up. `HostResolver.SetResolvedCache` overrides the pair per resolver; nil = no caching. Stale entries read as misses and are auto-pruned on every DB open.
+
+**Shared pacing (F95-cbv5)**: the desktop runs several game updates at once, each with its own `HostResolver`, so the politeness limits are process-wide rather than per resolver. One package-level `sharedUnwrapLimiter` (`rate.Every(3s)`, burst 1, `internal/downloader/hosts.go`) paces every masked-URL POST, and the browser fallback and masked-captcha solver are wrapped by `serialBrowserFallback` / `serialMaskedSolver`, which share one mutex (each copies the browser profile and opens a window). Only byte transfer and extraction run in parallel.
+
+If unwrapping fails (timeout, network error, captcha), resolution falls through to host-specific resolution with the masked URL — which will likely fail, but the caller's fallback loop will try other links.
+
+### Browser Cookie Reuse
+
+Cloudflare-protected hosts (datanodes, vikingfile, ...) 403 plain HTTP clients — they require the browser-only `cf_clearance` challenge token. Since moxie already extracts cookies from installed browsers (see [browser.md](browser.md)), the resolver now does the same for download hosts automatically:
+
+- `browser.GetCookiesForHost(hostname)` returns every cookie the browser holds for that host (RFC 6265 domain match: a `.buzzheavier.com` cookie is valid for `dd.buzzheavier.com`). The kooky snapshot is cached for 60 s (cf_clearance lives ~30 min-2 h) and the header is sorted/deduped/capped at 6 KB.
+- The `HostResolver` attaches these cookies to every request it makes: resolver GET/POST steps (so datanodes/vikingfile form flows pass Cloudflare) and the final download request (`mergeBrowserCookies` in `downloadWithHeaders`), merged with any existing Cookie header from the resolution flow.
+- Cookies are **host-scoped**: they are only ever sent to the hostname they were stored for. Go's http client also strips manual Cookie headers on cross-domain redirects, so a resolved CDN URL never receives the resolver host's cookies.
+
+**Practical effect**: if the user has visited datanodes.to/vikingfile.com in a browser (even once, recently), downloads for those hosts pass the Cloudflare challenge instead of failing with HTTP 403. If the browser holds no cookies for a host, extraction is a no-op and the request behaves exactly as before. This is best-effort — a fresh/expired clearance still fails and falls through to the next link.
+
+> **Buzzheavier is NOT gated by cf_clearance** (live-verified 2026-08-09, see [research-buzzheavier-cloudflare.md](research-buzzheavier-cloudflare.md)). Its wall is the **Turnstile-gated token flow**: the share page (which passes with stdlib TLS + browser cookies, retry through intermittent adaptive 403s) embeds a **server-signed `t=` token** in the `hx-get` attributes — no Turnstile proof is needed to obtain it. `GET /download?t=<token>&alt=true` returns `hx-redirect` with a real file URL (`fafda.to/d/<id>?v=<token>`; plain `alt` yields `ts.bzzhr.to`, whose origin is currently dead). fafda.to is Cloudflare-proxied but **challenge-free** at the app layer (404 no token / 403 bad token / 503 origin outage). **Implemented in `resolveBuzzheavier` (F95-hs4y, live-verified end-to-end 2026-08-09)**: page fetch retries adaptive 403s (backoff ~1s, cap 5), token extraction, HTMX download with `alt=true`, fafda.to preference (ts/dd redirects rewritten), and a `Range: bytes=0-0` probe — 503 origin outages are retried with an escalating backoff, 403/404 JSON errors trigger a share-page refetch for a fresh token (bounded at 2).
+
+### Browser fallback for challenge-graded hosts (F95-675j)
+
+When the Go path hits a wall it cannot pass — a Cloudflare challenge
+(Cf-Mitigated header / 403 challenge body) at the file hop, or a
+challenge/captcha failure at the resolver stage (vikingfile, datanodes,
+mixdrop) — the downloader hands the URL to the **user's real browser**,
+which performs the download itself on a copy of the live profile (same IP +
+UA + TLS fingerprint the clearance was minted to). Wiring:
+
+- `HostResolver.SetBrowserFallback(fn)` / `SetDefaultBrowserFallback(fn)` —
+  package-level hook picked up by every resolver (mirrors
+  `SetDefaultResolvedCache`); nil = Go path only (the default, so existing
+  behavior is unchanged until an app wires it).
+- Invoked **at most once per download**; the browser's finished file lands
+  in the destination dir and the download is reported complete.
+- **Human-assisted handoff (2026-10-24):** when a `/dl/` or `/masked/` solve
+  required a visible browser window and that window downloaded the file
+  itself, browserresolve returns an opaque `moxie-browser-file://` token
+  instead of a destination URL. The token is random, single-use and consumed
+  by `downloadWithHeaders`, which copies the finished file into `destDir`
+  (sanitized name, size limits, progress) and removes the temp dir. This
+  avoids downloading a multi-GB archive twice and works for one-time/clearance-
+  bound URLs that Go cannot fetch. A scraped link can never forge a token, so
+  it cannot be used to read local files.
+- `browserresolve.InstallDownloaderFallback()` (TUI download, CLI `download`,
+  desktop startup) installs the hook when a usable browser exists; default
+  is auto-detect, overridable per run via `MOXIE_BROWSER=auto|chrome|firefox`
+  or persistently via `moxie config set browser_fallback auto` (`off`
+  disables). Engine choice is per URL: the browser holding cookies for the
+  host first (kooky per-browser — a clearance only matches its minting
+  browser), then Chrome-family (rod), then Firefox (raw-launch, zero deps).
+  **No browser is ever shipped or downloaded by moxie** — both engines
+  launch the user's own installed browser.
+- Live-verified 2026-08-09: Firefox 153 headless through the full raw-launch
+  pipeline (profiles.ini `Default=1` → copy → user.js prefs →
+  `--headless -profile <copy> -no-remote` → `.part`-aware polling);
+  headless→headful escalation (xvfb-run on display-less Linux).
+- **Limitation:** raw-launch Firefox only auto-downloads URLs that start a
+  download on navigation — hosts whose pages need a button click
+  (vikingfile/datanodes free-download forms) require CDP click automation
+  (future work). See `docs/browserresolve.md`.
+
+### Host-Specific Resolvers (`hosts.go`)
+
+| Host | Strategy | Status |
+|------|----------|--------|
+| **Pixeldrain** | API: `pixeldrain.com/api/file/<ID>` — direct download | Yes |
+| **Buzzheavier** | Token flow: share page `t=` → HTMX `/download?t=&alt=true` → `hx-redirect` to fafda.to; probe-validated with 503 backoff + token-refetch | Verified (F95-hs4y) |
+| **Gofile** | Guest token + dynamic `X-Website-Token` (SHA-256 `UA::lang::token::4h-slot::secret`) + contents API; CDN hop needs `Cookie: accountToken=<token>` | Yes |
+| **Mediafire** | Page CDN href / base64 `data-scrambled-url` (allow-listed host) + API fallback | Yes |
+| **Workupload** | SHA-256 proof-of-work puzzle (`/puzzle` → solve → `/captcha`) + `getDownloadServer` API | Yes |
+| **VikingFile** | Scraper: form POST + redirect follow (blocked by Cloudflare Turnstile — browser fallback only) | Beta |
+| **DataNodes** | Cookie + POST flow to extract CDN URL (mostly dead links + captcha) | Beta |
+| **MixDrop** | Pass-through with User-Agent (blocked by interstitial on file pages) | Beta |
+| **Google Drive** | Two-step confirm token extraction for large files | Beta |
+| **Mega** | Megatools subprocess (`megatools dl`) when the binary is installed; progress is parsed from stdout and a silently-skipped link is reported as a failed download; informative error otherwise (Arch: AUR-only) | Binary-gated |
+
+All other detected hosts (40+) pass through for standard HTTP download. See [Host Feasibility](#host-feasibility) below for the full breakdown of which hosts work.
+
+### Host File Size Limits (`hostsizes.go`)
+
+All 41 F95Zone approved hosts have documented max file sizes. E.g.: Catbox (200MB), Meg/a (15GB), Buzzheavier/VikingFile (unlimited), WDHO (3GB). Used to warn users before attempting large downloads on small hosts.
+
+### Platform Priority (`platform.go`)
+
+Downloads are ranked by compatibility with the user's OS:
+
+| Current OS | Priority Chain |
+|------------|----------------|
+| **Linux**  | native (100) > Windows via Wine/Proton (70) > cross-platform (50) > unknown (25) > Mac (0) |
+| **Windows**| native (100) > cross-platform (50) > unknown (25) > Linux/Mac (0) |
+| **Mac**    | native (100) > cross-platform (50) > unknown (25) > Linux/Windows (0) |
+
+**Platform detection.** `DetectPlatform` classifies the trailing segment of a link name first (names are "section · platform", so "DOWNLOAD Win · Mac" is a Mac build), then the section, then the URL. Android links (`android`, `.apk`) are `android` and never match a desktop install. Combined "Win/Linux" builds are `all`. Distro names match only as whole words, so "search" is no longer Linux. Linux archives include `.tar.bz2` and `.tar.xz`.
+
+**Updating an existing install (`InstallPlatformPriority`).** The desktop updater infers the installed build from the launcher path (`InstalledPlatform`: `.exe`/`.bat` → Windows; `.sh`, `.x86_64` or an extension-less binary → Linux; `.app` → macOS). When it's known, links for any other explicit platform are rejected: same platform scores 100, `all` 90 and `unknown` 25. Before this, Linux scored above Windows on a Linux host, so a Linux `.tar.bz2` was merged over a Windows install (game 74, 2026-10-03).
+
+**Link kinds (`linkkind.go`).** `ClassifyLink` reads a link's section label:
+- **full**: the game itself ("DOWNLOAD", "All", "Win/Linux", a bare host name).
+- **patch**: "Update Only (v0.17 -> v0.18)", "Update-only", "Patch v0.4.1 to v0.4.2". The optional version range is parsed into `FromVersion`/`ToVersion`.
+- **extra**: mods, translations, walkthroughs, cheats, decensor patches, DLC, multi-part pieces ("Part 2"), old builds, soundtracks, torrents.
+
+The desktop ranking (`rankDownloadLinksFor`) drops extras. It uses a patch only when its range starts at the installed version, and ends at the latest version when stated. An applicable patch gets +30 because it's a much smaller download. A patch is applied with `updater.MergeOverlay`, which overwrites in place and deletes nothing. Any archive that doesn't contain the game's launcher, including a hand-picked file, is treated as a patch too.
+
+**Saved filenames.** The downloader prefers the server's `Content-Disposition` filename over the URL's last segment, so pixeldrain saves keep their real name and extension (`MyHentaiFantasy-0.18.1-linux.tar.bz2`, not `aQiB1niF`).
+
+### Download Validation (`downloader.go`)
+
+```go
+downloader.IsValidGameFile(path)  // returns true if file is a real game file
 ```
 
-Other responses:
+After a download completes, the caller should validate the downloaded file before using it. `IsValidGameFile` checks:
 
-```json
-{"status":"captcha","msg":"Please complete the CAPTCHA to continue"}
-{"status":"error","msg":"You are not logged in"}
+1. **Minimum size**: Files under 4096 bytes are rejected — they're too small to be a real game archive or executable.
+2. **Archive check**: If `archive.IsArchiveFile(path)` returns true (zip, 7z, rar, tar.gz), the file is accepted.
+3. **Executable check**: Files with extensions `.exe`, `.sh`, `.x86_64`, `.bin`, `.run`, `.AppImage`, `.html`, or `.htm` are accepted.
+
+### HTML game payloads
+
+HTML games are often distributed as a **single `.html` file**, and file hosts serve it with `Content-Type: text/html` (verified 2026-10-24: pixeldrain `Ashfall_RPG_v*.html`, 5.2 MB). The downloader therefore does not treat every `text/html` response as a challenge page. It accepts the payload when any of these holds:
+
+1. `Content-Disposition` names a `.html`/`.htm` file (`attachment; filename=Game.html`),
+2. the request URL path ends in `.html`/`.htm`,
+3. the response is at least 512 KiB — far larger than any captcha/landing page, so it is an unlabeled HTML game.
+
+Only when none applies does it reject with `server returned HTML instead of file` (or hand a known browser-gated host to the browser fallback). The browser fallback (`browserresolve`) applies the same rule using the filename the browser proposed.
+
+On success the CLI installs the page into the game directory instead of extracting it: the previous entry page is renamed to `<name>.pre-update` (kept for rollback, excluded from the entry scan), `ExePath` points at the new page, and the installed version is recorded. `moxie play` already resolves HTML entry pages inside the game directory.
+
+**Stale mirrors:** before downloading, `download` re-scrapes the thread whenever a session cookie is available, so stored links (masked or `/dl/`) cannot silently deliver the previous build. If the delivered payload's filename declares an older version than the thread (`Ashfall_RPG_v0.4.0.html` vs `v0.5`), the installer records the **payload** version and warns, so the update still shows as pending instead of being falsely marked up to date.
+
+Files that fail validation are typically interstitial HTML pages, captcha walls, or ad pages that malicious or anti-bot-protected hosts serve instead of the real file. The downloader removes the invalid file and the caller's fallback loop tries the next link.
+
+### Dead Link Validation (`validator.go`)
+
+```go
+downloader.CheckLink(url)  // HEAD request, returns nil or descriptive error
 ```
 
-`resolveMasked` implements this POST, validates the returned URL, and caches
-successful mappings in two layers:
-
-1. in-memory for the current process (12 hours),
-2. persistently in the SQLite `resolved_urls` table (12 hours), so repeated
-   `moxie download` runs reuse the unmasking without touching F95Zone.
-
-The cache matters because F95Zone rate-limits unmasking and escalates to an
-interactive CAPTCHA after a handful of automated requests. A trial run resolved
-`pixeldrain.com/u/f9USE4aK` on the first request; subsequent requests in the
-same session returned `captcha`. After roughly 30 minutes the limit reset: the
-same path resolved to a MEGA folder link (`mega.nz/#!...`), and a second attempt
-resolved to a Pixeldrain mirror and downloaded 24.9 MB of
-`A Red Flower Shining in the Moonlight-v1.02-Deepseek-Compressed.7z` before the
-test timeout. The endpoint appears to rotate among the thread's mirrors.
-
-A live `moxie download 7` run confirmed persistence: `resolved_urls` grew from
-18 to 19 rows with
-`https://f95zone.to/masked/pixeldrain.com/256438/...` → `https://pixeldrain.com/u/BYzajuVk`,
-and the download started immediately from that cached URL.
-
-On 2026-11-08 cookie extraction was widened to Chromium-family browsers.
-`internal/browser` now scans Helium, Chrome/Chromium, Brave, Edge, Playwright
-profiles and other `~/.config` Chromium stores through kooky's encrypted-cookie
-reader, in addition to Firefox. With the Helium profile logged into F95Zone the
-masked POST succeeded and returned real mirrors:
-
-```text
-masked/pixeldrain.com/277896/... -> {"status":"ok","msg":"https://pixeldrain.com/u/BJzfpdhX"}
-masked/gofile.io/277896/...     -> {"status":"ok","msg":"https://gofile.io/d/ZK4v1p"}
-masked/mega.nz/277896/...       -> {"status":"ok","msg":"https://mega.nz/#!..."}
-```
-
-A range GET of the unmasked Pixeldrain URL returned **206**, 1024 bytes,
-`application/zip`, `Content-Disposition: ...Crowb4rd_Collection_2024_-_2025-10.zip`
-and `PK\x03\x04`. Unmasking one link and then immediately requesting more in the
-same session returned `{"status":"captcha",...}` and the check stayed sticky for
-at least 15 minutes, so the cache and link fallback remain essential.
-
-**Remaining blocker:** F95Zone's masked endpoint and `/dl/` check both raise an
-interactive reCAPTCHA/hCaptcha after automation is detected. `moxie` cannot and
-should not solve that captcha. With `--browser`, `resolveMaskedBrowser` opens the
-masked page in a headed browser, injects the same F95 cookies, clicks the host
-link, and captures the document navigation to the real host URL once the
-challenge is clear. Live evidence (challenge temporarily clear): the browser
-captured `https://pixeldrain.com/u/ysLVsEEB` from a masked pixeldrain link in
-~2 seconds. When the challenge is pending the resolver waits up to four minutes
-for a human to complete it, then reports that the captcha was not cleared.
-Mitigations:
-
-- resolution cache and 12-hour reuse limit repeated calls;
-- F95Zone's rate limit is temporary — pausing and retrying works;
-- the fallback loop tries direct/non-masked links first;
-- `moxie download --open --watch` hands the link to a real browser and watches
-  the download directory for the completed file.
-
-### F95Zone `/dl/` links
-
-Current F95 threads wrap links as `/dl/<postID>/?u=…&k=…&r=…&t=…`. The wrapper
-sometimes 302s straight to the host. When it does, `resolveF95DL` re-runs host
-resolution on the final URL. Otherwise the page is either:
-
-- `Just a quick check` — invisible hCaptcha (browser required),
-- `That link is no longer in the post` — stale link.
-
-Both produce descriptive errors instead of downloading HTML.
-
-Because `/dl` tokens are tied to the page that rendered them, `moxie download`
-re-scrapes the thread when every stored link is a `/dl/` wrapper instead of
-reusing stale tokens. This is the only way `/dl` links stay usable over time.
-
-### HTML games
-
-F95Zone hosts many Twine/SugarCube/HTML releases. `downloadWithHeaders` now
-accepts `text/html` when the filename (from `Content-Disposition` or the URL)
-ends in `.html`, `.htm`, or `.swf` **and** `Content-Length >= 64 KiB`.
-`IsValidGameFile` applies the same rule. Smaller HTML responses are still
-treated as captcha/interstitial pages and rejected.
-
-### Host support matrix
-
-Evidence collected 2026-11-08 on Linux against real links. “Verified” means a
-range or full download returned real bytes with the expected magic/type.
-
-| Host | Method | Status | Evidence |
-|------|--------|--------|----------|
-| **Pixeldrain** | `GET https://pixeldrain.com/api/file/<id>` | ✅ Verified | 206 + `PK\x03\x04`; full 4.9 MB HTML game downloaded and named from Content-Disposition |
-| **MediaFire** | Parse `downloadNNN.mediafire.com` link from file page | ✅ Verified | 206 + ZIP; full 497 KB archive downloaded with correct name |
-| **Bunkr / Bunkrr** | Page → `dl.bunkr.*/file/<id>` → `POST /api/_001_v2` → `glb-apisign.cdn.cr/sign` | ✅ Verified | 206 + `Rar!` from a 1.1 GB file; token/`ex` flow works |
-| **Dropbox** | Append `dl=1` | ✅ Verified | Full 32.5 MB `.odt` downloaded, `application/binary` |
-| **Google Drive** | `drive.usercontent.google.com/download?id=…&export=download&confirm=t` (+ `uuid` when present) | ✅ Verified | 206 + first bytes from a 1 GB public test file; handles both old `confirm=` and new hidden-form pages |
-| **MEGA** | `megatools dl` subprocess | ✅ Verified (external tool) | 1.28 MB transferred in 25 s from a public link; resume handled by megatools |
-| **WorkUpload** | Solve SHA-256 proof-of-work, then parse direct link | ✅ PoW verified | Live `/puzzle` solved (3 targets in range 10 000) and `/captcha` accepted; test file had been deleted |
-| **Gofile** | `POST /accounts` → `GET /contents/<id>` with `X-Website-Token` (SHA-256 of UA::language::token::4h-bucket::salt) | ✅ Verified | Uploaded a 50-byte file to `gofile.io/d/krheSqXq`; resolver returned `store5.gofile.io/download/...`, GET 200, exact 50 bytes and correct filename |
-| **Buzzheavier** | Page → HTMX `GET <id>/download?t=…` → `hx-redirect` | ✅ Verified with `--browser` | Live `bzzhr.to/wp0penkq05sy`: browser read the signed endpoint and returned `ts.bzzhr.to/d/...`; GET 206, 256 bytes of `PK\x03\x04` ZIP (417 MB file) |
-| **DataNodes** | Optional headed-browser resolver: click `#method_free`, wait for invisible Turnstile, click Free Download, capture `nodeNN.datanodes.to:8443/d/...` | ✅ Verified with `--browser` | Fresh upload `datanodes.to/swyya9wz61je` resolved in ~16 s; full 145-byte ZIP downloaded and validated (`PK\x03\x04`); cached second run ~1 s |
-| **MixDrop** | File page → `grecaptcha.execute('6LetXao…')` → `POST a=genticket` → JSON `url` | ✅ Verified with `--browser` | Live `mxdrop.click/e/vkkl8zlzhq88gjl`: resolver returned `a-delivery38.mxcontent.net/d/...`; GET 206, 256 bytes `ftypisom` MP4 (1.42 GB file) |
-| **KrakenFiles** | Optional headed-browser resolver: wait Turnstile + FingerprintJS, POST `/download/<hash>`, read JSON `{url}` | ⚠ Browser implemented / server-blocked | Valid Turnstile, fingerprint and behavior data sent; every tested live file returned `{"status":"error","msg":"Server error"}` (3 files, 95 s wait, mouse activity) — server-side refusal from this network |
-| **VikingFile** | Optional headed-browser resolver → `/d/...` → presigned S3 | ✅ Verified with `--browser` | Turnstile auto-solved in a real Chromium; `#download-link` returned a `/d/` URL that 302s to a presigned S3 object; full 989 MB `.7z` downloaded in ~40 s |
-| **UploadHaven** | Browser waits for countdown + Turnstile, submits the form, reads the manual download link | ✅ Verified with `--browser` | Live `uploadhaven.com/download/96db…`: resolved in ~18 s to `download141.uploadhaven.com/.../KuroyaraCollection2025-05.zip`; GET 206, 256 bytes of `PK\x03\x04` ZIP (581 MB file) |
-| **WDHO** | Referer header → file page → base64 `e='…'` signed URL → wait out countdown → GET signed URL | ✅ Verified | Live `wdho.ru/kbhw`: page returned the signed `?pt=…` URL; after the countdown the GET returned 200, 256 bytes `PK\x03\x04`, `Content-Disposition: result.zip`, 7,985,981-byte ZIP. The colour-button challenge only appears without a Referer; the browser resolver waits at it if it does. |
-| **Catbox / Quax / Vern / files.dp.ua** | Direct HTTP GET | ⚠ Pass-through | Catbox samples were 404 (deleted); no live samples available |
-| **transfer.sh / yourfilestore / delafil** | Direct HTTP GET | ❌ Dead in testing | `transfer.sh` and `yourfilestore.com` timed out / DNS failed; Delafil returned an error page |
-| **Files.fm / UploadNow / FromSmash / SendGB / DropMeFiles / others** | JS UI or account API | ❌ Browser | Not automatable with plain HTTP |
-
-### Host scoring
-
-`ScoreLinkHost` feeds the fallback ordering:
-
-| Score | Hosts |
-|-------|-------|
-| **+25** | Pixeldrain, Gofile, Catbox, MediaFire, Bunkrr, Dropbox, WDHO; Buzzheavier when `--browser` is enabled |
-| **+10** | Google Drive, WorkUpload, MEGA (when `megatools` is installed), MixDrop/UploadHaven with `--browser`, DataNodes/VikingFile/KrakenFiles with `--browser` |
-| **+5** | Buzzheavier without `--browser` (Cloudflare often rejects plain HTTP) |
-| **0** | Other recognized hosts |
-| **-50** | MixDrop/UploadHaven, DataNodes/VikingFile/KrakenFiles when `--browser` is disabled |
-| **-200** | MEGA when `megatools` is missing |
-
-### External downloader: MEGA
-
-MEGA uses RSA/AES-CTR, so it cannot be fetched with a plain HTTP GET.
-`resolveMega` checks `exec.LookPath("megatools")` and returns
-`ExternalCommand` when available; `downloadWithExternal` runs:
-
-```bash
-megatools dl --path <destDir> --no-progress --no-ask-password <url>
-```
-
-It polls the destination directory once per second for progress and reports the
-newest file when the command exits. Install with `apt install megatools`,
-`brew install megatools`, or `pacman -S megatools`. Without it, MEGA links score
--200 and clearly report the missing dependency.
-
-### WorkUpload proof-of-work
-
-WorkUpload's “Are you a human?” page is not a captcha; it is SHA-256 grinding:
-
-1. `GET /puzzle` → `{"data":{"puzzle":"…","range":10000,"find":["<sha256>",…]}}`
-2. For `i` in `[0, range)`, compute `sha256(puzzle + i)` until it matches every
-   hash in `find`.
-3. `POST /captcha` with `captcha="<i1> <i2> … "`.
-4. Reload the file page and read the direct download link.
-
-`hosts_workupload.go` performs this with the standard library, using a cookie
-jar for the session. A live run solved 3 targets and the server accepted the
-captcha (the sample file itself had been deleted).
-
-### Optional browser resolver (Buzzheavier, MixDrop, UploadHaven, WDHO, F95 masked, VikingFile, DataNodes, KrakenFiles)
-
-Turnstile does not issue a token to headless Chromium or to plain HTTP clients.
-Moxie therefore has an opt-in headed-browser resolver implemented with
-`chromedp` (Chrome DevTools Protocol, pure Go, no Node dependency):
-
-```bash
-moxie download --browser <id>      # or MOXIE_BROWSER=1 moxie download <id>
-MOXIE_BROWSER=/path/to/chrome moxie download --browser <id>
-```
-
-Flow:
-
-1. With `--browser` enabled, browser-gated hosts (Buzzheavier, MixDrop,
-   UploadHaven, WDHO, F95 masked links, VikingFile, DataNodes, KrakenFiles) go
-   straight to the browser resolver because their HTTP flow stops at a
-   challenge. Other hosts use the normal HTTP resolver.
-2. Launch a visible Chromium-family browser with a dedicated profile under
-   `~/.cache/moxie/browser-profile-<host>`.
-3. Drive the host's page until Turnstile auto-solves and a direct URL appears.
-4. Return that URL; the normal HTTP downloader fetches it with Range/resume.
-
-Live evidence: the resolver obtained the link in ~8 s and downloaded the full
-**989,346,221-byte** `RJ01316694-Red_Flower_Shining_in_the_Moonlight.7z` in
-about 40 seconds (≈25 MB/s). The browser window closes when the resolver
-returns; the download itself is plain HTTP. Resolved `/d/` links are cached in
-`resolved_urls` for 12 hours, so a second run returned the same URL in **0.095 s**
-without launching the browser.
-
-**DataNodes** uses the same browser session for its two-step flow:
-
-1. wait for `#method_free` to be enabled (the virus-scan component arms it
-   after ~6 s) and submit step 1 (`op=download1`),
-2. wait for step 2's invisible Turnstile token,
-3. click **Free Download**, and capture the `nodeNN.datanodes.to:8443/d/...`
-   request that the page issues.
-
-The captured node URL is a normal HTTP download with Range support. Live
-evidence: a freshly uploaded `https://datanodes.to/swyya9wz61je` resolved in
-~16 s and the full 145-byte ZIP downloaded and validated (`PK\x03\x04`); the
-cached second run completed in ~1 s without opening the browser. DataNodes uses
-its own browser profile and clears cookies before each run, because its step-1
-token is single-use.
-
-**KrakenFiles** is wired to the same framework:
-
-1. wait for Turnstile + FingerprintJS visitor ID,
-2. populate the behavior payload (`mousemove`, focus gaps, telemetry),
-3. POST `/download/<hash>` and parse the JSON response.
-
-The browser side works: valid Turnstile tokens (709 chars), fingerprints and
-behavior data were sent. The server returned
-`{"status":"error","url":"","msg":"Server error"}` for every live file tested
-(3 files, including a 95-second wait and real mouse movement), so no range
-download could be verified. This looks like a server-side/IP refusal rather than
-a client-flow bug; the resolver reports the server message instead of pretending
-to succeed.
-
-**Buzzheavier** — the file page exposes
-`<a class="download-btn" hx-get="/<id>/download?t=<token>">`. The resolver first
-tries the HTMX request over plain HTTP; when Cloudflare answers 403 (as it did
-from this network) it opens the page in the browser, performs the same request
-from page context and reads the `hx-redirect` header. Live: 206 + 256 bytes of
-`PK\x03\x04` from a 417,042,839-byte ZIP.
-
-**MixDrop** — the download view (`/f/<id>?download`) posts
-`{csrf, token, a:"genticket"}` after executing the site's invisible reCAPTCHA v3
-key (`6LetXao…`). The JSON response carries the signed
-`a-deliveryNN.mxcontent.net/d/<id>/<token>` URL. Live: 206 + 256 bytes
-`ftypisom` MP4 from a 1,522,001,145-byte file. MixDrop moved off `mixdrop.co`
-(parked domain) to `mixdrop.ag` → `mxdrop.click`; `/e/` URLs are converted to
-`/f/` automatically.
-
-**UploadHaven** — the page combines a ~20 s countdown with an invisible
-Turnstile. The resolver polls until `#submitFree` becomes `type=submit`, submits
-the form directly (ad overlays make clicking unreliable), then reads the manual
-link (`downloadNNN.uploadhaven.com/...?key=…&expire=…`). Live: 206 + 256 bytes
-of `PK\x03\x04` from a 581,886,038-byte ZIP.
-
-**F95Zone masked links** — on a `captcha` response, `resolveMaskedBrowser`
-opens the masked page, injects the caller's F95 cookies through CDP, clicks
-`.host_link`, and listens for the document navigation to a known file host. It
-never interacts with the reCAPTCHA. Live (challenge temporarily clear): captured
-`https://pixeldrain.com/u/ysLVsEEB` in ~2 s. If the challenge is pending, the
-resolver waits up to `browserChallengeTimeout` (four minutes) and then reports
-that it was not cleared.
-
-**WDHO** — the normal HTTP path now works: a `Referer` header makes the site
-serve the real file page instead of the colour-button interstitial. The page
-embeds the signed download URL as base64 in `e='…'`; the token is single-use and
-only valid after the 4–8 second countdown, so the resolver waits, then hands the
-URL plus the page's `filehosting` cookie and `Referer` to the normal downloader.
-Live: 200 + 256 bytes of `PK\x03\x04` from a 7,985,981-byte ZIP. If an IP does
-get the colour-button page, `resolveWDHOBrowser` performs the `/robots.txt`
-device probe, waits for a human to clear the check, and captures the resulting
-download event/link; no colour solving is attempted.
-
-Browser discovery order: `MOXIE_BROWSER`, `google-chrome-stable`,
-`google-chrome`, `chromium`, `chromium-browser`, `brave-browser`,
-`microsoft-edge`, then Playwright's cached Chromium. If no browser is found the
-error explains how to set `MOXIE_BROWSER`.
-
-Hosts that still need a human:
-
-- **F95Zone `/dl/` and masked links** — both render an interactive
-  reCAPTCHA/hCaptcha after automation is detected; `--browser` waits for a human
-  to clear it but does not solve it.
-- **WDHO** — only when the colour-button page is served (normally bypassed by
-  the Referer header); `--browser` waits for a human to clear it and captures the
-  download, but does not solve the colour check.
-
-`moxie download --open --watch` remains the fallback for hosts that need a human
-to solve a CAPTCHA.
-
-### Host-specific notes
-
-- **Pixeldrain** — `X-Ratelimit-*` headers are present; free downloads are
-  throttled (~1 MiB/s in testing). API key support is not implemented.
-- **MediaFire** — Files that require a captcha show a challenge page instead of
-  a `downloadNNN` link; the resolver reports that rather than downloading HTML.
-- **Bunkr** — Domains rotate (`bunkr.ws`, `bunkr.cr`, `dl.bunkr.cr`,
-  `psu.scdn.st`). The resolver derives all hosts from the page and CDN URL.
-- **Google Drive** — Large files use a hidden form to
-  `drive.usercontent.google.com/download`; both that and the legacy `confirm=`
-  token are parsed.
-- **Dropbox** — Shared links use `dl=0` for preview; `dl=1` is required.
-- **Gofile** — the 2026 API mints an anonymous account with `POST /accounts`
-  and requires an `X-Website-Token` header on `/contents/<id>`. That token is a
-  SHA-256 over `userAgent::language::accountToken::floor(unix/14400)::salt`
-  (`12af056dacea0b`); the salt is rotated server-side, so a 401 means refresh
-  `gofileWTSalt` from `/js/wt.obf.js`. The old `getContent` parser and the
-  `<id>.gofile.io` fallback host are gone.
-
-### Masked F95Zone URLs (historical note)
-
-Older releases stored `https://f95zone.to/masked/pixeldrain.com/...` links. The
-host is identified from the embedded domain, so `IdentifyHostInURL` still routes
-them correctly before unmasking.
-
-### File size limits
-
-`hostsizes.go` records documented maximum sizes for 41 approved hosts (Catbox
-200 MB, MEGA 15 GB, Buzzheavier unlimited, etc.). Limits are checked before the
-request when metadata is known, and again against `Content-Length`.
-
-### Dead-link validation
-
-`CheckLink`/`CheckLinkWithHost` perform a HEAD request (or host resolver) and map
-404/403/410/429/5xx to descriptive errors. MEGA validation succeeds when
-`megatools` is installed, since there is no HTTP HEAD to perform.
+Response mapping:
+- 200/206 → valid
+- 404 → "404 Not Found — file removed"
+- 403 → "403 Forbidden — access denied or DMCA'd"
+- 410 → "410 Gone — permanently removed"
+- 503 → "503 Service Unavailable — host down"
+- 429 → "429 Too Many Requests — rate limited"
+- 5xx → server error
 
 ## Why
 
-**Resolution cache and throttling** — F95Zone's anti-bot threshold is low.
-Caching successful unmaskings means a batch download touches F95Zone only once
-per masked URL, and repeated runs stay under the CAPTCHA trigger.
+**Resume support** — F95Zone game downloads can be 10+ GB. Network interruptions are common. `.part` files with `Range` headers let users resume without restarting.
 
-**Content-Disposition filenames** — ID-only URLs (Pixeldrain `/u/<id>`,
-Bunkr CDN) otherwise save files with no extension, which breaks archive
-detection, extraction, and engine matching.
+**Host-specific resolvers** — Pixeldrain, Buzzheavier, Gofile, and VikingFile have specialized resolvers because each uses different APIs (HTMX headers, content APIs, direct URLs). Masked F95Zone URLs are automatically unmasked before resolution.
 
-**HTML-game support** — Twine/SugarCube games are a large share of F95Zone
-releases; rejecting all `text/html` silently discarded valid downloads.
+**SSRF protection** — reused from the Steam artwork downloader (`internal/steam/grid.go`). Blocks metadata endpoints that could leak cloud credentials.
 
-**MEGA via megatools** — Implementing MEGA's key exchange and AES-CTR in Go is
-possible but duplicates a maintained, resume-capable implementation. The
-subprocess adapter keeps `moxie` pure-Go while giving users full MEGA support
-when they install one package.
+## Known Limitations
 
-## Known limitations
-
-- **F95 CAPTCHA** — masked and `/dl/` links escalate to an interactive
-  reCAPTCHA/hCaptcha under automation. No automated bypass is attempted. Use the
-  cache, retry later, or `--open --watch`.
-- **WDHO** — its colour-button challenge is an interactive anti-bot check; moxie
-  detects it and tells you to use `--open` rather than solving it.
-- **Browser resolver hosts** — with `--browser`, Buzzheavier, MixDrop,
-  UploadHaven, VikingFile, DataNodes and KrakenFiles are automated (KrakenFiles
-  is currently server-blocked). Without it, these links score −50 and fail fast
-  with an actionable message.
-- **Browser resolver requirements** — `--browser` needs a Chrome/Chromium-family
-  browser and opens a visible window; `MOXIE_BROWSER` can point at a specific
-  binary.
-- **MEGA without megatools** — the link is skipped with an install hint.
-- **Gofile website-token salt** — `gofileWTSalt` is copied from
-  `/js/wt.obf.js`; Gofile rotates it periodically. A 401 from `/contents` means
-  the constant must be refreshed.
-- **No multi-part/segmented downloading** — single connection per download.
-- **No bandwidth throttling** beyond host-side limits.
-- **Pixeldrain rate limits** — free transfers are ~1 MiB/s and may redirect to a
-  captcha page after repeated views; an API key path is not implemented.
-- **F95 `/dl` tokens** — wrapper links are tied to the rendered page; resolving
-  requires a fresh link from the same scrape.
+- **Mega requires megatools** — Mega uses a proprietary encrypted protocol not accessible via HTTP, handled by the `megatools dl` subprocess when the binary is installed. Without it, Mega links receive a -200 score penalty so they are always tried last, and the error suggests installing megatools or downloading manually. A native SDK integration is planned.
+- **Masked URLs** — F95Zone wraps external links as `f95zone.to/masked/<host>/...`. These are unwrapped via HEAD redirect before host-specific resolution. If the redirect fails, the link is skipped and the fallback loop tries other links.
+- **Captcha-heavy hosts** — MediaFire, WorkUpload, and premium hosts (Keep2Share, Uploaded) require CAPTCHA solving or premium accounts. These hosts are passed through for HTTP download but may fail on captcha interstitials. The fallback loop will try the next link.
+- **Gofile API changes** — As of March 2026, Gofile's API may restrict free downloads to premium accounts. The resolver falls back to direct download patterns.
+- No multi-part download support
+- No bandwidth throttling
+- Buzzheavier resolution may break if their HTMX API changes

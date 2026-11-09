@@ -1,0 +1,23 @@
+{
+  "manifest_version": 2,
+  "name": "moxie-bridge",
+  "version": "0.1.0",
+  "description": "Reports F95Zone download destinations to a local moxie instance after the browser check.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "https://f95zone.to/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": { "scripts": ["background.js"], "persistent": false },
+  "content_scripts": [
+    {
+      "matches": ["https://f95zone.to/dl/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": { "id": "moxie-bridge@local", "strict_min_version": "115.0" }
+  }
+}

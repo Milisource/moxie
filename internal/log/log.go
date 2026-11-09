@@ -13,14 +13,22 @@
 //	    log.Init(config.LogDir())
 //	    // ... rest of app
 //	}
+//
+// Init also calls slog.SetDefault so stdlib slog.* calls (used throughout the
+// desktop app) land in the same sink. The MOXIE_LOG_LEVEL environment
+// variable (debug|info|warn|error) can raise or lower the level at startup;
+// SetLevel does the same at runtime.
 package log
 
 import (
+	"bufio"
+	"context"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,15 +36,58 @@ const (
 	logRetentionDays = 30
 )
 
-// Logger is the package-level structured logger. By default writes to stderr
-// at Info level. After Init(dir) it also writes to a daily log file.
-var Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+var (
+	// Logger is the package-level structured logger. By default writes to
+	// stderr at Info level. After Init(dir) it also writes to a daily log
+	// file, and slog.Default is pointed at the same sink.
+	Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// mu guards the fields below.
+	mu sync.Mutex
+
+	// fileWriter is the open daily log file, set by Init/InitWithConsole.
+	fileWriter io.Writer
+
+	// bufWriter wraps fileWriter to batch disk writes — a bulk operation
+	// (cover backfill, sync) can emit thousands of log lines, and an
+	// unbuffered O_APPEND write is a syscall per line. Warn/Error flush
+	// immediately so anything worth investigating still hits disk promptly;
+	// Debug/Info ride the buffer.
+	bufWriter *bufio.Writer
+
+	// console mirrors InitWithConsole: write to stderr in addition to the file.
+	console bool
+
+	// level is the active log level. Init applies MOXIE_LOG_LEVEL if set.
+	level slog.Level = slog.LevelInfo
+)
 
 // Init creates the log directory and redirects output to a per-day log file
 // (moxie-YYYY-MM-DD.log). After Init, log messages go to the file only —
 // stderr is intentionally excluded to avoid corrupting the TUI.
 // Safe to call multiple times; the log file is reopened on each call.
 func Init(dir string) {
+	initLogger(dir, false)
+}
+
+// InitWithConsole creates the log directory and writes to BOTH a per-day log
+// file AND stderr. Use this for desktop GUI apps where there's no TUI to
+// corrupt. Safe to call multiple times; the log file is reopened on each call.
+func InitWithConsole(dir string) {
+	initLogger(dir, true)
+}
+
+func initLogger(dir string, alsoStderr bool) {
+	invalidEnv := ""
+	if raw := strings.TrimSpace(os.Getenv("MOXIE_LOG_LEVEL")); raw != "" {
+		if lvl, ok := parseLevel(raw); ok {
+			mu.Lock()
+			level = lvl
+			mu.Unlock()
+		} else {
+			invalidEnv = raw
+		}
+	}
 	os.MkdirAll(dir, 0755)
 	date := time.Now().Format("2006-01-02")
 	logPath := filepath.Join(dir, "moxie-"+date+".log")
@@ -46,9 +97,93 @@ func Init(dir string) {
 		Warn("cannot open log file", "path", logPath, "error", err)
 		return
 	}
-	Logger = slog.New(slog.NewTextHandler(f, nil))
+	mu.Lock()
+	if bufWriter != nil {
+		// Flush anything still buffered against the old file before we
+		// swap it out from under the writer.
+		bufWriter.Flush()
+	}
+	if old, ok := fileWriter.(io.Closer); ok {
+		// Repeated Init calls (documented as safe) replace the file
+		// writer — close the previous handle so it is not leaked.
+		old.Close()
+	}
+	fileWriter = f
+	bufWriter = bufio.NewWriterSize(f, 8192)
+	console = alsoStderr
+	mu.Unlock()
 	// Clean up old log files after opening today's. Non-fatal if it fails.
 	rotateOldLogs(dir)
+	rebuildLogger()
+	if invalidEnv != "" {
+		Warn("ignoring invalid MOXIE_LOG_LEVEL", "value", invalidEnv)
+	}
+}
+
+// parseLevel maps a MOXIE_LOG_LEVEL string to a slog level.
+func parseLevel(raw string) (slog.Level, bool) {
+	switch strings.ToLower(raw) {
+	case "debug":
+		return slog.LevelDebug, true
+	case "info":
+		return slog.LevelInfo, true
+	case "warn", "warning":
+		return slog.LevelWarn, true
+	case "error":
+		return slog.LevelError, true
+	}
+	return slog.LevelInfo, false
+}
+
+// rebuildLogger recreates Logger from the current file/stderr composition and
+// level, and points slog's package-level default at it so stdlib slog calls
+// (used throughout the desktop app) land in the same sink.
+func rebuildLogger() {
+	mu.Lock()
+	defer mu.Unlock()
+	var w io.Writer = os.Stderr
+	if bufWriter != nil {
+		w = bufWriter
+		if console {
+			w = io.MultiWriter(bufWriter, os.Stderr)
+		}
+	}
+	var handler slog.Handler = slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})
+	if bufWriter != nil {
+		handler = &flushingHandler{Handler: handler}
+	}
+	Logger = slog.New(handler)
+	slog.SetDefault(Logger)
+}
+
+// Flush writes any buffered log lines to disk. Call this before the process
+// exits (e.g. from an OnShutdown hook) so the tail of the log isn't lost;
+// it's a no-op if Init/InitWithConsole was never called.
+func Flush() {
+	mu.Lock()
+	defer mu.Unlock()
+	if bufWriter != nil {
+		bufWriter.Flush()
+	}
+}
+
+// Close flushes and closes the daily log file, if one is open, and falls back
+// to stderr until Init/InitWithConsole is called again. Safe to call multiple
+// times. Release the handle on shutdown: Windows cannot delete or replace a
+// log file that is still open.
+func Close() {
+	mu.Lock()
+	if bufWriter != nil {
+		bufWriter.Flush()
+		bufWriter = nil
+	}
+	if old, ok := fileWriter.(io.Closer); ok {
+		old.Close()
+	}
+	fileWriter = nil
+	console = false
+	mu.Unlock()
+	rebuildLogger()
 }
 
 // rotateOldLogs removes log files older than logRetentionDays from the log directory.
@@ -86,10 +221,15 @@ func rotateOldLogs(dir string) {
 	}
 }
 
-// SetLevel adjusts the log level at runtime (stderr-only; overrides Init).
-// Use slog.LevelDebug, slog.LevelInfo, slog.LevelWarn, or slog.LevelError.
-func SetLevel(level slog.Level) {
-	Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+// SetLevel adjusts the log level at runtime. The file/stderr composition
+// established by Init/InitWithConsole is preserved — without Init, output
+// stays on stderr. Use slog.LevelDebug, slog.LevelInfo, slog.LevelWarn, or
+// slog.LevelError.
+func SetLevel(l slog.Level) {
+	mu.Lock()
+	level = l
+	mu.Unlock()
+	rebuildLogger()
 }
 
 // SetOutput redirects output to a single writer (useful for testing).
@@ -108,3 +248,28 @@ func Warn(msg string, args ...any) { Logger.Warn(msg, args...) }
 
 // Error logs at error level with the given message and key-value pairs.
 func Error(msg string, args ...any) { Logger.Error(msg, args...) }
+
+// flushingHandler wraps a slog.Handler and flushes the buffered file writer
+// after any Warn/Error record. Debug/Info ride the buffer for throughput;
+// Warn/Error still hit disk immediately, whether logged via this package's
+// Warn/Error or directly via slog.Warn/slog.Error (both land on the same
+// Logger/slog.Default after rebuildLogger).
+type flushingHandler struct {
+	slog.Handler
+}
+
+func (h *flushingHandler) Handle(ctx context.Context, r slog.Record) error {
+	err := h.Handler.Handle(ctx, r)
+	if r.Level >= slog.LevelWarn {
+		Flush()
+	}
+	return err
+}
+
+func (h *flushingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &flushingHandler{Handler: h.Handler.WithAttrs(attrs)}
+}
+
+func (h *flushingHandler) WithGroup(name string) slog.Handler {
+	return &flushingHandler{Handler: h.Handler.WithGroup(name)}
+}

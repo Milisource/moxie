@@ -1,12 +1,17 @@
 package util
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/muesli/reflow/wordwrap"
+
+	"github.com/mili/moxie/internal/scraper"
 )
 
 // Pre-compiled regexps used by FilesystemSafe.
@@ -14,20 +19,6 @@ var (
 	MultiSpaceRE = regexp.MustCompile(`\s{2,}`)
 	MultiDashRE  = regexp.MustCompile(`-{2,}`)
 )
-
-// FormatSize returns a human-readable size string (e.g. "1.5 KB").
-func FormatSize(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
-}
 
 // FormatDuration returns a human-readable duration string.
 func FormatDuration(d time.Duration) string {
@@ -52,9 +43,16 @@ func IsBlocked(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Typed match first: the scraper surfaces blocks as *scraper.BlockedError
+	// (its Error() format is "scraper: blocked — <reason> (HTTP <n>)", so the
+	// old string match on "BlockedError" never hit). String checks remain as a
+	// fallback for errors from other sources that describe a block.
+	var blockedErr *scraper.BlockedError
+	if errors.As(err, &blockedErr) {
+		return true
+	}
 	msg := err.Error()
-	return strings.Contains(msg, "BlockedError") ||
-		strings.Contains(msg, "blocked") ||
+	return strings.Contains(msg, "blocked") ||
 		strings.Contains(msg, "Cloudflare challenge")
 }
 
@@ -62,6 +60,9 @@ func IsBlocked(err error) bool {
 func Truncate(s string, maxLen int) string {
 	// Strip newlines and truncate.
 	s = strings.ReplaceAll(s, "\n", " ")
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(s) <= maxLen {
 		return s
 	}
@@ -91,20 +92,5 @@ func MustParseInt(s string) int64 {
 
 // WrapText wraps text to a given width.
 func WrapText(s string, width int) string {
-	var result strings.Builder
-	words := strings.Fields(s)
-	lineLen := 0
-	for _, w := range words {
-		if lineLen+len(w)+1 > width && lineLen > 0 {
-			result.WriteByte('\n')
-			lineLen = 0
-		}
-		if lineLen > 0 {
-			result.WriteByte(' ')
-			lineLen++
-		}
-		result.WriteString(w)
-		lineLen += len(w)
-	}
-	return result.String()
+	return wordwrap.String(s, width)
 }

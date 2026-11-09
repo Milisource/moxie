@@ -1,40 +1,13 @@
 package util
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/mili/moxie/internal/scraper"
 )
-
-// ---------------------------------------------------------------------------
-// formatSize
-// ---------------------------------------------------------------------------
-
-func TestFormatSize(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input int64
-		want  string
-	}{
-		{0, "0 B"},
-		{1, "1 B"},
-		{512, "512 B"},
-		{1023, "1023 B"},
-		{1024, "1.0 KB"},
-		{1536, "1.5 KB"},
-		{1048576, "1.0 MB"},
-		{1073741824, "1.0 GB"},
-		{1099511627776, "1.0 TB"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.want, func(t *testing.T) {
-			got := FormatSize(tt.input)
-			if got != tt.want {
-				t.Errorf("FormatSize(%d) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
 
 // ---------------------------------------------------------------------------
 // formatDuration
@@ -139,7 +112,10 @@ func TestIsBlocked(t *testing.T) {
 	}{
 		{"nil error", nil, false},
 		{"blocked string", testError{"blocked"}, true},
-		{"BlockedError type", testError{"BlockedError"}, true},
+		{"BlockedError direct", &scraper.BlockedError{Reason: "Cloudflare challenge", StatusCode: 403}, true},
+		{"BlockedError wrapped", fmt.Errorf("scrape thread: %w", &scraper.BlockedError{Reason: "rate limited", StatusCode: 429}), true},
+		{"BlockedError via errors.Join", errors.Join(errors.New("first"), &scraper.BlockedError{Reason: "IP blocked", StatusCode: 403}), true},
+		{"BlockedError string literal no longer matches", testError{"BlockedError"}, false},
 		{"Cloudflare challenge", testError{"Cloudflare challenge"}, true},
 		{"unrelated error", testError{"something else"}, false},
 		{"empty string", testError{""}, false},

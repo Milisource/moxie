@@ -1,0 +1,329 @@
+<script>
+  import {GetCollections} from '../../wailsjs/go/main/App'
+  import NavIcon from './NavIcon.svelte'
+
+  let {activeView = $bindable('library'), onNavigate, onShortcuts = () => {}, lastUpdate = 0, updateCount = 0} = $props()
+
+  let collectionCount = $state(null)
+
+  async function loadCount() {
+    try {
+      collectionCount = ((await GetCollections()) || []).length
+    } catch (e) {
+      collectionCount = 0
+    }
+  }
+
+  // Load on mount and re-fetch every time the user navigates
+  // (in case updates were applied elsewhere).
+  $effect(() => {
+    if (activeView || lastUpdate) loadCount()
+  })
+
+  // Primary items get the most visual weight — these are the two views a
+  // user lives in day-to-day. Everything else is either a regular daily
+  // action (still always visible) or an occasional management action
+  // (demoted, collapsed behind a disclosure toggle by default).
+  // One consistent line-icon set (NavIcon.svelte) replaces the old mix of
+  // emoji and Unicode symbols; the archive type treatment stays.
+  const primaryItems = [
+    {id: 'library', label: 'Library', icon: 'library'},
+    {id: 'browser', label: 'Browse', icon: 'browse'},
+  ]
+
+  let regularItems = $derived.by(() => [
+    {id: 'add', label: 'Add Game', icon: 'add'},
+    {id: 'updates', label: 'Updates', icon: 'updates', badge: updateCount},
+    {id: 'downloads', label: 'Downloads', icon: 'downloads'},
+    {id: 'collections', label: 'Collections', icon: 'collections', badge: collectionCount},
+    {id: 'saves', label: 'Saves', icon: 'saves'},
+  ])
+
+  const manageItems = [
+    {id: 'scan', label: 'Scan', icon: 'scan'},
+    {id: 'sync', label: 'Sync', icon: 'sync'},
+    {id: 'covers', label: 'Covers', icon: 'covers'},
+    {id: 'duplicates', label: 'Duplicates', icon: 'duplicates'},
+    {id: 'trash', label: 'Trash', icon: 'trash'},
+  ]
+
+  const MANAGE_STORAGE_KEY = 'sidebar-manage-expanded'
+  let manageExpanded = $state(localStorage.getItem(MANAGE_STORAGE_KEY) === 'true')
+
+  function toggleManage() {
+    manageExpanded = !manageExpanded
+    localStorage.setItem(MANAGE_STORAGE_KEY, String(manageExpanded))
+  }
+
+  // If the user lands directly on a management view (e.g. deep link, or
+  // returning to a session), auto-expand so the active item stays visible.
+  $effect(() => {
+    if (manageItems.some((item) => item.id === activeView)) manageExpanded = true
+  })
+</script>
+
+<aside class="sidebar">
+  <div class="brand">
+    <span class="brand-text">Moxie</span>
+    <span class="brand-sub">Library index</span>
+  </div>
+
+  <nav class="nav">
+    {#each primaryItems as item}
+      <button
+        class="nav-item nav-item-primary"
+        class:active={activeView === item.id}
+        onclick={() => onNavigate?.(item.id)}
+      >
+        <span class="nav-icon"><NavIcon name={item.icon} /></span>
+        <span class="nav-label">{item.label}</span>
+      </button>
+    {/each}
+
+    <div class="nav-divider"></div>
+
+    {#each regularItems as item}
+      <button
+        class="nav-item"
+        class:active={activeView === item.id}
+        onclick={() => onNavigate?.(item.id)}
+      >
+        <span class="nav-icon"><NavIcon name={item.icon} /></span>
+        <span class="nav-label">{item.label}</span>
+        {#if item.badge !== null && item.badge !== undefined && item.badge > 0}
+          <span class="nav-badge">{item.badge}</span>
+        {/if}
+      </button>
+    {/each}
+
+    <button class="nav-manage-toggle" onclick={toggleManage} aria-expanded={manageExpanded}>
+      <span class="nav-manage-chevron" class:expanded={manageExpanded}>›</span>
+      <span>Manage</span>
+    </button>
+
+    {#if manageExpanded}
+      {#each manageItems as item}
+        <button
+          class="nav-item nav-item-demoted"
+          class:active={activeView === item.id}
+          onclick={() => onNavigate?.(item.id)}
+        >
+          <span class="nav-icon"><NavIcon name={item.icon} /></span>
+          <span class="nav-label">{item.label}</span>
+        </button>
+      {/each}
+    {/if}
+  </nav>
+
+  <div class="sidebar-footer">
+    <button
+      class="nav-item nav-settings"
+      class:active={activeView === 'settings'}
+      onclick={() => onNavigate?.('settings')}
+    >
+      <span class="nav-icon"><NavIcon name="settings" /></span>
+      <span class="nav-label">Settings</span>
+    </button>
+    <button class="shortcut-hint" onclick={onShortcuts} title="Keyboard shortcuts">
+      <kbd>?</kbd>
+      <span>Keyboard shortcuts</span>
+    </button>
+  </div>
+</aside>
+
+<style>
+  /* Index-style navigation: hairline-separated rows, an accent ▌ marker on
+     the active row, condensed uppercase labels (docs/desktop-ui-research.md §8). */
+  .sidebar {
+    width: var(--sidebar-width);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    flex-shrink: 0;
+    user-select: none;
+  }
+
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    height: var(--header-height);
+    padding: 0 20px;
+    border-bottom: 1px solid var(--border);
+    line-height: var(--header-height);
+  }
+  .brand-text {
+    font-family: var(--font-display);
+    font-size: var(--text-xl);
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .brand-sub {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .nav {
+    flex: 1;
+    padding: var(--space-4) 0;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .nav-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 20px;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-display);
+    font-size: var(--text-md);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.1s, color 0.1s;
+  }
+  .nav-item:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+  .nav-item.active {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+  .nav-item.active::before {
+    content: '▌';
+    position: absolute;
+    left: 4px;
+    color: var(--accent);
+  }
+
+  .nav-item-primary {
+    padding: 12px 20px;
+    font-size: var(--text-lg);
+    font-weight: 600;
+  }
+  .nav-item-primary:first-child { border-top: 1px solid var(--border); }
+
+  .nav-divider {
+    height: var(--space-5);
+  }
+
+  .nav-item-demoted {
+    padding: 6px 20px;
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--text-muted);
+  }
+  .nav-item-demoted:hover { color: var(--text-secondary); }
+
+  .nav-manage-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-5);
+    padding: var(--space-2) 20px;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    font-family: var(--font-display);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    cursor: pointer;
+    text-align: left;
+  }
+  .nav-manage-toggle:hover { color: var(--text-secondary); }
+
+  .nav-manage-chevron {
+    display: inline-block;
+    font-size: var(--text-base);
+    transition: transform 0.12s;
+  }
+  .nav-manage-chevron.expanded { transform: rotate(90deg); }
+
+  .shortcut-hint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 5px 20px 0;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    cursor: pointer;
+    text-align: left;
+  }
+  .shortcut-hint:hover { color: var(--text-secondary); }
+  .shortcut-hint kbd {
+    min-width: 16px;
+    padding: 1px 4px;
+    border: 1px solid var(--rule-strong);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    text-align: center;
+    color: var(--text-secondary);
+  }
+
+  .nav-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    color: var(--text-muted);
+  }
+  .nav-item:hover .nav-icon { color: var(--text-secondary); }
+  .nav-item.active .nav-icon { color: var(--accent); }
+  .nav-label { font-weight: inherit; }
+
+  .nav-badge {
+    margin-left: auto;
+    min-width: 22px;
+    padding: 0 4px;
+    border: 1px solid var(--accent-dim);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    line-height: 16px;
+    text-align: center;
+    letter-spacing: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sidebar-footer {
+    margin-top: auto;
+    padding: 4px 0 12px;
+    border-top: 1px solid var(--border);
+  }
+  .nav-settings {
+    width: 100%;
+    border-bottom: none;
+    padding: 9px 20px;
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--text-secondary);
+  }
+</style>

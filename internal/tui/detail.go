@@ -3,12 +3,13 @@ package tui
 import (
 	"fmt"
 	"path/filepath"
-	"sort"
+
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
+	"github.com/mili/moxie/internal/version"
 )
 
 // availableStatuses lists all valid game statuses for the TUI status selector.
@@ -86,7 +87,7 @@ func (m model) buildDetailContent() string {
 
 	// ── Header ────────────────────────────────────────────────────
 	back := titleStyle.Render("◂  Back to Library  ")
-	hint := subtleStyle.Render("[Esc] back  [s] status  [e] edit  [x] exe  [u] url  [p] play  [g] dl  [d] delete  [?] help")
+	hint := subtleStyle.Render("[Esc] back  [s] status  [e] edit  [x] exe  [Ctrl+U] url  [v] saves  [p] play  [g] dl  [d] delete  [?] help")
 	gap := max(0, w-lipgloss.Width(back)-lipgloss.Width(hint)-4)
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, back, strings.Repeat(" ", gap), hint))
 	b.WriteString("\n")
@@ -108,8 +109,8 @@ func (m model) buildDetailContent() string {
 	}
 
 	writeField(&b, labelStyle, "Title:", game.Title, valueStyle)
-	if game.LatestVersion != "" && game.Version != "" && game.LatestVersion != game.Version {
-		latestStr := fmt.Sprintf(" (latest: %s 🆕)", game.LatestVersion)
+	if version.NeedsUpdate(game.LatestVersion, game.Version) {
+		latestStr := fmt.Sprintf(" (latest: %s, new)", game.LatestVersion)
 		writeField(&b, labelStyle, "Version:", ver, valueStyle, updateAvailableStyle.Render(latestStr))
 	} else {
 		writeField(&b, labelStyle, "Version:", ver, valueStyle)
@@ -133,7 +134,7 @@ func (m model) buildDetailContent() string {
 		b.WriteString(copyHintStyle.Render("  (Press Enter on URL line to open in browser)"))
 		b.WriteString("\n")
 	} else {
-		writeField(&b, labelStyle, "URL:", "not set — press [u] to add", subtleStyle)
+		writeField(&b, labelStyle, "URL:", "not set — press [Ctrl+U] to add", subtleStyle)
 	}
 
 	if m.scrapedMeta != nil {
@@ -148,14 +149,13 @@ func (m model) buildDetailContent() string {
 	}
 
 	// Version info from F95Zone
-	if game.LatestVersion != "" && game.LatestVersion != game.Version {
+	if version.NeedsUpdate(game.LatestVersion, game.Version) {
 		writeField(&b, labelStyle, "Latest:", game.LatestVersion, updateAvailableStyle)
 	}
 
 	// Tags — show each tag individually styled
 	if len(game.Tags) > 0 {
 		writeField(&b, labelStyle, "Tags:", "", valueStyle)
-		sort.Strings(game.Tags)
 		var tagParts []string
 		for _, t := range game.Tags {
 			if t != "" {
@@ -198,11 +198,25 @@ func (m model) buildDetailContent() string {
 		b.WriteString(accentStyle.Render("  Download"))
 		b.WriteString("\n")
 		b.WriteString(downloadSection(game.ID, progress, status, errStr, stepMsg, w))
+
+		// Browser fallback prompt: every auto-download link failed, so
+		// offer to open the best link in the user's real browser.
+		if fb := m.browserFallbacks[game.ID]; fb != nil {
+			if !fb.watching {
+				b.WriteString("\n")
+				b.WriteString(deletePromptStyle.Render("  All download links failed — open in your browser?  [y] Open  [n] Dismiss  "))
+				b.WriteString("\n")
+				b.WriteString(subtleStyle.Render(fmt.Sprintf("  Save the file into %s — moxie will detect and install it automatically", fb.destDir)))
+			} else {
+				b.WriteString("\n")
+				b.WriteString(noticeStyle.Render(fmt.Sprintf("  Watching %s for the browser download — new archives are installed automatically", fb.destDir)))
+			}
+		}
 	}
 
 	// ── Action buttons ────────────────────────────────────────────
 	actions := subtleStyle.Render(
-		"  [e] Edit  [s] Status  [x] Exe  [u] URL  [o] Path  [p] Play  [g] Download  [d] Delete  [Esc] Back  ",
+		"  [e] Edit  [s] Status  [x] Exe  [Ctrl+U] URL  [v] Saves  [o] Path  [p] Play  [g] Download  [d] Delete  [Esc] Back  ",
 	)
 	b.WriteString("\n\n")
 	b.WriteString(actions)
