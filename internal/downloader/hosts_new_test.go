@@ -1,11 +1,13 @@
 package downloader
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveBuzzheavierHTTP_HTMXRedirect(t *testing.T) {
@@ -93,24 +95,45 @@ func TestResolveWDHO_DetectsInteractiveChallenge(t *testing.T) {
 	}
 }
 
-func TestResolveWDHO_DirectFilePassthrough(t *testing.T) {
-	old := BrowserResolverEnabled()
-	SetBrowserResolver(false)
-	defer SetBrowserResolver(old)
+func TestResolveWDHOHTTP_SignedToken(t *testing.T) {
+	oldDelay := wdhoTokenDelay
+	wdhoTokenDelay = 10 * time.Millisecond
+	defer func() { wdhoTokenDelay = oldDelay }()
 
+	direct := "https://wdho.ru/kbhw?pt=abc123"
+	encoded := base64.StdEncoding.EncodeToString([]byte(direct))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/zip")
-		w.WriteHeader(http.StatusOK)
+		http.SetCookie(w, &http.Cookie{Name: "filehosting", Value: "test-cookie", Path: "/"})
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<div class="download-timer"></div><script>var e='%s';</script>`, encoded)
 	}))
 	defer server.Close()
 
 	r := NewHostResolver()
 	toTestServer(r, server)
-	res, err := r.resolveWDHO("https://wdho.ru/abc")
+	res, err := r.resolveWDHOHTTP("https://wdho.ru/kbhw")
 	if err != nil {
-		t.Fatalf("resolveWDHO: %v", err)
+		t.Fatalf("resolveWDHOHTTP: %v", err)
 	}
-	if res.URL != "https://wdho.ru/abc" {
-		t.Errorf("unexpected URL: %s", res.URL)
+	if res.URL != direct {
+		t.Errorf("URL = %q, want %q", res.URL, direct)
+	}
+	if !strings.Contains(res.Headers["Cookie"], "filehosting=test-cookie") {
+		t.Errorf("missing session cookie: %q", res.Headers["Cookie"])
+	}
+}
+
+func TestResolveWDHOHTTP_Challenge(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<form action="/kbhw" method="post"><input name="antibot" value="x"><button class="btn-color">GREEN</button></form>`)
+	}))
+	defer server.Close()
+
+	r := NewHostResolver()
+	toTestServer(r, server)
+	_, err := r.resolveWDHOHTTP("https://wdho.ru/kbhw")
+	if err == nil || !strings.Contains(err.Error(), "colour") {
+		t.Fatalf("expected colour challenge error, got %v", err)
 	}
 }

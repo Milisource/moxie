@@ -20,7 +20,7 @@ func IsOnlineOnly(name, url string) bool {
 // Higher scores are preferred. Callers should add this to their platform priority score.
 func ScoreLinkHost(host string) int {
 	switch strings.ToLower(host) {
-	case "pixeldrain", "gofile", "catbox", "mediafire", "bunkrr", "dropbox":
+	case "pixeldrain", "gofile", "catbox", "mediafire", "bunkrr", "dropbox", "wdho":
 		return 25
 	case "buzzheavier":
 		if BrowserResolverEnabled() {
@@ -31,7 +31,7 @@ func ScoreLinkHost(host string) int {
 		return 5
 	case "google drive", "workupload":
 		return 10
-	case "mixdrop", "uploadhaven", "wdho":
+	case "mixdrop", "uploadhaven":
 		if BrowserResolverEnabled() {
 			return 10
 		}

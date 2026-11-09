@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
 **Version:** 0.4.0-alpha (July 2026)
-**Status:** Alpha — 0.4.0 (moxie update fix — correct GitHub repo URL). Download: Beta (verified HTTP: Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload, Gofile; MEGA via megatools; Buzzheavier, MixDrop, UploadHaven, VikingFile + DataNodes via optional headed-browser resolver; KrakenFiles browser flow implemented but server returns "Server error"; WDHO interactive check detected; F95 masked links work with Chromium-family cookies)
+**Status:** Alpha — 0.4.0 (moxie update fix — correct GitHub repo URL). Download: Beta (verified HTTP: Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload, Gofile, WDHO; MEGA via megatools; Buzzheavier, MixDrop, UploadHaven, VikingFile + DataNodes via optional headed-browser resolver; KrakenFiles browser flow implemented but server returns "Server error"; F95 masked links work with Chromium-family cookies)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
@@ -147,7 +147,7 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] Buzzheavier resolver — signed HTMX `hx-get` endpoint + `hx-redirect`, with a headed-browser fallback for Cloudflare 403; verified 206 on a 417 MB ZIP
 - [x] MixDrop resolver — invisible reCAPTCHA v3 `genticket` exchange in the headed browser; verified 206 on a 1.42 GB MP4
 - [x] UploadHaven resolver — countdown + Turnstile form submission in the headed browser; verified 206 on a 581 MB ZIP
-- [x] WDHO resolver — detects the interactive colour-button/`antibot` check; the browser resolver performs the `/robots.txt` probe, waits at the colour form and captures the post-challenge download URL once a human clears it
+- [x] WDHO resolver — Referer header gets the real file page; decodes the base64 `e='…'` signed URL, waits out the countdown, and returns it with the page cookie/referer (verified 200 + `PK\x03\x04` on a 7.98 MB ZIP); browser fallback waits at the colour-button challenge without solving it
 - [x] HTML game support — `.html`/`.htm`/`.swf` downloads >= 64 KiB accepted as real games instead of being rejected as interstitials
 - [x] Content-Disposition filenames — ID-only URLs (Pixeldrain `/u/<id>`, Bunkr CDN) now save with their real name and extension
 - [x] TUI step-by-step download status — `stepMsg` field on `activeDownload` shows host-finding phase, per-host attempt, failure reasons, extract/merge progress; rendered in `downloadSection()` in real-time via 500 ms poll tick
@@ -202,7 +202,7 @@ A local game library manager for adult games. Scans directories, detects engines
 ### Known Limitations
 
 - **Mega requires megatools** — MEGA's proprietary encrypted protocol is not implemented natively. When `megatools` is installed, links are downloaded through it (with resume); otherwise MEGA links score -200 and report an install hint.
-- **Download feature is BETA** — Interactive CAPTCHAs remain on F95Zone masked/`/dl` links after automation is detected, and on WDHO's colour-button check. Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload and Gofile are verified over HTTP; Buzzheavier, MixDrop, UploadHaven, VikingFile and DataNodes work with the optional `--browser` resolver; KrakenFiles is browser-implemented but server-blocked. The fallback loop tries all available links and shows detailed per-host errors. When all links fail, use `moxie download --open --watch` or `moxie install <id> <path>` with a manually downloaded archive.
+- **Download feature is BETA** — Interactive CAPTCHAs remain on F95Zone masked/`/dl` links after automation is detected. Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload, Gofile and WDHO are verified over HTTP; Buzzheavier, MixDrop, UploadHaven, VikingFile and DataNodes work with the optional `--browser` resolver; KrakenFiles is browser-implemented but server-blocked. The fallback loop tries all available links and shows detailed per-host errors. When all links fail, use `moxie download --open --watch` or `moxie install <id> <path>` with a manually downloaded archive.
 - **Testability** — 130+ `os.Exit(1)` calls remain in CLI wrappers; `RunPlay`, `RunScan`, `RunSync` extracted as testable logic functions; other commands still need extraction
 - **False positives** — tool/editor directories and generic folder names may be misdetected as games
 - **No archive scanning** — `.zip`/`.rar`/`.7z` at scan roots are not inspected (but can be extracted after download)

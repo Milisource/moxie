@@ -605,13 +605,6 @@ func setF95BrowserCookies(ctx context.Context, header string) error {
 // check, then captures the resulting download navigation or link. It never
 // picks a colour itself.
 func (r *HostResolver) resolveWDHOBrowser(rawURL string) (*ResolveResult, error) {
-	if store := getResolutionStore(); store != nil {
-		if cached, _, ok := store.GetResolvedURL(rawURL, time.Hour); ok && isValidDownloadURL(cached) {
-			log.Debug("wdho browser cache hit", "url", rawURL)
-			return &ResolveResult{URL: cached, Headers: browserHeaders(rawURL)}, nil
-		}
-	}
-
 	downloadDir, err := os.MkdirTemp("", "moxie-wdho-")
 	if err != nil {
 		return nil, fmt.Errorf("browser resolver: create download dir: %w", err)
@@ -736,7 +729,6 @@ func (r *HostResolver) resolveWDHOBrowser(rawURL string) (*ResolveResult, error)
 		return nil, fmt.Errorf("browser resolver: invalid WDHO download URL")
 	}
 	log.Info("browser resolver obtained direct link", "host", "wdho", "target_host", strings.Split(strings.TrimPrefix(direct, "https://"), "/")[0])
-	cacheBrowserResolution(rawURL, direct, "wdho")
 	return &ResolveResult{URL: direct, Headers: browserHeaders(rawURL)}, nil
 }
 

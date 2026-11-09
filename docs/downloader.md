@@ -1,6 +1,6 @@
 # Downloader
 
-> **Status: beta, with 10 verified host paths and optional browser resolvers.** HTTP-only downloads are verified for Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload and Gofile; MEGA is verified through the `megatools` subprocess. Buzzheavier, MixDrop, UploadHaven, VikingFile and DataNodes are fully automated with the optional headed-browser resolver (`--browser`). F95Zone masked links work with cookies imported from Chromium-family browsers; a pending reCAPTCHA still needs a human. WDHO's colour-button check is detected but not solved. See [Host support matrix](#host-support-matrix) for the per-host evidence.
+> **Status: beta, with 11 verified host paths and optional browser resolvers.** HTTP-only downloads are verified for Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload, Gofile and WDHO; MEGA is verified through the `megatools` subprocess. Buzzheavier, MixDrop, UploadHaven, VikingFile and DataNodes are fully automated with the optional headed-browser resolver (`--browser`). F95Zone masked links work with cookies imported from Chromium-family browsers; a pending reCAPTCHA still needs a human. See [Host support matrix](#host-support-matrix) for the per-host evidence.
 
 ## What
 
@@ -176,7 +176,7 @@ range or full download returned real bytes with the expected magic/type.
 | **KrakenFiles** | Optional headed-browser resolver: wait Turnstile + FingerprintJS, POST `/download/<hash>`, read JSON `{url}` | ⚠ Browser implemented / server-blocked | Valid Turnstile, fingerprint and behavior data sent; every tested live file returned `{"status":"error","msg":"Server error"}` (3 files, 95 s wait, mouse activity) — server-side refusal from this network |
 | **VikingFile** | Optional headed-browser resolver → `/d/...` → presigned S3 | ✅ Verified with `--browser` | Turnstile auto-solved in a real Chromium; `#download-link` returned a `/d/` URL that 302s to a presigned S3 object; full 989 MB `.7z` downloaded in ~40 s |
 | **UploadHaven** | Browser waits for countdown + Turnstile, submits the form, reads the manual download link | ✅ Verified with `--browser` | Live `uploadhaven.com/download/96db…`: resolved in ~18 s to `download141.uploadhaven.com/.../KuroyaraCollection2025-05.zip`; GET 206, 256 bytes of `PK\x03\x04` ZIP (581 MB file) |
-| **WDHO** | Browser: page performs `/robots.txt` device probe, then a colour-button check; resolver waits for a human to clear it and captures the resulting download URL | ⚠ Challenge reached, post-clear capture implemented | Live `wdho.ru/kbhw`: probe observed, colour form reached, resolver reports `WDHO challenge not cleared — complete the colour check in the opened browser`; no automated colour solving |
+| **WDHO** | Referer header → file page → base64 `e='…'` signed URL → wait out countdown → GET signed URL | ✅ Verified | Live `wdho.ru/kbhw`: page returned the signed `?pt=…` URL; after the countdown the GET returned 200, 256 bytes `PK\x03\x04`, `Content-Disposition: result.zip`, 7,985,981-byte ZIP. The colour-button challenge only appears without a Referer; the browser resolver waits at it if it does. |
 | **Catbox / Quax / Vern / files.dp.ua** | Direct HTTP GET | ⚠ Pass-through | Catbox samples were 404 (deleted); no live samples available |
 | **transfer.sh / yourfilestore / delafil** | Direct HTTP GET | ❌ Dead in testing | `transfer.sh` and `yourfilestore.com` timed out / DNS failed; Delafil returned an error page |
 | **Files.fm / UploadNow / FromSmash / SendGB / DropMeFiles / others** | JS UI or account API | ❌ Browser | Not automatable with plain HTTP |
@@ -187,11 +187,11 @@ range or full download returned real bytes with the expected magic/type.
 
 | Score | Hosts |
 |-------|-------|
-| **+25** | Pixeldrain, Gofile, Catbox, MediaFire, Bunkrr, Dropbox; Buzzheavier when `--browser` is enabled |
-| **+10** | Google Drive, WorkUpload, MEGA (when `megatools` is installed), MixDrop/UploadHaven/WDHO with `--browser`, DataNodes/VikingFile/KrakenFiles with `--browser` |
+| **+25** | Pixeldrain, Gofile, Catbox, MediaFire, Bunkrr, Dropbox, WDHO; Buzzheavier when `--browser` is enabled |
+| **+10** | Google Drive, WorkUpload, MEGA (when `megatools` is installed), MixDrop/UploadHaven with `--browser`, DataNodes/VikingFile/KrakenFiles with `--browser` |
 | **+5** | Buzzheavier without `--browser` (Cloudflare often rejects plain HTTP) |
 | **0** | Other recognized hosts |
-| **-50** | MixDrop/UploadHaven/WDHO, DataNodes/VikingFile/KrakenFiles when `--browser` is disabled |
+| **-50** | MixDrop/UploadHaven, DataNodes/VikingFile/KrakenFiles when `--browser` is disabled |
 | **-200** | MEGA when `megatools` is missing |
 
 ### External downloader: MEGA
@@ -310,13 +310,15 @@ never interacts with the reCAPTCHA. Live (challenge temporarily clear): captured
 resolver waits up to `browserChallengeTimeout` (four minutes) and then reports
 that it was not cleared.
 
-**WDHO** — the page's own JavaScript performs the `/robots.txt` device probe and
-sets the `antibot_…` cookie, then renders the colour buttons. The browser
-resolver enables download events, waits for a human to click the matching colour,
-and captures either the `Browser.downloadWillBegin` URL or a post-challenge
-direct link. Live: the probe was observed, the colour form was reached, and the
-resolver reported `WDHO challenge not cleared — complete the colour check in the
-opened browser` after the timeout. No colour solving is attempted.
+**WDHO** — the normal HTTP path now works: a `Referer` header makes the site
+serve the real file page instead of the colour-button interstitial. The page
+embeds the signed download URL as base64 in `e='…'`; the token is single-use and
+only valid after the 4–8 second countdown, so the resolver waits, then hands the
+URL plus the page's `filehosting` cookie and `Referer` to the normal downloader.
+Live: 200 + 256 bytes of `PK\x03\x04` from a 7,985,981-byte ZIP. If an IP does
+get the colour-button page, `resolveWDHOBrowser` performs the `/robots.txt`
+device probe, waits for a human to clear the check, and captures the resulting
+download event/link; no colour solving is attempted.
 
 Browser discovery order: `MOXIE_BROWSER`, `google-chrome-stable`,
 `google-chrome`, `chromium`, `chromium-browser`, `brave-browser`,
@@ -328,9 +330,9 @@ Hosts that still need a human:
 - **F95Zone `/dl/` and masked links** — both render an interactive
   reCAPTCHA/hCaptcha after automation is detected; `--browser` waits for a human
   to clear it but does not solve it.
-- **WDHO** — the page presents a “click the button matching this colour” check
-  (`btn-color` + `antibot` form). The resolver detects it and refuses rather
-  than solving an interactive anti-bot challenge.
+- **WDHO** — only when the colour-button page is served (normally bypassed by
+  the Referer header); `--browser` waits for a human to clear it and captures the
+  download, but does not solve the colour check.
 
 `moxie download --open --watch` remains the fallback for hosts that need a human
 to solve a CAPTCHA.
