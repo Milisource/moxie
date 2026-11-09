@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.5.0-alpha] - 2026-11-08
+
 ### Fixed
 
 - **F95Zone thread fetches no longer 403 after a browser update.** Cloudflare binds `cf_clearance` to the User-Agent that solved its challenge; moxie sent a hard-coded Firefox 140 UA, so every sync, update check and Browse scrape was challenged once Firefox updated to 159 (2026-10-27). The UA is now derived from the browser store that supplied the clearance (Firefox profile `compatibility.ini`, Chromium `Last Version`) and used by the scraper and every F95Zone request in the downloader.

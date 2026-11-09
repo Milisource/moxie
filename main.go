@@ -14,7 +14,7 @@ import (
 	"github.com/mili/moxie/internal/tui"
 )
 
-var version = "0.4.0-alpha"
+var version = "0.5.0-alpha"
 
 // channel selects the release channel at build time via
 // -ldflags "-X main.channel=dev". It defaults to the stable "main" channel.

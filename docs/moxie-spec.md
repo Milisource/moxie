@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
-**Version:** 0.4.0-alpha (July 2026)
-**Status:** Alpha — 0.4.0 (moxie update fix — correct GitHub repo URL). Download: Beta (8 host resolvers: Pixeldrain, Buzzheavier, Gofile, Google Drive, DataNodes, MixDrop, Mega, VikingFile (beta))
+**Version:** 0.5.0-alpha (November 2026)
+**Status:** Alpha — 0.5.0 (download/update hardening; WDHO HTTP resolver, Gofile token refresh). Download: Beta (HTTP: Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload, Gofile, WDHO; MEGA via megatools; browser fallback for Buzzheavier, MixDrop, UploadHaven, VikingFile, DataNodes; F95 masked/`/dl` links)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
