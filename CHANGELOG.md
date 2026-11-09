@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **F95Zone `/dl/` wrapper resolver** — Follows plain redirects to the host and reports hCaptcha/stale-link interstitials clearly.
 - **Google Drive 2024+ form flow** — Supports `drive.usercontent.google.com/download` hidden forms in addition to legacy `confirm=` tokens.
 - **Gofile current API** — Anonymous account token + `/contents/<id>` Bearer-auth flow.
+- **Gofile 2026 API + website token** — `POST /accounts` mints the guest token and `/contents/<id>` now requires `X-Website-Token` (SHA-256 of `userAgent::language::token::4h-bucket::salt`). Verified with a live 50-byte upload (`gofile.io/d/krheSqXq`) that resolved and downloaded byte-for-byte.
+- **Buzzheavier HTMX resolver** — Parses the page's signed `hx-get` endpoint and reads the `hx-redirect`; falls back to the headed browser when Cloudflare returns 403. Verified with a 417 MB ZIP (206 range).
+- **MixDrop browser resolver** — Executes the invisible reCAPTCHA v3 `genticket` exchange and returns the signed `mxcontent.net` URL. Handles the current `mixdrop.ag` → `mxdrop.click` domain. Verified with a 1.42 GB MP4 (206 range).
+- **UploadHaven browser resolver** — Waits for the countdown + Turnstile, submits the form, and reads the signed `downloadNNN.uploadhaven.com` link. Verified with a 581 MB ZIP (206 range).
+- **WDHO challenge detection** — Recognises the colour-button/`antibot` page and reports it instead of downloading HTML; does not solve the interactive check.
+- **Chromium-family F95 cookie extraction** — `internal/browser` now reads encrypted Chromium cookies (Helium, Chrome, Brave, Edge, Playwright profiles) in addition to Firefox, so masked-link unmasking works when the user is logged in there. Verified live: three masked links unmasked and a 206 ZIP range downloaded.
 - **HTML game support** — `.html`/`.htm`/`.swf` downloads ≥ 64 KiB are accepted instead of rejected as interstitials.
 - **Content-Disposition filenames** — ID-only URLs (Pixeldrain, Bunkr CDN) save with their real filename and extension.
 - **Optional browser resolver** — `moxie download --browser` (or `MOXIE_BROWSER=1`) uses `chromedp` to drive a headed Chromium through Cloudflare Turnstile for VikingFile, DataNodes and KrakenFiles, captures the direct URL, and downloads it over normal HTTP. Verified with a 989 MB `.7z` (VikingFile) and a live DataNodes ZIP; KrakenFiles currently receives a server-side `Server error` after a valid Turnstile/fingerprint POST.
@@ -23,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Host scoring** — MediaFire/Bunkr/Dropbox now +25, WorkUpload/Google Drive/MEGA (with megatools) +10, DataNodes/VikingFile +10 with `--browser` and −50 without, KrakenFiles −50.
+- **Host scoring** — MediaFire/Bunkr/Dropbox/Gofile now +25, WorkUpload/Google Drive/MEGA (with megatools) +10, MixDrop/UploadHaven/WDHO and DataNodes/VikingFile/KrakenFiles +10 with `--browser` and −50 without, Buzzheavier +25 with `--browser` / +5 without.
 
 ## [0.4.0-alpha] - 2026-07-01
 

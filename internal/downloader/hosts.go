@@ -79,7 +79,7 @@ func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) 
 	case "pixeldrain":
 		return r.resolvePixeldrain(url)
 	case "buzzheavier":
-		return r.resolveBuzzheavier(url)
+		return r.resolveBuzzheavierWithFallback(url)
 	case "gofile":
 		return r.resolveGofile(url)
 	case "datanodes":
@@ -100,6 +100,10 @@ func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) 
 		return r.resolveDropbox(url)
 	case "workupload":
 		return r.resolveWorkupload(url)
+	case "uploadhaven":
+		return r.resolveUploadHavenWithFallback(url)
+	case "wdho":
+		return r.resolveWDHO(url)
 	case "krakenfiles":
 		return r.resolveKrakenFilesWithFallback(url)
 	default:

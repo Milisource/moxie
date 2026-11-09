@@ -54,7 +54,7 @@ Key capabilities:
 - **Steam integration** — Add non-Steam games with deterministic AppIDs, grid artwork (F95Zone cover or SteamGridDB), and Proton version configuration. Safe VDF read/write with automatic backups.
 - **Bubble Tea TUI** — Interactive terminal UI with list/detail views, engine/status filters, sortable columns, real-time search, and engine-colored rows.
 - **Version tracking** — Check all associated games for newer versions on F95Zone. Supports `--force` to bypass 24h cooldown.
-- **Download manager** — Download games directly from verified hosts (Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload, plus MEGA via megatools) with resume support, platform priority, and dead link fallback. `--browser` adds a headed-Chromium resolver for Turnstile-gated VikingFile, DataNodes and KrakenFiles links.
+- **Download manager** — Download games directly from verified hosts (Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload, Gofile, plus MEGA via megatools) with resume support, platform priority, and dead link fallback. `--browser` adds a headed-Chromium resolver for Buzzheavier, MixDrop, UploadHaven, Turnstile-gated VikingFile, DataNodes and KrakenFiles links.
 - **Cross-platform** — Single static Go binary (~16 MB), no CGO, no runtime deps. Linux, macOS, and Windows.
 
 ---
@@ -76,7 +76,7 @@ This project is intended for **gamers and collectors** who:
 Before using moxie, ensure you have:
 
 - **A directory of games** — moxie scans local folders for game engine markers. It does not download games from the internet on its own.
-- **A Firefox browser (optional)** — for automatic F95Zone cookie detection during scraping. Chrome/Edge cookies are supported via explicit export.
+- **A Firefox or Chromium-family browser (optional)** — for automatic F95Zone cookie detection during scraping. Firefox, Chrome/Chromium, Brave, Edge, Helium and Playwright profiles are read automatically; `--cookie`/`--cookie-file` override detection.
 - **Steam (optional)** — for the `steam` commands. Steam must be closed before adding or removing games.
 - **Go 1.24+ (optional)** — only needed if building from source. No CGO required.
 
@@ -144,7 +144,7 @@ moxie --version
 
 #### F95Zone cookie (for scraping)
 
-moxie automatically detects cookies from Firefox. If you use another browser:
+moxie automatically detects cookies from Firefox and Chromium-family browsers (Chrome, Chromium, Brave, Edge, Helium, Playwright profiles). If you use another browser, export cookies explicitly:
 
 ```bash
 # Export cookies manually:

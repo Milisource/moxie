@@ -2,28 +2,25 @@
 
 ## What
 
-Extracts F95Zone authentication cookies from installed browsers (primarily Firefox, fallback to Chrome/Chromium/Brave/Edge) so the scraper can send authenticated requests. Lives in `internal/browser/browser.go` — a single file of ~56 lines.
+Extracts F95Zone authentication cookies from installed browsers — Firefox plus Chromium-family stores (Chrome, Chromium, Brave, Edge, Helium, Playwright profiles) — so the scraper and masked-link resolver can send authenticated requests. Lives in `internal/browser/browser.go`.
 
 ## How
 
-The `GetF95Cookies()` function uses `github.com/browserutils/kooky` to read browser cookie stores:
+`GetF95Cookies()` merges cookies from three sources, deduplicating by cookie name and preferring later, non-empty values:
 
-```go
-cookies, err := kooky.ReadCookies(
-    context.Background(),
-    kooky.Valid,
-    kooky.Domain("f95zone.to"),
-)
-```
+1. kooky's registered finders (Firefox) with `kooky.DomainHasSuffix("f95zone.to")`.
+2. Non-standard Firefox profiles such as `~/.config/mozilla/firefox` through the direct `cookies.sqlite` reader.
+3. Chromium-family profiles that kooky does not discover, scanned with globs and read through `chrome.CookieStore` (which handles Chromium's encrypted cookie values):
+   - `~/.config/*/*/Cookies`
+   - `~/.config/*/*/*/Cookies`
+   - `~/.config/*/*/Network/Cookies`
+   - `~/.cache/ms-playwright*/*/Default/Cookies`
 
-kooky discovers installed browsers by scanning standard install paths on each platform:
-- **Linux**: `~/.mozilla/firefox/`, `~/.config/google-chrome/`, `~/.config/BraveSoftware/`, etc.
-- **macOS**: `~/Library/Application Support/Firefox/`, `~/Library/Application Support/Google/Chrome/`, etc.
-- **Windows**: `%APPDATA%/Mozilla/Firefox/`, `%LOCALAPPDATA%/Google/Chrome/`, etc.
+The Chromium globbing matters in practice: Helium stores its profile at `~/.config/net.imput.helium/Default/Cookies`, which is outside kooky's fixed Chrome/Chromium/Brave roots. Before this, an F95Zone login in Helium was invisible to moxie and every masked link failed with "requires a session cookie".
 
 For Firefox, kooky reads `cookies.sqlite` at the binary level using its own B-tree parser — it does **not** use a SQL driver. This is critical because Firefox's `cookies.sqlite` is always in WAL mode and locked by the browser process; a SQL driver would fail with "database is locked." kooky's binary-level reading bypasses the SQLite driver entirely.
 
-The function filters for `f95zone.to` domain cookies, sorts them by name for deterministic header construction, and joins them into a Cookie header string: `"xf_session=abc; xf_user=def; cf_clearance=ghi"`.
+The function filters for `f95zone.to` domain cookies, sorts them by name for deterministic header construction, and joins them into a Cookie header string: `"cf_clearance=abc; xf_captcha=…; xf_csrf=…; xf_session=…; xf_user=def"`.
 
 ## Why
 

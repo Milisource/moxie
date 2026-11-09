@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/browserutils/kooky"
+	"github.com/browserutils/kooky/browser/chrome"
 	_ "github.com/browserutils/kooky/browser/firefox"
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
@@ -23,36 +24,116 @@ import (
 // Checks kooky's standard paths first, then falls back to non-standard
 // locations like ~/.config/mozilla/firefox (used by some distros).
 func GetF95Cookies() (string, error) {
-	cookies, kookyErr := kooky.ReadCookies(
-		context.Background(),
-		kooky.Valid,
-		kooky.Domain("f95zone.to"),
-	)
-
-	var f95 []*kooky.Cookie
-	for _, c := range cookies {
-		if c.Domain == "f95zone.to" || strings.HasSuffix(c.Domain, ".f95zone.to") {
-			f95 = append(f95, c)
+	byName := map[string]string{}
+	addHeader := func(header string) {
+		for _, pair := range strings.Split(header, "; ") {
+			name, value, ok := strings.Cut(pair, "=")
+			if !ok || name == "" {
+				continue
+			}
+			value = sanitizeHeaderValue(value)
+			if value == "" {
+				continue
+			}
+			byName[name] = value
 		}
 	}
 
-	if len(f95) > 0 {
-		sort.Slice(f95, func(i, j int) bool { return f95[i].Name < f95[j].Name })
-		return buildCookieHeader(f95), nil
+	// kooky's registered finders (Firefox out of the box).
+	cookies, kookyErr := kooky.ReadCookies(
+		context.Background(),
+		kooky.Valid,
+		kooky.DomainHasSuffix("f95zone.to"),
+	)
+	for _, c := range cookies {
+		if c.Domain == "f95zone.to" || strings.HasSuffix(c.Domain, ".f95zone.to") {
+			if v := sanitizeHeaderValue(c.Value); v != "" {
+				byName[c.Name] = v
+			}
+		}
 	}
 
-	// kooky didn't find cookies — try non-standard Firefox profile locations
-	// (e.g. ~/.config/mozilla/firefox used on some distros and custom setups).
+	// Non-standard Firefox profiles (e.g. ~/.config/mozilla/firefox).
 	if cookie, err := tryNonStandardFirefoxPaths(); err == nil && cookie != "" {
-		return cookie, nil
+		addHeader(cookie)
+	}
+
+	// Chromium-family profiles that kooky's built-in roots do not cover
+	// (Helium, Playwright's bundled Chrome, portable Chromium builds, ...).
+	if cookie, err := tryChromiumCookieStores(); err == nil && cookie != "" {
+		addHeader(cookie)
+	}
+
+	if len(byName) > 0 {
+		pairs := make([]string, 0, len(byName))
+		for name, value := range byName {
+			pairs = append(pairs, name+"="+value)
+		}
+		sort.Strings(pairs)
+		return strings.Join(pairs, "; "), nil
 	}
 
 	msg := "no f95zone.to cookies found in any browser"
 	if kookyErr != nil {
 		msg += fmt.Sprintf(" (kooky read: %v)", kookyErr)
 	}
-	msg += "\nMake sure you're logged into f95zone.to in Firefox or Chrome"
+	msg += "\nMake sure you're logged into f95zone.to in Firefox or a Chromium-family browser"
 	return "", fmt.Errorf("%s", msg)
+}
+
+// tryChromiumCookieStores reads F95Zone cookies from Chromium-family profile
+// directories that kooky does not discover automatically. Chromium encrypts
+// cookie values, so the stores go through kooky's Chrome reader rather than
+// the plain SQLite path used for Firefox.
+func tryChromiumCookieStores() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	patterns := []string{
+		filepath.Join(home, ".config", "*", "*", "Cookies"),
+		filepath.Join(home, ".config", "*", "*", "*", "Cookies"),
+		filepath.Join(home, ".config", "*", "*", "Network", "Cookies"),
+		filepath.Join(home, ".config", "*", "*", "*", "Network", "Cookies"),
+		filepath.Join(home, ".cache", "ms-playwright*", "*", "Default", "Cookies"),
+	}
+
+	seen := map[string]bool{}
+	byName := map[string]string{}
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		for _, path := range matches {
+			if seen[path] {
+				continue
+			}
+			seen[path] = true
+			store, err := chrome.CookieStore(path, kooky.Valid)
+			if err != nil {
+				continue
+			}
+			for c := range store.TraverseCookies(kooky.Valid, kooky.DomainHasSuffix("f95zone.to")) {
+				if c == nil {
+					continue
+				}
+				if v := sanitizeHeaderValue(c.Value); v != "" {
+					byName[c.Name] = v
+				}
+			}
+			_ = store.Close()
+		}
+	}
+	if len(byName) == 0 {
+		return "", fmt.Errorf("no f95zone.to cookies found in Chromium-family profiles")
+	}
+	pairs := make([]string, 0, len(byName))
+	for name, value := range byName {
+		pairs = append(pairs, name+"="+value)
+	}
+	sort.Strings(pairs)
+	return strings.Join(pairs, "; "), nil
 }
 
 // GetF95CookiesFromSQLite reads f95zone.to cookies directly from a Firefox

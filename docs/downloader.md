@@ -1,6 +1,6 @@
 # Downloader
 
-> **Status: beta, with 7 verified HTTP host paths and optional browser resolvers.** HTTP-only downloads are verified for Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, and WorkUpload; MEGA is verified through the `megatools` subprocess. VikingFile and DataNodes are fully automated with the optional headed-browser resolver (`--browser`). F95Zone's own masked/`/dl` hCaptcha still needs a browser handoff. See [Host support matrix](#host-support-matrix) for the per-host evidence.
+> **Status: beta, with 10 verified host paths and optional browser resolvers.** HTTP-only downloads are verified for Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload and Gofile; MEGA is verified through the `megatools` subprocess. Buzzheavier, MixDrop, UploadHaven, VikingFile and DataNodes are fully automated with the optional headed-browser resolver (`--browser`). F95Zone masked links work with cookies imported from Chromium-family browsers; a pending reCAPTCHA still needs a human. WDHO's colour-button check is detected but not solved. See [Host support matrix](#host-support-matrix) for the per-host evidence.
 
 ## What
 
@@ -97,9 +97,27 @@ A live `moxie download 7` run confirmed persistence: `resolved_urls` grew from
 `https://f95zone.to/masked/pixeldrain.com/256438/...` → `https://pixeldrain.com/u/BYzajuVk`,
 and the download started immediately from that cached URL.
 
+On 2026-11-08 cookie extraction was widened to Chromium-family browsers.
+`internal/browser` now scans Helium, Chrome/Chromium, Brave, Edge, Playwright
+profiles and other `~/.config` Chromium stores through kooky's encrypted-cookie
+reader, in addition to Firefox. With the Helium profile logged into F95Zone the
+masked POST succeeded and returned real mirrors:
+
+```text
+masked/pixeldrain.com/277896/... -> {"status":"ok","msg":"https://pixeldrain.com/u/BJzfpdhX"}
+masked/gofile.io/277896/...     -> {"status":"ok","msg":"https://gofile.io/d/ZK4v1p"}
+masked/mega.nz/277896/...       -> {"status":"ok","msg":"https://mega.nz/#!..."}
+```
+
+A range GET of the unmasked Pixeldrain URL returned **206**, 1024 bytes,
+`application/zip`, `Content-Disposition: ...Crowb4rd_Collection_2024_-_2025-10.zip`
+and `PK\x03\x04`. Unmasking one link and then immediately requesting more in the
+same session returned `{"status":"captcha",...}` and the check stayed sticky for
+at least 15 minutes, so the cache and link fallback remain essential.
+
 **Remaining blocker:** F95Zone's masked endpoint and `/dl/` check both raise an
-interactive hCaptcha after automation is detected. `moxie` cannot and should not
-solve that captcha. Mitigations:
+interactive reCAPTCHA/hCaptcha after automation is detected. `moxie` cannot and
+should not solve that captcha. Mitigations:
 
 - resolution cache and 12-hour reuse limit repeated calls;
 - F95Zone's rate limit is temporary — pausing and retrying works;
@@ -144,14 +162,14 @@ range or full download returned real bytes with the expected magic/type.
 | **Google Drive** | `drive.usercontent.google.com/download?id=…&export=download&confirm=t` (+ `uuid` when present) | ✅ Verified | 206 + first bytes from a 1 GB public test file; handles both old `confirm=` and new hidden-form pages |
 | **MEGA** | `megatools dl` subprocess | ✅ Verified (external tool) | 1.28 MB transferred in 25 s from a public link; resume handled by megatools |
 | **WorkUpload** | Solve SHA-256 proof-of-work, then parse direct link | ✅ PoW verified | Live `/puzzle` solved (3 targets in range 10 000) and `/captcha` accepted; test file had been deleted |
-| **Gofile** | `GET /accounts` → `GET /contents/<id>` (Bearer token) | ⚠ Implemented | API host is unreachable from this test network (TCP timeout); resolver covered by unit test |
-| **Buzzheavier** | HTMX `GET <url>/download` with `HX-Request` | ⚠ Implemented | No live link remained in the local DB to test (all returned 404/self-redirect) |
+| **Gofile** | `POST /accounts` → `GET /contents/<id>` with `X-Website-Token` (SHA-256 of UA::language::token::4h-bucket::salt) | ✅ Verified | Uploaded a 50-byte file to `gofile.io/d/krheSqXq`; resolver returned `store5.gofile.io/download/...`, GET 200, exact 50 bytes and correct filename |
+| **Buzzheavier** | Page → HTMX `GET <id>/download?t=…` → `hx-redirect` | ✅ Verified with `--browser` | Live `bzzhr.to/wp0penkq05sy`: browser read the signed endpoint and returned `ts.bzzhr.to/d/...`; GET 206, 256 bytes of `PK\x03\x04` ZIP (417 MB file) |
 | **DataNodes** | Optional headed-browser resolver: click `#method_free`, wait for invisible Turnstile, click Free Download, capture `nodeNN.datanodes.to:8443/d/...` | ✅ Verified with `--browser` | Fresh upload `datanodes.to/swyya9wz61je` resolved in ~16 s; full 145-byte ZIP downloaded and validated (`PK\x03\x04`); cached second run ~1 s |
-| **MixDrop** | Page calls `grecaptcha.execute` + `POST a=genticket` | ❌ Browser | Direct GET returns HTML; genticket needs reCAPTCHA v3 |
+| **MixDrop** | File page → `grecaptcha.execute('6LetXao…')` → `POST a=genticket` → JSON `url` | ✅ Verified with `--browser` | Live `mxdrop.click/e/vkkl8zlzhq88gjl`: resolver returned `a-delivery38.mxcontent.net/d/...`; GET 206, 256 bytes `ftypisom` MP4 (1.42 GB file) |
 | **KrakenFiles** | Optional headed-browser resolver: wait Turnstile + FingerprintJS, POST `/download/<hash>`, read JSON `{url}` | ⚠ Browser implemented / server-blocked | Valid Turnstile, fingerprint and behavior data sent; every tested live file returned `{"status":"error","msg":"Server error"}` (3 files, 95 s wait, mouse activity) — server-side refusal from this network |
 | **VikingFile** | Optional headed-browser resolver → `/d/...` → presigned S3 | ✅ Verified with `--browser` | Turnstile auto-solved in a real Chromium; `#download-link` returned a `/d/` URL that 302s to a presigned S3 object; full 989 MB `.7z` downloaded in ~40 s |
-| **UploadHaven** | Form POST with `_token`, `hash`, countdown, Turnstile | ❌ Browser | POST without turnstile re-renders the page |
-| **WDHO** | Custom “click the colored button” check | ❌ Browser | Page JS only |
+| **UploadHaven** | Browser waits for countdown + Turnstile, submits the form, reads the manual download link | ✅ Verified with `--browser` | Live `uploadhaven.com/download/96db…`: resolved in ~18 s to `download141.uploadhaven.com/.../KuroyaraCollection2025-05.zip`; GET 206, 256 bytes of `PK\x03\x04` ZIP (581 MB file) |
+| **WDHO** | Custom “click the button matching this colour” check after a JS/device probe | ⚠ Detected, not solved | Live `wdho.ru/kbhw` returns the `btn-color`/`antibot` challenge; the resolver reports `wdho requires an interactive colour-button check — use --open` instead of saving HTML |
 | **Catbox / Quax / Vern / files.dp.ua** | Direct HTTP GET | ⚠ Pass-through | Catbox samples were 404 (deleted); no live samples available |
 | **transfer.sh / yourfilestore / delafil** | Direct HTTP GET | ❌ Dead in testing | `transfer.sh` and `yourfilestore.com` timed out / DNS failed; Delafil returned an error page |
 | **Files.fm / UploadNow / FromSmash / SendGB / DropMeFiles / others** | JS UI or account API | ❌ Browser | Not automatable with plain HTTP |
@@ -162,10 +180,11 @@ range or full download returned real bytes with the expected magic/type.
 
 | Score | Hosts |
 |-------|-------|
-| **+25** | Pixeldrain, Buzzheavier, Gofile, Catbox, MediaFire, Bunkrr, Dropbox |
-| **+10** | Google Drive, MixDrop, WorkUpload, MEGA (when `megatools` is installed), DataNodes/VikingFile/KrakenFiles (when `--browser` is enabled) |
+| **+25** | Pixeldrain, Gofile, Catbox, MediaFire, Bunkrr, Dropbox; Buzzheavier when `--browser` is enabled |
+| **+10** | Google Drive, WorkUpload, MEGA (when `megatools` is installed), MixDrop/UploadHaven/WDHO with `--browser`, DataNodes/VikingFile/KrakenFiles with `--browser` |
+| **+5** | Buzzheavier without `--browser` (Cloudflare often rejects plain HTTP) |
 | **0** | Other recognized hosts |
-| **-50** | DataNodes/VikingFile/KrakenFiles (when `--browser` is disabled) |
+| **-50** | MixDrop/UploadHaven/WDHO, DataNodes/VikingFile/KrakenFiles when `--browser` is disabled |
 | **-200** | MEGA when `megatools` is missing |
 
 ### External downloader: MEGA
@@ -197,7 +216,7 @@ WorkUpload's “Are you a human?” page is not a captcha; it is SHA-256 grindin
 jar for the session. A live run solved 3 targets and the server accepted the
 captcha (the sample file itself had been deleted).
 
-### Optional browser resolver (VikingFile, DataNodes, KrakenFiles)
+### Optional browser resolver (Buzzheavier, MixDrop, UploadHaven, VikingFile, DataNodes, KrakenFiles)
 
 Turnstile does not issue a token to headless Chromium or to plain HTTP clients.
 Moxie therefore has an opt-in headed-browser resolver implemented with
@@ -210,9 +229,10 @@ MOXIE_BROWSER=/path/to/chrome moxie download --browser <id>
 
 Flow:
 
-1. With `--browser` enabled, browser-gated hosts (VikingFile, DataNodes) go
-   straight to the browser resolver because their HTTP flow is known to stop at
-   Turnstile. Other hosts use the normal HTTP resolver.
+1. With `--browser` enabled, browser-gated hosts (Buzzheavier, MixDrop,
+   UploadHaven, VikingFile, DataNodes, KrakenFiles) go straight to the browser
+   resolver because their HTTP flow stops at a challenge. Other hosts use the
+   normal HTTP resolver.
 2. Launch a visible Chromium-family browser with a dedicated profile under
    `~/.cache/moxie/browser-profile-<host>`.
 3. Drive the host's page until Turnstile auto-solves and a direct URL appears.
@@ -254,19 +274,40 @@ download could be verified. This looks like a server-side/IP refusal rather than
 a client-flow bug; the resolver reports the server message instead of pretending
 to succeed.
 
+**Buzzheavier** — the file page exposes
+`<a class="download-btn" hx-get="/<id>/download?t=<token>">`. The resolver first
+tries the HTMX request over plain HTTP; when Cloudflare answers 403 (as it did
+from this network) it opens the page in the browser, performs the same request
+from page context and reads the `hx-redirect` header. Live: 206 + 256 bytes of
+`PK\x03\x04` from a 417,042,839-byte ZIP.
+
+**MixDrop** — the download view (`/f/<id>?download`) posts
+`{csrf, token, a:"genticket"}` after executing the site's invisible reCAPTCHA v3
+key (`6LetXao…`). The JSON response carries the signed
+`a-deliveryNN.mxcontent.net/d/<id>/<token>` URL. Live: 206 + 256 bytes
+`ftypisom` MP4 from a 1,522,001,145-byte file. MixDrop moved off `mixdrop.co`
+(parked domain) to `mixdrop.ag` → `mxdrop.click`; `/e/` URLs are converted to
+`/f/` automatically.
+
+**UploadHaven** — the page combines a ~20 s countdown with an invisible
+Turnstile. The resolver polls until `#submitFree` becomes `type=submit`, submits
+the form directly (ad overlays make clicking unreliable), then reads the manual
+link (`downloadNNN.uploadhaven.com/...?key=…&expire=…`). Live: 206 + 256 bytes
+of `PK\x03\x04` from a 581,886,038-byte ZIP.
+
 Browser discovery order: `MOXIE_BROWSER`, `google-chrome-stable`,
 `google-chrome`, `chromium`, `chromium-browser`, `brave-browser`,
 `microsoft-edge`, then Playwright's cached Chromium. If no browser is found the
 error explains how to set `MOXIE_BROWSER`.
 
-Other browser-gated hosts remain unimplemented:
+Hosts that still need a human:
 
-- **F95Zone `/dl/` and masked links** — both render an interactive hCaptcha
-  checkbox under automation; waiting does not auto-solve it.
-- **MixDrop** — reCAPTCHA v3 + `genticket`; no request fired in headed testing
-  without additional interaction.
-- **UploadHaven / WDHO** — Turnstile or custom checks not yet wired to the
-  browser resolver.
+- **F95Zone `/dl/` and masked links** — both render an interactive
+  reCAPTCHA/hCaptcha after automation is detected; waiting does not auto-solve
+  it.
+- **WDHO** — the page presents a “click the button matching this colour” check
+  (`btn-color` + `antibot` form). The resolver detects it and refuses rather
+  than solving an interactive anti-bot challenge.
 
 `moxie download --open --watch` remains the fallback for hosts that need a human
 to solve a CAPTCHA.
@@ -283,8 +324,12 @@ to solve a CAPTCHA.
   `drive.usercontent.google.com/download`; both that and the legacy `confirm=`
   token are parsed.
 - **Dropbox** — Shared links use `dl=0` for preview; `dl=1` is required.
-- **Gofile** — The March 2026 API uses anonymous account tokens and
-  `/contents/<id>`; the old `getContent` response parser was replaced.
+- **Gofile** — the 2026 API mints an anonymous account with `POST /accounts`
+  and requires an `X-Website-Token` header on `/contents/<id>`. That token is a
+  SHA-256 over `userAgent::language::accountToken::floor(unix/14400)::salt`
+  (`12af056dacea0b`); the salt is rotated server-side, so a 401 means refresh
+  `gofileWTSalt` from `/js/wt.obf.js`. The old `getContent` parser and the
+  `<id>.gofile.io` fallback host are gone.
 
 ### Masked F95Zone URLs (historical note)
 
@@ -324,18 +369,22 @@ when they install one package.
 
 ## Known limitations
 
-- **F95 CAPTCHA** — masked and `/dl/` links escalate to an interactive hCaptcha
-  under automation. No automated bypass is attempted. Use the cache, retry
-  later, or `--open --watch`.
-- **Browser-only hosts** — MixDrop, UploadHaven, WDHO and JS-only hosts remain
-  manual/browser downloads. The optional browser resolver implements VikingFile,
-  DataNodes, and KrakenFiles (KrakenFiles is currently server-blocked).
+- **F95 CAPTCHA** — masked and `/dl/` links escalate to an interactive
+  reCAPTCHA/hCaptcha under automation. No automated bypass is attempted. Use the
+  cache, retry later, or `--open --watch`.
+- **WDHO** — its colour-button challenge is an interactive anti-bot check; moxie
+  detects it and tells you to use `--open` rather than solving it.
+- **Browser resolver hosts** — with `--browser`, Buzzheavier, MixDrop,
+  UploadHaven, VikingFile, DataNodes and KrakenFiles are automated (KrakenFiles
+  is currently server-blocked). Without it, these links score −50 and fail fast
+  with an actionable message.
 - **Browser resolver requirements** — `--browser` needs a Chrome/Chromium-family
   browser and opens a visible window; `MOXIE_BROWSER` can point at a specific
   binary.
 - **MEGA without megatools** — the link is skipped with an install hint.
-- **Gofile network** — the API flow is implemented but could not be live-tested
-  from the development network.
+- **Gofile website-token salt** — `gofileWTSalt` is copied from
+  `/js/wt.obf.js`; Gofile rotates it periodically. A 401 from `/contents` means
+  the constant must be refreshed.
 - **No multi-part/segmented downloading** — single connection per download.
 - **No bandwidth throttling** beyond host-side limits.
 - **Pixeldrain rate limits** — free transfers are ~1 MiB/s and may redirect to a

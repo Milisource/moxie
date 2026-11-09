@@ -1,7 +1,7 @@
 # moxie — MVP Specification
 
 **Version:** 0.4.0-alpha (July 2026)
-**Status:** Alpha — 0.4.0 (moxie update fix — correct GitHub repo URL). Download: Beta (verified HTTP: Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload; MEGA via megatools; VikingFile + DataNodes via optional headed-browser resolver; KrakenFiles browser flow implemented but server returns "Server error"; Gofile/Buzzheavier implemented)
+**Status:** Alpha — 0.4.0 (moxie update fix — correct GitHub repo URL). Download: Beta (verified HTTP: Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload, Gofile; MEGA via megatools; Buzzheavier, MixDrop, UploadHaven, VikingFile + DataNodes via optional headed-browser resolver; KrakenFiles browser flow implemented but server returns "Server error"; WDHO interactive check detected; F95 masked links work with Chromium-family cookies)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
 ---
@@ -130,10 +130,11 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] `ResolveFirstArg` variant — for multi-arg commands like `install <id|name> <archive-path>` that must not consume subsequent positional args as part of the game name
 - [x] `LaunchCommand` working directory fix — `cmd.Dir` set to game root so Windows games under Wine resolve relative asset paths correctly
 - [x] `SelectBestExe` scoring overhaul — skips known runtime engines (`nwjc`, `nw`, `node`) and launchers (`unitycrashhandler`, `unins`, `setup`); awards +1 GB score bonus for `Game.exe`
-- [x] Optional browser resolver (`--browser`) — `chromedp` drives a headed Chromium through Cloudflare Turnstile for VikingFile, DataNodes and KrakenFiles, returns a direct HTTP URL, and hands it to the normal downloader; verified with a full 989 MB `.7z` (VikingFile) and a live DataNodes ZIP. KrakenFiles sends valid Turnstile/fingerprint/behavior data but its server replies `Server error` for every tested file.
+- [x] Optional browser resolver (`--browser`) — `chromedp` drives a headed Chromium through Cloudflare/reCAPTCHA checks for Buzzheavier, MixDrop, UploadHaven, VikingFile, DataNodes and KrakenFiles, returns a direct HTTP URL, and hands it to the normal downloader; verified with full/range downloads from a 989 MB `.7z` (VikingFile), DataNodes ZIP, 417 MB Buzzheavier ZIP, 1.42 GB MixDrop MP4 and 581 MB UploadHaven ZIP. KrakenFiles sends valid Turnstile/fingerprint/behavior data but its server replies `Server error` for every tested file.
+- [x] Chromium-family F95 cookie extraction — Helium/Chrome/Brave/Edge/Playwright cookie stores are decrypted through kooky, so masked-link unmasking works from any logged-in browser, not only Firefox; verified with three live masked links and a 206 ZIP range download
 - [x] Persistent masked-link cache — successful F95Zone unmaskings are stored in the `resolved_urls` SQLite table for 12 hours (plus an in-memory layer), so repeated downloads avoid the rate-limited endpoint
 - [x] F95Zone `/dl/` re-scrape — when every stored link is a tokenized `/dl/` wrapper, `moxie download` re-scrapes the thread instead of reusing stale tokens
-- [x] Host scoring reorganized — verified hosts (Pixeldrain, Buzzheavier, Gofile, Catbox, MediaFire, Bunkr, Dropbox) weighted +25, working hosts (Google Drive, MixDrop, WorkUpload, MEGA with megatools) weighted +10, browser-gated hosts (DataNodes, VikingFile, KrakenFiles) +10 with `--browser` and -50 without, MEGA without megatools -200
+- [x] Host scoring reorganized — verified hosts (Pixeldrain, Gofile, Catbox, MediaFire, Bunkr, Dropbox, Buzzheavier with `--browser`) weighted +25, working hosts (Google Drive, WorkUpload, MEGA with megatools) weighted +10, browser-gated hosts (MixDrop, UploadHaven, WDHO, DataNodes, VikingFile, KrakenFiles) +10 with `--browser` and -50 without, Buzzheavier +5 without a browser, MEGA without megatools -200
 - [x] F95Zone masked-link resolver — POST `xhr=1&download=1` JSON endpoint (the same call masked.js makes) replaces the old redirect guess; successful mappings cached in memory for 12h, CAPTCHA responses reported clearly
 - [x] F95Zone `/dl/` wrapper resolver — follows plain redirects to the host; detects the hCaptcha "Just a quick check" interstitial and stale-link pages
 - [x] MediaFire resolver — extracts the time-limited `downloadNNN.mediafire.com` URL from the file page (verified full ZIP download)
@@ -142,7 +143,11 @@ A local game library manager for adult games. Scans directories, detects engines
 - [x] WorkUpload resolver — solves the SHA-256 proof-of-work challenge programmatically, then extracts the direct link
 - [x] MEGA support — `megatools` subprocess adapter with progress polling, resume delegated to megatools, and install hints when missing
 - [x] Google Drive resolver — supports the 2024+ `drive.usercontent.google.com/download` hidden-form flow in addition to the legacy `confirm=` token
-- [x] Gofile resolver — anonymous account token + `/contents/<id>` API with Bearer auth and direct-link extraction
+- [x] Gofile resolver — 2026 API: `POST /accounts` guest token, `/contents/<id>` with Bearer auth and the SHA-256 `X-Website-Token` header, direct-link extraction; verified with a live 50-byte upload
+- [x] Buzzheavier resolver — signed HTMX `hx-get` endpoint + `hx-redirect`, with a headed-browser fallback for Cloudflare 403; verified 206 on a 417 MB ZIP
+- [x] MixDrop resolver — invisible reCAPTCHA v3 `genticket` exchange in the headed browser; verified 206 on a 1.42 GB MP4
+- [x] UploadHaven resolver — countdown + Turnstile form submission in the headed browser; verified 206 on a 581 MB ZIP
+- [x] WDHO resolver — detects the interactive colour-button/`antibot` check and reports it instead of saving HTML
 - [x] HTML game support — `.html`/`.htm`/`.swf` downloads >= 64 KiB accepted as real games instead of being rejected as interstitials
 - [x] Content-Disposition filenames — ID-only URLs (Pixeldrain `/u/<id>`, Bunkr CDN) now save with their real name and extension
 - [x] TUI step-by-step download status — `stepMsg` field on `activeDownload` shows host-finding phase, per-host attempt, failure reasons, extract/merge progress; rendered in `downloadSection()` in real-time via 500 ms poll tick
@@ -197,7 +202,7 @@ A local game library manager for adult games. Scans directories, detects engines
 ### Known Limitations
 
 - **Mega requires megatools** — MEGA's proprietary encrypted protocol is not implemented natively. When `megatools` is installed, links are downloaded through it (with resume); otherwise MEGA links score -200 and report an install hint.
-- **Download feature is BETA** — Interactive CAPTCHAs remain on F95Zone masked/`/dl` links after automation is detected, and on MixDrop, KrakenFiles, UploadHaven and WDHO. Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive and WorkUpload are verified; VikingFile and DataNodes work with the optional `--browser` resolver. The fallback loop tries all available links and shows detailed per-host errors. When all links fail, use `moxie download --open --watch` or `moxie install <id> <path>` with a manually downloaded archive.
+- **Download feature is BETA** — Interactive CAPTCHAs remain on F95Zone masked/`/dl` links after automation is detected, and on WDHO's colour-button check. Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload and Gofile are verified over HTTP; Buzzheavier, MixDrop, UploadHaven, VikingFile and DataNodes work with the optional `--browser` resolver; KrakenFiles is browser-implemented but server-blocked. The fallback loop tries all available links and shows detailed per-host errors. When all links fail, use `moxie download --open --watch` or `moxie install <id> <path>` with a manually downloaded archive.
 - **Testability** — 130+ `os.Exit(1)` calls remain in CLI wrappers; `RunPlay`, `RunScan`, `RunSync` extracted as testable logic functions; other commands still need extraction
 - **False positives** — tool/editor directories and generic folder names may be misdetected as games
 - **No archive scanning** — `.zip`/`.rar`/`.7z` at scan roots are not inspected (but can be extracted after download)

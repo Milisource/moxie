@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -301,6 +302,193 @@ func parseKrakenFilesResponse(rawURL, body string) (*ResolveResult, error) {
 	}
 	cacheBrowserResolution(rawURL, result.URL, "krakenfiles")
 	return &ResolveResult{URL: result.URL, Headers: browserHeaders(rawURL)}, nil
+}
+
+// resolveUploadHavenBrowser automates UploadHaven's free-download page.
+// The page shows a countdown and an invisible Turnstile widget; when both are
+// ready it enables #submitFree. Submitting returns a "Download Started" page
+// whose manual link is the signed downloadNNN.uploadhaven.com URL.
+func (r *HostResolver) resolveUploadHavenBrowser(rawURL string) (*ResolveResult, error) {
+	if store := getResolutionStore(); store != nil {
+		if cached, _, ok := store.GetResolvedURL(rawURL, time.Hour); ok && isValidDownloadURL(cached) {
+			log.Debug("uploadhaven browser cache hit", "url", rawURL)
+			return &ResolveResult{URL: cached, Headers: browserHeaders(rawURL)}, nil
+		}
+	}
+
+	href, err := runInBrowser("uploadhaven", "uploadhaven", 180*time.Second, func(ctx context.Context) (string, error) {
+		if err := chromedp.Do(ctx, chromedp.Navigate(rawURL)); err != nil {
+			return "", fmt.Errorf("browser resolver: navigate: %w", err)
+		}
+		// The page enables the button only after the countdown and Turnstile
+		// both complete. Polling type=submit is the site's own ready signal.
+		if err := pollBrowser(ctx, 150*time.Second, `(() => {
+			const b = document.getElementById('submitFree');
+			return !!b && b.type === 'submit';
+		})()`); err != nil {
+			return "", fmt.Errorf("browser resolver: UploadHaven countdown/Turnstile: %w", err)
+		}
+		// Clicking the button is unreliable once overlay ads appear; the
+		// server only checks that the countdown finished and Turnstile issued
+		// a token, so submit the form directly.
+		if _, err := chromedp.Run(ctx, chromedp.Evaluate[chromedp.Void](`(() => {
+			const form = document.getElementById('form-download');
+			if (form) HTMLFormElement.prototype.submit.call(form);
+		})()`)); err != nil {
+			return "", fmt.Errorf("browser resolver: UploadHaven submit: %w", err)
+		}
+		deadline := time.Now().Add(60 * time.Second)
+		for time.Now().Before(deadline) {
+			href, err := chromedp.Run(ctx, chromedp.Evaluate[string](`(() => {
+				const a = [...document.querySelectorAll('a')].find(a => /uploadhaven\.com/.test(a.href) && /download/i.test(a.href));
+				return a ? a.href : '';
+			})()`))
+			if err != nil {
+				return "", fmt.Errorf("browser resolver: UploadHaven read link: %w", err)
+			}
+			if strings.HasPrefix(href, "https://") {
+				return href, nil
+			}
+			select {
+			case <-ctx.Done():
+				return "", fmt.Errorf("browser resolver: UploadHaven timed out waiting for download link")
+			case <-time.After(time.Second):
+			}
+		}
+		return "", fmt.Errorf("browser resolver: UploadHaven download link not produced")
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !isValidDownloadURL(href) {
+		return nil, fmt.Errorf("browser resolver: invalid UploadHaven download URL")
+	}
+	log.Info("browser resolver obtained direct link", "host", "uploadhaven", "target_host", strings.Split(strings.TrimPrefix(href, "https://"), "/")[0])
+	cacheBrowserResolution(rawURL, href, "uploadhaven")
+	return &ResolveResult{URL: href, Headers: browserHeaders(rawURL)}, nil
+}
+
+// resolveBuzzheavierBrowser opens the file page (Cloudflare blocks plain
+// HTTP), reads the HTMX download endpoint from the button, and performs the
+// HTMX request inside the page. The response has no body; the direct CDN URL
+// is in the hx-redirect header.
+func (r *HostResolver) resolveBuzzheavierBrowser(rawURL string) (*ResolveResult, error) {
+	if store := getResolutionStore(); store != nil {
+		if cached, _, ok := store.GetResolvedURL(rawURL, time.Hour); ok && isValidDownloadURL(cached) {
+			log.Debug("buzzheavier browser cache hit", "url", rawURL)
+			return &ResolveResult{URL: cached, Headers: browserHeaders(rawURL)}, nil
+		}
+	}
+
+	direct, err := runInBrowser("buzzheavier", "buzzheavier", 90*time.Second, func(ctx context.Context) (string, error) {
+		if err := chromedp.Do(ctx, chromedp.Navigate(rawURL)); err != nil {
+			return "", fmt.Errorf("browser resolver: navigate: %w", err)
+		}
+		if err := pollBrowser(ctx, 45*time.Second, `!!document.querySelector('a.download-btn[hx-get]')`); err != nil {
+			return "", fmt.Errorf("browser resolver: Buzzheavier download button: %w", err)
+		}
+		return chromedp.Run(ctx, chromedp.Evaluate[string](`(async () => {
+			const a = document.querySelector('a.download-btn[hx-get]');
+			const r = await fetch(a.getAttribute('hx-get'), {
+				headers: {'HX-Request': 'true', 'HX-Current-URL': location.href},
+				credentials: 'same-origin'
+			});
+			return r.headers.get('hx-redirect') || '';
+		})()`, chromedp.EvalAwaitPromise))
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !isValidDownloadURL(direct) {
+		return nil, fmt.Errorf("browser resolver: Buzzheavier returned no redirect")
+	}
+	log.Info("browser resolver obtained direct link", "host", "buzzheavier", "target_host", strings.Split(strings.TrimPrefix(direct, "https://"), "/")[0])
+	cacheBrowserResolution(rawURL, direct, "buzzheavier")
+	return &ResolveResult{URL: direct, Headers: browserHeaders(rawURL)}, nil
+}
+
+// resolveMixdropBrowser turns MixDrop's file page into its direct CDN URL.
+// The DOWNLOAD button calls grecaptcha.execute (invisible v3), then POSTs
+// {csrf, token, a:genticket}; the JSON response carries the signed URL.
+func (r *HostResolver) resolveMixdropBrowser(rawURL string) (*ResolveResult, error) {
+	if store := getResolutionStore(); store != nil {
+		if cached, _, ok := store.GetResolvedURL(rawURL, time.Hour); ok && isValidDownloadURL(cached) {
+			log.Debug("mixdrop browser cache hit", "url", rawURL)
+			return &ResolveResult{URL: cached, Headers: browserHeaders(rawURL)}, nil
+		}
+	}
+
+	pageURL := mixdropDownloadPageURL(rawURL)
+	direct, err := runInBrowser("mixdrop", "mixdrop", 120*time.Second, func(ctx context.Context) (string, error) {
+		if err := chromedp.Do(ctx, chromedp.Navigate(pageURL)); err != nil {
+			return "", fmt.Errorf("browser resolver: navigate: %w", err)
+		}
+		// Let Cloudflare's redirect chain settle before issuing evaluations;
+		// an Evaluate during navigation can block until the context expires.
+		if err := chromedp.Do(ctx, chromedp.Sleep(8*time.Second)); err != nil {
+			return "", fmt.Errorf("browser resolver: MixDrop settle: %w", err)
+		}
+		if err := pollBrowser(ctx, 60*time.Second, `(() => {
+			const b = document.querySelector('.download-btn[data-cf-key]');
+			return !!(b && document.querySelector('meta[name="csrf"]') && window.grecaptcha);
+		})()`); err != nil {
+			return "", fmt.Errorf("browser resolver: MixDrop page not ready: %w", err)
+		}
+		return chromedp.Run(ctx, chromedp.Evaluate[string](`(async () => {
+			const csrf = document.querySelector('meta[name="csrf"]').content;
+			// MixDrop's own player executes this reCAPTCHA v3 key. The
+			// data-cf-key attribute is a Turnstile key used by a different
+			// protection layer, not this exchange.
+			const token = await Promise.race([
+				grecaptcha.execute('6LetXaoUAAAAAB6axgg4WLG9oZ_6QLTsFXZj-5sd', {action: 'download'}),
+				new Promise((_, reject) => setTimeout(() => reject(new Error('reCAPTCHA timed out')), 20000))
+			]);
+			const r = await fetch(location.href, {
+				method: 'POST',
+				headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+				body: new URLSearchParams({csrf, token, a: 'genticket'}).toString(),
+				credentials: 'same-origin'
+			});
+			return await r.text();
+		})()`, chromedp.EvalAwaitPromise))
+	})
+	if err != nil {
+		return nil, err
+	}
+	var got struct {
+		Type string `json:"type"`
+		URL  string `json:"url"`
+		Msg  string `json:"msg"`
+	}
+	if err := json.Unmarshal([]byte(direct), &got); err != nil {
+		return nil, fmt.Errorf("browser resolver: MixDrop returned non-JSON response")
+	}
+	if got.URL == "" {
+		if got.Msg == "" {
+			got.Msg = "no download URL"
+		}
+		return nil, fmt.Errorf("mixdrop: %s", got.Msg)
+	}
+	if !isValidDownloadURL(got.URL) {
+		return nil, fmt.Errorf("browser resolver: MixDrop returned an invalid URL")
+	}
+	log.Info("browser resolver obtained direct link", "host", "mixdrop", "target_host", strings.Split(strings.TrimPrefix(got.URL, "https://"), "/")[0])
+	cacheBrowserResolution(rawURL, got.URL, "mixdrop")
+	return &ResolveResult{URL: got.URL, Headers: browserHeaders(rawURL)}, nil
+}
+
+// mixdropDownloadPageURL converts an /e/ embed URL into the /f/ file page and
+// requests its download view, which is where the genticket flow lives.
+func mixdropDownloadPageURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	if strings.HasPrefix(u.Path, "/e/") {
+		u.Path = "/f/" + strings.TrimPrefix(u.Path, "/e/")
+	}
+	u.RawQuery = "download"
+	return u.String()
 }
 
 func cacheBrowserResolution(key, resolved, host string) {

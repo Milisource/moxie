@@ -940,71 +940,48 @@ func TestIdentifyHostInURL_MixDropDomains(t *testing.T) {
 	}
 }
 
-func TestResolveMixdrop_ReturnsURLAsIs(t *testing.T) {
-	t.Parallel()
+func TestResolveMixdrop_RequiresBrowser(t *testing.T) {
 	r := NewHostResolver()
-	inputURL := "https://mixdrop.co/file/abc123"
-	result, err := r.Resolve(inputURL, "mixdrop")
-	if err != nil {
-		t.Fatalf("Resolve mixdrop failed: %v", err)
+	_, err := r.Resolve("https://mixdrop.co/file/abc123", "mixdrop")
+	if err == nil {
+		t.Fatal("expected an error without --browser")
 	}
-	if result.URL != inputURL {
-		t.Errorf("expected URL %q, got %q", inputURL, result.URL)
+	if !strings.Contains(err.Error(), "requires a browser") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveMixdrop_UsesCachedResolution(t *testing.T) {
+	store := &fakeResolutionStore{getHit: true, url: "https://a-delivery38.mxcontent.net/d/abc/token", host: "mixdrop"}
+	SetResolutionStore(store)
+	defer SetResolutionStore(nil)
+
+	r := NewHostResolver()
+	result, err := r.Resolve("https://mixdrop.co/file/abc123", "mixdrop")
+	if err != nil {
+		t.Fatalf("Resolve mixdrop cached failed: %v", err)
+	}
+	if result.URL != store.url {
+		t.Errorf("expected cached URL %q, got %q", store.url, result.URL)
 	}
 	if result.Headers == nil {
 		t.Fatal("expected non-nil headers")
 	}
-	if ua, ok := result.Headers["User-Agent"]; !ok || ua == "" {
-		t.Error("expected User-Agent header")
-	}
 }
 
-func TestResolveMixdrop_AllDomains(t *testing.T) {
-	t.Parallel()
+func TestResolveMixdrop_AllDomainsRequireBrowser(t *testing.T) {
 	r := NewHostResolver()
 	domains := []string{
 		"https://mixdrop.co/file/abc123",
 		"https://mixdrop.ag/file/xyz789",
-		"https://mixdrop.net/file/def456",
+		"https://mxdrop.click/file/def456",
 		"https://m1xdrop.click/file/ghi012",
 	}
 	for _, url := range domains {
-		t.Run(url, func(t *testing.T) {
-			result, err := r.Resolve(url, "mixdrop")
-			if err != nil {
-				t.Fatalf("Resolve mixdrop(%q) failed: %v", url, err)
-			}
-			if result.URL != url {
-				t.Errorf("expected URL to pass through unchanged, got %q", result.URL)
-			}
-			if ua := result.Headers["User-Agent"]; ua == "" {
-				t.Error("expected User-Agent header")
-			}
-		})
-	}
-}
-
-func TestResolveMixdrop_MockServerVerifyPassThrough(t *testing.T) {
-	// Verify that MixDrop does NOT make any HTTP requests — the resolver
-	// returns the URL as-is without contacting any server.
-	t.Parallel()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("resolver must not make HTTP requests for mixdrop pass-through")
-	}))
-	defer server.Close()
-
-	r := NewHostResolver()
-	// Use a mixdrop-style URL (the mock server is never contacted).
-	result, err := r.Resolve("https://mixdrop.co/file/abc123", "mixdrop")
-	if err != nil {
-		t.Fatalf("Resolve mixdrop failed: %v", err)
-	}
-	if result.URL != "https://mixdrop.co/file/abc123" {
-		t.Errorf("expected URL to pass through unchanged, got %q", result.URL)
-	}
-	if result.Headers == nil {
-		t.Fatal("expected non-nil headers")
+		_, err := r.Resolve(url, "mixdrop")
+		if err == nil || !strings.Contains(err.Error(), "requires a browser") {
+			t.Errorf("Resolve mixdrop(%q) error = %v, want browser requirement", url, err)
+		}
 	}
 }
 
