@@ -468,7 +468,7 @@
   // surface that rejection instead of dropping it.
   function startUpdateGame(gameId) {
     const gs = gameStates[gameId] || {phase: 'idle'}
-    if (gs.phase !== 'idle' && gs.phase !== 'error') return
+    if (gs.phase !== 'idle' && gs.phase !== 'error' && gs.phase !== 'done') return
     updateGS(gameId, {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', oldVersion: '', newVersion: '', manualRequired: false, manualHost: '', step: ''})
     DownloadGameUpdate(gameId).catch((e) => {
       const msg = String(e)
@@ -1104,6 +1104,7 @@
               onProvideFile={provideUpdateFile}
               onCancel={cancelUpdates}
               onCancelGame={cancelUpdateFor}
+              onRefresh={async () => { await refreshGames(); lastUpdate++ }}
             />
           {:else if activeView === 'downloads'}
             <DownloadsView

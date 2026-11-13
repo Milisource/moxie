@@ -465,6 +465,9 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 
 		log.Error("download failed (all links exhausted)", "game_id", game.ID, "links_tried", len(scored), "error", lastErr)
 		fmt.Fprintf(os.Stderr, "  ✗ Failed: %s\n", lastErr.Error())
+		if len(failures) > 1 {
+			fmt.Fprintf(os.Stderr, "  (tried %d hosts: %s)\n", len(failures), strings.Join(failures, "; "))
+		}
 		if containsF95CheckLink(groupLinks) && isCaptchaError(lastErr) {
 			fmt.Fprintf(os.Stderr, "  F95Zone now gates every download link behind a human hCaptcha check.\n")
 			fmt.Fprintf(os.Stderr, "  Open the game's links in your browser instead: moxie download --open %d\n", game.ID)

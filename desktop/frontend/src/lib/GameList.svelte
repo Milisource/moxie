@@ -215,7 +215,7 @@
       onLaunched(`Removed ${n} game${n === 1 ? '' : 's'} — restore from Trash`)
       clearSelection()
       selectMode = false
-      await onUpdate()
+      await refreshAfterMutation()
     } finally {
       bulkBusy = false
     }
@@ -611,6 +611,15 @@
     if (seq === searchSeq) isSearching = false
   }
 
+  // After any mutation, re-snapshot the search results so the visible list
+  // cannot disagree with the database while a query is active.
+  async function refreshAfterMutation() {
+    await onUpdate()
+    if (library.search && library.search.trim().length >= 2) {
+      await doSearch(library.search)
+    }
+  }
+
   function onSearchInput(e) {
     library.search = e.target.value
     clearTimeout(debounceTimer)
@@ -675,7 +684,7 @@
     ctxMenuOpen = false
     try {
       await SetGameStatus(g.id, status)
-      await onUpdate()
+      await refreshAfterMutation()
     } catch (e) {
       console.error('Failed to set status:', e)
     }
@@ -688,7 +697,7 @@
     const g = contextGame
     ctxMenuOpen = false
     const saved = await openEditGame(g.id)
-    if (saved) await onUpdate()
+    if (saved) await refreshAfterMutation()
   }
 
   async function handleRename() {
@@ -699,7 +708,7 @@
     if (!newTitle || newTitle === g.title) return
     try {
       await RenameGame(g.id, newTitle)
-      await onUpdate()
+      await refreshAfterMutation()
     } catch (e) {
       console.error('Failed to rename:', e)
     }
@@ -718,7 +727,7 @@
     if (!ok) return
     try {
       await RemoveGame(g.id, false)
-      await onUpdate()
+      await refreshAfterMutation()
     } catch (e) {
       console.error('Failed to remove:', e)
     }

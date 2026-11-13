@@ -23,7 +23,7 @@ func TestGofileLiveProbe(t *testing.T) {
 	r := NewHostResolver()
 	r.SetF95Cookie(os.Getenv("F95_COOKIE"))
 
-	real, err := r.unwrapMasked(masked)
+	real, err := r.unwrapMasked(context.Background(), masked)
 	if err != nil {
 		t.Fatalf("unwrapMasked: %v", err)
 	}

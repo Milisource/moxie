@@ -18,6 +18,7 @@ var shortcutKnownKeys = map[string]bool{
 	"AllowDesktopConfig": true, "AllowOverlay": true, "OpenVR": true,
 	"Devkit": true, "LastPlayTime": true, "FlatpakAppID": true,
 	"sortas": true, "tags": true,
+	"ShortcutPath": true, "DevkitGameID": true, "DevkitOverrideAppID": true,
 }
 
 // ---------------------------------------------------------------------------

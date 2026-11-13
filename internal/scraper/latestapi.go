@@ -443,22 +443,6 @@ func StripVersionQualifier(v string) string {
 	return version.Canonical(v)
 }
 
-// looksLikeVersion reports whether a token plausibly carries a version:
-// it has a digit after any leading v/V (so "v5.0.5s" and "B.0.10.8" count,
-// but "DX" and "Hotfix" don't).
-func looksLikeVersion(tok string) bool {
-	t := strings.TrimLeft(tok, "vV")
-	if t == "" {
-		return false
-	}
-	for _, r := range t {
-		if r >= '0' && r <= '9' {
-			return true
-		}
-	}
-	return false
-}
-
 // BulkChunkError describes a failed checker.php chunk.
 type BulkChunkError struct {
 	// Chunk / IDs / ThreadIDs are the thread IDs in the failed chunk.
@@ -563,8 +547,6 @@ func (p *PublicAPI) BulkVersions(ctx context.Context, ids []int64) (map[int64]st
 		var lastErr error
 		var lastKind string
 		var body string
-		succeeded := false
-		_ = succeeded
 		emptyChunk := false
 		for attempt := 0; attempt < 2; attempt++ {
 			if attempt > 0 {
@@ -589,7 +571,6 @@ func (p *PublicAPI) BulkVersions(ctx context.Context, ids []int64) (map[int64]st
 					lastErr = nil
 					lastKind = ""
 					body = ""
-					succeeded = true
 					emptyChunk = true
 					break
 				}
@@ -602,7 +583,6 @@ func (p *PublicAPI) BulkVersions(ctx context.Context, ids []int64) (map[int64]st
 			body = b
 			lastErr = nil
 			lastKind = ""
-			succeeded = true
 			break
 		}
 

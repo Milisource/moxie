@@ -119,7 +119,7 @@
   <!-- ── Download Progress ───────────────────────────────── -->
   {#if downloading}
     <div class="progress-section">
-      <div class="progress-bar-bg">
+      <div class="progress-bar-bg" role="progressbar" aria-valuemin="0" aria-valuemax="100">
         <div class="progress-bar-fill" style="width: {downloadPct}%"></div>
       </div>
       <p class="progress-label">{downloadLabel}</p>

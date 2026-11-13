@@ -39,6 +39,7 @@
     onProvideFile = () => {},
     onCancel = () => {},
     onCancelGame = () => {},
+    onRefresh = () => {},
   } = $props()
 
   // ── Game List State ──────────────────────────────────────────
@@ -151,6 +152,7 @@
     try {
       await EditGame(game.id, {version: game.latestVersion})
       await loadGames()
+      await onRefresh()
     } catch (e) {
       markError = `Failed to mark ${game.title} as current: ${String(e)}`
     }

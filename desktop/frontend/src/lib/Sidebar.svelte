@@ -48,11 +48,13 @@
   ]
 
   const MANAGE_STORAGE_KEY = 'sidebar-manage-expanded'
-  let manageExpanded = $state(localStorage.getItem(MANAGE_STORAGE_KEY) === 'true')
+  let manageExpanded = $state((() => {
+    try { return localStorage.getItem(MANAGE_STORAGE_KEY) === 'true' } catch { return false }
+  })())
 
   function toggleManage() {
     manageExpanded = !manageExpanded
-    localStorage.setItem(MANAGE_STORAGE_KEY, String(manageExpanded))
+    try { localStorage.setItem(MANAGE_STORAGE_KEY, String(manageExpanded)) } catch { /* ignore */ }
   }
 
   // If the user lands directly on a management view (e.g. deep link, or

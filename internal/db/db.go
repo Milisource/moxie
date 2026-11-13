@@ -70,6 +70,11 @@ func Open(path string) (*Database, error) {
 		return nil, err
 	}
 
+	// Periodic maintenance runs on every open so soft-deleted games, expired
+	// masked-URL cache entries, and stale cover placeholders are reclaimed even
+	// when the schema is already up to date.
+	pruneStaleData(conn)
+
 	return &Database{conn: conn}, nil
 }
 
@@ -402,31 +407,6 @@ func migrate(conn *sql.DB) error {
 		if err := migrateVersionStep(conn, v); err != nil {
 			return fmt.Errorf("migration v%d: %w", v, err)
 		}
-	}
-
-	// Auto-purge games soft-deleted more than 30 days ago.
-	if _, err := conn.Exec(
-		"DELETE FROM games WHERE deleted_at IS NOT NULL AND datetime(deleted_at) < datetime('now', '-30 days')",
-	); err != nil {
-		// Non-fatal — log and continue.
-		log.Warn("auto-purge failed", "error", err)
-	}
-
-	// Auto-prune expired masked-URL unwrap cache entries (ResolvedURLTTL).
-	if _, err := conn.Exec(
-		"DELETE FROM resolved_urls WHERE created_at < strftime('%s', 'now') - ?",
-		int64(ResolvedURLTTL.Seconds()),
-	); err != nil {
-		// Non-fatal — log and continue.
-		log.Warn("resolved_urls auto-prune failed", "error", err)
-	}
-
-	// Scrapes once stored F95's literal "missing" placeholder as a cover URL;
-	// clear anything that isn't an http(s) URL so cover fetching retries.
-	if _, err := conn.Exec(
-		"UPDATE scraped_meta SET cover_url = NULL WHERE cover_url IS NOT NULL AND cover_url NOT LIKE 'http%'",
-	); err != nil {
-		log.Warn("scraped_meta cover cleanup failed", "error", err)
 	}
 
 	return nil
@@ -834,6 +814,15 @@ func upgradeOldDB(conn *sql.DB) error {
 // columnExists checks whether a column exists in a table by scanning PRAGMA
 // table_info output.
 func columnExists(tx *sql.Tx, table, column string) bool {
+	// table is only ever a known schema table; reject anything else to avoid
+	// injecting an identifier into PRAGMA table_info.
+	switch table {
+	case "games", "scraped_meta", "downloads", "download_links", "play_history",
+		"game_series", "collections", "game_collections", "resolved_urls",
+		"save_sets", "save_configs", "excluded_paths":
+	default:
+		return false
+	}
 	rows, err := tx.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
 		return false
@@ -937,4 +926,26 @@ func (db *Database) TotalSize() (int64, error) {
 	var total int64
 	err := db.conn.QueryRow("SELECT COALESCE(SUM(size_bytes), 0) FROM games WHERE deleted_at IS NULL AND path NOT LIKE '%.old'").Scan(&total)
 	return total, err
+}
+
+// pruneStaleData runs the periodic maintenance that must happen on every Open,
+// regardless of schema version: purging long-soft-deleted games, pruning the
+// masked-URL unwrap cache, and clearing placeholder cover URLs.
+func pruneStaleData(conn *sql.DB) {
+	if _, err := conn.Exec(
+		"DELETE FROM games WHERE deleted_at IS NOT NULL AND datetime(deleted_at) < datetime('now', '-30 days')",
+	); err != nil {
+		log.Warn("auto-purge failed", "error", err)
+	}
+	if _, err := conn.Exec(
+		"DELETE FROM resolved_urls WHERE created_at < strftime('%s', 'now') - ?",
+		int64(ResolvedURLTTL.Seconds()),
+	); err != nil {
+		log.Warn("resolved_urls auto-prune failed", "error", err)
+	}
+	if _, err := conn.Exec(
+		"UPDATE scraped_meta SET cover_url = NULL WHERE cover_url IS NOT NULL AND cover_url NOT LIKE 'http%'",
+	); err != nil {
+		log.Warn("scraped_meta cover cleanup failed", "error", err)
+	}
 }

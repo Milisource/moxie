@@ -301,6 +301,14 @@ func (c *Client) do(req *http.Request, baseDelay time.Duration) (bodyStr string,
 		if c.isBlocked() {
 			return "", c.blockedErr()
 		}
+		// Rewind the request body before each attempt so POST retries do
+		// not send an already-consumed (empty) body against a non-zero
+		// Content-Length.
+		if req.GetBody != nil {
+			if b, err := req.GetBody(); err == nil {
+				req.Body = b
+			}
+		}
 		body, err := c.doOnce(req, baseDelay)
 		if err == nil {
 			return body, nil
@@ -840,10 +848,11 @@ func (ct *cookieTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	cookieValue := ct.cookieValue
 	ct.mu.RUnlock()
 	if cookieValue != "" && (ct.unrestricted || f95ZoneHost(req)) {
-		if existing := req.Header.Get("Cookie"); existing != "" {
-			req.Header.Set("Cookie", existing+"; "+cookieValue)
-		} else {
+		existing := req.Header.Get("Cookie")
+		if existing == "" {
 			req.Header.Set("Cookie", cookieValue)
+		} else if !strings.Contains(existing, cookieValue) {
+			req.Header.Set("Cookie", existing+"; "+cookieValue)
 		}
 	}
 	return ct.inner.RoundTrip(req)

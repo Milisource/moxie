@@ -67,7 +67,7 @@
   let manualRequired = $derived(!!gameState?.manualRequired)
   let manualHost = $derived(gameState?.manualHost || '')
   let updateError = $derived(gameState?.phase === 'error' ? (gameState.error || 'Update failed') : '')
-  let providingFile = $state(false)   // transient — the native file picker is modal
+
 
   // ── Install (browser-added games with no local copy) ──
   let installTargets = $state([])
@@ -522,7 +522,10 @@
     return detail?.updateState === 'available' ? `${base}. Update available.` : base
   }
 
+  let launching = $state(false)
   async function handlePlay() {
+    if (launching) return
+    launching = true
     launchStatus = {msg: '', error: ''}
     try {
       const msg = await PlayGame(gameId)
@@ -531,6 +534,8 @@
       onUpdate()
     } catch (err) {
       launchStatus = {msg: '', error: String(err).replace(/^Error:\s*/, '')}
+    } finally {
+      launching = false
     }
   }
 
@@ -953,7 +958,7 @@
               {/if}
             </div>
           {:else}
-            <button class="btn btn-primary btn-play" onclick={handlePlay}>▶︎ Play</button>
+            <button class="btn btn-primary btn-play" onclick={handlePlay} disabled={launching}>{launching ? 'Launching…' : '▶︎ Play'}</button>
           {/if}
 
           <div class="play-bar-updates">
@@ -1001,9 +1006,9 @@
                     <button
                       class="btn btn-sm btn-primary"
                       onclick={() => onProvideFile(gameId)}
-                      disabled={providingFile || updating || installing}
+                      disabled={updating || installing}
                     >
-                      {providingFile ? 'Selecting…' : 'Choose Downloaded Archive…'}
+                      Choose Downloaded Archive…
                     </button>
                   </div>
                 {/if}
