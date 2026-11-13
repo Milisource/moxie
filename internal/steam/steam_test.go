@@ -780,6 +780,9 @@ func TestResolveSteamPaths(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReadShortcuts_WriteShortcuts_RoundTrip(t *testing.T) {
+	if running, _ := IsSteamRunning(); running {
+		t.Skip("Steam is running on this host")
+	}
 	original := []ShortcutEntry{
 		{
 			AppName:            "In-Game Game",
@@ -855,6 +858,9 @@ func TestReadShortcuts_WriteShortcuts_RoundTrip(t *testing.T) {
 // layout, (2) deterministic serialization, and (3) a semantic round-trip
 // that loses nothing.
 func TestReadShortcuts_RealFixture(t *testing.T) {
+	if running, _ := IsSteamRunning(); running {
+		t.Skip("Steam is running on this host")
+	}
 	t.Parallel()
 
 	fixture := filepath.Join("testdata", "shortcuts_real.vdf")
@@ -1583,6 +1589,9 @@ func TestKnownProtonVersions_NumberedToolIDs(t *testing.T) {
 // is surfaced as an error rather than being silently treated as "nothing to
 // remove" — consistent with GetProtonVersion.
 func TestRemoveProtonVersion_CorruptConfigError(t *testing.T) {
+	if running, _ := IsSteamRunning(); running {
+		t.Skip("Steam is running on this host")
+	}
 	t.Parallel()
 	if !IsLinux() {
 		t.Skip("Proton configuration is Linux-only")

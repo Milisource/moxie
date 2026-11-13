@@ -297,6 +297,9 @@ func (r *HostResolver) resolveWorkupload(rawURL string) (*ResolveResult, error) 
 		if err != nil {
 			return nil, fmt.Errorf("workupload GET page after captcha: %w", err)
 		}
+		if pageResp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("workupload: GET page after captcha returned HTTP %d", pageResp.StatusCode)
+		}
 		if strings.Contains(string(pageBody), workuploadWallMarker) {
 			return nil, fmt.Errorf("workupload: captcha solve did not clear the security wall")
 		}

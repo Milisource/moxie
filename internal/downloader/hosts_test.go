@@ -1599,7 +1599,7 @@ func TestUnwrapMasked_OK(t *testing.T) {
 
 	r := NewHostResolver()
 	r.SetF95Cookie("xf_session=abc123")
-	got, err := r.unwrapMasked("https://f95zone.to/masked/pixeldrain.com/x")
+	got, err := r.unwrapMasked(context.Background(), "https://f95zone.to/masked/pixeldrain.com/x")
 	if err != nil {
 		t.Fatalf("unwrapMasked failed: %v", err)
 	}
@@ -1634,7 +1634,7 @@ func TestUnwrapMasked_BrowserCookieFallback(t *testing.T) {
 		}
 		return ""
 	}
-	got, err := r.unwrapMasked(srv.URL + "/masked/example.com/x")
+	got, err := r.unwrapMasked(context.Background(), srv.URL + "/masked/example.com/x")
 	if err != nil {
 		t.Fatalf("unwrapMasked failed: %v", err)
 	}
@@ -1653,7 +1653,7 @@ func TestUnwrapMasked_CaptchaStatus(t *testing.T) {
 
 	r := NewHostResolver()
 	r.unwrapBackoff = nil // single attempt — the retry path is covered separately
-	_, err := r.unwrapMasked(srv.URL + "/masked/example.com/x")
+	_, err := r.unwrapMasked(context.Background(), srv.URL + "/masked/example.com/x")
 	if err == nil {
 		t.Fatal("expected error for captcha status")
 	}
@@ -1714,7 +1714,7 @@ func TestUnwrapMasked_CaptchaRetries(t *testing.T) {
 
 	r := NewHostResolver()
 	r.unwrapBackoff = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
-	got, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	got, err := r.unwrapMasked(context.Background(), srv.URL + "/masked/pixeldrain.com/x")
 	if err != nil {
 		t.Fatalf("unwrapMasked with retries: %v", err)
 	}
@@ -1749,7 +1749,7 @@ func TestUnwrapMasked_CaptchaExhaustsSolver(t *testing.T) {
 		}
 		return "https://pixeldrain.com/u/solved", nil
 	})
-	got, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	got, err := r.unwrapMasked(context.Background(), srv.URL + "/masked/pixeldrain.com/x")
 	if err != nil {
 		t.Fatalf("unwrapMasked with solver: %v", err)
 	}
@@ -1775,7 +1775,7 @@ func TestUnwrapMasked_CaptchaExhaustsNoSolver(t *testing.T) {
 
 	r := NewHostResolver()
 	r.unwrapBackoff = []time.Duration{time.Millisecond}
-	_, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	_, err := r.unwrapMasked(context.Background(), srv.URL + "/masked/pixeldrain.com/x")
 	if err == nil {
 		t.Fatal("expected the captcha error after retries exhausted")
 	}
@@ -1808,7 +1808,7 @@ func TestUnwrapMasked_Pacing(t *testing.T) {
 	r.unwrapLimiter = rate.NewLimiter(rate.Every(wantInterval), 1)
 	start := time.Now()
 	for i := 0; i < 4; i++ {
-		if _, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x"); err != nil {
+		if _, err := r.unwrapMasked(context.Background(), srv.URL + "/masked/pixeldrain.com/x"); err != nil {
 			t.Fatalf("unwrap %d: %v", i, err)
 		}
 	}
@@ -1847,7 +1847,7 @@ func TestUnwrapMasked_ErrorStatus(t *testing.T) {
 	defer srv.Close()
 
 	r := NewHostResolver()
-	_, err := r.unwrapMasked(srv.URL + "/masked/example.com/x")
+	_, err := r.unwrapMasked(context.Background(), srv.URL + "/masked/example.com/x")
 	if err == nil {
 		t.Fatal("expected error for error status")
 	}
@@ -1872,7 +1872,7 @@ func TestUnwrapMasked_NonJSONFallsBackToRedirect(t *testing.T) {
 	defer srv.Close()
 
 	r := NewHostResolver()
-	got, err := r.unwrapMasked(srv.URL + "/masked/pixeldrain.com/x")
+	got, err := r.unwrapMasked(context.Background(), srv.URL + "/masked/pixeldrain.com/x")
 	if err != nil {
 		t.Fatalf("unwrapMasked fallback failed: %v", err)
 	}

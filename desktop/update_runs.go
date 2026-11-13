@@ -121,13 +121,6 @@ func (r *updateRuns) claimed(id int64) bool {
 	return ok
 }
 
-// count returns the number of claimed games.
-func (r *updateRuns) count() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.games)
-}
-
 // cancel aborts one game's run. False when it isn't running.
 func (r *updateRuns) cancel(id int64) bool {
 	r.mu.Lock()

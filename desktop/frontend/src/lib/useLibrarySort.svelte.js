@@ -90,6 +90,12 @@ export function compareVersions(a, b) {
 }
 
 export function toggleSort(col) {
+  // 'recent' is inherently most-recent-first; direction is not toggleable.
+  if (col === 'recent') {
+    library.sortColumn = 'recent'
+    library.sortDesc = true
+    return
+  }
   if (library.sortColumn === col) {
     library.sortDesc = !library.sortDesc
   } else {
@@ -107,44 +113,52 @@ export function onSortSelect(e) {
   library.sortColumn = e.target.value
   // Recency & date-added default to most-recent-first; column sorts start
   // ascending (clicking a header toggles direction).
-  library.sortDesc = e.target.value === 'added'
+  library.sortDesc = e.target.value === 'added' || e.target.value === 'recent'
 }
 
 export function sortCompare(a, b) {
-  switch (library.sortColumn) {
-    case 'recent': {
-      const ta = tsVal(a, 'lastPlayed')
-      const tb = tsVal(b, 'lastPlayed')
-      if (ta === null && tb === null) {
-        return (a.title || '').localeCompare(b.title || '', undefined, {numeric: true})
-      }
-      if (ta === null) return 1
-      if (tb === null) return -1
-      return tb - ta                     // most recent first
+  // 'recent' is inherently most-recent-first and ignores the toggle.
+  if (library.sortColumn === 'recent') {
+    const ta = tsVal(a, 'lastPlayed')
+    const tb = tsVal(b, 'lastPlayed')
+    if (ta === null && tb === null) {
+      return (a.title || '').localeCompare(b.title || '', undefined, {numeric: true})
     }
+    if (ta === null) return 1
+    if (tb === null) return -1
+    return tb - ta
+  }
+  let cmp = 0
+  switch (library.sortColumn) {
     case 'added': {
       const ta = tsVal(a, 'createdAt')
       const tb = tsVal(b, 'createdAt')
-      let cmp
       if (ta === null && tb === null) cmp = (a.id || 0) - (b.id || 0)
       else if (ta === null) cmp = 1
       else if (tb === null) cmp = -1
       else cmp = ta - tb
-      return library.sortDesc ? -cmp : cmp
+      break
     }
     case 'title':
-      return (a.title || '').localeCompare(b.title || '', undefined, {numeric: true})
+      cmp = (a.title || '').localeCompare(b.title || '', undefined, {numeric: true})
+      break
     case 'engine':
-      return (a.engine || '').localeCompare(b.engine || '')
+      cmp = (a.engine || '').localeCompare(b.engine || '')
+      break
     case 'version':
-      return compareVersions(a.version, b.version)
+      cmp = compareVersions(a.version, b.version)
+      break
     case 'status':
-      return (a.status || '').localeCompare(b.status || '')
+      cmp = (a.status || '').localeCompare(b.status || '')
+      break
     case 'size':
-      return (a.sizeBytes || 0) - (b.sizeBytes || 0)
+      cmp = (a.sizeBytes || 0) - (b.sizeBytes || 0)
+      break
     default:
-      return 0
+      cmp = 0
   }
+  if (cmp === 0) return 0
+  return library.sortDesc ? -cmp : cmp
 }
 
 // ── Per-game display helpers (shared by grid card + table row) ─

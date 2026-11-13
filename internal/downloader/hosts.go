@@ -114,7 +114,6 @@ type HostResolver struct {
 	// rate-budgeted (live A/B: ok, ok, wall, wall, wall, wall) — pacing
 	// unwraps keeps bursts under the budget, retries ride out transient
 	// walls, and the browser solver handles persistent ones.
-	lastCaptcha   time.Time
 	unwrapBackoff []time.Duration
 	unwrapLimiter *rate.Limiter
 }
@@ -326,12 +325,16 @@ type ResolveResult struct {
 // F95Zone masked URLs (f95zone.to/masked/) are resolved via HEAD redirect first,
 // then host-specific resolution is applied on the real download URL.
 func (r *HostResolver) Resolve(url string, host string) (*ResolveResult, error) {
-	return r.resolveDepth(url, host, 0)
+	return r.ResolveContext(context.Background(), url, host)
+}
+
+func (r *HostResolver) ResolveContext(ctx context.Context, url string, host string) (*ResolveResult, error) {
+	return r.resolveDepth(ctx, url, host, 0)
 }
 
 // resolveDepth implements Resolve with a recursion bound so a malicious
 // masked→masked redirect chain cannot recurse indefinitely.
-func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*ResolveResult, error) {
+func (r *HostResolver) resolveDepth(ctx context.Context, rawURL string, host string, depth int) (*ResolveResult, error) {
 	if depth > 5 {
 		return nil, fmt.Errorf("masked URL chain too deep")
 	}
@@ -353,13 +356,13 @@ func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*Res
 	// a browser cannot revive an expired link, and a Cloudflare challenge
 	// the clearance refresh could not clear would stop the browser too.
 	if u, err := url.Parse(rawURL); err == nil && isF95DownloadLinkURL(u) {
-		dest, err := r.resolveF95DownloadLink(context.Background(), rawURL)
+		dest, err := r.resolveF95DownloadLink(ctx, rawURL)
 		if errors.Is(err, errF95NeedsBrowser) {
 			if r.dlSolver == nil {
 				return nil, fmt.Errorf("F95Zone download link %s needs the browser check; enable browser-assisted downloads with `moxie config set browser_fallback auto` or MOXIE_BROWSER=auto: %w", rawURL, ErrBrowserCheckRequired)
 			}
 			log.Info("F95Zone download link needs the browser check; handing it to the browser", "url", rawURL)
-			dest, err = r.dlSolver(context.Background(), rawURL)
+			dest, err = r.dlSolver(ctx, rawURL)
 			if err != nil {
 				// Keep the classification: every mirror goes through the same
 				// check page, so callers should stop the mirror loop instead
@@ -374,7 +377,7 @@ func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*Res
 			return nil, fmt.Errorf("resolve F95Zone download link: no destination")
 		}
 		log.Debug("F95Zone download link resolved", "url", rawURL, "dest", dest)
-		return r.resolveDepth(dest, IdentifyHostInURL(dest), depth+1)
+		return r.resolveDepth(ctx, dest, IdentifyHostInURL(dest), depth+1)
 	}
 
 	// F95Zone masked URLs are redirect endpoints — unwrap them first by following
@@ -392,11 +395,11 @@ func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*Res
 			if cached, ok := r.resolvedCache(rawURL); ok && cached != "" && cached != rawURL && !IsBrowserFileURL(cached) {
 				cachedHost := IdentifyHostInURL(cached)
 				log.Debug("masked URL cache hit", "masked", rawURL, "resolved", cached, "host", cachedHost)
-				return r.resolveDepth(cached, cachedHost, depth+1)
+				return r.resolveDepth(ctx, cached, cachedHost, depth+1)
 			}
 		}
 
-		realURL, err := r.unwrapMasked(rawURL)
+		realURL, err := r.unwrapMasked(ctx, rawURL)
 		realHost := IdentifyHostInURL(realURL)
 		log.Debug("masked unwrap result", "real_url", realURL, "real_host", realHost, "error", err)
 		if err != nil {
@@ -416,7 +419,7 @@ func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*Res
 				r.resolvedCachePut(rawURL, realURL, realHost)
 			}
 			log.Debug("masked URL resolved", "original", rawURL, "real", realURL)
-			return r.resolveDepth(realURL, realHost, depth+1)
+			return r.resolveDepth(ctx, realURL, realHost, depth+1)
 		}
 	}
 
@@ -473,8 +476,8 @@ func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*Res
 //
 // Falls back to followRedirect (HTTP redirect chain) for older F95Zone
 // deployments that answer non-JSON.
-func (r *HostResolver) unwrapMasked(rawURL string) (string, error) {
-	r.paceUnwrap(context.Background())
+func (r *HostResolver) unwrapMasked(ctx context.Context, rawURL string) (string, error) {
+	r.paceUnwrap(ctx)
 
 	status, msg, err := r.unwrapOnce(rawURL)
 	if err != nil {
@@ -486,7 +489,11 @@ func (r *HostResolver) unwrapMasked(rawURL string) (string, error) {
 		delay := backoff[0]
 		backoff = backoff[1:]
 		log.Debug("masked unwrap captcha — retrying", "url", rawURL, "delay", delay)
-		time.Sleep(delay)
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
 		status, msg, err = r.unwrapOnce(rawURL)
 		if err != nil {
 			return "", err
@@ -502,7 +509,7 @@ func (r *HostResolver) unwrapMasked(rawURL string) (string, error) {
 	case "captcha":
 		if r.maskedSolver != nil {
 			log.Info("masked unwrap: captcha wall persists — solving in the browser", "url", rawURL)
-			realURL, err := r.maskedSolver(context.Background(), rawURL)
+			realURL, err := r.maskedSolver(ctx, rawURL)
 			if err == nil && realURL != "" && realURL != rawURL {
 				log.Info("masked unwrap: browser solver returned destination", "real_url", realURL)
 				return realURL, nil

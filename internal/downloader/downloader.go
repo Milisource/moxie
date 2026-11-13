@@ -112,7 +112,7 @@ func DownloadWithContext(ctx context.Context, urlStr, host, destDir string, expe
 	if f95Cookie != "" {
 		resolver.SetF95Cookie(f95Cookie)
 	}
-	resolved, resolveErr := resolver.Resolve(urlStr, host)
+	resolved, resolveErr := resolver.ResolveContext(ctx, urlStr, host)
 	if resolveErr != nil {
 		// Mega links are downloaded via the megatools subprocess: the
 		// encrypted protocol is not plain HTTP, so resolveMega returns
@@ -276,6 +276,7 @@ var sharedDownloadTransport = &http.Transport{
 	Proxy:                 http.ProxyFromEnvironment,
 	MaxIdleConns:          8,
 	IdleConnTimeout:       90 * time.Second,
+	DialContext: safeDialContext,
 }
 
 func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]string, originalURL, host, destDir string, expectedTotal int64, onProgress func(Progress), cookieSource func(hostname string) string, browserFallback func(ctx context.Context, url, destDir string) (string, error), throttleProbe func(context.Context) (*ThrottledError, bool)) (string, error) {
@@ -356,6 +357,15 @@ func downloadWithHeaders(ctx context.Context, urlStr string, headers map[string]
 	client := &http.Client{
 		Timeout:   downloadTimeout,
 		Transport: downloadTransport(),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			if !isValidDownloadURL(req.URL.String()) {
+				return fmt.Errorf("redirect to disallowed URL blocked")
+			}
+			return nil
+		},
 	}
 
 	resp, err := client.Do(req)
@@ -776,4 +786,36 @@ func contentDispositionFilename(header string) string {
 		return ""
 	}
 	return name
+}
+
+
+// safeDialContext resolves the hostname, rejects private/loopback/link-local
+// targets (defeating DNS rebinding and nip.io-style hostnames), then dials.
+func safeDialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+		port = ""
+	}
+	if port == "" {
+		port = "80"
+	}
+	// If the host is already an IP, validate directly.
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return nil, fmt.Errorf("connection to private address blocked")
+		}
+	} else {
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		if err != nil {
+			return nil, err
+		}
+		for _, ip := range ips {
+			if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+				return nil, fmt.Errorf("connection to private address blocked")
+			}
+		}
+	}
+	d := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	return d.DialContext(ctx, network, address)
 }

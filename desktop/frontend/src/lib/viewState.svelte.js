@@ -180,7 +180,13 @@ export const browser = $state({
   // whichever surface is shown. They survive tab switches (this object) and
   // app restarts (persisted). `engines` is the selected canonical engine-name
   // list; engineMode decides whether that list includes or excludes.
-  filters: readStoredJSON(BROWSE_FILTERS_KEY, {engines: [], engineMode: 'include', hideAICG: false}),
+  filters: (() => {
+    const v = readStoredJSON(BROWSE_FILTERS_KEY, {engines: [], engineMode: 'include', hideAICG: false})
+    if (!v || !Array.isArray(v.engines) || (v.engineMode !== 'include' && v.engineMode !== 'exclude')) {
+      return {engines: [], engineMode: 'include', hideAICG: false}
+    }
+    return {engines: v.engines, engineMode: v.engineMode, hideAICG: !!v.hideAICG}
+  })(),
 })
 
 // Persists a Browse-filter patch (engine selection / mode / AI-CG toggle) so the
@@ -207,7 +213,11 @@ export const collectionsView = $state({
   // recomputed client-side from the currently loaded game list and never
   // needs to be kept in sync with server state. Persisted so rules survive
   // an app restart the same way viewMode/density do.
-  smartCollections: readStoredJSON(SMART_COLLECTIONS_KEY, []),
+  smartCollections: (() => {
+    const v = readStoredJSON(SMART_COLLECTIONS_KEY, [])
+    if (!Array.isArray(v) || !v.every(r => r && typeof r.id === 'string' && typeof r.field === 'string')) return []
+    return v
+  })(),
 })
 
 export function addSmartCollection(field, value) {

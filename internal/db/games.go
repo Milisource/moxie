@@ -514,7 +514,7 @@ func (db *Database) UpdateGame(g *Game) error {
 		return err
 	}
 
-	_, err = db.conn.Exec(`
+	res, err := db.conn.Exec(`
 		UPDATE games
 		SET title=?, engine=?, path=?, exe_path=?, version=?, size_bytes=?,
 		    f95_url=?, f95_thread_id=?, tags=?, status=?, notes=?,
@@ -535,7 +535,13 @@ func (db *Database) UpdateGame(g *Game) error {
 		nullableInt64Ptr(g.SeriesID), g.SeriesOrder,
 		now, g.ID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // UpdateGameScanFields atomically applies scanner-detected values to an

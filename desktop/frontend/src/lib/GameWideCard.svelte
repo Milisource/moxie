@@ -117,6 +117,7 @@
       class:state-error={ctl.state === 'error'}
       disabled={ctl.state === 'launching'}
       title={ctl.msg || 'Play'}
+      tabindex="-1"
       onclick={onPlay}
     >
       {#if ctl.state === 'launching'}

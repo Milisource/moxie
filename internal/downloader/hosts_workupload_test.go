@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -530,7 +531,7 @@ func TestWorkuploadLiveProbe(t *testing.T) {
 		return
 	}
 	r.SetF95Cookie(cookie)
-	real, err := r.unwrapMasked(maskedURL)
+	real, err := r.unwrapMasked(context.Background(), maskedURL)
 	if err != nil {
 		t.Logf("skipping masked URL (unwrap failed): %v", err)
 		return

@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"os"
@@ -42,7 +43,7 @@ func TestMaskedUnwrapLive(t *testing.T) {
 	}
 
 	// 2. The masked unwrap itself.
-	realURL, err := r.unwrapMasked(masked)
+	realURL, err := r.unwrapMasked(context.Background(), masked)
 	if err != nil {
 		t.Logf("UNWRAP FAILED: %v", err)
 		if strings.Contains(err.Error(), "captcha") {

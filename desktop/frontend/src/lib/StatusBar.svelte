@@ -42,7 +42,7 @@
 </script>
 
 <footer class="status-bar">
-  <span class="status-msg">{statusMsg}</span>
+  <span class="status-msg" role="status" aria-live="polite">{statusMsg}</span>
   <span class="status-right">
     {#if updateAvailable}
       <button

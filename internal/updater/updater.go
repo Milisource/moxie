@@ -713,14 +713,6 @@ func keepIfAbsentPatterns(engine string) []string {
 	return out
 }
 
-// allEnginePatterns returns both sets combined (used by tests that want the
-// full preserve list for an engine).
-func allPreservePatterns(engine string) []string {
-	out := append([]string{}, patterns(engine)...)
-	out = append(out, keepIfAbsentPatterns(engine)...)
-	return out
-}
-
 var commonPatterns = []string{
 	"*.sav", "*.save",
 	"persistent",

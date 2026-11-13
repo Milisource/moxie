@@ -10,7 +10,7 @@
  */
 export function formatBytes(bytes) {
   if (!bytes || bytes <= 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
   const i = Math.min(Math.max(Math.floor(Math.log(bytes) / Math.log(1024)), 0), units.length - 1)
   const val = (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)
   return `${val} ${units[i]}`
@@ -21,7 +21,7 @@ export function formatBytes(bytes) {
  */
 export function formatSpeed(bps) {
   if (!bps || bps <= 0) return ''
-  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
+  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s', 'TB/s', 'PB/s']
   const i = Math.min(Math.max(Math.floor(Math.log(bps) / Math.log(1024)), 0), units.length - 1)
   const val = (bps / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)
   return `${val} ${units[i]}`
