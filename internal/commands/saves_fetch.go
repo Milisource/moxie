@@ -255,10 +255,10 @@ func downloadCandidate(ctx context.Context, client *scraper.Client, cookie strin
 		return path, n, nil
 
 	case scraper.SaveCandidateExternal:
-		if err := downloader.Download(candidate.URL, dir, 0, nil, cookie); err != nil {
+		path, err := downloader.DownloadWithContext(ctx, candidate.URL, candidate.Host, dir, 0, nil, cookie)
+		if err != nil {
 			return "", 0, fmt.Errorf("download from %s: %w", candidate.Host, err)
 		}
-		path := downloader.FindMostRecentFile(dir)
 		if path == "" {
 			return "", 0, fmt.Errorf("download from %s produced no file", candidate.Host)
 		}

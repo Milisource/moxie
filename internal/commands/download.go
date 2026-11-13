@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -41,8 +40,8 @@ func prepareDownloader(database *db.Database) {
 }
 
 // Download downloads a game from F95Zone download links with platform priority.
-func Download(args []string) {
-	fs := flag.NewFlagSet("download", flag.ExitOnError)
+func Download(args []string) int {
+	fs := flag.NewFlagSet("download", flag.ContinueOnError)
 	downloadDir := fs.String("dir", "", "Download directory (default: game path)")
 	extract := fs.Bool("extract", true, "Auto-extract archives after download")
 	cookieStr := fs.String("cookie", "", "Cookie header from browser")
@@ -55,7 +54,9 @@ func Download(args []string) {
 	watch := fs.Bool("watch", false, "Watch download directory for new files and auto-install (use with --open)")
 	browserDir := fs.String("browser-dir", "", "Browser download directory to watch (default: ~/Downloads)")
 	verbose := fs.Bool("verbose", false, "Verbose logging (debug level)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
 
 	if *verbose {
 		log.SetLevel(slog.LevelDebug)
@@ -74,7 +75,7 @@ func Download(args []string) {
 		bridge, err := extensionbridge.New(extensionbridge.WithOpener(openURL))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error starting the extension bridge: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
 		defer bridge.Close()
 		var extTimedOut bool
@@ -109,11 +110,23 @@ func Download(args []string) {
 	// ── Batch mode ──
 	if *all {
 		if *open {
-			downloadAllOpen(database, cookie, string(targetPlatform), dlWatchDir, *extract, *watch)
+			failed, err := downloadAllOpen(database, cookie, string(targetPlatform), dlWatchDir, *extract, *watch)
+			if err != nil {
+				return 1
+			}
+			if failed > 0 {
+				return 2
+			}
 		} else {
-			downloadAll(database, cookie, *downloadDir, string(targetPlatform), *extract, parseHostExclusions(*excludeHost))
+			failed := downloadAll(database, cookie, *downloadDir, string(targetPlatform), *extract, parseHostExclusions(*excludeHost))
+			if failed < 0 {
+				return 1
+			}
+			if failed > 0 {
+				return 2
+			}
 		}
-		return
+		return 0
 	}
 
 	if fs.NArg() < 1 {
@@ -122,34 +135,38 @@ func Download(args []string) {
 		fmt.Fprintf(os.Stderr, "\nNote: flags must come BEFORE the game ID.\n")
 		fmt.Fprintf(os.Stderr, "\nFlags:\n")
 		fs.PrintDefaults()
-		os.Exit(1)
+		return 1
 	}
 
 	game := ResolveGame(database, fs.Arg(0))
 	if game == nil {
 		fmt.Fprintf(os.Stderr, "Cancelled.\n")
-		os.Exit(1)
+		return 1
 	}
 
 	if *open {
-		downloadSingleOpen(database, game, cookie, string(targetPlatform), dlWatchDir, *extract, *watch)
+		if err := downloadSingleOpen(database, game, cookie, string(targetPlatform), dlWatchDir, *extract, *watch); err != nil {
+			return 1
+		}
 	} else if err := downloadSingle(database, game, cookie, *downloadDir, string(targetPlatform), *extract, nil, parseHostExclusions(*excludeHost)); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
-// downloadAll downloads all games with pending version updates.
-func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform string, extract bool, excludedHosts map[string]bool) {
+// downloadAll downloads all games with pending version updates. It returns
+// the failed count, or -1 if the pending games could not be listed.
+func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform string, extract bool, excludedHosts map[string]bool) int {
 	queue, err := database.GamesNeedingUpdate()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error listing games: %v\n", err)
-		os.Exit(1)
+		return -1
 	}
 
 	if len(queue) == 0 {
 		fmt.Fprintln(os.Stderr, "No games have pending updates.")
-		return
+		return 0
 	}
 
 	fmt.Fprintf(os.Stderr, "Downloading updates for %d games...\n\n", len(queue))
@@ -173,12 +190,14 @@ func downloadAll(database *db.Database, cookie, downloadDir, targetPlatform stri
 	if failed > 0 {
 		fmt.Fprintf(os.Stderr, "  %d failed\n", failed)
 	}
+	return failed
 }
 
 // scoredDL pairs a download link with its host/platform score.
 type scoredDL struct {
 	link  db.DownloadLink
 	score int
+	patch bool
 }
 
 // scoreDownloadLinks ranks the usable links for a platform, dropping
@@ -186,18 +205,15 @@ type scoredDL struct {
 // is not a failure, so the downloader would otherwise keep choosing it).
 // skippedExcluded counts the links removed by the exclusion so the caller can
 // explain an empty result.
-func scoreDownloadLinks(links []db.DownloadLink, platform downloader.Platform, excluded map[string]bool) (scored []scoredDL, skippedExcluded int) {
-	for _, link := range links {
-		if downloader.IsOnlineOnly(link.Name, link.URL) {
-			continue
-		}
-		if excluded[strings.ToLower(strings.TrimSpace(link.Host))] {
-			skippedExcluded++
-			continue
-		}
-		scored = append(scored, scoredDL{link, downloader.ScoreDownloadLink(link, platform)})
+func scoreDownloadLinks(links []db.DownloadLink, platform downloader.Platform, excluded map[string]bool, game *db.Game) (scored []scoredDL, rank downloader.RankResult) {
+	opts := downloader.UpdateRankOptions(game)
+	opts.TargetPlatform = platform
+	opts.ExcludeHosts = excluded
+	rank = downloader.RankDownloadLinks(links, opts)
+	for _, ranked := range rank.Links {
+		scored = append(scored, scoredDL{link: ranked.Link, score: ranked.Score, patch: ranked.Patch})
 	}
-	return scored, skippedExcluded
+	return scored, rank
 }
 
 // parseHostExclusions turns a comma-separated host list into a lookup set.
@@ -215,6 +231,13 @@ func parseHostExclusions(v string) map[string]bool {
 // Returns an error when the download did not complete; nil on success or
 // when skipped (e.g. download already in progress).
 func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, targetPlatform string, extract bool, client *scraper.Client, excludedHosts map[string]bool) error {
+	return downloadSingleContext(context.Background(), database, game, cookie, downloadDir, targetPlatform, extract, client, excludedHosts)
+}
+
+func downloadSingleContext(ctx context.Context, database *db.Database, game *db.Game, cookie, downloadDir, targetPlatform string, extract bool, client *scraper.Client, excludedHosts map[string]bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	destDir := downloadDir
 	if destDir == "" {
 		// One directory per game: concurrent updates must never share a
@@ -316,25 +339,28 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 		return fmt.Errorf("no download links found")
 	}
 
-	scored, skippedExcluded := scoreDownloadLinks(links, platform, excludedHosts)
+	scored, rank := scoreDownloadLinks(links, platform, excludedHosts, game)
 	if len(scored) == 0 {
-		if skippedExcluded > 0 {
-			fmt.Fprintf(os.Stderr, "  – No downloadable links (all %d hosts excluded).\n", skippedExcluded)
+		if rank.SkippedExtra+rank.SkippedPatch+rank.SkippedPlatform > 0 {
+			fmt.Fprintf(os.Stderr, "  – No usable links: %d extras/mods, %d patches for other versions, %d other platforms.\n",
+				rank.SkippedExtra, rank.SkippedPatch, rank.SkippedPlatform)
+			return fmt.Errorf("no usable download links")
+		}
+		if rank.SkippedExcluded > 0 {
+			fmt.Fprintf(os.Stderr, "  – No downloadable links (all %d hosts excluded).\n", rank.SkippedExcluded)
 			return fmt.Errorf("every download host was excluded")
 		}
 		fmt.Fprintf(os.Stderr, "  – No downloadable links (all online-only).\n")
 		return fmt.Errorf("no downloadable links (all online-only)")
 	}
-	if skippedExcluded > 0 {
-		fmt.Fprintf(os.Stderr, "  Skipped %d link(s) from excluded hosts.\n", skippedExcluded)
+	if rank.SkippedExcluded > 0 {
+		fmt.Fprintf(os.Stderr, "  Skipped %d link(s) from excluded hosts.\n", rank.SkippedExcluded)
 	}
-	sort.SliceStable(scored, func(i, j int) bool {
-		return scored[i].score > scored[j].score
-	})
 
 	log.Info("links scored for download", "game_id", game.ID, "total_links", len(scored), "best_host", scored[0].link.Host, "best_score", scored[0].score)
 
 	bestLink := scored[0].link
+	selectedPatch := scored[0].patch
 	fmt.Fprintf(os.Stderr, "  Selected: [%s] [%s] %s\n", bestLink.Platform, bestLink.Host, bestLink.Name)
 
 	dlRecord := &db.Download{
@@ -374,9 +400,21 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 	if groups := downloader.GroupMultiPartLinks(groupLinks); len(groups) > 0 {
 		group := groups[0]
 		fmt.Fprintf(os.Stderr, "  Multi-part archive: %d parts (%s)\n", len(group.Parts), group.Prefix)
-		finalFile, err := downloader.DownloadMultiPart(group, destDir, progressFn, cookie)
+		finalFile, err := downloader.DownloadMultiPartWithContext(ctx, group, destDir, progressFn, cookie)
 		if err == nil && downloader.IsValidGameFile(finalFile) {
 			multiPartFinal = finalFile
+			// The group can differ from the top single link.
+		groupMode:
+			for _, sl := range scored {
+				for _, candidates := range group.Parts {
+					for _, part := range candidates {
+						if part.URL == sl.link.URL && part.Name == sl.link.Name {
+							selectedPatch = sl.patch
+							break groupMode
+						}
+					}
+				}
+			}
 			dlRecord.Filename = filepath.Base(finalFile)
 			dlRecord.Status = db.DownloadStatusDownloading
 			database.UpdateDownload(dlRecord)
@@ -391,8 +429,13 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 		}
 	}
 
+	downloadedFile := multiPartFinal
 	if multiPartFinal == "" {
 		for i, sl := range scored {
+			if err := ctx.Err(); err != nil {
+				lastErr = err
+				break
+			}
 			link := sl.link
 
 			if i > 0 {
@@ -416,9 +459,11 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 				database.UpdateDownload(dlRecord)
 			}
 
-			err = downloader.Download(link.URL, destDir, link.Size, progressFn, cookie)
+			downloadedFile, err = downloader.DownloadWithContext(ctx, link.URL, link.Host, destDir, link.Size, progressFn, cookie)
+			if err == nil && downloadedFile == "" {
+				err = fmt.Errorf("download produced no file")
+			}
 			if err == nil {
-				downloadedFile := findDownloadedFile(destDir, dlRecord.Filename)
 				if downloadedFile != "" && !downloader.IsValidGameFile(downloadedFile) {
 					fi, _ := os.Stat(downloadedFile)
 					size := int64(0)
@@ -431,6 +476,8 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 				}
 			}
 			if err == nil {
+				dlRecord.Filename = filepath.Base(downloadedFile)
+				selectedPatch = sl.patch
 				lastErr = nil
 				break
 			}
@@ -482,10 +529,6 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 
 	// Auto-extract
 	if extract {
-		downloadedFile := multiPartFinal
-		if downloadedFile == "" {
-			downloadedFile = findDownloadedFile(destDir, dlRecord.Filename)
-		}
 		if downloadedFile == "" {
 			// Reporting success without a file leaves the game queued while
 			// auto-update claims it was installed.
@@ -525,7 +568,7 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 				removeExtractionIfUnused(extractDir, extractionAdopted)
 			}()
 
-			result, err := archive.Extract(downloadedFile, extractDir, archive.Options{
+			result, err := archive.ExtractWithContext(ctx, downloadedFile, extractDir, archive.Options{
 				OnProgress: func(totalFiles, extractedFiles int, currentFile string, bytesProcessed, bytesTotal int64) {
 					if totalFiles > 0 {
 						percent := float64(extractedFiles) / float64(totalFiles) * 100
@@ -550,8 +593,28 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 			}
 			fmt.Fprintf(os.Stderr, "\n    Extracted %d files\n", result.FilesExtracted)
 
-			fmt.Fprintf(os.Stderr, "  Merging update into %s...\n", game.Path)
-			mergeResult, mergeErr := updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
+			// A payload without the game's launcher is a patch even when the
+			// link label did not say so; a full Merge would delete every file
+			// the payload does not contain.
+			exeRel := ""
+			if game.ExePath != "" {
+				if rel, err := filepath.Rel(game.Path, game.ExePath); err == nil && !strings.HasPrefix(rel, "..") {
+					exeRel = rel
+				}
+			}
+			overlay := selectedPatch || !updater.ContainsLauncher(result.Destination, exeRel)
+			phase := "Merging update"
+			if overlay {
+				phase = "Applying patch"
+			}
+			fmt.Fprintf(os.Stderr, "  %s into %s...\n", phase, game.Path)
+			var mergeResult *updater.MergeResult
+			var mergeErr error
+			if overlay {
+				mergeResult, mergeErr = updater.MergeOverlay(ctx, game.Path, string(game.Engine), result.Destination)
+			} else {
+				mergeResult, mergeErr = updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
+			}
 			if mergeErr == nil && mergeResult != nil && mergeResult.Adopted {
 				extractionAdopted = true
 			}
@@ -571,7 +634,7 @@ func downloadSingle(database *db.Database, game *db.Game, cookie, downloadDir, t
 
 			// Record the installed version so the game leaves the update
 			// queue; only now is it safe to delete the archive.
-			if installed, verr := recordInstalledVersion(database, game, downloadedFile); verr != nil {
+			if installed, verr := RecordInstalledVersion(database, game, downloadedFile, selectedPatch); verr != nil {
 				log.Warn("failed to record installed version", "game_id", game.ID, "error", verr)
 				fmt.Fprintf(os.Stderr, "    Warning: could not record version: %v\n", verr)
 			} else if installed != "" {

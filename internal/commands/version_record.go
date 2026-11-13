@@ -1,43 +1,71 @@
 package commands
 
 import (
+	"strings"
+
 	"github.com/mili/moxie/internal/db"
+	"github.com/mili/moxie/internal/log"
 	"github.com/mili/moxie/internal/version"
 )
 
-// recordInstalledVersion updates game.Version after a successful merge and
-// persists it. It returns the version now recorded (unchanged when nothing
-// could be determined).
-//
-// This is the step that takes a game out of the update queue. Without it,
-// `download` merged the files but left version != latest_version forever, so
-// the next check (and auto-update) reported the same update again.
-//
-// The payload's own filename version is the ground truth when present: a
-// mirror can lag the thread, and recording latest_version while an older
-// build is on disk would mark the game up to date and never retry the update.
-// Only when the payload carries no version does the thread version stand in.
-// A payload older than the recorded version never downgrades it.
-func recordInstalledVersion(database *db.Database, game *db.Game, archivePath string) (string, error) {
-	current := game.Version
-	candidate := current
-
-	payloadVer := ""
+// RecordedVersion chooses the installed version from the payload and thread,
+// retaining the current version when the payload would downgrade it. patch
+// means the payload was an "Update only" overlay, which may be named after the
+// version it upgrades from.
+func RecordedVersion(current, latest, archivePath string, patch bool) string {
+	payload := ""
 	if archivePath != "" {
-		payloadVer = versionFromFilename(archivePath)
+		payload = versionFromFilename(archivePath)
 	}
-	if payloadVer != "" {
-		if version.IsNewer(payloadVer, current) {
-			candidate = payloadVer
-			// "1.1.0" and the thread's "1.1" are the same release; keep the
-			// thread's spelling so the UI does not show a needless suffix.
-			if sameVersionNumbers(payloadVer, game.LatestVersion) {
-				candidate = game.LatestVersion
+	if strings.TrimSpace(current) == "" {
+		// Nothing is recorded to compare against (first install): the applied
+		// payload is the evidence of what is on disk, falling back to the
+		// thread release when the filename carries no version.
+		if payload != "" {
+			if latest != "" && version.SameCore(payload, latest) {
+				return latest
 			}
+			return payload
 		}
-	} else if version.NeedsUpdate(game.LatestVersion, current) {
-		candidate = game.LatestVersion
+		return latest
 	}
+	candidate := current
+	if payload != "" {
+		switch version.Compare(payload, current) {
+		case version.Newer:
+			candidate = payload
+			if latest != "" && version.SameCore(payload, latest) {
+				candidate = latest
+			}
+		case version.Same:
+			// A full build named after the installed release is not evidence
+			// that the thread's newer build is on disk. Only a qualifier-only
+			// difference ("1.0" vs "1.0 Final") or an overlay patch may adopt
+			// the thread version.
+			if latest != "" && version.NeedsUpdate(latest, current) &&
+				(patch || version.SameCore(payload, latest)) {
+				candidate = latest
+			}
+		case version.Changed:
+			// An unorderable payload is not evidence of an installed upgrade.
+			return current
+		case version.Older:
+			log.Warn("mirror served an older build than installed", "payload", payload, "current", current, "archivePath", archivePath)
+		}
+	} else if version.NeedsUpdate(latest, current) {
+		candidate = latest
+	}
+	if candidate == "" {
+		return current
+	}
+	return candidate
+}
+
+// RecordInstalledVersion persists the shared recording decision after a
+// successful install, marking changed versions as F95Zone-authoritative.
+func RecordInstalledVersion(database *db.Database, game *db.Game, archivePath string, patch bool) (string, error) {
+	current := game.Version
+	candidate := RecordedVersion(current, game.LatestVersion, archivePath, patch)
 
 	if candidate == "" || version.Compare(candidate, current) == version.Same {
 		return current, nil

@@ -61,8 +61,11 @@ var (
 	// ErrF95LinkGone: the link expired or no longer exists in the post — a
 	// fresh scrape of the thread yields a working one. Link-level.
 	ErrF95LinkGone = errors.New("F95Zone download link expired or removed")
-	// errF95NeedsBrowser: the page wants a check plain HTTP cannot pass.
-	errF95NeedsBrowser = errors.New("F95Zone download link needs the browser check")
+	// ErrF95NeedsBrowser means the page wants a check plain HTTP cannot pass.
+	ErrF95NeedsBrowser = errors.New("F95Zone download link needs the browser check")
+	// ErrBrowserCheckRequired marks a browser check without changing mirror retry policy.
+	ErrBrowserCheckRequired = errors.New("needs a browser check")
+	errF95NeedsBrowser      = ErrF95NeedsBrowser
 )
 
 // f95LinkMaxAge is how long a scraped /dl/ link is trusted. The site says

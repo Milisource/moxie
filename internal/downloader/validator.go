@@ -89,15 +89,15 @@ func statusError(code int) error {
 	case http.StatusOK, http.StatusPartialContent:
 		return nil
 	case http.StatusNotFound:
-		return fmt.Errorf("404 Not Found - file removed")
+		return &HTTPStatusError{StatusCode: http.StatusNotFound, Message: "404 Not Found - file removed"}
 	case http.StatusForbidden:
 		return fmt.Errorf("403 Forbidden - access denied or DMCA'd")
 	case http.StatusGone:
-		return fmt.Errorf("410 Gone - permanently removed")
+		return &HTTPStatusError{StatusCode: http.StatusGone, Message: "410 Gone - permanently removed"}
 	case http.StatusServiceUnavailable:
 		return fmt.Errorf("503 Service Unavailable - host down")
 	case http.StatusTooManyRequests:
-		return fmt.Errorf("429 Too Many Requests - rate limited")
+		return &HTTPStatusError{StatusCode: http.StatusTooManyRequests, Message: "429 Too Many Requests - rate limited"}
 	default:
 		if code >= 500 {
 			return fmt.Errorf("%d Server Error - host error", code)

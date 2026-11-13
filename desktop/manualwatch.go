@@ -152,8 +152,7 @@ func (w *manualWatcher) removeWaiter(gameID int64) {
 	w.mu.Unlock()
 }
 
-// match finds the waiting game an archive belongs to: a title match wins; with
-// exactly one waiter, that waiter is the only possible answer.
+// match finds a waiting game only when the archive filename matches its title.
 func (w *manualWatcher) match(filename string) (int64, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -171,11 +170,6 @@ func (w *manualWatcher) match(filename string) (int64, bool) {
 	}
 	if bestID != 0 {
 		return bestID, true
-	}
-	if len(w.waiters) == 1 {
-		for id := range w.waiters {
-			return id, true
-		}
 	}
 	return 0, false
 }
@@ -262,30 +256,30 @@ func (a *App) provideUpdateFileFromPath(gameID int64, archivePath string) error 
 	return a.startGameRun(gameID, "game-update", true, func(ctx context.Context) {
 		game, err := a.db.GetGame(gameID)
 		if err != nil {
-			a.emitUpdateError(gameID, "lookup", err.Error())
+			a.emitUpdateError(gameID, "lookup", err)
 			return
 		}
 		if game == nil {
-			a.emitUpdateError(gameID, "lookup", fmt.Sprintf("game with id %d not found", gameID))
+			a.emitUpdateError(gameID, "lookup", fmt.Errorf("game with id %d not found", gameID))
 			return
 		}
 		if db.IsVirtualPath(game.Path) {
 			a.emitUpdateError(gameID, "check",
-				fmt.Sprintf("%q was added from F95Zone but not yet downloaded — install it from the Downloads view before updating", game.Title))
+				fmt.Errorf("%q was added from F95Zone but not yet downloaded — install it from the Downloads view before updating", game.Title))
 			return
 		}
 		if !updatable(game.LatestVersion, game.Version) {
 			a.emitUpdateError(gameID, "check",
-				fmt.Sprintf("no update available (current version: %s)", game.Version))
+				fmt.Errorf("no update available (current version: %s)", game.Version))
 			return
 		}
 		if _, err := os.Stat(archivePath); err != nil {
-			a.emitUpdateError(gameID, "select-file", fmt.Sprintf("Downloaded file not found: %v", err))
+			a.emitUpdateError(gameID, "select-file", fmt.Errorf("Downloaded file not found: %w", err))
 			return
 		}
 		if !archive.IsArchiveFile(archivePath) {
 			a.emitUpdateError(gameID, "select-file",
-				"Downloaded file is not a recognized archive (zip, 7z, rar, tar, tar.gz, tar.bz2, tar.xz)")
+				fmt.Errorf("Downloaded file is not a recognized archive (zip, 7z, rar, tar, tar.gz, tar.bz2, tar.xz)"))
 			return
 		}
 		log.Info("game update: manual archive picked up from downloads", "gameID", gameID, "file", archivePath)

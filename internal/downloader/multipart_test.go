@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -380,5 +381,67 @@ func TestDownloadMultiPart_PartFallback(t *testing.T) {
 	}
 	if fi, _ := os.Stat(filepath.Join(dir, "Game.part1.rar")); fi == nil || fi.Size() != 50 {
 		t.Fatal("fallback candidate file missing or wrong size")
+	}
+}
+
+func TestDownloadMultiPart_ContentDispositionFilename(t *testing.T) {
+	old := testTransportOverride
+	testTransportOverride = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		suffix := "001"
+		body := "first"
+		if strings.HasSuffix(req.URL.Path, "two") {
+			suffix = "002"
+			body = "second"
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Disposition": []string{`attachment; filename="game.zip.` + suffix + `"`}}, ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})
+	defer func() { testTransportOverride = old }()
+	group := PartGroup{Prefix: "game.zip", Parts: map[int][]db.DownloadLink{
+		1: {{URL: "https://example.com/one", Name: "game.zip.001"}},
+		2: {{URL: "https://example.com/two", Name: "game.zip.002"}},
+	}}
+	path, err := DownloadMultiPart(group, t.TempDir(), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "firstsecond" || filepath.Base(path) != "game.zip" {
+		t.Fatalf("path=%q data=%q", path, data)
+	}
+}
+
+func TestDownloadMultiPart_SkipContentDispositionPart(t *testing.T) {
+	old := testTransportOverride
+	testTransportOverride = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		name := "game.part1.rar"
+		if strings.HasSuffix(req.URL.Path, "two") {
+			name = "game.part2.rar"
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Disposition": []string{`attachment; filename="` + name + `"`}}, ContentLength: 5, Body: io.NopCloser(strings.NewReader("fresh")), Request: req}, nil
+	})
+	defer func() { testTransportOverride = old }()
+	dir := t.TempDir()
+	for _, name := range []string{"game.part1.rar", "game.part2.rar"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("saved"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	group := PartGroup{Prefix: "game", Parts: map[int][]db.DownloadLink{
+		1: {{URL: "https://example.com/one", Name: "game.part1.rar"}},
+		2: {{URL: "https://example.com/two", Name: "game.part2.rar"}},
+	}}
+	path, err := DownloadMultiPart(group, dir, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "saved" {
+		t.Fatalf("existing part overwritten: %q", data)
 	}
 }

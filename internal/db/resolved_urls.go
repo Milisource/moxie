@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,11 @@ func (db *Database) GetResolvedURL(maskedURL string) (string, bool) {
 		WHERE masked_url = ? AND created_at >= strftime('%s', 'now') - ?
 	`, maskedURL, int64(ResolvedURLTTL.Seconds())).Scan(&resolved)
 	if err != nil {
+		return "", false
+	}
+	// Browser handoffs are single-use process-local tokens, never reusable URLs.
+	if strings.HasPrefix(resolved, "moxie-browser-file://") {
+		_ = db.DeleteResolvedURL(maskedURL)
 		return "", false
 	}
 	return resolved, true
@@ -66,4 +72,10 @@ func (db *Database) DeleteResolvedURLsOlderThan(age time.Duration) (int64, error
 // PruneResolvedURLs deletes cache entries older than ResolvedURLTTL.
 func (db *Database) PruneResolvedURLs() (int64, error) {
 	return db.DeleteResolvedURLsOlderThan(ResolvedURLTTL)
+}
+
+// DeleteResolvedURL removes a single cached unwrap result.
+func (db *Database) DeleteResolvedURL(maskedURL string) error {
+	_, err := db.conn.Exec("DELETE FROM resolved_urls WHERE masked_url = ?", maskedURL)
+	return err
 }

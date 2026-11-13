@@ -92,3 +92,73 @@ func TestUserAgent_FallsBackToDefault(t *testing.T) {
 		t.Errorf("UserAgent = %q, want the platform default", got)
 	}
 }
+
+func TestClient_ClearanceRetryHasOneFreshCookie(t *testing.T) {
+	var cookies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookies = append(cookies, r.Header.Get("Cookie"))
+		if len(cookies) == 1 {
+			w.Header().Set("cf-mitigated", "challenge")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		count := 0
+		for _, cookie := range r.Cookies() {
+			if cookie.Name == "cf_clearance" {
+				count++
+				if cookie.Value != "fresh" {
+					t.Errorf("retry clearance = %q, want fresh", cookie.Value)
+				}
+			}
+		}
+		if count != 1 {
+			t.Errorf("retry has %d clearance cookies, want 1", count)
+		}
+		fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+	SetClearanceRefresher(func(context.Context) (string, error) { return "cf_clearance=fresh", nil })
+	t.Cleanup(func() { SetClearanceRefresher(nil) })
+	c := NewClientWithHTTP("cf_clearance=stale", srv.Client())
+	c.pacer.delay = 0
+	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+	req.Header.Set("Cookie", "custom=present")
+	body, err := c.do(req, 0)
+	if err != nil || body != "ok" {
+		t.Fatalf("do = %q, %v", body, err)
+	}
+	if len(cookies) != 2 {
+		t.Fatalf("got %d requests, want 2", len(cookies))
+	}
+	if cookies[0] != "custom=present; cf_clearance=stale" || cookies[1] != "custom=present; cf_clearance=fresh" {
+		t.Errorf("cookies = %q", cookies)
+	}
+	if got := req.Header.Get("Cookie"); got != "custom=present" {
+		t.Errorf("original cookie = %q", got)
+	}
+}
+
+func TestClient_Plain503RetriesWithoutClearanceRefresh(t *testing.T) {
+	var requests, refreshes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+	SetClearanceRefresher(func(context.Context) (string, error) { refreshes.Add(1); return "cf_clearance=fresh", nil })
+	t.Cleanup(func() { SetClearanceRefresher(nil) })
+	c := NewClientWithHTTP("", srv.Client())
+	c.pacer.delay = 0
+	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+	body, err := c.do(req, 0)
+	if err != nil || body != "ok" {
+		t.Fatalf("do = %q, %v", body, err)
+	}
+	if requests.Load() != 2 || refreshes.Load() != 0 {
+		t.Errorf("requests=%d refreshes=%d, want 2 and 0", requests.Load(), refreshes.Load())
+	}
+}

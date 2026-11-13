@@ -318,7 +318,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("Cannot find download link: %v", msg.err)
 			return m, nil
 		}
-		m.notice = fmt.Sprintf("Downloading from %s...", msg.links[0].Host)
+		m.notice = fmt.Sprintf("Downloading from %s...", msg.links[0].Link.Host)
 		return m, m.startDownloadCmd(msg.gameID, msg.links, msg.destDir, msg.gamePath, msg.engine, m.f95Cookie)
 
 	case downloadFinishedMsg:
@@ -328,6 +328,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.browserFallbacks[msg.gameID] = &browserFallback{
 				gameID:   msg.gameID,
 				url:      msg.url,
+				patch:    msg.patch,
 				destDir:  msg.destDir,
 				gamePath: msg.gamePath,
 				engine:   msg.engine,
@@ -657,7 +658,7 @@ func (m model) handleDownloadKey() (tea.Model, tea.Cmd) {
 	}
 	m.activeDownloadsMu.Unlock()
 
-	destDir := filepath.Join(filepath.Dir(game.Path), "downloads")
+	destDir := filepath.Join(filepath.Dir(game.Path), "downloads", fmt.Sprintf("%d", game.ID))
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		m.releasePendingReservation(m.selectedID)
 		m.err = fmt.Errorf("Cannot create download directory: %v", err)

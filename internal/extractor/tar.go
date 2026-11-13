@@ -50,9 +50,40 @@ func extractTar(ctx context.Context, archivePath, typ, destDir string, progress 
 		return fmt.Errorf("%w: %s", ErrUnknownFormat, typ)
 	}
 
-	cleanDest := filepath.Clean(destDir)
+	cleanDest, err := filepath.Abs(destDir)
+	if err != nil {
+		return err
+	}
 	inside := func(p string) bool {
-		return strings.HasPrefix(filepath.Clean(p), cleanDest+string(os.PathSeparator))
+		rel, err := filepath.Rel(cleanDest, p)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel)
+	}
+	// Deferred links must also be treated as symlinks during the write pass.
+	links := make(map[string]string)
+	var linkOrder []string
+	checkPath := func(p string) error {
+		rel, err := filepath.Rel(cleanDest, p)
+		if err != nil || !inside(p) {
+			return fmt.Errorf("%w: %s", ErrPathTraversal, p)
+		}
+		current := cleanDest
+		for _, component := range strings.Split(rel, string(os.PathSeparator)) {
+			current = filepath.Join(current, component)
+			if _, pending := links[current]; pending {
+				return fmt.Errorf("%w: %s", ErrPathTraversal, current)
+			}
+			info, err := os.Lstat(current)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("%w: %s", ErrPathTraversal, current)
+			}
+		}
+		return nil
 	}
 
 	tr := tar.NewReader(r)
@@ -72,7 +103,7 @@ func extractTar(ctx context.Context, archivePath, typ, destDir string, progress 
 		if err := sanitizeZipPath(hdr.Name); err != nil {
 			return fmt.Errorf("%w: %s", ErrPathTraversal, hdr.Name)
 		}
-		destPath := filepath.Join(destDir, hdr.Name)
+		destPath := filepath.Join(cleanDest, hdr.Name)
 		if filepath.Clean(destPath) == cleanDest {
 			continue // "./" entry
 		}
@@ -80,6 +111,9 @@ func extractTar(ctx context.Context, archivePath, typ, destDir string, progress 
 			return fmt.Errorf("%w: %s", ErrPathTraversal, hdr.Name)
 		}
 
+		if err := checkPath(destPath); err != nil {
+			return err
+		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(destPath, 0755); err != nil {
@@ -87,17 +121,22 @@ func extractTar(ctx context.Context, archivePath, typ, destDir string, progress 
 			}
 			continue
 		case tar.TypeSymlink:
-			// Only relative links that resolve inside destDir.
 			target := hdr.Linkname
 			if filepath.IsAbs(target) || !inside(filepath.Join(filepath.Dir(destPath), target)) {
-				continue
+				return fmt.Errorf("%w: %s -> %s", ErrPathTraversal, hdr.Name, target)
 			}
-			if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-				return fmt.Errorf("mkdir for %s: %w", hdr.Name, err)
+			links[destPath] = target
+			linkOrder = append(linkOrder, destPath)
+			continue
+		case tar.TypeLink:
+			// Hardlinks are still skipped, but their archive-root-relative targets
+			// must pass the same containment and symlink checks as written entries.
+			target := filepath.Join(cleanDest, hdr.Linkname)
+			if filepath.IsAbs(hdr.Linkname) || !inside(target) {
+				return fmt.Errorf("%w: %s -> %s", ErrPathTraversal, hdr.Name, hdr.Linkname)
 			}
-			_ = os.Remove(destPath)
-			if err := os.Symlink(target, destPath); err != nil {
-				return fmt.Errorf("symlink %s: %w", hdr.Name, err)
+			if err := checkPath(target); err != nil {
+				return err
 			}
 			continue
 		case tar.TypeReg, tar.TypeRegA:
@@ -128,6 +167,74 @@ func extractTar(ctx context.Context, archivePath, typ, destDir string, progress 
 		if progress != nil {
 			// Tar streams have no index, so the total is unknown (0).
 			progress(Progress{FilesExtracted: n, CurrentFile: hdr.Name})
+		}
+	}
+	// Resolve all deferred targets before creating any links, including chains
+	// through other archive links or pre-existing symlinks.
+	var resolveTarget func(string, int) error
+	resolveTarget = func(p string, depth int) error {
+		if depth > 255 || !inside(p) {
+			return fmt.Errorf("%w: %s", ErrPathTraversal, p)
+		}
+		prefix := cleanDest + string(os.PathSeparator)
+		if p != cleanDest && !strings.HasPrefix(p, prefix) {
+			return fmt.Errorf("%w: %s", ErrPathTraversal, p)
+		}
+		components := strings.Split(strings.TrimPrefix(p, prefix), string(os.PathSeparator))
+		if p == cleanDest {
+			return nil
+		}
+		current := cleanDest
+		for i, component := range components {
+			current = filepath.Join(current, component)
+			if !inside(current) {
+				return fmt.Errorf("%w: %s", ErrPathTraversal, current)
+			}
+			target, pending := links[current]
+			if !pending {
+				info, err := os.Lstat(current)
+				if os.IsNotExist(err) {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				if info.Mode()&os.ModeSymlink == 0 {
+					continue
+				}
+				target, err = os.Readlink(current)
+				if err != nil {
+					return err
+				}
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Dir(current) + string(os.PathSeparator) + target
+			}
+			return resolveTarget(target+string(os.PathSeparator)+strings.Join(components[i+1:], string(os.PathSeparator)), depth+1)
+		}
+		return nil
+	}
+	for _, path := range linkOrder {
+		if err := resolveTarget(filepath.Dir(path)+string(os.PathSeparator)+links[path], 0); err != nil {
+			return err
+		}
+	}
+	for _, path := range linkOrder {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// The final component is this deferred link; only check its parents.
+		if err := checkPath(filepath.Dir(path)); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return fmt.Errorf("mkdir for %s: %w", path, err)
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Symlink(links[path], path); err != nil {
+			return fmt.Errorf("symlink %s: %w", path, err)
 		}
 	}
 	return nil

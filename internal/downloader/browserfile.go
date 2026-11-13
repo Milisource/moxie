@@ -106,7 +106,7 @@ func IsBrowserFileURL(rawURL string) bool {
 // adoptBrowserFile copies a finished browser download into destDir and
 // removes the temp directory that held it. The copy is measured (progress) and
 // size-limited exactly like an HTTP download.
-func adoptBrowserFile(ctx context.Context, src, name, destDir string, host string, onProgress func(Progress)) error {
+func adoptBrowserFile(ctx context.Context, src, name, destDir string, host string, onProgress func(Progress)) (string, error) {
 	// The browser wrote into a per-session temp dir; remove it once the file
 	// is adopted (success or failure) so nothing leaks.
 	if dir := browserFileDir(src); dir != "" {
@@ -115,16 +115,16 @@ func adoptBrowserFile(ctx context.Context, src, name, destDir string, host strin
 
 	fi, err := os.Stat(src)
 	if err != nil {
-		return fmt.Errorf("browser download: %w", err)
+		return "", fmt.Errorf("browser download: %w", err)
 	}
 	if !fi.Mode().IsRegular() || fi.Size() == 0 {
-		return fmt.Errorf("browser download: %q is not a usable file", src)
+		return "", fmt.Errorf("browser download: %q is not a usable file", src)
 	}
 	if err := checkGlobalSizeLimit(fi.Size()); err != nil {
-		return err
+		return "", err
 	}
 	if err := checkHostSizeLimit(fi.Size(), HostSizeLimit(host), host); err != nil {
-		return err
+		return "", err
 	}
 
 	name = browserFileName(name)
@@ -136,20 +136,20 @@ func adoptBrowserFile(ctx context.Context, src, name, destDir string, host strin
 	}
 
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return fmt.Errorf("browser download: creating destination dir: %w", err)
+		return "", fmt.Errorf("browser download: creating destination dir: %w", err)
 	}
 	finalPath := filepath.Join(destDir, name)
 	partPath := finalPath + ".part"
 
 	in, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("browser download: %w", err)
+		return "", fmt.Errorf("browser download: %w", err)
 	}
 	defer in.Close()
 
 	out, err := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return fmt.Errorf("browser download: %w", err)
+		return "", fmt.Errorf("browser download: %w", err)
 	}
 
 	total := fi.Size()
@@ -159,14 +159,14 @@ func adoptBrowserFile(ctx context.Context, src, name, destDir string, host strin
 		if cerr := ctx.Err(); cerr != nil {
 			out.Close()
 			os.Remove(partPath)
-			return cerr
+			return "", cerr
 		}
 		n, readErr := in.Read(buf)
 		if n > 0 {
 			if _, werr := out.Write(buf[:n]); werr != nil {
 				out.Close()
 				os.Remove(partPath)
-				return fmt.Errorf("browser download: write: %w", werr)
+				return "", fmt.Errorf("browser download: write: %w", werr)
 			}
 			written += int64(n)
 			if onProgress != nil {
@@ -183,30 +183,30 @@ func adoptBrowserFile(ctx context.Context, src, name, destDir string, host strin
 		if readErr != nil {
 			out.Close()
 			os.Remove(partPath)
-			return fmt.Errorf("browser download: read: %w", readErr)
+			return "", fmt.Errorf("browser download: read: %w", readErr)
 		}
 	}
 	if err := out.Close(); err != nil {
 		os.Remove(partPath)
-		return fmt.Errorf("browser download: %w", err)
+		return "", fmt.Errorf("browser download: %w", err)
 	}
 	if written != total {
 		os.Remove(partPath)
-		return fmt.Errorf("browser download: short copy (%d of %d bytes)", written, total)
+		return "", fmt.Errorf("browser download: short copy (%d of %d bytes)", written, total)
 	}
 	if err := os.Rename(partPath, finalPath); err != nil {
 		os.Remove(partPath)
-		return fmt.Errorf("browser download: rename: %w", err)
+		return "", fmt.Errorf("browser download: rename: %w", err)
 	}
 	if err := os.Chmod(finalPath, 0o600); err != nil {
-		return fmt.Errorf("browser download: chmod: %w", err)
+		return "", fmt.Errorf("browser download: chmod: %w", err)
 	}
 
 	log.Info("browser download adopted", "file", filepath.Base(finalPath), "size_bytes", written)
 	if onProgress != nil {
 		onProgress(Progress{BytesDownloaded: written, TotalBytes: total, Percent: 100})
 	}
-	return nil
+	return finalPath, nil
 }
 
 // browserFileDir returns the per-session temp directory that holds a handoff

@@ -35,7 +35,20 @@ var (
 	// comparator pads missing segments with zero, so these spellings must
 	// canonicalize together or Compare would downgrade a Same to Changed.
 	trailingZeroSegRe = regexp.MustCompile(`(?:\.0+)+$`)
+
+	finalMarkerRe = regexp.MustCompile(`(?i)(?:^|[^a-z])(?:final|completed?)(?:[^a-z]|$)`)
 )
+
+func hasFinalMarker(s string) bool {
+	return finalMarkerRe.MatchString(s)
+}
+
+// SameCore reports whether two versions share the same numeric core,
+// ignoring release qualifiers such as "Final".
+func SameCore(a, b string) bool {
+	va, vb := Parse(a), Parse(b)
+	return len(va.Core) > 0 && len(vb.Core) > 0 && compareSegments(va.Core, vb.Core) == Same
+}
 
 func isNoiseToken(tok string) bool {
 	t := strings.ToLower(strings.TrimSpace(tok))
@@ -189,7 +202,7 @@ func Parse(raw string) Version {
 	if len(v.Track) > 0 && len(v.Core) == 0 && v.Kind == "numeric" {
 		v.Kind = "chapter"
 	}
-	if strings.Contains(low, "final") || strings.Contains(low, "complete") {
+	if hasFinalMarker(s) {
 		v.Kind = "final"
 	}
 	// Keep trailing zeros so "1.0" stays [1,0] and compares correctly
@@ -238,7 +251,7 @@ func Canonical(raw string) string {
 		out = append(out, tl)
 	}
 	res := strings.Join(out, " ")
-	if (strings.Contains(low, "final") || strings.Contains(low, "complete")) && len(out) == 0 {
+	if hasFinalMarker(s) && len(out) == 0 {
 		res = "Final"
 	}
 	// normalize final capitalization? keep lowercase for canonical
@@ -278,10 +291,18 @@ func CompareStructured(a, b Version) Diff {
 	}
 	if a.Kind == "final" {
 		if b.Kind == "final" {
+			if len(a.Core) > 0 && len(b.Core) > 0 {
+				return compareSegments(a.Core, b.Core)
+			}
+			if len(a.Track) > 0 && len(b.Track) > 0 {
+				return compareSegments(a.Track, b.Track)
+			}
 			if versionsEqualC(a, b) {
 				return Same
 			}
-			return Newer
+			// Two different final shapes with no common numbers are not
+			// orderable; claiming Newer both ways breaks antisymmetry.
+			return Changed
 		}
 		return Newer
 	}

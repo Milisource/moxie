@@ -54,10 +54,10 @@ func TestManualWatcherMatch(t *testing.T) {
 		t.Error("ambiguous archive must not be assigned to a game")
 	}
 
-	// One waiter is unambiguous even when the filename says nothing.
+	// A single waiter still requires a matching title.
 	w.waiters = map[int64]manualWaiter{3: {title: "Zzz", since: time.Now()}}
-	if id, ok := w.match("download.zip"); !ok || id != 3 {
-		t.Fatalf("single waiter match = %d, %v; want game 3", id, ok)
+	if id, ok := w.match("download.zip"); ok {
+		t.Fatalf("single waiter match = %d, %v; want no match", id, ok)
 	}
 }
 
@@ -100,5 +100,15 @@ func TestListArchiveFiles(t *testing.T) {
 	got := listArchiveFiles(dir)
 	if len(got) != 1 || got[0] != "Game.zip" {
 		t.Fatalf("listArchiveFiles = %v, want [Game.zip]", got)
+	}
+}
+
+func TestManualWatcherMatch_UnrelatedSingleWaiter(t *testing.T) {
+	w := &manualWatcher{waiters: map[int64]manualWaiter{1: {title: "Ashfall RPG", since: time.Now()}}}
+	if id, ok := w.match("unrelated_archive.zip"); ok {
+		t.Fatalf("match = %d, true; want no waiter", id)
+	}
+	if id, ok := w.match("Ashfall_RPG_v2.zip"); !ok || id != 1 {
+		t.Fatalf("matching title = %d, %v; want 1, true", id, ok)
 	}
 }

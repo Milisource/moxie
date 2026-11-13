@@ -356,7 +356,7 @@ func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*Res
 		dest, err := r.resolveF95DownloadLink(context.Background(), rawURL)
 		if errors.Is(err, errF95NeedsBrowser) {
 			if r.dlSolver == nil {
-				return nil, fmt.Errorf("F95Zone download link %s needs the browser check; enable browser-assisted downloads with `moxie config set browser_fallback auto` or MOXIE_BROWSER=auto", rawURL)
+				return nil, fmt.Errorf("F95Zone download link %s needs the browser check; enable browser-assisted downloads with `moxie config set browser_fallback auto` or MOXIE_BROWSER=auto: %w", rawURL, ErrBrowserCheckRequired)
 			}
 			log.Info("F95Zone download link needs the browser check; handing it to the browser", "url", rawURL)
 			dest, err = r.dlSolver(context.Background(), rawURL)
@@ -389,7 +389,7 @@ func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*Res
 		// masked URL was already unwrapped. The cached destination still
 		// goes through host-specific resolution below.
 		if r.resolvedCache != nil {
-			if cached, ok := r.resolvedCache(rawURL); ok && cached != "" && cached != rawURL {
+			if cached, ok := r.resolvedCache(rawURL); ok && cached != "" && cached != rawURL && !IsBrowserFileURL(cached) {
 				cachedHost := IdentifyHostInURL(cached)
 				log.Debug("masked URL cache hit", "masked", rawURL, "resolved", cached, "host", cachedHost)
 				return r.resolveDepth(cached, cachedHost, depth+1)
@@ -412,7 +412,7 @@ func (r *HostResolver) resolveDepth(rawURL string, host string, depth int) (*Res
 		if realURL != rawURL {
 			// Cache store: a successful unwrap, so the next resolve of this
 			// masked URL skips the endpoint entirely.
-			if r.resolvedCachePut != nil {
+			if r.resolvedCachePut != nil && !IsBrowserFileURL(realURL) {
 				r.resolvedCachePut(rawURL, realURL, realHost)
 			}
 			log.Debug("masked URL resolved", "original", rawURL, "real", realURL)
@@ -648,8 +648,17 @@ func (r *HostResolver) followRedirect(url string) (string, error) {
 
 // isLoginRedirect returns true if the URL looks like an F95Zone login page.
 func isLoginRedirect(rawURL string) bool {
-	lower := strings.ToLower(rawURL)
-	return strings.Contains(lower, "/login") || strings.Contains(lower, "_xfRedirect")
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != "f95zone.to" && !strings.HasSuffix(host, ".f95zone.to") {
+		return false
+	}
+	path := strings.ToLower(parsed.Path)
+	return path == "/login" || strings.HasPrefix(path, "/login/") ||
+		strings.Contains(path, "_xfredirect") || strings.Contains(strings.ToLower(parsed.RawQuery), "_xfredirect")
 }
 
 // IdentifyHostInURL extracts the host label from a URL for host-specific routing.

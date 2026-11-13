@@ -284,21 +284,21 @@ func TestSortLinksByPlatform_AllBonusesBeatNoBonus_TUI(t *testing.T) {
 		host   string
 		expect string
 	}{
-		{"vikingfile loses (-200)", "vikingfile", "no bonus link"},
-		{"buzzheavier wins (+25)", "buzzheavier", "bonus link"},
-		{"pixeldrain wins (+25)", "pixeldrain", "bonus link"},
-		{"mega loses (-200)", "mega", "no bonus link"},
-		{"gofile wins (+25)", "gofile", "bonus link"},
-		{"mediafire (tie, stable sort)", "mediafire", "bonus link"},
-		{"workupload wins (+10)", "workupload", "bonus link"},
-		{"krakenfiles loses (-200)", "krakenfiles", "no bonus link"},
-		{"googledrive (tie, stable sort)", "googledrive", "bonus link"},
+		{"vikingfile loses (-200)", "vikingfile", "other link"},
+		{"buzzheavier wins (+25)", "buzzheavier", "preferred link"},
+		{"pixeldrain wins (+25)", "pixeldrain", "preferred link"},
+		{"mega loses (-200)", "mega", "other link"},
+		{"gofile wins (+25)", "gofile", "preferred link"},
+		{"mediafire (tie, stable sort)", "mediafire", "preferred link"},
+		{"workupload wins (+10)", "workupload", "preferred link"},
+		{"krakenfiles loses (-200)", "krakenfiles", "other link"},
+		{"googledrive (tie, stable sort)", "googledrive", "preferred link"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			links := []db.DownloadLink{
-				{Name: "bonus link", Platform: db.PlatformUnknown, Host: tt.host},
-				{Name: "no bonus link", Platform: db.PlatformUnknown, Host: "rando"},
+				{Name: "preferred link", Platform: db.PlatformUnknown, Host: tt.host},
+				{Name: "other link", Platform: db.PlatformUnknown, Host: "rando"},
 			}
 			got := sortLinksByPlatform(links, downloader.PlatformLinux)
 			if got == nil {
@@ -727,5 +727,79 @@ func TestBrowserFallback_PromptRenders(t *testing.T) {
 	}
 	if !strings.Contains(content, "Watching /tmp/downloads") {
 		t.Error("expected the watching hint in the detail view")
+	}
+}
+
+func TestInstallArchive_DeletesOnlyAfterSuccessfulMerge(t *testing.T) {
+	for _, success := range []bool{false, true} {
+		name := "merge-fails"
+		if success {
+			name = "merge-succeeds"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			archivePath := filepath.Join(root, "update.zip")
+			makeTestZip(t, archivePath)
+			destDir := filepath.Join(root, "downloads")
+			if err := os.MkdirAll(destDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			gamePath := filepath.Join(root, "game")
+			if success {
+				if err := os.MkdirAll(gamePath, 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m := model{}
+			msg := m.installArchive(&activeDownload{}, nil, archivePath, destDir, gamePath, "RenPy")
+			if success && msg != "" {
+				t.Fatalf("install failed: %s", msg)
+			}
+			if !success && !strings.Contains(msg, "merging") {
+				t.Fatalf("want merge failure, got %q", msg)
+			}
+			_, err := os.Stat(archivePath)
+			if success && !os.IsNotExist(err) {
+				t.Fatalf("archive remains after successful merge: %v", err)
+			}
+			if !success && err != nil {
+				t.Fatalf("archive removed after failed merge: %v", err)
+			}
+		})
+	}
+}
+
+func TestInstallArchiveRankedPatchUsesOverlay(t *testing.T) {
+	t.Parallel()
+	ranked := downloader.RankDownloadLinks([]db.DownloadLink{
+		{Name: "DOWNLOAD · Win", URL: "full", Host: "gofile"},
+		{Name: "Update only (0.17 -> 0.18) · Win", URL: "patch", Host: "gofile"},
+	}, downloader.UpdateRankOptions(&db.Game{ExePath: "Game.exe", Version: "0.17", LatestVersion: "0.18"}))
+	if len(ranked.Links) == 0 || !ranked.Links[0].Patch {
+		t.Fatal("patch not selected")
+	}
+	root := t.TempDir()
+	gamePath := filepath.Join(root, "game")
+	destDir := filepath.Join(root, "downloads")
+	for _, dir := range []string{gamePath, destDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unchanged := filepath.Join(gamePath, "base-assets.dat")
+	if err := os.WriteFile(unchanged, []byte("unchanged game assets"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(root, "patch.zip")
+	makeTestZip(t, archivePath)
+	ad := &activeDownload{patch: ranked.Links[0].Patch}
+	if msg := (model{}).installArchive(ad, nil, archivePath, destDir, gamePath, "RenPy"); msg != "" {
+		t.Fatal(msg)
+	}
+	if data, err := os.ReadFile(unchanged); err != nil || string(data) != "unchanged game assets" {
+		t.Fatalf("base file lost: %q, %v", data, err)
+	}
+	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+		t.Fatalf("archive not removed: %v", err)
 	}
 }

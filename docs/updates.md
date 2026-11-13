@@ -37,6 +37,8 @@ check ──► queue ──► refresh links ──► pick mirror ──► re
                                                           record installed version
 ```
 
+CLI, TUI, and desktop share `downloader.RankDownloadLinks`: patch ranges must match the installed version and, when stated and known, the latest version. Selected "Update only" patches use `updater.MergeOverlay`, preserving game files absent from the patch; full builds retain the staged merge.
+
 ### 1. Detect
 
 `RunUpdateCheck` prefers F95Zone's cookie-free bulk version endpoints
@@ -94,18 +96,32 @@ files). A flat archive that extracts into the shared downloads directory keeps
 using the copy path.
 
 Merge failures are now surfaced as errors instead of warnings, and the
-downloaded archive is kept for a retry.
+downloaded archive is kept for a retry. The TUI isolates downloads in `downloads/<gameID>`, uses the returned archive path and removes the archive only after a successful merge.
+
+Tar extraction refuses writes through symlink components and creates safe internal symlinks only after regular files and directories. Desktop manual watching requires a positive title match; cancelled jobs do not start a watcher.
 
 ### 5. Record the version
 
-`recordInstalledVersion` writes the thread version — or an archive filename
-that parses to something even newer — only after a successful merge. This is
-the step that removes the game from the queue. It previously existed only in
-`install` and the watcher, so `moxie download` merged files and left the game
-queued forever, which would have made auto-update re-download the same release
-on every run. A reverted thread can never downgrade the recorded version.
+CLI, TUI and desktop use `commands.RecordedVersion` after a successful install
+(the TUI via `RecordInstalledVersion`). A newer archive filename version is
+recorded, using the thread spelling when both share the same numeric core. A
+payload whose version matches the installed one adopts a thread version only
+when the difference is a qualifier (`1.0` → `1.0 Final`) or the payload was an
+"Update only" overlay, whose file is often named after the version it upgrades
+*from*. An older payload logs a warning and preserves the installed version;
+unorderable payloads also preserve it. Without a payload version, an
+update-worthy thread version is used. A first install (no recorded version)
+records the payload version, falling back to the thread. Only changed versions
+receive the `f95` source.
 
 ## Auto-Update
+
+CLI exit codes for `download` and `auto-update` (`auto`): `0` means success,
+`1` a hard command error, and `2` a completed run that did not finish
+everything - a failed game in `download --all` (including `--open` batches
+whose links could not be opened or whose files never arrived), or a failed or
+browser-check-blocked game in an installing auto-update run. Completed
+`--check-only` and `--dry-run` runs return `0` regardless of the summary.
 
 ```bash
 moxie auto-update                  # check + install everything possible
@@ -170,11 +186,21 @@ with fresh cookies) retries it.
 - `<config>/auto-update.lock` prevents two runs installing into the same game
   directory. A lock whose recorded PID is no longer running is stale
   immediately; one without a readable PID falls back to a two-hour age window.
-  SIGINT/SIGTERM release it.
+  SIGINT/SIGTERM cancel pending downloads and extraction, stop scheduling jobs, and release it after in-flight jobs finish. An in-flight merge completes or rolls back before shutdown; startup recovery remains deferred.
 - A failed game waits 30 minutes before another automatic attempt. A new target
   version clears the backoff immediately. `--force` bypasses both the backoff
   and the 24 h check cooldown.
 - Retry state lives in `<config>/auto-update.json` and is pruned after 7 days.
+
+## Desktop Update Events
+
+`game-update:error` retains its full human-readable `message` and adds `kind`;
+`game-update:game-done` also includes `kind`. Error kinds are `auth`, `challenge`,
+`rate_limit`, `dead_link`, `network`, `disk`, and `unknown`.
+`game-update:manual-required` includes `kind: "challenge"`.
+Each game excluded before batch job creation emits `game-update:skipped` with
+`gameID`, `title`, and `reason`: `not-installed`, `no-update`,
+`unorderable-version`, or `already-updating`. Frontend rendering is a separate phase.
 
 ## Version Comparison
 

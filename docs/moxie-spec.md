@@ -4,6 +4,10 @@
 **Status:** Alpha — 0.5.0 (download/update hardening; WDHO HTTP resolver, Gofile token refresh). Download: Beta (HTTP: Pixeldrain, MediaFire, Bunkr, Dropbox, Google Drive, WorkUpload, Gofile, WDHO; MEGA via megatools; browser fallback for Buzzheavier, MixDrop, UploadHaven, VikingFile, DataNodes; F95 masked/`/dl` links)
 **Target:** CLI/TUI → Multi-platform Wails desktop app
 
+`download` and `auto-update` (`auto`) return exit code `0` on success, `1` on
+hard command errors, and `2` when a completed batch has failed games.
+Completed auto-update `--check-only` and `--dry-run` runs return `0`.
+
 ---
 
 ## Overview

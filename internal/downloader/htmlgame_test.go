@@ -50,7 +50,7 @@ func TestDownloadWithHeaders_HTMLGameByContentDisposition(t *testing.T) {
 
 	dir := t.TempDir()
 	url := "https://pixeldrain.com/api/file/abc123?download"
-	if err := downloadWithHeaders(context.Background(), url, nil, url, "pixeldrain", dir, 0, nil, nil, nil, nil); err != nil {
+	if _, err := downloadWithHeaders(context.Background(), url, nil, url, "pixeldrain", dir, 0, nil, nil, nil, nil); err != nil {
 		t.Fatalf("downloadWithHeaders: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "Ashfall_RPG_v0.5.0.html"))
@@ -71,7 +71,7 @@ func TestDownloadWithHeaders_HTMLGameByURLPath(t *testing.T) {
 
 	dir := t.TempDir()
 	url := "https://cdn.example.com/files/Ashfall_RPG_v0.5.0.html"
-	if err := downloadWithHeaders(context.Background(), url, nil, url, "unknown", dir, 0, nil, nil, nil, nil); err != nil {
+	if _, err := downloadWithHeaders(context.Background(), url, nil, url, "unknown", dir, 0, nil, nil, nil, nil); err != nil {
 		t.Fatalf("downloadWithHeaders: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "Ashfall_RPG_v0.5.0.html")); err != nil {
@@ -86,7 +86,7 @@ func TestDownloadWithHeaders_HTMLChallengeStillRejected(t *testing.T) {
 	rewriteTestHost(t, "cdn.example.com", srv)
 
 	url := "https://cdn.example.com/download/12345"
-	err := downloadWithHeaders(context.Background(), url, nil, url, "unknown", t.TempDir(), 0, nil, nil, nil, nil)
+	_, err := downloadWithHeaders(context.Background(), url, nil, url, "unknown", t.TempDir(), 0, nil, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "server returned HTML instead of file") {
 		t.Fatalf("error = %v, want the HTML reject", err)
 	}

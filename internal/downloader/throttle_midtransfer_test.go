@@ -44,7 +44,7 @@ func TestDownloadWithHeaders_AbortsWhenThrottleStartsMidTransfer(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	err := downloadWithHeaders(context.Background(), "https://pixeldrain.com/api/file/abc123", nil, "https://pixeldrain.com/api/file/abc123",
+	_, err := downloadWithHeaders(context.Background(), "https://pixeldrain.com/api/file/abc123", nil, "https://pixeldrain.com/api/file/abc123",
 		"pixeldrain", dir, 0, nil, nil, nil, probe)
 	if !errors.Is(err, ErrHostThrottled) {
 		t.Fatalf("error = %v, want ErrHostThrottled (probes=%d)", err, probes)
@@ -73,7 +73,7 @@ func TestDownloadWithHeaders_UnthrottledProbeKeepsTransfer(t *testing.T) {
 
 	dir := t.TempDir()
 	probe := func(context.Context) (*ThrottledError, bool) { return nil, false }
-	if err := downloadWithHeaders(context.Background(), "https://pixeldrain.com/api/file/abc123", nil, "https://pixeldrain.com/api/file/abc123",
+	if _, err := downloadWithHeaders(context.Background(), "https://pixeldrain.com/api/file/abc123", nil, "https://pixeldrain.com/api/file/abc123",
 		"pixeldrain", dir, 0, nil, nil, nil, probe); err != nil {
 		t.Fatalf("download failed: %v", err)
 	}

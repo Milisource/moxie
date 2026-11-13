@@ -112,9 +112,9 @@ func TestIsBlocked(t *testing.T) {
 	}{
 		{"nil error", nil, false},
 		{"blocked string", testError{"blocked"}, true},
-		{"BlockedError direct", &scraper.BlockedError{Reason: "Cloudflare challenge", StatusCode: 403}, true},
-		{"BlockedError wrapped", fmt.Errorf("scrape thread: %w", &scraper.BlockedError{Reason: "rate limited", StatusCode: 429}), true},
-		{"BlockedError via errors.Join", errors.Join(errors.New("first"), &scraper.BlockedError{Reason: "IP blocked", StatusCode: 403}), true},
+		{"BlockedError direct", &scraper.BlockedError{Kind: scraper.BlockChallenge, Reason: "Cloudflare challenge", StatusCode: 403}, true},
+		{"BlockedError wrapped", fmt.Errorf("scrape thread: %w", &scraper.BlockedError{Kind: scraper.BlockRateLimit, Reason: "rate limited", StatusCode: 429}), true},
+		{"BlockedError via errors.Join", errors.Join(errors.New("first"), &scraper.BlockedError{Kind: scraper.BlockForbidden, Reason: "IP blocked", StatusCode: 403}), true},
 		{"BlockedError string literal no longer matches", testError{"BlockedError"}, false},
 		{"Cloudflare challenge", testError{"Cloudflare challenge"}, true},
 		{"unrelated error", testError{"something else"}, false},
@@ -129,7 +129,3 @@ func TestIsBlocked(t *testing.T) {
 		})
 	}
 }
-
-
-
-

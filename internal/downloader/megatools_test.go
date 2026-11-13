@@ -291,7 +291,7 @@ func TestMegatoolsErrSummary(t *testing.T) {
 
 func TestRunMegatoolsDownload_InvalidURL(t *testing.T) {
 	t.Parallel()
-	err := runMegatoolsDownload(context.Background(), "https://example.com/not-mega", t.TempDir(), 0, nil)
+	_, err := runMegatoolsDownload(context.Background(), "https://example.com/not-mega", t.TempDir(), 0, nil)
 	if err == nil {
 		t.Fatal("expected error for non-mega URL, got nil")
 	}
@@ -308,13 +308,16 @@ func TestRunMegatoolsDownload_Success(t *testing.T) {
 	destDir := t.TempDir()
 	url := "https://mega.nz/file/abc123#jFc2HL6rIoDVU9kECBpMEIAbcv2WQcz6le9kS_bb2gc"
 	var samples []Progress
-	err := runMegatoolsDownload(context.Background(), url, destDir, 0, func(p Progress) {
+	savedPath, err := runMegatoolsDownload(context.Background(), url, destDir, 0, func(p Progress) {
 		samples = append(samples, p)
 	})
 	if err != nil {
 		t.Fatalf("runMegatoolsDownload: %v", err)
 	}
 
+	if savedPath != filepath.Join(destDir, "game.zip") {
+		t.Fatalf("saved path = %q", savedPath)
+	}
 	// The fake binary wrote the downloaded file into destDir.
 	content, err := os.ReadFile(filepath.Join(destDir, "game.zip"))
 	if err != nil {
@@ -358,7 +361,7 @@ func TestRunMegatoolsDownload_MissingBinary(t *testing.T) {
 	// NOT parallel — replaces the findMegatools global.
 	t.Cleanup(stubFindMegatools("", errors.New("executable not found")))
 
-	err := runMegatoolsDownload(context.Background(), "https://mega.nz/file/abc123#key", t.TempDir(), 0, nil)
+	_, err := runMegatoolsDownload(context.Background(), "https://mega.nz/file/abc123#key", t.TempDir(), 0, nil)
 	if err == nil {
 		t.Fatal("expected error when megatools is missing, got nil")
 	}
@@ -375,7 +378,7 @@ func TestRunMegatoolsDownload_NonZeroExit(t *testing.T) {
 	path := writeFakeMegatools(t, fakeMegatoolsFailureScript)
 	t.Cleanup(stubFindMegatools(path, nil))
 
-	err := runMegatoolsDownload(context.Background(), "https://mega.nz/file/abc123#key", t.TempDir(), 0, nil)
+	_, err := runMegatoolsDownload(context.Background(), "https://mega.nz/file/abc123#key", t.TempDir(), 0, nil)
 	if err == nil {
 		t.Fatal("expected error on non-zero exit, got nil")
 	}
@@ -392,7 +395,7 @@ func TestRunMegatoolsDownload_SilentSkip(t *testing.T) {
 	path := writeFakeMegatools(t, fakeMegatoolsSkippedScript)
 	t.Cleanup(stubFindMegatools(path, nil))
 
-	err := runMegatoolsDownload(context.Background(), "https://mega.nz/file/abc123#key", t.TempDir(), 0, nil)
+	_, err := runMegatoolsDownload(context.Background(), "https://mega.nz/file/abc123#key", t.TempDir(), 0, nil)
 	if err == nil {
 		t.Fatal("expected error when megatools exits 0 without downloading, got nil")
 	}
@@ -411,7 +414,7 @@ func TestRunMegatoolsDownload_Canceled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(200*time.Millisecond, cancel)
-	err := runMegatoolsDownload(ctx, "https://mega.nz/file/abc123#key", t.TempDir(), 0, nil)
+	_, err := runMegatoolsDownload(ctx, "https://mega.nz/file/abc123#key", t.TempDir(), 0, nil)
 	if err == nil {
 		t.Fatal("expected cancellation error, got nil")
 	}
@@ -431,7 +434,7 @@ func TestRunMegatoolsDownload_Timeout(t *testing.T) {
 	megatoolsTimeout = 250 * time.Millisecond
 	t.Cleanup(func() { megatoolsTimeout = origTimeout })
 
-	err := runMegatoolsDownload(context.Background(), "https://mega.nz/file/abc123#key", t.TempDir(), 0, nil)
+	_, err := runMegatoolsDownload(context.Background(), "https://mega.nz/file/abc123#key", t.TempDir(), 0, nil)
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
@@ -484,7 +487,7 @@ func TestDownloadWithContext_MegaDelegatesToMegatools(t *testing.T) {
 	t.Cleanup(stubFindMegatools(path, nil))
 
 	destDir := t.TempDir()
-	err := DownloadWithContext(context.Background(), "https://mega.nz/file/abc123#key", "mega", destDir, 0, nil, "")
+	_, err := DownloadWithContext(context.Background(), "https://mega.nz/file/abc123#key", "mega", destDir, 0, nil, "")
 	if err != nil {
 		t.Fatalf("DownloadWithContext mega: %v", err)
 	}
@@ -497,7 +500,7 @@ func TestDownloadWithContext_MegaWithoutMegatools(t *testing.T) {
 	// NOT parallel — replaces the findMegatools global.
 	t.Cleanup(stubFindMegatools("", errors.New("executable not found")))
 
-	err := DownloadWithContext(context.Background(), "https://mega.nz/file/abc123#key", "mega", t.TempDir(), 0, nil, "")
+	_, err := DownloadWithContext(context.Background(), "https://mega.nz/file/abc123#key", "mega", t.TempDir(), 0, nil, "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

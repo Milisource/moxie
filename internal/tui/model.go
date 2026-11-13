@@ -149,7 +149,7 @@ type savesOpMsg struct {
 // F95Zone, which must never block the Update layer.
 type downloadLinksMsg struct {
 	gameID   int64
-	links    []db.DownloadLink
+	links    []downloader.RankedLink
 	destDir  string
 	gamePath string
 	engine   string
@@ -160,6 +160,7 @@ type downloadLinksMsg struct {
 // A non-empty summary means every link failed; the payload then carries the
 // best link URL so the TUI can offer the browser fallback.
 type downloadFinishedMsg struct {
+	patch    bool
 	gameID   int64
 	url      string
 	summary  string
@@ -171,6 +172,7 @@ type downloadFinishedMsg struct {
 // watcherFoundMsg reports that a new archive appeared in a game's download
 // dir (a browser-saved download picked up by the ArchiveWatcher).
 type watcherFoundMsg struct {
+	patch    bool
 	gameID   int64
 	path     string
 	destDir  string
@@ -192,6 +194,7 @@ type watcherIdleMsg struct{}
 // ─── Active Download ───────────────────────────────────────────────────────
 
 type activeDownload struct {
+	patch    bool
 	mu       sync.Mutex
 	gameID   int64
 	url      string

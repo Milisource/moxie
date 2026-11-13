@@ -303,6 +303,8 @@ Status colours are `--success`, `--warning` and `--danger`. Engine colours still
 
 **Verifying.** Run `cd desktop/frontend && npx vite --config vite.mock.config.js`, then open `/mock.html`. The mock library has about 80 games covering every update state (including `unknown`) and some missing covers, and serves 3:4 portrait covers at the real `/cover/<id>[/thumb]` routes. Check at 2560×1440, 1920×1080 and 1200×800.
 
+Update failures retain the full message with a three-line visual clamp and kind-specific recovery hints. Auth failures link to Sign in / Sync; dead mirrors emphasize Open download page; other failures offer Retry, with the existing manual-file fallback retained when requested by the pipeline. Skipped updates show a muted reason and Retry, without keeping the row or batch in an active state.
+
 ## 9. Sources
 
 **Primary (product pages / official statements):**

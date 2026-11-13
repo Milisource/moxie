@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 
 	"github.com/mili/moxie/internal/archive"
 	"github.com/mili/moxie/internal/browserresolve"
+	"github.com/mili/moxie/internal/commands"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
 	"github.com/mili/moxie/internal/log"
@@ -175,7 +175,11 @@ func (m model) scrapeMeta(gameID int64, url string) tea.Cmd {
 // startDownloadCmd launches a download in a background goroutine, trying links in priority order.
 // Progress is written to the model's activeDownloads map.
 // After successful download + extract, merges new files into gamePath, preserving saves/configs.
-func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, gamePath, engine, f95Cookie string) tea.Cmd {
+func (m model) startDownloadCmd(gameID int64, ranked []downloader.RankedLink, destDir, gamePath, engine, f95Cookie string) tea.Cmd {
+	links := make([]db.DownloadLink, len(ranked))
+	for i, r := range ranked {
+		links[i] = r.Link
+	}
 	firstLink := links[0]
 	log.Info("tui download started", "game_id", gameID, "host", firstLink.Host, "total_links", len(links))
 
@@ -221,6 +225,7 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 		destDir: destDir,
 		status:  db.DownloadStatusDownloading,
 		stepMsg: "Finding suitable host...",
+		patch:   ranked[0].Patch,
 	}
 	m.activeDownloadsMu.Lock()
 	existing, ok := m.activeDownloads[gameID]
@@ -233,6 +238,7 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 		// instead of replacing it, keeping the entry's identity stable
 		// across the resolve → download flow.
 		existing.mu.Lock()
+		existing.patch = ranked[0].Patch
 		existing.gameID = gameID
 		existing.url = firstLink.URL
 		existing.host = firstLink.Host
@@ -274,6 +280,18 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 			}, f95Cookie)
 			if err == nil && downloader.IsValidGameFile(finalFile) {
 				ad.mu.Lock()
+				// The multipart group can differ from the best single link.
+			groupMode:
+				for _, r := range ranked {
+					for _, candidates := range group.Parts {
+						for _, part := range candidates {
+							if part.URL == r.Link.URL && part.Name == r.Link.Name {
+								ad.patch = r.Patch
+								break groupMode
+							}
+						}
+					}
+				}
 				ad.status = db.DownloadStatusCompleted
 				ad.progress.Percent = 100
 				ad.stepMsg = "✓ Download succeeded!"
@@ -296,7 +314,11 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 			log.Warn("tui multi-part download failed, falling back to single links", "game_id", gameID, "error", err)
 		}
 
+		var downloadedFile string
 		for i, link := range links {
+			ad.mu.Lock()
+			ad.patch = ranked[i].Patch
+			ad.mu.Unlock()
 			if i > 0 {
 				ad.mu.Lock()
 				ad.url = link.URL
@@ -323,7 +345,8 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 				ad.mu.Unlock()
 			}
 
-			err := downloader.DownloadWithHost(link.URL, link.Host, destDir, link.Size, func(p downloader.Progress) {
+			var err error
+			downloadedFile, err = downloader.DownloadWithHost(link.URL, link.Host, destDir, link.Size, func(p downloader.Progress) {
 				ad.mu.Lock()
 				if p.BytesDownloaded > 0 {
 					ad.stepMsg = "Downloading..."
@@ -337,8 +360,10 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 				m.db.UpdateDownload(dl)
 			}, f95Cookie)
 
+			if err == nil && downloadedFile == "" {
+				err = fmt.Errorf("download produced no file")
+			}
 			if err == nil {
-				downloadedFile := findMostRecentFile(destDir)
 				if downloadedFile != "" && !downloader.IsValidGameFile(downloadedFile) {
 					os.Remove(downloadedFile)
 					err = fmt.Errorf("downloaded content is not a valid game file (interstitial page)")
@@ -389,7 +414,6 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 			log.Info("tui download succeeded", "game_id", gameID, "host", dl.Host)
 
 			// Auto-extract if the downloaded file is an archive
-			downloadedFile := findMostRecentFile(destDir)
 			if downloadedFile != "" && archive.IsArchiveFile(downloadedFile) {
 				ad.mu.Unlock() // don't hold the lock across extraction/merge
 				if errMsg := m.installArchive(ad, dl, downloadedFile, destDir, gamePath, engine); errMsg != "" {
@@ -416,6 +440,7 @@ func (m model) startDownloadCmd(gameID int64, links []db.DownloadLink, destDir, 
 			m.watcherMsgCh <- downloadFinishedMsg{
 				gameID:   gameID,
 				url:      links[0].URL,
+				patch:    ranked[0].Patch,
 				summary:  summary,
 				destDir:  destDir,
 				gamePath: gamePath,
@@ -453,16 +478,31 @@ func (m model) installArchive(ad *activeDownload, dl *db.Download, archivePath, 
 		return fmt.Sprintf("Download succeeded, but extraction failed: %v", extractErr)
 	}
 	log.Info("extraction complete", "files", result.FilesExtracted, "dest", result.Destination)
-	os.Remove(archivePath)
 
 	ad.mu.Lock()
 	ad.stepMsg = "Merging into game directory..."
+	patch := ad.patch
+	if patch {
+		ad.stepMsg = "Applying patch..."
+	}
 	ad.mu.Unlock()
-	mergeResult, mergeErr := updater.Merge(context.Background(), gamePath, engine, result.Destination, true)
+	mergeResult, mergeErr := mergeDownloadArchive(context.Background(), gamePath, engine, result.Destination, patch)
 	if mergeErr != nil {
 		log.Warn("merge failed", "game", gamePath, "error", mergeErr)
 		return fmt.Sprintf("Download succeeded, but merging into the game directory failed: %v", mergeErr)
 	}
+	// A merged install is only "updated" once the version is recorded; leaving
+	// it unrecorded keeps the game in the update queue forever.
+	if m.db != nil {
+		if game, gerr := m.db.GetGame(ad.gameID); gerr == nil && game != nil {
+			if installed, rerr := commands.RecordInstalledVersion(m.db, game, archivePath, patch); rerr != nil {
+				log.Warn("failed to record installed version", "game_id", ad.gameID, "error", rerr)
+			} else if installed != "" {
+				log.Info("installed version recorded", "game_id", ad.gameID, "version", installed)
+			}
+		}
+	}
+	os.Remove(archivePath)
 	log.Info("merge complete", "game", gamePath, "copied", mergeResult.FilesCopied, "preserved", mergeResult.FilesPreserved)
 
 	ad.mu.Lock()
@@ -546,15 +586,14 @@ func (m model) resolveLinksCmd(game *db.Game, destDir string) tea.Cmd {
 }
 
 // resolveDownloadLinks finds all viable download links for a game, sorted by platform score.
-func (m model) resolveDownloadLinks(game *db.Game) ([]db.DownloadLink, error) {
+func (m model) resolveDownloadLinks(game *db.Game) ([]downloader.RankedLink, error) {
 	links, listErr := m.db.ListDownloadLinks(game.ID, "", false)
 	// F95Zone /dl/ links expire a few hours after the thread was scraped:
 	// stale stored links go through the scrape below for fresh ones (and
 	// are still used if that scrape fails).
 	stale := m.scraperClient != nil && game.F95URL != "" && anyStaleLink(links)
 	if listErr == nil && len(links) > 0 && !stale {
-		targetPlatform := downloader.CurrentPlatform()
-		sorted := sortLinksByPlatform(links, targetPlatform)
+		sorted := downloader.RankDownloadLinks(links, downloader.UpdateRankOptions(game)).Links
 		if len(sorted) > 0 {
 			return sorted, nil
 		}
@@ -575,8 +614,7 @@ func (m model) resolveDownloadLinks(game *db.Game) ([]db.DownloadLink, error) {
 				m.db.CreateDownloadLink(link)
 			}
 			links, _ = m.db.ListDownloadLinks(game.ID, "", false)
-			targetPlatform := downloader.CurrentPlatform()
-			sorted := sortLinksByPlatform(links, targetPlatform)
+			sorted := downloader.RankDownloadLinks(links, downloader.UpdateRankOptions(game)).Links
 			if len(sorted) > 0 {
 				return sorted, nil
 			}
@@ -584,7 +622,7 @@ func (m model) resolveDownloadLinks(game *db.Game) ([]db.DownloadLink, error) {
 	}
 
 	if stale {
-		if sorted := sortLinksByPlatform(links, downloader.CurrentPlatform()); len(sorted) > 0 {
+		if sorted := downloader.RankDownloadLinks(links, downloader.UpdateRankOptions(game)).Links; len(sorted) > 0 {
 			return sorted, nil
 		}
 	}
@@ -602,38 +640,22 @@ func anyStaleLink(links []db.DownloadLink) bool {
 	return false
 }
 
-// sortLinksByPlatform returns all links sorted by platform + host reliability score (descending).
-// Skips online-only links that aren't downloadable.
+// sortLinksByPlatform ranks fresh-install links using the shared eligibility rules.
 func sortLinksByPlatform(links []db.DownloadLink, targetPlatform downloader.Platform) []db.DownloadLink {
-	type sl struct {
-		link  db.DownloadLink
-		score int
-	}
-	var scored []sl
-	for _, link := range links {
-		if downloader.IsOnlineOnly(link.Name, link.URL) {
-			continue
-		}
-		score := downloader.ScoreDownloadLink(link, targetPlatform)
-		scored = append(scored, sl{link, score})
-	}
-	if len(scored) == 0 {
-		return nil
-	}
-	sort.SliceStable(scored, func(i, j int) bool {
-		return scored[i].score > scored[j].score
-	})
-	result := make([]db.DownloadLink, len(scored))
-	for i, s := range scored {
-		result[i] = s.link
+	ranked := downloader.RankDownloadLinks(links, downloader.RankOptions{TargetPlatform: targetPlatform})
+	var result []db.DownloadLink
+	for _, r := range ranked.Links {
+		result = append(result, r.Link)
 	}
 	return result
 }
 
-// findMostRecentFile returns the path of the most recently modified regular file
-// in a directory, or empty string if the directory is empty/unreadable.
-func findMostRecentFile(dir string) string {
-	return downloader.FindMostRecentFile(dir)
+// mergeDownloadArchive preserves unchanged game files for patch archives.
+func mergeDownloadArchive(ctx context.Context, gamePath, engine, extracted string, patch bool) (*updater.MergeResult, error) {
+	if patch {
+		return updater.MergeOverlay(ctx, gamePath, engine, extracted)
+	}
+	return updater.Merge(ctx, gamePath, engine, extracted, true)
 }
 
 // ─── Browser fallback & download-dir watchers ───────────────────────────
@@ -643,6 +665,7 @@ func findMostRecentFile(dir string) string {
 // download-dir watcher then picks up the browser-saved archive and the
 // existing validate → extract → merge pipeline installs it.
 type browserFallback struct {
+	patch    bool
 	gameID   int64
 	url      string
 	destDir  string
@@ -685,6 +708,7 @@ func (m model) confirmBrowserOpen(fb *browserFallback) (tea.Model, tea.Cmd) {
 		downloader.WithOnArchive(func(path string) {
 			m.watcherMsgCh <- watcherFoundMsg{
 				gameID:   fb.gameID,
+				patch:    fb.patch,
 				path:     path,
 				destDir:  fb.destDir,
 				gamePath: fb.gamePath,
@@ -749,6 +773,9 @@ func (m model) installBrowserArchiveCmd(msg watcherFoundMsg) tea.Cmd {
 		}
 
 		ad := m.ensureActiveDownload(msg.gameID, msg.destDir)
+		ad.mu.Lock()
+		ad.patch = msg.patch
+		ad.mu.Unlock()
 		if errMsg := m.installArchive(ad, nil, msg.path, msg.destDir, msg.gamePath, msg.engine); errMsg != "" {
 			ad.mu.Lock()
 			ad.status = db.DownloadStatusFailed

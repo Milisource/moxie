@@ -343,9 +343,9 @@ func TestScoreDownloadLinksSkipsExcludedHosts(t *testing.T) {
 		{Host: "mega", Name: "DOWNLOAD · Win", Platform: db.PlatformWindows, URL: "https://f95zone.to/dl/3/"},
 	}
 
-	scored, skipped := scoreDownloadLinks(links, downloader.PlatformWindows, parseHostExclusions("pixeldrain"))
-	if skipped != 1 {
-		t.Errorf("skipped = %d, want 1", skipped)
+	scored, rank := scoreDownloadLinks(links, downloader.PlatformWindows, parseHostExclusions("pixeldrain"), nil)
+	if rank.SkippedExcluded != 1 {
+		t.Errorf("skipped = %d, want 1", rank.SkippedExcluded)
 	}
 	if len(scored) != 2 {
 		t.Fatalf("scored %d links, want 2", len(scored))
@@ -357,8 +357,27 @@ func TestScoreDownloadLinksSkipsExcludedHosts(t *testing.T) {
 	}
 
 	// No exclusions keeps every link.
-	all, none := scoreDownloadLinks(links, downloader.PlatformWindows, nil)
-	if none != 0 || len(all) != len(links) {
-		t.Errorf("nil exclusions: %d scored, %d skipped; want %d, 0", len(all), none, len(links))
+	all, none := scoreDownloadLinks(links, downloader.PlatformWindows, nil, nil)
+	if none.SkippedExcluded != 0 || len(all) != len(links) {
+		t.Errorf("nil exclusions: %d scored, %d skipped; want %d, 0", len(all), none.SkippedExcluded, len(links))
+	}
+}
+
+func TestScoreDownloadLinksPatchSelection(t *testing.T) {
+	t.Parallel()
+	links := []db.DownloadLink{
+		{Name: "DOWNLOAD · Win", URL: "full", Host: "gofile", Platform: db.PlatformLinux},
+		{Name: "Update only (0.17 -> 0.18) · Win", URL: "patch", Host: "gofile", Platform: db.PlatformLinux},
+	}
+	for _, tc := range []struct {
+		version, want string
+		patch         bool
+	}{{"v0.17", "patch", true}, {"0.16", "full", false}} {
+		t.Run(tc.version, func(t *testing.T) {
+			got, _ := scoreDownloadLinks(links, downloader.PlatformWindows, nil, &db.Game{ExePath: "Game.exe", Version: tc.version, LatestVersion: "0.18"})
+			if len(got) == 0 || got[0].link.URL != tc.want || got[0].patch != tc.patch {
+				t.Fatalf("ranked = %+v", got)
+			}
+		})
 	}
 }

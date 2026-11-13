@@ -78,6 +78,23 @@
     }
   }
 
+  const errorHints = {
+    auth: 'F95Zone session expired - sign in in your browser, then retry.',
+    challenge: 'The host or F95Zone needs a browser check - complete it in the browser window, then retry.',
+    rate_limit: 'This host is rate-limited - wait a while, retry, or exclude the host.',
+    dead_link: 'This mirror is gone - try another link from the download page.',
+    network: 'Network problem - check your connection and retry.',
+    disk: 'The disk is full - free some space and retry.',
+  }
+
+  const skipReasons = {
+    'not-installed': 'Not installed',
+    'no-update': 'No update available',
+    'unknown-version': 'Installed version unknown',
+    'unorderable-version': 'Version ordering unclear - update manually',
+    'already-updating': 'Already updating',
+  }
+
   // ── Data Loading ─────────────────────────────────────────────
   let gamesLoadInFlight = false
   async function loadGames() {
@@ -129,7 +146,7 @@
 
   // ── Derived ──────────────────────────────────────────────────
   let isUpdatingAny = $derived(
-    Object.values(gameStates).some(s => s && s.phase && s.phase !== 'idle' && s.phase !== 'done' && s.phase !== 'error')
+    Object.values(gameStates).some(s => s && s.phase && s.phase !== 'idle' && s.phase !== 'done' && s.phase !== 'error' && s.phase !== 'skipped')
   )
 
   // Anything running (updates run per game, in parallel; an install started
@@ -169,7 +186,7 @@
   // instead of sitting at 0% until the first game finishes.
   let batchDone = $derived(batchState?.results?.length ?? 0)
   let batchActive = $derived(
-    Object.values(gameStates).filter(s => s && s.phase && !['idle', 'done', 'error', 'queued'].includes(s.phase)).length
+    Object.values(gameStates).filter(s => s && s.phase && !['idle', 'done', 'error', 'skipped', 'queued'].includes(s.phase)).length
   )
   let batchWaiting = $derived(
     (batchState?.games ?? []).filter(g => gameStates[g.id]?.manualRequired).length
@@ -180,7 +197,7 @@
     let inFlight = 0
     for (const g of batchState.games ?? []) {
       const phase = gameStates[g.id]?.phase
-      if (!phase || phase === 'done' || phase === 'idle' || phase === 'error') continue
+      if (!phase || phase === 'done' || phase === 'idle' || phase === 'error' || phase === 'skipped') continue
       const pct = gameStates[g.id]?.percent
       if (typeof pct === 'number' && pct > 0) inFlight += Math.min(pct, 100) / 100
     }
@@ -347,7 +364,7 @@
             class="table-row"
             class:row-done={phase === 'done'}
             class:row-error={phase === 'error'}
-            class:row-active={phase !== 'idle' && phase !== 'done' && phase !== 'error'}
+            class:row-active={phase !== 'idle' && phase !== 'done' && phase !== 'error' && phase !== 'skipped'}
           >
             <span class="col-title game-title" title={game.title}>
               {game.title}
@@ -400,6 +417,21 @@
                     Mark as current
                   </button>
                 {/if}
+
+              {:else if phase === 'skipped'}
+                <div class="cell-status-row cell-status-skipped">
+                  <span class="cell-status-text">{skipReasons[gs.skipReason] || 'Skipped'}</span>
+                  <button class="btn btn-sm btn-outline" onclick={() => onUpdateGame(game.id)}>Retry</button>
+                  {#if isUnknown}
+                    <button
+                      class="btn btn-sm btn-outline"
+                      onclick={() => markAsCurrent(game)}
+                      title="Record {game.latestVersion} as installed without downloading"
+                    >
+                      Mark as current
+                    </button>
+                  {/if}
+                </div>
 
               {:else if phase === 'downloading'}
                 {#if gs.totalBytes > 0}
@@ -481,8 +513,11 @@
               {:else if phase === 'error'}
                 <div class="cell-error-column">
                   <span class="cell-error-text" title={gs.error}>
-                    {gs.error ? (gs.error.length > 60 ? gs.error.slice(0, 60) + '…' : gs.error) : 'Error'}
+                    {gs.error || 'Error'}
                   </span>
+                  {#if errorHints[gs.errorKind]}
+                    <span class="cell-error-hint">{errorHints[gs.errorKind]}</span>
+                  {/if}
                   {#if gs.manualRequired}
                     <div class="cell-manual-row">
                       <span class="cell-manual-hint">
@@ -503,13 +538,18 @@
                     >
                       Retry
                     </button>
-                    <button
-                      class="btn btn-sm btn-outline"
-                      onclick={() => openDownloadPage(game.id)}
-                      title="Open the download page in your browser"
-                    >
-                      Open download page ↗
-                    </button>
+                    {#if gs.errorKind === 'auth'}
+                      <button class="btn btn-sm btn-primary" onclick={() => onNavigate('sync')}>Sign in / Sync</button>
+                    {/if}
+                    {#if gs.errorKind !== 'auth'}
+                      <button
+                        class={gs.errorKind === 'dead_link' ? 'btn btn-sm btn-primary' : 'btn btn-sm btn-outline'}
+                        onclick={() => openDownloadPage(game.id)}
+                        title="Open the download page in your browser"
+                      >
+                        Open download page ↗
+                      </button>
+                    {/if}
                   </div>
                   {#if openedPages[game.id]}
                     <span class="cell-opened" title={openedPages[game.id]}>{openedPages[game.id]}</span>
@@ -767,7 +807,7 @@
   /* ── Table ──────────────────────────── */
   .table-header {
     display: grid;
-    grid-template-columns: 1fr 110px 150px 1fr;
+    grid-template-columns: 1fr 110px 180px 1fr;
     gap: 8px;
     padding: 6px 12px;
     font-size: var(--text-xs);
@@ -787,7 +827,7 @@
 
   .table-row {
     display: grid;
-    grid-template-columns: 1fr 110px 150px 1fr;
+    grid-template-columns: 1fr 110px 180px 1fr;
     gap: 8px;
     padding: 10px 12px;
     font-size: var(--text-base);
@@ -834,6 +874,8 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    /* Date-style versions ("2026-10-02") must not wrap into two lines. */
+    white-space: nowrap;
   }
   .version-current {
     color: var(--text-muted);
@@ -928,6 +970,9 @@
     align-self: flex-start;
     margin-left: 0;
   }
+  .cell-status-skipped .cell-status-text {
+    color: var(--text-muted);
+  }
   .cell-status-done {
     gap: 4px;
   }
@@ -949,11 +994,17 @@
     font-size: var(--text-xs);
     color: var(--danger);
     font-family: var(--font-mono);
-    text-align: right;
+    text-align: left;
     overflow: hidden;
-    text-overflow: ellipsis;
     max-width: 100%;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .cell-error-hint {
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    text-align: left;
+    line-height: 1.35;
   }
   .cell-manual-row {
     display: flex;

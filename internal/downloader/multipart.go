@@ -1,9 +1,9 @@
 package downloader
 
 import (
+	"context"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -198,15 +198,12 @@ func GroupMultiPartLinks(links []db.DownloadLink) []PartGroup {
 // partDestName derives the on-disk file name a download of link will
 // produce — mirroring downloadWithHeaders' base-name derivation.
 func partDestName(link db.DownloadLink) string {
-	base := filepath.Base(strings.SplitN(link.URL, "?", 2)[0])
-	if base == "" || base == "." || base == "/" {
-		base = "download"
-	}
-	if decoded, err := url.PathUnescape(base); err == nil && decoded != "" {
-		base = decoded
-	}
-	return base
+	name, _ := safeDestName(link.URL, "")
+	return name
 }
+
+// skipExistingPart enables the multipart retry check after response naming is known.
+type skipExistingPart struct{}
 
 // DownloadMultiPart downloads every part of a group into destDir, trying
 // each part's candidate links in order and skipping parts already present
@@ -214,6 +211,10 @@ func partDestName(link db.DownloadLink) string {
 // final archive (parts removed afterwards); volume-style groups return the
 // first part (the extractor handles the set). Returns the assembled file.
 func DownloadMultiPart(group PartGroup, destDir string, onProgress func(Progress), f95Cookie string) (string, error) {
+	return DownloadMultiPartWithContext(context.Background(), group, destDir, onProgress, f95Cookie)
+}
+
+func DownloadMultiPartWithContext(ctx context.Context, group PartGroup, destDir string, onProgress func(Progress), f95Cookie string) (string, error) {
 	maxIdx := group.MaxIndex()
 	files := make([]string, maxIdx+1)
 	for idx := 1; idx <= maxIdx; idx++ {
@@ -224,20 +225,37 @@ func DownloadMultiPart(group PartGroup, destDir string, onProgress func(Progress
 		var got string
 		var lastErr error
 		for _, link := range candidates {
-			name := partDestName(link)
-			present := filepath.Join(destDir, name)
-			if fi, err := os.Stat(present); err == nil && link.Size > 0 && fi.Size() == link.Size {
-				got = present
-				log.Info("multi-part: part already present, skipping", "part", idx, "file", name)
-				break
+			if err := ctx.Err(); err != nil {
+				return "", err
 			}
-			err := DownloadWithHost(link.URL, link.Host, destDir, link.Size, onProgress, f95Cookie)
+			// Preserve retries for URL-named parts, using the shared sanitizer.
+			name, nameErr := safeDestName(link.URL, "")
+			if nameErr == nil {
+				present, pathErr := safeDestPath(destDir, name)
+				if pathErr == nil {
+					if fi, err := os.Stat(present); err == nil && fi.Mode().IsRegular() && link.Size > 0 && fi.Size() == link.Size {
+						got = present
+						log.Info("multi-part: part already present, skipping", "part", idx, "file", name)
+						break
+					}
+				}
+			}
+
+			path, err := DownloadWithContext(context.WithValue(ctx, skipExistingPart{}, true), link.URL, link.Host, destDir, link.Size, onProgress, f95Cookie)
 			if err != nil {
 				lastErr = err
 				log.Warn("multi-part: part download failed", "part", idx, "host", link.Host, "error", err)
 				continue
 			}
-			got = present
+			if path == "" {
+				lastErr = fmt.Errorf("download did not report a path for part %d", idx)
+				continue
+			}
+			if _, err := os.Stat(path); err != nil {
+				lastErr = fmt.Errorf("downloaded part %d: %w", idx, err)
+				continue
+			}
+			got = path
 			break
 		}
 		if got == "" {

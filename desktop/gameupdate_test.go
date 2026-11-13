@@ -152,7 +152,7 @@ func TestRecordAppliedVersionSurvivesRescan(t *testing.T) {
 	g.Version = "0.16"
 	g.VersionSource = "scanner"
 
-	recordAppliedVersion(g)
+	recordAppliedVersion(g, "", false)
 	if g.Version != "0.18" || g.VersionSource != "f95" {
 		t.Fatalf("recordAppliedVersion = version %q source %q, want 0.18/f95", g.Version, g.VersionSource)
 	}
@@ -180,8 +180,33 @@ func TestRecordAppliedVersionSurvivesRescan(t *testing.T) {
 // also reachable from install paths, so keep the guard.
 func TestRecordAppliedVersionIgnoresEmptyLatest(t *testing.T) {
 	g := &db.Game{Version: "0.16", VersionSource: "scanner", LatestVersion: ""}
-	recordAppliedVersion(g)
+	recordAppliedVersion(g, "", false)
 	if g.Version != "0.16" || g.VersionSource != "scanner" {
 		t.Errorf("recordAppliedVersion with empty latest = version %q source %q, want 0.16/scanner unchanged", g.Version, g.VersionSource)
+	}
+}
+
+func TestRecordAppliedVersionUsesPayload(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, current, latest, archive, want, source string
+		patch                                        bool
+	}{
+		{"same payload final thread", "1.0", "1.0 Final", "Game-1.0.zip", "1.0 Final", "f95", false},
+		{"older mirror", "1.2", "1.3", "Game-1.1.zip", "1.2", "scanner", false},
+		{"unchanged release", "1.0", "1.0", "Game-1.0.zip", "1.0", "scanner", false},
+		{"unchanged install retains source", "1.0", "1.0", "", "1.0", "scanner", false},
+		{"empty install records thread version", "", "1.5", "", "1.5", "f95", false},
+		{"payload behind thread", "1.0", "1.3", "Game-1.1.zip", "1.1", "f95", false},
+		{"same payload does not adopt a newer thread", "1.0", "1.5", "Game-1.0.zip", "1.0", "scanner", false},
+		{"patch adopts the thread target", "1.0", "1.1", "Game-1.0.zip", "1.1", "f95", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			game := &db.Game{Version: tt.current, LatestVersion: tt.latest, VersionSource: "scanner"}
+			recordAppliedVersion(game, tt.archive, tt.patch)
+			if game.Version != tt.want || game.VersionSource != tt.source {
+				t.Errorf("recorded %q/%q, want %q/%q", game.Version, game.VersionSource, tt.want, tt.source)
+			}
+		})
 	}
 }

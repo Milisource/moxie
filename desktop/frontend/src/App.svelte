@@ -360,7 +360,7 @@
   // Like syncState, this lives here so the Updates view keeps its state (and
   // the backend's single-flight pipeline stays visible) when switching tabs
   // mid-run. The update view just renders this state and calls the callbacks.
-  /** @type {Record<number, {phase:string,percent:number,speed:number,bytesDownloaded:number,totalBytes:number,filesExtracted:number,totalFiles:number,currentFile:string,error:string,oldVersion:string,newVersion:string}>} */
+  /** @type {Record<number, {phase:string,percent:number,speed:number,bytesDownloaded:number,totalBytes:number,filesExtracted:number,totalFiles:number,currentFile:string,error:string,errorKind:string,skipReason:string,oldVersion:string,newVersion:string}>} */
   let gameStates = $state({})
   /** @type {{running:boolean,retrying?:boolean,current:number,total:number,currentGameTitle:string,results:Array,error:string,succeeded?:number,failed?:number,games?:Array}|null} */
   let batchState = $state(null)
@@ -418,7 +418,7 @@
   )
 
   function updateGS(gameId, patch) {
-    gameStates = {...gameStates, [gameId]: {...(gameStates[gameId] || {}), ...patch}}
+    gameStates = {...gameStates, [gameId]: {errorKind: '', skipReason: '', ...(gameStates[gameId] || {}), ...patch}}
   }
 
   // A pipeline that dies before its per-game events arrive leaves rows in the
@@ -449,7 +449,7 @@
       // 'selecting-file' is not a busy phase but is still non-terminal —
       // a cancel must never leave a row wedged in it.
       if (UPDATE_BUSY_PHASES.includes(gs.phase) || gs.phase === 'selecting-file') {
-        next[id] = {...gs, phase: 'error', error: 'Cancelled'}
+        next[id] = {...gs, phase: 'error', error: 'Cancelled', errorKind: 'unknown'}
       }
     }
     gameStates = next
@@ -468,8 +468,8 @@
   // surface that rejection instead of dropping it.
   function startUpdateGame(gameId) {
     const gs = gameStates[gameId] || {phase: 'idle'}
-    if (gs.phase !== 'idle' && gs.phase !== 'error') return
-    updateGS(gameId, {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', oldVersion: '', newVersion: '', manualRequired: false, manualHost: '', step: ''})
+    if (gs.phase !== 'idle' && gs.phase !== 'error' && gs.phase !== 'skipped') return
+    updateGS(gameId, {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', errorKind: '', skipReason: '', oldVersion: '', newVersion: '', manualRequired: false, manualHost: '', step: ''})
     DownloadGameUpdate(gameId).catch((e) => {
       const msg = String(e)
       updateGS(gameId, {phase: 'error', error: msg})
@@ -507,7 +507,7 @@
     // confirms the batch actually started.
     const newStates = {...gameStates}
     for (const game of list) {
-      newStates[game.id] = {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', oldVersion: '', newVersion: ''}
+      newStates[game.id] = {phase: 'syncing', percent: 0, speed: 0, bytesDownloaded: 0, totalBytes: 0, filesExtracted: 0, totalFiles: 0, currentFile: '', error: '', errorKind: '', skipReason: '', oldVersion: '', newVersion: ''}
     }
     gameStates = newStates
     batchState = {running: true, current: 0, total: list.length, currentGameTitle: '', results: [], error: '', games: list.map(g => ({id: g.id, title: g.title}))}
@@ -559,6 +559,7 @@
         title: retryTitle(gameId),
         success: ok,
         error: ok ? '' : (error || 'Update failed'),
+        kind: gameStates[gameId]?.errorKind || 'unknown',
       }]
       batchState = {...batchState, results, current: results.length}
     }
@@ -595,7 +596,7 @@
     CancelGameUpdateFor(gameId).then((cancelled) => {
       if (!cancelled) {
         const gs = gameStates[gameId]
-        if (gs && UPDATE_BUSY_PHASES.includes(gs.phase)) updateGS(gameId, {phase: 'error', error: 'Cancelled'})
+        if (gs && UPDATE_BUSY_PHASES.includes(gs.phase)) updateGS(gameId, {phase: 'error', error: 'Cancelled', errorKind: 'unknown'})
       }
     }).catch(() => {})
   }
@@ -878,6 +879,7 @@
         host: data.host || '',
         upToDate: false,
         ...(data.phase === 'selecting-file' ? {} : {manualRequired: false, manualHost: ''}),
+        ...(['downloading', 'selecting-link'].includes(data.phase) ? {errorKind: '', skipReason: ''} : {}),
       })
     }))
     subs.push(EventsOn('game-update:up-to-date', (data) => {
@@ -909,6 +911,7 @@
       updateGS(data.gameID, {
         manualRequired: true,
         manualHost: data.host || '',
+        errorKind: data.kind || gameStates[data.gameID]?.errorKind || 'challenge',
       })
     }))
     subs.push(EventsOn('game-update:error', (data) => {
@@ -931,7 +934,17 @@
         resetStaleBusyPhases()
         return
       }
-      updateGS(data.gameID, {phase: 'error', error: data.message || 'Unknown error', step: data.step || ''})
+      updateGS(data.gameID, {phase: 'error', error: data.message || 'Unknown error', errorKind: data.kind || 'unknown', step: data.step || ''})
+    }))
+    subs.push(EventsOn('game-update:skipped', (data) => {
+      // `already-updating` is a real in-flight run, not a skip to display:
+      // startUpdateAll optimistically marks every row syncing, and replacing
+      // that with a terminal "skipped" would end the batch's busy state.
+      if (data.reason === 'already-updating') return
+      const phase = gameStates[data.gameID]?.phase || 'idle'
+      if (phase === 'idle' || phase === 'syncing') {
+        updateGS(data.gameID, {phase: 'skipped', skipReason: data.reason || ''})
+      }
     }))
     subs.push(EventsOn('game-update:complete', (data) => {
       updateGS(data.gameID, {
@@ -975,6 +988,7 @@
             title: data.title || '',
             success: !!data.success,
             error: data.error || '',
+            kind: data.kind || 'unknown',
           }],
         }
       }
@@ -987,6 +1001,17 @@
           succeeded: data.succeeded ?? 0,
           failed: data.failed ?? 0,
         }
+        // A skip reason is only meaningful for the run that produced it;
+        // clearing it here keeps a stale "Already updating" from sticking.
+        const next = {...gameStates}
+        let cleared = false
+        for (const [id, gs] of Object.entries(next)) {
+          if (gs?.phase === 'skipped') {
+            next[id] = {...gs, phase: 'idle', skipReason: ''}
+            cleared = true
+          }
+        }
+        if (cleared) gameStates = next
         // One refresh for the whole batch (not N per-game refreshes).
         refreshGames()
         lastUpdate++
@@ -1004,7 +1029,7 @@
       if (id === undefined || id === null) return
       const gs = gameStates[id]
       if (gs && UPDATE_BUSY_PHASES.includes(gs.phase)) {
-        updateGS(id, {phase: 'error', error: gs.error || 'Update stopped before finishing'})
+        updateGS(id, {phase: 'error', error: gs.error || 'Update stopped before finishing', errorKind: gs.errorKind || 'unknown'})
       }
       if (!(id in retryPending)) return
       if (retryPending[id] === 'deferred') {

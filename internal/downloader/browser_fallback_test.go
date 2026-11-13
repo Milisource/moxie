@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -55,7 +56,7 @@ func TestDownloadWithHost_FileHopChallenge_Fallback(t *testing.T) {
 	defaultBrowserFallback = fb
 
 	destDir := t.TempDir()
-	err := DownloadWithHost("https://cdn.example.com/file.zip", "unknown", destDir, 0, nil, "")
+	_, err := DownloadWithHost("https://cdn.example.com/file.zip", "unknown", destDir, 0, nil, "")
 	if err != nil {
 		t.Fatalf("DownloadWithHost: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestDownloadWithHost_FileHopChallenge_FallbackFails(t *testing.T) {
 	fb, _ := fakeFallback(t, false)
 	defaultBrowserFallback = fb
 
-	err := DownloadWithHost("https://cdn.example.com/file.zip", "unknown", t.TempDir(), 0, nil, "")
+	_, err := DownloadWithHost("https://cdn.example.com/file.zip", "unknown", t.TempDir(), 0, nil, "")
 	if err == nil {
 		t.Fatal("expected error when the browser fallback fails")
 	}
@@ -112,9 +113,11 @@ func TestDownloadWithHost_FileHopChallenge_NoFallback(t *testing.T) {
 	saveFallback(t)
 	defaultBrowserFallback = nil
 
-	err := DownloadWithHost("https://cdn.example.com/file.zip", "unknown", t.TempDir(), 0, nil, "")
-	if err == nil || !strings.Contains(err.Error(), "HTTP 403") {
-		t.Fatalf("expected HTTP 403 without fallback, got %v", err)
+	_, err := DownloadWithHost("https://cdn.example.com/file.zip", "unknown", t.TempDir(), 0, nil, "")
+	// A challenge stays a typed challenge even when no browser can be handed
+	// the URL: callers must classify it as such, not as a bare 403.
+	if err == nil || !errors.Is(err, ErrCFChallengeStale) {
+		t.Fatalf("expected ErrCFChallengeStale without fallback, got %v", err)
 	}
 }
 
@@ -138,7 +141,7 @@ func TestDownloadWithHost_ResolveChallenge_Fallback(t *testing.T) {
 	defaultBrowserFallback = fb
 
 	destDir := t.TempDir()
-	err := DownloadWithHost("https://vikingfile.com/f/abc123", "vikingfile", destDir, 0, nil, "")
+	_, err := DownloadWithHost("https://vikingfile.com/f/abc123", "vikingfile", destDir, 0, nil, "")
 	if err != nil {
 		t.Fatalf("DownloadWithHost: %v", err)
 	}
@@ -166,7 +169,7 @@ func TestDownloadWithHost_ResolveFailure_NoFallback(t *testing.T) {
 	fb, calls := fakeFallback(t, true)
 	defaultBrowserFallback = fb
 
-	err := DownloadWithHost("https://vikingfile.com/f/abc123", "vikingfile", t.TempDir(), 0, nil, "")
+	_, err := DownloadWithHost("https://vikingfile.com/f/abc123", "vikingfile", t.TempDir(), 0, nil, "")
 	if err == nil {
 		t.Fatal("expected error for a 404 page (no challenge)")
 	}
@@ -202,7 +205,7 @@ func TestDownloadWithHost_ResolveCaptchaFailure_Fallback(t *testing.T) {
 	defaultBrowserFallback = fb
 
 	destDir := t.TempDir()
-	err := DownloadWithHost("https://vikingfile.com/f/abc123", "vikingfile", destDir, 0, nil, "")
+	_, err := DownloadWithHost("https://vikingfile.com/f/abc123", "vikingfile", destDir, 0, nil, "")
 	if err != nil {
 		t.Fatalf("DownloadWithHost: %v", err)
 	}

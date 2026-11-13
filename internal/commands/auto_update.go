@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 
 // autoUpdateOptions controls one auto-update run.
 type autoUpdateOptions struct {
+	Ctx         context.Context
 	Cookie      string
 	Platform    string
 	Extract     bool
@@ -95,8 +97,8 @@ type autoUpdateAttempt struct {
 // without a person. Challenge-graded links are handed to the installed
 // browser by the downloader's browser fallback, so most updates complete
 // unattended; the rest are reported for a manual retry.
-func AutoUpdate(args []string) {
-	fs := flag.NewFlagSet("auto-update", flag.ExitOnError)
+func AutoUpdate(args []string) (code int) {
+	fs := flag.NewFlagSet("auto-update", flag.ContinueOnError)
 	cookieStr := fs.String("cookie", "", "Cookie header (recommended: needed to refresh download links)")
 	cookieFile := fs.String("cookie-file", "", "File containing cookie header")
 	platform := fs.String("platform", "", "Platform preference (linux/windows/macos, default: auto-detect)")
@@ -109,7 +111,26 @@ func AutoUpdate(args []string) {
 	noCheck := fs.Bool("no-check", false, "Skip the version check; use pending updates already in the DB")
 	concurrencyFlag := fs.Int("concurrency", 0, "Maximum games to update at once (1-4; 0 = update-concurrency config)")
 	excludeHost := fs.String("exclude-host", "", "Comma-separated hosts to skip (e.g. pixeldrain when rate-limited)")
-	fs.Parse(hoistFlags(args, autoUpdateParseFlags))
+	if err := fs.Parse(hoistFlags(args, autoUpdateParseFlags)); err != nil {
+		return 1
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// Registered before resource defers: an interrupted run returns only after
+	// workers finish and the database and update lock have been released.
+	defer func() {
+		interrupted := ctx.Err() != nil
+		stop()
+		if interrupted {
+			code = 1
+		}
+	}()
+	// Restore the default disposition on the first signal: the version check
+	// takes no context, so a second Ctrl-C must be able to terminate it.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 
 	cookie := ResolveCookie(*cookieStr, *cookieFile)
 
@@ -120,20 +141,9 @@ func AutoUpdate(args []string) {
 	release, err := acquireAutoUpdateLock()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer release()
-	// os.Exit skips defers, so release explicitly on the exits below; SIGINT
-	// must also release the lock or the next run waits out the stale window.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
-	go func() {
-		if _, ok := <-sigCh; ok {
-			release()
-			os.Exit(1)
-		}
-	}()
 
 	targetPlatform := *platform
 	if targetPlatform == "" {
@@ -150,8 +160,7 @@ func AutoUpdate(args []string) {
 		trackable, err := database.GamesWithF95URL()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			release()
-			os.Exit(1)
+			return 1
 		}
 		if len(trackable) > 0 {
 			if _, err := RunUpdateCheck(database, client, trackable, *force, public); err != nil {
@@ -163,8 +172,7 @@ func AutoUpdate(args []string) {
 	pending, err := database.GamesNeedingUpdate()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		release()
-		os.Exit(1)
+		return 1
 	}
 
 	if *checkOnly {
@@ -172,7 +180,7 @@ func AutoUpdate(args []string) {
 		for i := range pending {
 			fmt.Fprintf(os.Stderr, "  %s: %s → %s\n", pending[i].Title, pending[i].Version, pending[i].LatestVersion)
 		}
-		return
+		return 0
 	}
 
 	maxPerRun := *max
@@ -180,6 +188,7 @@ func AutoUpdate(args []string) {
 		maxPerRun = autoUpdateMaxPerRun()
 	}
 	summary := runAutoUpdate(database, pending, autoUpdateOptions{
+		Ctx:          ctx,
 		Cookie:       cookie,
 		Client:       client,
 		Platform:     targetPlatform,
@@ -191,6 +200,17 @@ func AutoUpdate(args []string) {
 		ExcludeHosts: parseHostExclusions(*excludeHost),
 	})
 	printAutoUpdateSummary(summary)
+	return autoUpdateExitCode(summary, *checkOnly, *dryRun)
+}
+
+// autoUpdateExitCode maps a completed run to the CLI exit status.
+func autoUpdateExitCode(summary autoUpdateSummary, checkOnly, dryRun bool) int {
+	// Games left waiting for a person are not success: an unattended run that
+	// installed nothing must be visible to scripts as well as to the operator.
+	if !checkOnly && !dryRun && (summary.Failed > 0 || summary.NeedsHuman > 0) {
+		return 2
+	}
+	return 0
 }
 
 // autoUpdateJob is one installable game and its 1-based position in the run.
@@ -214,6 +234,9 @@ type autoUpdateStep struct {
 // config key when unset).
 func runAutoUpdate(database *db.Database, games []db.Game, opts autoUpdateOptions) autoUpdateSummary {
 	summary := autoUpdateSummary{}
+	if opts.Ctx == nil {
+		opts.Ctx = context.Background()
+	}
 	state := loadAutoUpdateState()
 
 	concurrency := opts.Concurrency
@@ -279,7 +302,7 @@ func runAutoUpdate(database *db.Database, games []db.Game, opts autoUpdateOption
 	install := opts.install
 	if install == nil {
 		install = func(game *db.Game) error {
-			return downloadSingle(database, game, opts.Cookie, "", opts.Platform, opts.Extract, opts.Client, opts.ExcludeHosts)
+			return downloadSingleContext(opts.Ctx, database, game, opts.Cookie, "", opts.Platform, opts.Extract, opts.Client, opts.ExcludeHosts)
 		}
 	}
 
@@ -288,6 +311,9 @@ func runAutoUpdate(database *db.Database, games []db.Game, opts autoUpdateOption
 	// the lock.
 	var mu sync.Mutex
 	runJob := func(job autoUpdateJob) {
+		if opts.Ctx.Err() != nil {
+			return
+		}
 		game := job.game
 		mu.Lock()
 		fmt.Fprintf(os.Stderr, "\n[%d/%d] %s: %s → %s\n",
@@ -295,6 +321,16 @@ func runAutoUpdate(database *db.Database, games []db.Game, opts autoUpdateOption
 		mu.Unlock()
 
 		err := install(game)
+
+		if err != nil && opts.Ctx.Err() != nil {
+			// An interrupted run must not consume the retry budget: recording
+			// a failure would back this game off even though nothing was wrong
+			// with it.
+			mu.Lock()
+			fmt.Fprintf(os.Stderr, "\n  - %s interrupted, nothing recorded\n", game.Title)
+			mu.Unlock()
+			return
+		}
 
 		mu.Lock()
 		defer mu.Unlock()
@@ -317,6 +353,9 @@ func runAutoUpdate(database *db.Database, games []db.Game, opts autoUpdateOption
 
 	if concurrency <= 1 {
 		for _, step := range steps {
+			if opts.Ctx.Err() != nil {
+				break
+			}
 			if step.job == nil {
 				fmt.Fprint(os.Stderr, step.note)
 				continue
@@ -332,7 +371,7 @@ func runAutoUpdate(database *db.Database, games []db.Game, opts autoUpdateOption
 			}
 			jobs = append(jobs, *step.job)
 		}
-		runAutoUpdateJobs(jobs, concurrency, runJob)
+		runAutoUpdateJobsContext(opts.Ctx, jobs, concurrency, runJob)
 	}
 
 	saveAutoUpdateState(state)
@@ -368,6 +407,10 @@ func isInstallableUpdate(game *db.Game) bool {
 // flight, then returns once all of them finish. work must be safe to call
 // concurrently.
 func runAutoUpdateJobs(jobs []autoUpdateJob, concurrency int, work func(autoUpdateJob)) {
+	runAutoUpdateJobsContext(context.Background(), jobs, concurrency, work)
+}
+
+func runAutoUpdateJobsContext(ctx context.Context, jobs []autoUpdateJob, concurrency int, work func(autoUpdateJob)) {
 	if len(jobs) == 0 {
 		return
 	}
@@ -376,6 +419,9 @@ func runAutoUpdateJobs(jobs []autoUpdateJob, concurrency int, work func(autoUpda
 	}
 	if concurrency <= 1 {
 		for _, job := range jobs {
+			if ctx.Err() != nil {
+				break
+			}
 			work(job)
 		}
 		return
@@ -383,10 +429,22 @@ func runAutoUpdateJobs(jobs []autoUpdateJob, concurrency int, work func(autoUpda
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for _, job := range jobs {
+		if ctx.Err() != nil {
+			break
+		}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Wait()
+			return
+		}
+		if ctx.Err() != nil {
+			<-sem
+			break
+		}
 		wg.Add(1)
 		go func(job autoUpdateJob) {
 			defer wg.Done()
-			sem <- struct{}{}
 			defer func() { <-sem }()
 			work(job)
 		}(job)

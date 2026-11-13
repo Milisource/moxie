@@ -3,7 +3,6 @@ package scraper
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 
 	"github.com/mili/moxie/internal/log"
@@ -62,7 +61,7 @@ func clearanceRefresher() func(ctx context.Context) (string, error) {
 // thread or mirror would get past.
 func IsCloudflareChallenge(err error) bool {
 	var b *BlockedError
-	return errors.As(err, &b) && strings.Contains(b.Reason, "Cloudflare")
+	return errors.As(err, &b) && b.Kind == BlockChallenge
 }
 
 // tryRefreshClearance runs the clearance refresher once per client after a

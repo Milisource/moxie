@@ -302,6 +302,12 @@ func TestF95DL_CaptchaWithoutSolverHints(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "browser_fallback") {
 		t.Fatalf("err = %v, want the browser-assisted-downloads hint", err)
 	}
+	if !errors.Is(err, ErrBrowserCheckRequired) {
+		t.Fatalf("err = %v, want typed browser-check marker", err)
+	}
+	if IsF95BrowserCheckError(err) {
+		t.Fatal("disabled browser fallback must allow the caller to try another mirror")
+	}
 }
 
 func TestF95DL_ExpiredLinkIsStaleError(t *testing.T) {

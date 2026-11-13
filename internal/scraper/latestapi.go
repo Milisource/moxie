@@ -884,8 +884,7 @@ func (p *PublicAPI) CacheFullThread(ctx context.Context, id int64) (*CacheThread
 		// challenge 403 means WE are blocked, not that the thread vanished;
 		// return the block error so callers stop the run instead of
 		// degrading every game to a per-game "not found" skip. This mirrors
-		// retryable()'s Cloudflare discrimination (checkBlocked embeds
-		// "Cloudflare" in the reason for challenge pages).
+		// retryable()'s typed Cloudflare challenge discrimination.
 		if errIsThreadGone(err) {
 			deleteCachedThreadIDByThread(id)
 			return nil, ErrThreadNotFound
@@ -995,8 +994,8 @@ func parseCacheDownloads(raw json.RawMessage) []CacheDownload {
 // errIsThreadGone reports whether a cache-API error means the thread itself
 // no longer exists — 404, or a non-Cloudflare 403 (the cache API answers
 // privated/deleted threads with 403) — rather than that our session or IP is
-// blocked. Cloudflare-challenge BlockedErrors carry "Cloudflare" in Reason
-// (see checkBlocked); a tripped circuit breaker surfaces as StatusCode 0 and
+// blocked. Cloudflare-challenge BlockedErrors carry Kind BlockChallenge;
+// a tripped circuit breaker surfaces as StatusCode 0 and
 // is also NOT a thread-gone signal.
 func errIsThreadGone(err error) bool {
 	var blockedErr *BlockedError
@@ -1005,7 +1004,7 @@ func errIsThreadGone(err error) bool {
 		case 404:
 			return true
 		case 403:
-			return !strings.Contains(blockedErr.Reason, "Cloudflare")
+			return blockedErr.Kind != BlockChallenge
 		}
 		return false
 	}

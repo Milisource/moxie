@@ -121,7 +121,9 @@ func main() {
 		case "check-updates", "updates":
 			commands.CheckUpdates(args[1:])
 		case "auto-update", "auto":
-			commands.AutoUpdate(args[1:])
+			if code := commands.AutoUpdate(args[1:]); code != 0 {
+				os.Exit(code)
+			}
 		case "sync":
 			commands.Sync(args[1:])
 		case "play":
@@ -148,7 +150,9 @@ func main() {
 		case "covers":
 			commands.Covers(args[1:])
 		case "download":
-			commands.Download(args[1:])
+			if code := commands.Download(args[1:]); code != 0 {
+				os.Exit(code)
+			}
 		case "install":
 			commands.Install(args[1:])
 		case "downloads":
@@ -271,6 +275,16 @@ COMMON FLAGS
     --force                   Re-check even if checked within 24h
     --auto                    Install updates immediately after checking
 
+  download:
+    --all                     Download all games with pending updates
+    --open                    Open download links in the browser
+    --watch                   Watch browser downloads and auto-install (with --open)
+    --extension               Resolve F95Zone checks with the browser extension
+    --browser-dir <path>      Browser download directory to watch
+    --exclude-host <hosts>    Skip mirrors by host, comma-separated
+    Exit codes: 0 success, 1 hard error, 2 completed batch with games that
+                failed or are waiting for a browser check
+
   auto-update:
     --check-only              Only check for updates; do not download
     --no-check                Skip the check; act on updates already in the DB
@@ -281,6 +295,9 @@ COMMON FLAGS
     --no-extract              Download only; do not extract/merge
     --force                   Ignore the 24h cooldown and the retry backoff
     --platform <p>            linux, windows or macos (default: auto)
+
+    Exit codes: 0 success (including --check-only/--dry-run), 1 hard error,
+                2 completed run with games that failed or need a browser check
 
   config keys for unattended updates:
     auto_update               true to update after sync/check-updates/scan --sync

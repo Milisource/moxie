@@ -27,6 +27,10 @@ var UseUTLSTransport = os.Getenv("MOXIE_UTLS") == "1"
 // cookies or fall back to a browser path.
 var ErrCFChallengeStale = errors.New("Cloudflare challenge received (cf_clearance stale or TLS fingerprint rejected) — re-import browser cookies or use the browser fallback")
 
+// ErrDownloadTruncated marks a transfer whose byte count did not match what
+// the server promised. It is a transport failure, not a corrupt payload.
+var ErrDownloadTruncated = errors.New("download truncated")
+
 // utlsProfileKey carries the impersonation profile through the request
 // context to the dialer.
 type utlsProfileKey struct{}

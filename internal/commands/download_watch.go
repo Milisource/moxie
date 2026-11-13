@@ -30,11 +30,24 @@ func resolveBestLink(database *db.Database, game db.Game, cookie, targetPlatform
 	}
 
 	var selectedLink *db.DownloadLink
+	// rankedBest applies the same eligibility rules as the CLI/TUI/desktop
+	// download paths: no mods, no links for another platform, and a patch only
+	// when its stated range matches this install.
+	rankedBest := func(candidates []db.DownloadLink) *db.DownloadLink {
+		opts := downloader.UpdateRankOptions(&game)
+		opts.TargetPlatform = platform
+		ranked := downloader.RankDownloadLinks(candidates, opts).Links
+		if len(ranked) == 0 {
+			return nil
+		}
+		link := ranked[0].Link
+		return &link
+	}
 	if len(links) > 0 {
 		// Refresh from the thread when a session is available so the opened
 		// page matches the current OP; stored links are the fallback.
 		if cookie == "" {
-			selectedLink = selectBestLinkByPlatform(links, platform)
+			selectedLink = rankedBest(links)
 		}
 	}
 
@@ -64,7 +77,7 @@ func resolveBestLink(database *db.Database, game db.Game, cookie, targetPlatform
 				addCacheDownloadLinks(database, &game, data, cookie)
 			}
 			links, _ = database.ListDownloadLinks(game.ID, "", false)
-			selectedLink = selectBestLinkByPlatform(links, platform)
+			selectedLink = rankedBest(links)
 		}
 	}
 
@@ -81,11 +94,11 @@ func resolveBestLink(database *db.Database, game db.Game, cookie, targetPlatform
 
 // downloadAllOpen finds all games with pending updates, opens their download
 // links in the browser, and optionally watches for the downloaded archives.
-func downloadAllOpen(database *db.Database, cookie, targetPlatform, watchDir string, extract, doWatch bool) {
+func downloadAllOpen(database *db.Database, cookie, targetPlatform, watchDir string, extract, doWatch bool) (failed int, err error) {
 	games, err := database.GamesNeedingUpdate()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error listing games: %v\n", err)
-		os.Exit(1)
+		return 0, err
 	}
 
 	var watched []watchedGame
@@ -94,19 +107,21 @@ func downloadAllOpen(database *db.Database, cookie, targetPlatform, watchDir str
 			watched = append(watched, *wg)
 			fmt.Fprintf(os.Stderr, "  %s: %s → %s  [%s]\n", g.Title, g.Version, g.LatestVersion, wg.LinkName)
 		} else {
+			failed++
 			fmt.Fprintf(os.Stderr, "  %s: %s → %s  (no download link)\n", g.Title, g.Version, g.LatestVersion)
 		}
 	}
 
 	if len(watched) == 0 {
 		fmt.Fprintln(os.Stderr, "No games with pending updates and available links.")
-		return
+		return failed, nil
 	}
 
 	fmt.Fprintf(os.Stderr, "\nOpening %d download(s) in your browser...\n\n", len(watched))
 	for i, wg := range watched {
 		fmt.Fprintf(os.Stderr, "  [%d/%d] %s\n", i+1, len(watched), wg.Game.Title)
 		if err := openURL(wg.LinkURL); err != nil {
+			failed++
 			fmt.Fprintf(os.Stderr, "    ✗ Failed to open: %v\n", err)
 		}
 	}
@@ -114,35 +129,39 @@ func downloadAllOpen(database *db.Database, cookie, targetPlatform, watchDir str
 	fmt.Fprintf(os.Stderr, "\nEach download opened in a new tab.\n")
 
 	if doWatch {
-		watchAndInstall(watchDir, watched, database, extract, 10*time.Minute)
+		failed += watchAndInstall(watchDir, watched, database, extract, 10*time.Minute)
 	} else {
 		fmt.Fprintf(os.Stderr, "Save the files and moxie will detect them.\n")
 		fmt.Fprintf(os.Stderr, "  Run with --watch to auto-install: moxie download --all --open --watch\n")
 	}
+	return failed, nil
 }
 
 // downloadSingleOpen resolves the best link for a single game and opens it
 // in the browser. Optionally watches for the downloaded archive.
-func downloadSingleOpen(database *db.Database, game *db.Game, cookie, targetPlatform, watchDir string, extract, doWatch bool) {
+func downloadSingleOpen(database *db.Database, game *db.Game, cookie, targetPlatform, watchDir string, extract, doWatch bool) error {
 	wg := resolveBestLink(database, *game, cookie, targetPlatform)
 	if wg == nil {
 		fmt.Fprintf(os.Stderr, "No download links found for %q.\n", game.Title)
-		return
+		return fmt.Errorf("no download links found for %q", game.Title)
 	}
 
 	fmt.Fprintf(os.Stderr, "Opening download link in browser...\n")
 	if err := openURL(wg.LinkURL); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ Failed to open: %v\n", err)
-		return
+		return err
 	}
 	fmt.Fprintf(os.Stderr, "  ✓ Opened in browser\n")
 
 	if doWatch {
-		watchAndInstall(watchDir, []watchedGame{*wg}, database, extract, 10*time.Minute)
+		if remaining := watchAndInstall(watchDir, []watchedGame{*wg}, database, extract, 10*time.Minute); remaining > 0 {
+			return fmt.Errorf("%d download(s) not detected before the watcher stopped", remaining)
+		}
 	} else {
 		fmt.Fprintf(os.Stderr, "Save the file to %s and moxie will detect it.\n", watchDir)
 		fmt.Fprintf(os.Stderr, "  Run with --watch to auto-install.\n")
 	}
+	return nil
 }
 
 // openURL opens a URL in the user's default browser.
@@ -192,9 +211,9 @@ func openDownloadsBatch(games []watchedGame) {
 // watchAndInstall monitors a directory for new archive files and auto-installs
 // them into the corresponding game. Returns after all games are installed,
 // or after idleTimeout with no new files.
-func watchAndInstall(watchDir string, games []watchedGame, database *db.Database, extract bool, idleTimeout time.Duration) {
+func watchAndInstall(watchDir string, games []watchedGame, database *db.Database, extract bool, idleTimeout time.Duration) (remaining int) {
 	if len(games) == 0 {
-		return
+		return 0
 	}
 
 	os.MkdirAll(watchDir, 0755)
@@ -262,12 +281,13 @@ func watchAndInstall(watchDir string, games []watchedGame, database *db.Database
 			if idleTimeout > 0 && time.Since(lastActivity) > idleTimeout {
 				fmt.Fprintf(os.Stderr, "\n  No activity for %v — stopping.\n", idleTimeout)
 				fmt.Fprintf(os.Stderr, "  %d game(s) remaining. Run again when files are ready.\n", pending)
-				return
+				return pending
 			}
 		}
 	}
 
 	fmt.Fprintf(os.Stderr, "\n  ✓ All %d game(s) installed!\n", len(games))
+	return 0
 }
 
 // matchArchiveToGame finds a pending game whose title or download link name
@@ -308,6 +328,7 @@ func matchArchiveToGame(filename string, games []watchedGame) *watchedGame {
 func installDownloadedArchive(database *db.Database, game *db.Game, archivePath string, doExtract bool) {
 	destDir := filepath.Join(filepath.Dir(game.Path), "downloads")
 	merged := false
+	overlaid := false
 
 	if doExtract {
 		fmt.Fprintf(os.Stderr, "    Extracting...\n")
@@ -319,7 +340,24 @@ func installDownloadedArchive(database *db.Database, game *db.Game, archivePath 
 		defer os.RemoveAll(result.Destination)
 
 		fmt.Fprintf(os.Stderr, "    Merging into %s...\n", game.Path)
-		mergeResult, mergeErr := updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
+		// The archive came from a browser download, so there is no link class
+		// to trust: a payload without the game's launcher is a patch and is
+		// overlaid instead of replacing the whole install.
+		exeRel := ""
+		if game.ExePath != "" {
+			if rel, err := filepath.Rel(game.Path, game.ExePath); err == nil && !strings.HasPrefix(rel, "..") {
+				exeRel = rel
+			}
+		}
+		var mergeResult *updater.MergeResult
+		var mergeErr error
+		if updater.ContainsLauncher(result.Destination, exeRel) {
+			mergeResult, mergeErr = updater.Merge(context.Background(), game.Path, string(game.Engine), result.Destination, true)
+		} else {
+			fmt.Fprintf(os.Stderr, "    Payload has no launcher — applying as a patch...\n")
+			mergeResult, mergeErr = updater.MergeOverlay(context.Background(), game.Path, string(game.Engine), result.Destination)
+			overlaid = true
+		}
 		if mergeErr != nil {
 			fmt.Fprintf(os.Stderr, "    ✗ Merge failed, version left at %q: %v\n", game.Version, mergeErr)
 			return
@@ -337,7 +375,7 @@ func installDownloadedArchive(database *db.Database, game *db.Game, archivePath 
 	}
 
 	previous := game.Version
-	if installed, err := recordInstalledVersion(database, game, archivePath); err != nil {
+	if installed, err := RecordInstalledVersion(database, game, archivePath, overlaid); err != nil {
 		log.Warn("failed to update version after install", "game_id", game.ID, "error", err)
 		fmt.Fprintf(os.Stderr, "    Warning: could not record version: %v\n", err)
 	} else if installed != previous {

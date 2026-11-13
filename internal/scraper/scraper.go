@@ -71,8 +71,35 @@ func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("scraper: unexpected status %d", e.StatusCode)
 }
 
+// BlockKind classifies a blocked response independently of its message.
+type BlockKind int
+
+const (
+	BlockUnknown BlockKind = iota
+	BlockChallenge
+	BlockRateLimit
+	BlockUnavailable
+	BlockForbidden
+)
+
+func (k BlockKind) String() string {
+	switch k {
+	case BlockChallenge:
+		return "challenge"
+	case BlockRateLimit:
+		return "rate limit"
+	case BlockUnavailable:
+		return "unavailable"
+	case BlockForbidden:
+		return "forbidden"
+	default:
+		return "unknown"
+	}
+}
+
 // BlockedError indicates the request was blocked by anti-bot protection.
 type BlockedError struct {
+	Kind       BlockKind
 	Reason     string
 	StatusCode int
 	// RetryAfter is the server-provided wait time from a Retry-After
@@ -364,14 +391,15 @@ func (c *Client) Blocked() bool {
 
 func (c *Client) blockedErr() error {
 	return &BlockedError{
+		Kind:       BlockForbidden,
 		Reason:     "repeated blocking responses — session expired or IP temporarily blocked; refresh F95Zone cookies in your browser and try again later",
 		StatusCode: 0,
 	}
 }
 
-// retryable reports whether a failed attempt is worth retrying. Network
-// errors and 5xx/429 responses are transient; Cloudflare challenge pages
-// would only produce the same challenge again.
+// retryable reports whether a failed attempt is worth retrying. Rate limits
+// and plain 5xx outages are transient; a challenge or a 403 would only produce
+// the same wall again, so the failure is surfaced after one attempt.
 func retryable(err error) bool {
 	if err == nil {
 		return false
@@ -381,11 +409,14 @@ func retryable(err error) bool {
 	}
 	var blockedErr *BlockedError
 	if errors.As(err, &blockedErr) {
-		switch blockedErr.StatusCode {
-		case 403, 429, 503:
-			return !strings.Contains(blockedErr.Reason, "Cloudflare")
+		switch blockedErr.Kind {
+		case BlockChallenge, BlockForbidden:
+			return false
+		case BlockRateLimit, BlockUnavailable:
+			return true
+		default:
+			return blockedErr.StatusCode >= 500
 		}
-		return false
 	}
 	// Plain transport/network errors are transient; HTTP 5xx responses
 	// are worth a retry, but 4xx are client errors that will only fail
@@ -522,28 +553,32 @@ func (c *Client) checkBlocked(resp *http.Response) (bodyStr string, err error) {
 
 	switch resp.StatusCode {
 	case 429:
-		return "", &BlockedError{Reason: "rate limited", StatusCode: 429, RetryAfter: retryAfter}
+		return "", &BlockedError{Kind: BlockRateLimit, Reason: "rate limited", StatusCode: 429, RetryAfter: retryAfter}
 	case 403:
 		if cf {
 			return "", &BlockedError{
+				Kind:       BlockChallenge,
 				Reason:     "Cloudflare challenge (HTTP 403) — refresh your browser session and re-import cookies",
 				StatusCode: 403,
 			}
 		}
 		return "", &BlockedError{
+			Kind:       BlockForbidden,
 			Reason:     "access denied (HTTP 403) — possible IP block or missing cookies",
 			StatusCode: 403,
 		}
 	case 503:
 		if cf {
 			return "", &BlockedError{
+				Kind:       BlockChallenge,
 				Reason:     "Cloudflare challenge (HTTP 503) — refresh your browser session and re-import cookies",
 				StatusCode: 503,
 				RetryAfter: retryAfter,
 			}
 		}
 		return "", &BlockedError{
-			Reason:     "service unavailable (HTTP 503) — possible Cloudflare challenge",
+			Kind:       BlockUnavailable,
+			Reason:     "service unavailable (HTTP 503)",
 			StatusCode: 503,
 			RetryAfter: retryAfter,
 		}
@@ -551,6 +586,7 @@ func (c *Client) checkBlocked(resp *http.Response) (bodyStr string, err error) {
 
 	if cf {
 		return "", &BlockedError{
+			Kind:       BlockChallenge,
 			Reason:     "Cloudflare challenge page detected — refresh your browser session and re-import cookies",
 			StatusCode: resp.StatusCode,
 		}
@@ -641,15 +677,17 @@ func blockErrorForStatus(resp *http.Response) *BlockedError {
 	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
 	switch resp.StatusCode {
 	case http.StatusTooManyRequests:
-		return &BlockedError{Reason: "rate limited", StatusCode: http.StatusTooManyRequests, RetryAfter: retryAfter}
+		return &BlockedError{Kind: BlockRateLimit, Reason: "rate limited", StatusCode: http.StatusTooManyRequests, RetryAfter: retryAfter}
 	case http.StatusForbidden:
 		return &BlockedError{
+			Kind:       BlockForbidden,
 			Reason:     "access denied (HTTP 403) — possible IP block or missing cookies",
 			StatusCode: http.StatusForbidden,
 		}
 	case http.StatusServiceUnavailable:
 		return &BlockedError{
-			Reason:     "service unavailable (HTTP 503) — possible Cloudflare challenge",
+			Kind:       BlockUnavailable,
+			Reason:     "service unavailable (HTTP 503)",
 			StatusCode: http.StatusServiceUnavailable,
 			RetryAfter: retryAfter,
 		}
@@ -840,6 +878,7 @@ func (ct *cookieTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	cookieValue := ct.cookieValue
 	ct.mu.RUnlock()
 	if cookieValue != "" && (ct.unrestricted || f95ZoneHost(req)) {
+		req = req.Clone(req.Context())
 		if existing := req.Header.Get("Cookie"); existing != "" {
 			req.Header.Set("Cookie", existing+"; "+cookieValue)
 		} else {

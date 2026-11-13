@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -186,7 +187,7 @@ const maxMegatoolsErrTail = 4096
 // so the subprocess must capture stdout for this to fire. sawDownload is set
 // when the "Downloaded <name>" success marker appears, which lets the caller
 // tell a real download apart from a link megatools silently skipped.
-func streamMegatoolsProgress(r io.Reader, expectedTotal int64, onProgress func(Progress), last *megatoolsProgress, sawDownload *bool) error {
+func streamMegatoolsProgress(r io.Reader, expectedTotal int64, onProgress func(Progress), last *megatoolsProgress, sawDownload *bool, downloadedName ...*string) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -198,6 +199,9 @@ func streamMegatoolsProgress(r io.Reader, expectedTotal int64, onProgress func(P
 		if !ok {
 			if sawDownload != nil && strings.HasPrefix(line, "Downloaded ") {
 				*sawDownload = true
+				if len(downloadedName) > 0 && downloadedName[0] != nil {
+					*downloadedName[0] = strings.TrimPrefix(line, "Downloaded ")
+				}
 			}
 			continue
 		}
@@ -282,14 +286,16 @@ func megatoolsErrSummary(tail string) string {
 // key — is passed through unchanged. megatools emits its progress bar on
 // stdout and diagnostics on stderr; both are captured, progress is reported
 // through onProgress, and ctx controls cancellation. A megatoolsTimeout cap
-// mirrors the HTTP path's runaway-transfer guard.
-func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTotal int64, onProgress func(Progress)) error {
+// mirrors the HTTP path's runaway-transfer guard. The success marker provides
+// the best-known filename. If it cannot be verified, success returns an empty
+// path; callers must handle it.
+func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTotal int64, onProgress func(Progress)) (string, error) {
 	if extractMegaFileID(url) == "" {
-		return fmt.Errorf("could not extract Mega file ID from URL: %s", redactedURL(url))
+		return "", fmt.Errorf("could not extract Mega file ID from URL: %s", redactedURL(url))
 	}
 	bin, err := findMegatools()
 	if err != nil {
-		return fmt.Errorf(
+		return "", fmt.Errorf(
 			"Mega uses encrypted protocol - use megatools CLI:\n"+
 				"  megatools dl --path <dest> '%s'\n"+
 				"  Install: brew install megatools / apt install megatools",
@@ -297,7 +303,7 @@ func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTota
 		)
 	}
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return fmt.Errorf("megatools: create destination dir: %w", err)
+		return "", fmt.Errorf("megatools: create destination dir: %w", err)
 	}
 
 	// megatools owns the transfer; give it the same ceiling as the HTTP path.
@@ -311,14 +317,14 @@ func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTota
 	// progress callback, stderr feeds the error summary.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("megatools: create stdout pipe: %w", err)
+		return "", fmt.Errorf("megatools: create stdout pipe: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("megatools: create stderr pipe: %w", err)
+		return "", fmt.Errorf("megatools: create stderr pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("megatools: start: %w", err)
+		return "", fmt.Errorf("megatools: start: %w", err)
 	}
 
 	// Drain both pipes in goroutines: progress forwarding, error-tail capture,
@@ -326,11 +332,12 @@ func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTota
 	// blocked child on a full pipe buffer.
 	var last megatoolsProgress
 	var sawDownload bool
+	var downloadedName string
 	var errTail strings.Builder
 	progressErrCh := make(chan error, 1)
 	stderrErrCh := make(chan error, 1)
 	go func() {
-		progressErrCh <- streamMegatoolsProgress(stdout, expectedTotal, onProgress, &last, &sawDownload)
+		progressErrCh <- streamMegatoolsProgress(stdout, expectedTotal, onProgress, &last, &sawDownload, &downloadedName)
 	}()
 	go func() {
 		stderrErrCh <- drainMegatoolsStderr(stderr, &errTail)
@@ -346,19 +353,19 @@ func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTota
 	waitErr := cmd.Wait()
 
 	if dlCtx.Err() != nil {
-		return fmt.Errorf("megatools download interrupted: %w", dlCtx.Err())
+		return "", fmt.Errorf("megatools download interrupted: %w", dlCtx.Err())
 	}
 	if waitErr != nil {
 		if tail := megatoolsErrSummary(errTail.String()); tail != "" {
-			return fmt.Errorf("megatools dl failed: %s", tail)
+			return "", fmt.Errorf("megatools dl failed: %s", tail)
 		}
-		return fmt.Errorf("megatools dl failed: %w", waitErr)
+		return "", fmt.Errorf("megatools dl failed: %w", waitErr)
 	}
 	if progressErr != nil {
-		return fmt.Errorf("megatools dl: %w", progressErr)
+		return "", fmt.Errorf("megatools dl: %w", progressErr)
 	}
 	if stderrErr != nil {
-		return fmt.Errorf("megatools dl: %w", stderrErr)
+		return "", fmt.Errorf("megatools dl: %w", stderrErr)
 	}
 
 	// A zero exit is not proof of a download: megatools skips syntactically
@@ -367,9 +374,9 @@ func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTota
 	// than a completed download that produced no file.
 	if !sawDownload {
 		if tail := megatoolsErrSummary(errTail.String()); tail != "" {
-			return fmt.Errorf("megatools dl: no file downloaded (%s)", tail)
+			return "", fmt.Errorf("megatools dl: no file downloaded (%s)", tail)
 		}
-		return errors.New("megatools dl: no file downloaded")
+		return "", errors.New("megatools dl: no file downloaded")
 	}
 
 	if onProgress != nil {
@@ -384,5 +391,17 @@ func runMegatoolsDownload(ctx context.Context, url, destDir string, expectedTota
 		onProgress(Progress{BytesDownloaded: done, TotalBytes: total, Percent: 100})
 	}
 	log.Info("mega download complete", "url", redactedURL(url), "dest", destDir, "bytes", last.done)
-	return nil
+	// megatools reports a literal filename, not a Content-Disposition value:
+	// do not percent-decode it, and let Go's own storage rules decide which
+	// characters are legal. Only an unrelated file in a shared folder is
+	// refused.
+	name := filepath.Base(strings.ReplaceAll(downloadedName, "\\", "/"))
+	if name != "" && name != "." && name != ".." {
+		if p, err := safeDestPath(destDir, name); err == nil {
+			if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() {
+				return filepath.Clean(p), nil
+			}
+		}
+	}
+	return "", nil
 }

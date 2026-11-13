@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -126,7 +127,7 @@ func TestIsValidDownloadURL_HostnameBlocklist(t *testing.T) {
 
 func TestDownloadWithHeaders_InvalidURL(t *testing.T) {
 	t.Parallel()
-	err := downloadWithHeaders(context.Background(), "http://127.0.0.1/secret", nil, "http://127.0.0.1/secret", "test", t.TempDir(), 0, nil, nil, nil, nil)
+	_, err := downloadWithHeaders(context.Background(), "http://127.0.0.1/secret", nil, "http://127.0.0.1/secret", "test", t.TempDir(), 0, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for blocked URL, got nil")
 	}
@@ -147,7 +148,7 @@ func TestDownload_RejectsNonHTTPS(t *testing.T) {
 	defer srv.Close()
 
 	destDir := t.TempDir()
-	err := Download(srv.URL, destDir, 0, nil, "")
+	_, err := Download(srv.URL, destDir, 0, nil, "")
 	if err == nil {
 		t.Fatal("expected error for non-https URL, got nil")
 	}
@@ -158,7 +159,7 @@ func TestDownload_RejectsNonHTTPS(t *testing.T) {
 
 func TestDownload_InvalidURL(t *testing.T) {
 	t.Parallel()
-	err := Download("", t.TempDir(), 0, nil, "")
+	_, err := Download("", t.TempDir(), 0, nil, "")
 	if err == nil {
 		t.Fatal("expected error for empty URL, got nil")
 	}
@@ -472,5 +473,33 @@ func TestContentDispositionFilename(t *testing.T) {
 		if got := contentDispositionFilename(in); got != want {
 			t.Errorf("%q → %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestIsValidGameFile_AppImage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "game.AppImage")
+	if err := os.WriteFile(path, make([]byte, 4096), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !IsValidGameFile(path) {
+		t.Fatal("AppImage should be accepted")
+	}
+}
+
+func TestDownloadWithHeaders_ContentDispositionOverridesOpaqueURL(t *testing.T) {
+	old := testTransportOverride
+	testTransportOverride = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{"Content-Disposition": []string{`attachment; filename="game.zip"`}},
+			ContentLength: 4, Body: io.NopCloser(strings.NewReader("game")), Request: req,
+		}, nil
+	})
+	defer func() { testTransportOverride = old }()
+	path, err := downloadWithHeaders(context.Background(), "https://example.com/", nil, "https://example.com/", "unknown", t.TempDir(), 0, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(path) != "game.zip" {
+		t.Fatalf("path=%q", path)
 	}
 }

@@ -44,16 +44,18 @@ backoff        = delay × 2 on 429, cap at 2min
 
 On each successful request, the delay decays by 5% back to `minDelay` — but only when it is already above the floor, so `--unsafe` (delay 0) and the unpaced F95Checker `CacheClient` stay unpaced instead of snapping up to 1.5s after the first success. On HTTP 429, the standing delay prefers the server's own `Retry-After` header (`parseRetryAfter` — delta-seconds or an HTTP-date, RFC 9110) when present, since that's an explicit signal rather than a guess; only when the header is absent does it fall back to doubling (exponential backoff). Either way the delay is capped at `maxBackoff` (2 min) so a malicious or misconfigured header can't stall the client indefinitely. Non-2xx statuses surface as a typed `HTTPStatusError` (or `BlockedError` for 403/429/503) so callers can branch on the code instead of matching error strings.
 
+Blocked responses carry a typed `BlockKind`: challenge, rate limit, unavailable, forbidden, or unknown. Retry and clearance-refresh decisions use this kind rather than the human-readable reason; unknown kinds fall back to retrying HTTP 5xx. Cookie injection clones the request only when adding a cookie, so a clearance refresh retry cannot retain an injected stale cookie.
+
 ### Retries, Circuit Breaker, and Preflight
 
 `Client.do()` wraps each request in a retry loop (up to 3 attempts) with growing pauses (2s, 4s + jitter) so retries look human:
 
 - **Transient failures** (network errors, 5xx, 429, 503) are retried
-- **403** gets a single retry — Cloudflare challenges are sometimes per-request — then fails
-- **Cloudflare challenge pages** are never retried (the same challenge would recur)
+- **Plain 403** is forbidden and is not retried
+- **Cloudflare challenge pages** trigger one clearance refresh when configured; otherwise they are not retried
 - **Context cancellation** aborts immediately, never retried
 
-After **3 consecutive blocking responses** the circuit breaker trips: every client of the host refuses further requests (fast-fail with a clear "refresh your F95Zone cookies" error) so a dead session doesn't waste a whole sync run failing game by game. A block is counted **once per logical request**, after its retry loop — a single 403 that was retried three times no longer counts as three blocks. A response carrying `Retry-After` is honoured but deliberately does **not** count toward the trip, so one rate-limit response cannot abort a run. A success resets the counter. Because the breaker is shared for the life of the process (the desktop app runs for hours), it heals on its own after `breakerCooldown` (10 min, then half-open: the next block run must start from zero), and a successful clearance refresh closes it immediately. Callers can check `Client.Blocked()` before scheduling more work.
+After **3 consecutive blocking responses** the circuit breaker trips: every client of the host refuses further requests (fast-fail with a clear "refresh your F95Zone cookies" error) so a dead session doesn't waste a whole sync run failing game by game. A block is counted **once per logical request**, after its retry loop — a single 503 retried across three attempts counts as one block. A response carrying `Retry-After` is honoured but deliberately does **not** count toward the trip, so one rate-limit response cannot abort a run. A success resets the counter. Because the breaker is shared for the life of the process (the desktop app runs for hours), it heals on its own after `breakerCooldown` (10 min, then half-open: the next block run must start from zero), and a successful clearance refresh closes it immediately. Callers can check `Client.Blocked()` before scheduling more work.
 
 `Client.Preflight()` verifies the session before a long direct-scrape run by fetching the forum index — fail fast instead of wasting minutes on doomed requests.
 
@@ -71,7 +73,7 @@ The client checks every response for blocking signals:
 
 - **HTTP 429** — rate limited, backs off and returns `BlockedError`
 - **HTTP 403** — access denied, likely IP block or expired cookies; the body is scanned for Cloudflare markers to distinguish a challenge from a plain block
-- **HTTP 503** — service unavailable, likely Cloudflare challenge
+- **HTTP 503** — unavailable and retryable unless Cloudflare markers identify a challenge
 - **Body content** — scanned for `cf-browser-verification`, `cf-challenge-running`, `_cf_chl_opt` markers
 
 When a block is detected, the scraper stops gracefully and surfaces the issue to the user rather than hammering the server.

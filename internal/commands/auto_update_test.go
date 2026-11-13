@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -419,4 +420,70 @@ func TestAcquireAutoUpdateLock(t *testing.T) {
 		t.Fatalf("acquire after release: %v", err)
 	}
 	release2()
+}
+
+func TestRunAutoUpdate_CancelStopsNewJobs(t *testing.T) {
+	for _, concurrency := range []int{1, 3} {
+		t.Run(strconv.Itoa(concurrency), func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var started, finished atomic.Int32
+			games := make([]db.Game, 8)
+			for i := range games {
+				games[i] = db.Game{ID: int64(i + 1), Title: fmt.Sprintf("Game %d", i), Version: "1.0", LatestVersion: "2.0"}
+			}
+			summary := runAutoUpdate(nil, games, autoUpdateOptions{
+				Ctx: ctx, Concurrency: concurrency, Force: true,
+				install: func(*db.Game) error {
+					started.Add(1)
+					cancel()
+					// Cancellation does not interrupt the in-flight install/merge.
+					finished.Add(1)
+					return nil
+				},
+			})
+			if got := started.Load(); got < 1 || got > int32(concurrency) {
+				t.Fatalf("started %d jobs after cancellation; want 1..%d", got, concurrency)
+			}
+			if finished.Load() != started.Load() || summary.Installed != int(finished.Load()) {
+				t.Fatalf("in-flight jobs not accounted for: started=%d finished=%d summary=%+v", started.Load(), finished.Load(), summary)
+			}
+		})
+	}
+}
+
+func TestRunAutoUpdateJobsContext_PreCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, concurrency := range []int{1, 3} {
+		runAutoUpdateJobsContext(ctx, []autoUpdateJob{{}, {}, {}}, concurrency, func(autoUpdateJob) { t.Error("scheduled a job after cancellation") })
+	}
+}
+
+func TestAutoUpdateExitCode(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		summary   autoUpdateSummary
+		checkOnly bool
+		dryRun    bool
+		want      int
+	}{
+		{name: "empty success", want: 0},
+		{name: "installed success", summary: autoUpdateSummary{Installed: 2}, want: 0},
+		{name: "partial failure", summary: autoUpdateSummary{Installed: 1, Failed: 1}, want: 2},
+		{name: "all failed", summary: autoUpdateSummary{Failed: 2}, want: 2},
+		{name: "check only", summary: autoUpdateSummary{Failed: 1}, checkOnly: true, want: 0},
+		{name: "dry run", summary: autoUpdateSummary{Failed: 1}, dryRun: true, want: 0},
+		{name: "manual or skipped", summary: autoUpdateSummary{NeedsHuman: 1, Skipped: 1, Ambiguous: 1}, want: 2},
+		{name: "needs human with an install", summary: autoUpdateSummary{Installed: 1, NeedsHuman: 1}, want: 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := autoUpdateExitCode(tc.summary, tc.checkOnly, tc.dryRun); got != tc.want {
+				t.Fatalf("autoUpdateExitCode(%+v, %v, %v) = %d, want %d", tc.summary, tc.checkOnly, tc.dryRun, got, tc.want)
+			}
+		})
+	}
 }

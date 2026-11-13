@@ -24,6 +24,8 @@ type Job struct { ID, GameID, URL, Host, DestPath, Status, Progress, Error, time
 type ProgressEvent struct { JobID, GameID, Status, Progress, Error }
 ```
 
+CLI, TUI, and desktop use `downloader.RankDownloadLinks` for stable platform and host ranking. It re-detects platform labels, drops extras and incompatible builds, and prefers applicable "Update only" patches (+30). Patches require a matching installed base version and, when stated and known, target version.
+
 ### Download Flow
 
 ```go
@@ -43,7 +45,7 @@ The `f95Cookie` parameter is an optional F95Zone session cookie string used to a
    - Host-specific resolvers handle each provider's protocol (API calls, cookie exchange, POST forms, confirm tokens).
    - **Browser cookies** (`cf_clearance`): every resolver request and the final download request merge in the browser's cookies for the request's own hostname (see [Browser Cookie Reuse](#browser-cookie-reuse)).
 
-3. **Resume**: If a `.part` file exists, sends `Range: bytes=<existingSize>-` header. On 206 Partial Content, appends to the file. Resume is skipped for host-specific resolvers that don't support range requests. Size limits are computed **after** the resume-mode decision so a server that ignores `Range` (returns a full 200 while a `.part` exists) can't double-count the existing bytes.
+3. **Resume**: If a `.part` file exists, sends `Range: bytes=<existingSize>-` header. On 206 Partial Content, appends to the file, but only when `Content-Range` starts at exactly `existingSize`; a different offset is rejected and the partial discarded so two files can never be spliced. Resume is skipped for host-specific resolvers that don't support range requests. Size limits are computed **after** the resume-mode decision so a server that ignores `Range` (returns a full 200 while a `.part` exists) can't double-count the existing bytes.
 
 4. **Download**: Reads response body in 32KB chunks (honoring `ctx` cancellation), writes to a `.part` temp file. The body is wrapped in a LimitReader at 50 GB+1; the total is re-checked after the loop so an oversized download is **rejected** rather than silently truncated at the cap. The HTTP transport is shared across downloads (connection reuse).
 
@@ -51,7 +53,7 @@ The `f95Cookie` parameter is an optional F95Zone session cookie string used to a
 
 6. **Validation**: After download completes, the caller calls `IsValidGameFile(path)` to reject files smaller than 4096 bytes or that aren't archives/executables (or `.html`/`.htm` entry pages — see [HTML game payloads](#html-game-payloads)). This catches interstitial HTML pages that some hosts serve instead of real files.
 
-7. **Finalize**: `fsync()` + rename `.part` → final filename. The saved filename percent-decodes the URL path (`file%20name.zip` → `file name.zip`).
+7. **Finalize**: `fsync()` + rename `.part` → final filename. Exact size validation uses positive HTTP `Content-Length` (plus resumed bytes). The rounded thread size is never an exact requirement: it only rejects a transfer with no `Content-Length` when the body is under half the stated size, and a deviation above 2% is logged as a warning. Download APIs return the actual saved path.
 
 ### Host-Specific Resolvers (`hosts.go`)
 
@@ -231,7 +233,7 @@ The `HostResolver.Resolve()` handles this transparently:
 
 **Cookie-based authentication**: The caller sets the F95Zone session cookie via `HostResolver.SetF95Cookie(cookie)` before resolving. When set, `unwrapMasked()` includes the `Cookie` header in the POST; when unset, the browser's own f95zone.to cookies are attached instead (host-scoped). The cookie flows through the pipeline: `Download() → DownloadWithHost() → HostResolver.SetF95Cookie() → unwrapMasked()`.
 
-**Resolved-URL cache**: the unwrap endpoint rate-limits after repeated hits (captcha rotation kicks in), so successful unwrap results are cached in the SQLite `resolved_urls` table (7-day TTL, `ResolvedURLTTL` in `internal/db/resolved_urls.go`). On `Resolve()`, the masked branch consults the cache first (`GetResolvedURL`) and only POSTs to the endpoint on a miss; a successful unwrap is stored via `PutResolvedURL` (upsert, one row per masked URL). The DB-backed pair is attached by the app entry points that hold a `*db.Database` — `tui/commands.go` (`startDownloadCmd`) and `internal/commands/download.go` — via `downloader.SetDefaultResolvedCache(get, put)`, which every `NewHostResolver()` (including the one constructed inside `DownloadWithContext`) picks up. `HostResolver.SetResolvedCache` overrides the pair per resolver; nil = no caching. Stale entries read as misses and are auto-pruned on every DB open.
+**Resolved-URL cache**: the unwrap endpoint rate-limits after repeated hits (captcha rotation kicks in), so successful unwrap results are cached in the SQLite `resolved_urls` table (7-day TTL, `ResolvedURLTTL` in `internal/db/resolved_urls.go`). On `Resolve()`, the masked branch consults the cache first (`GetResolvedURL`) and only POSTs to the endpoint on a miss; a successful unwrap is stored via `PutResolvedURL` (upsert, one row per masked URL). The DB-backed pair is attached by the app entry points that hold a `*db.Database` — `tui/commands.go` (`startDownloadCmd`) and `internal/commands/download.go` — via `downloader.SetDefaultResolvedCache(get, put)`, which every `NewHostResolver()` (including the one constructed inside `DownloadWithContext`) picks up. `HostResolver.SetResolvedCache` overrides the pair per resolver; nil = no caching. Stale entries read as misses and are auto-pruned on every DB open. One-shot `moxie-browser-file://` handoff tokens are never cached; legacy cached tokens are deleted and treated as misses.
 
 **Shared pacing (F95-cbv5)**: the desktop runs several game updates at once, each with its own `HostResolver`, so the politeness limits are process-wide rather than per resolver. One package-level `sharedUnwrapLimiter` (`rate.Every(3s)`, burst 1, `internal/downloader/hosts.go`) paces every masked-URL POST, and the browser fallback and masked-captcha solver are wrapped by `serialBrowserFallback` / `serialMaskedSolver`, which share one mutex (each copies the browser profile and opens a window). Only byte transfer and extraction run in parallel.
 
@@ -333,7 +335,7 @@ Downloads are ranked by compatibility with the user's OS:
 
 The desktop ranking (`rankDownloadLinksFor`) drops extras. It uses a patch only when its range starts at the installed version, and ends at the latest version when stated. An applicable patch gets +30 because it's a much smaller download. A patch is applied with `updater.MergeOverlay`, which overwrites in place and deletes nothing. Any archive that doesn't contain the game's launcher, including a hand-picked file, is treated as a patch too.
 
-**Saved filenames.** The downloader prefers the server's `Content-Disposition` filename over the URL's last segment, so pixeldrain saves keep their real name and extension (`MyHentaiFantasy-0.18.1-linux.tar.bz2`, not `aQiB1niF`).
+**Saved filenames.** The downloader prefers a usable server `Content-Disposition` filename over the URL path. Names are percent-decoded before stripping either slash style; hidden, reserved and invalid names are rejected, and both final and `.part` paths must remain inside the destination directory. Multipart assembly uses the actual saved paths.
 
 ### Download Validation (`downloader.go`)
 

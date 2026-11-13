@@ -184,3 +184,31 @@ func TestMigrateV10FromBareV9(t *testing.T) {
 		t.Fatal("empty migrated cache must miss")
 	}
 }
+
+func TestDeleteResolvedURLAndLegacyBrowserToken(t *testing.T) {
+	d := setupTestDB(t)
+	defer d.Close()
+	const masked = "https://f95zone.to/masked/example.com/old"
+	if err := d.PutResolvedURL(masked, "moxie-browser-file://old", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.GetResolvedURL(masked); ok {
+		t.Fatal("legacy browser token must miss")
+	}
+	var count int
+	if err := d.conn.QueryRow("SELECT count(*) FROM resolved_urls WHERE masked_url = ?", masked).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("legacy browser token was not deleted")
+	}
+	if err := d.PutResolvedURL(masked, "https://example.com/game.zip", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DeleteResolvedURL(masked); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.GetResolvedURL(masked); ok {
+		t.Fatal("deleted entry must miss")
+	}
+}

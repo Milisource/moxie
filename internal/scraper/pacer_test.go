@@ -160,7 +160,7 @@ func TestPacer_RetryAfterDoesNotTripBreaker(t *testing.T) {
 	t.Parallel()
 	p := fastPacer()
 
-	throttled := &BlockedError{StatusCode: http.StatusTooManyRequests, RetryAfter: 7 * time.Second}
+	throttled := &BlockedError{Kind: BlockRateLimit, StatusCode: http.StatusTooManyRequests, RetryAfter: 7 * time.Second}
 	for i := 0; i < maxConsecutiveBlocks*2; i++ {
 		p.noteBlocked(throttled, "x")
 	}
@@ -169,7 +169,7 @@ func TestPacer_RetryAfterDoesNotTripBreaker(t *testing.T) {
 	}
 
 	for i := 0; i < maxConsecutiveBlocks; i++ {
-		p.noteBlocked(&BlockedError{StatusCode: http.StatusForbidden}, "x")
+		p.noteBlocked(&BlockedError{Kind: BlockForbidden, StatusCode: http.StatusForbidden}, "x")
 	}
 	if !(&Client{pacer: p}).Blocked() {
 		t.Fatal("breaker did not trip after three distinct 403s")
@@ -182,7 +182,7 @@ func TestClient_BlockedRetriesCountOnce(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&hits, 1)
-		w.WriteHeader(http.StatusForbidden)
+		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -209,7 +209,7 @@ func TestPacer_SharedCircuitBreaker(t *testing.T) {
 	t.Parallel()
 	p := fastPacer()
 	for i := 0; i < maxConsecutiveBlocks; i++ {
-		p.noteBlocked(&BlockedError{StatusCode: 403}, "x")
+		p.noteBlocked(&BlockedError{Kind: BlockForbidden, StatusCode: 403}, "x")
 	}
 	a := &Client{pacer: p}
 	b := &Client{pacer: p}
@@ -225,7 +225,7 @@ func TestPacer_SharedCircuitBreaker(t *testing.T) {
 	}
 
 	for i := 0; i < maxConsecutiveBlocks; i++ {
-		p.noteBlocked(&BlockedError{StatusCode: 403}, "x")
+		p.noteBlocked(&BlockedError{Kind: BlockForbidden, StatusCode: 403}, "x")
 	}
 	p.resetBreaker()
 	if a.Blocked() {

@@ -40,6 +40,7 @@ import (
 	"github.com/mili/moxie/internal/archive"
 	"github.com/mili/moxie/internal/browser"
 	"github.com/mili/moxie/internal/browserresolve"
+	"github.com/mili/moxie/internal/commands"
 	"github.com/mili/moxie/internal/config"
 	"github.com/mili/moxie/internal/db"
 	"github.com/mili/moxie/internal/downloader"
@@ -1103,14 +1104,20 @@ func gameWorkTempDir(pattern string) (string, error) {
 // terminal error while another host is still being tried. A missing cookie is
 // always emitted (it fails every link alike).
 func (a *App) downloadGameFileOpts(ctx context.Context, evPrefix string, gameID int64, link db.DownloadLink, emitErrors bool) (string, error) {
-	emitErr := func(step, msg string) {
-		if !emitErrors {
+	emitErr := func(step string, err error) {
+		// Earlier links stay quiet so a fallback does not flash an error, but
+		// a session-level failure stops the whole loop: the user must see the
+		// real message even when this was not the last candidate.
+		sessionLevel := errors.Is(err, errNoF95Cookies) || downloader.IsF95SessionError(err) ||
+			downloader.IsF95BrowserCheckError(err) || downloader.IsF95StaleLinkError(err)
+		if !emitErrors && !sessionLevel {
 			return
 		}
 		runtime.EventsEmit(a.ctx, evPrefix+":error", map[string]interface{}{
 			"gameID":  gameID,
 			"step":    step,
-			"message": msg,
+			"message": err.Error(),
+			"kind":    updateErrorKind(err, step),
 		})
 	}
 	if a.db == nil {
@@ -1127,6 +1134,7 @@ func (a *App) downloadGameFileOpts(ctx context.Context, evPrefix string, gameID 
 			"gameID":  gameID,
 			"step":    "cookie",
 			"message": errNoF95Cookies.Error(),
+			"kind":    updateErrorKind(errNoF95Cookies, "download"),
 		})
 		return "", errNoF95Cookies
 	}
@@ -1135,7 +1143,7 @@ func (a *App) downloadGameFileOpts(ctx context.Context, evPrefix string, gameID 
 	// dir (not os.TempDir(), often a small tmpfs).
 	tempDir, err := gameWorkTempDir(fmt.Sprintf("moxie-update-%d-*", gameID))
 	if err != nil {
-		emitErr("temp", fmt.Sprintf("Failed to create temp directory: %v", err))
+		emitErr("temp", fmt.Errorf("Failed to create temp directory: %w", err))
 		return "", fmt.Errorf("create temp dir: %w", err)
 	}
 
@@ -1160,9 +1168,11 @@ func (a *App) downloadGameFileOpts(ctx context.Context, evPrefix string, gameID 
 	const maxRetries = 3
 	const retryDelay = 2 * time.Second
 
+	var bestFile string
 	attempts, lastErr := downloadWithRetries(ctx, tempDir, maxRetries, retryDelay,
 		func(attempt int, dir string) error {
-			return downloader.DownloadWithContext(
+			var err error
+			bestFile, err = downloader.DownloadWithContext(
 				ctx,
 				link.URL,
 				link.Host,
@@ -1171,6 +1181,10 @@ func (a *App) downloadGameFileOpts(ctx context.Context, evPrefix string, gameID 
 				progressCb,
 				cookie,
 			)
+			if err == nil && bestFile == "" {
+				err = fmt.Errorf("download produced no file")
+			}
+			return err
 		})
 	if lastErr != nil {
 		// A terminal, link-specific failure (404/410) means this exact
@@ -1178,19 +1192,11 @@ func (a *App) downloadGameFileOpts(ctx context.Context, evPrefix string, gameID 
 		// ranking into future batches. Host-wide/transient errors are left
 		// untouched (see deadLinkReason).
 		a.markDownloadLinkDeadIfTerminal(link, lastErr)
-		emitErr("download", fmt.Sprintf("Download failed after %d attempts: %v", attempts, lastErr))
+		emitErr("download", fmt.Errorf("Download failed after %d attempts: %w", attempts, lastErr))
 		os.RemoveAll(tempDir)
 		return "", fmt.Errorf("download after %d attempts: %w", attempts, lastErr)
 	}
 
-	// Find the downloaded file in the temp directory.
-	bestFile, err := pickDownloadedFile(tempDir)
-	if err != nil {
-		// Without this event the frontend sat on "downloading" forever.
-		emitErr("download", err.Error())
-		os.RemoveAll(tempDir)
-		return "", err
-	}
 	bestSize, _ := os.Stat(bestFile)
 	var size int64
 	if bestSize != nil {
@@ -1328,13 +1334,6 @@ func updateRankOpts(g *db.Game) rankOpts {
 	}
 }
 
-// sameGameVersion reports whether two free-form game versions are the same
-// release (qualifier-stripped, "v0.4" == "0.4").
-func sameGameVersion(a, b string) bool {
-	a, b = scraper.StripVersionQualifier(a), scraper.StripVersionQualifier(b)
-	return a != "" && b != "" && version.Compare(a, b) == version.Same
-}
-
 // rankDownloadLinks ranks links for a fresh install; see rankDownloadLinksFor.
 func rankDownloadLinks(links []DesktopDownloadLink) ([]DesktopDownloadLink, error) {
 	return rankDownloadLinksFor(links, rankOpts{})
@@ -1353,74 +1352,28 @@ func rankDownloadLinksFor(links []DesktopDownloadLink, opts rankOpts) ([]Desktop
 
 	currentPlatform := downloader.CurrentPlatform()
 	installKnown := opts.Installed != "" && opts.Installed != downloader.PlatformUnknown
-
-	type scoredLink struct {
-		link  DesktopDownloadLink
-		score int
+	stored := make([]db.DownloadLink, len(links))
+	for i, link := range links {
+		// A synthetic index preserves DTO identity even for duplicate URLs.
+		stored[i] = db.DownloadLink{ID: int64(i), URL: link.URL, Host: link.Host, Name: link.Name, Platform: db.Platform(link.Platform), IsDead: link.IsDead}
 	}
+	result := downloader.RankDownloadLinks(stored, downloader.RankOptions{
+		TargetPlatform: currentPlatform, Installed: opts.Installed, InstallKnown: installKnown,
+		InstalledVersion: opts.InstalledVersion, LatestVersion: opts.LatestVersion,
+	})
 
-	var candidates []scoredLink
-	skippedExtra, skippedPatch, skippedPlatform := 0, 0, 0
-	for _, link := range links {
-		// Skip dead links.
-		if link.IsDead {
-			continue
-		}
-
-		// Skip online-only / browser-playable links.
-		if downloader.IsOnlineOnly(link.Name, link.URL) {
-			continue
-		}
-
-		bonus := 0
-		switch class := downloader.ClassifyLink(link.Name); class.Kind {
-		case downloader.LinkExtra:
-			skippedExtra++
-			continue
-		case downloader.LinkPatch:
-			if !sameGameVersion(class.FromVersion, opts.InstalledVersion) ||
-				(class.ToVersion != "" && opts.LatestVersion != "" && !sameGameVersion(class.ToVersion, opts.LatestVersion)) {
-				skippedPatch++
-				continue
-			}
-			bonus = 30
-		}
-
-		// Platform: re-detect from the label (stored values may predate
-		// the current detector) and match the install, else this machine.
-		dlPlatform := downloader.DetectPlatform(link.Name, link.URL)
-		var platformScore int
-		if installKnown {
-			platformScore = downloader.InstallPlatformPriority(dlPlatform, opts.Installed)
-			if platformScore < 0 {
-				skippedPlatform++
-				continue
-			}
-		} else {
-			if !downloader.PlatformMatches(dlPlatform, currentPlatform) {
-				skippedPlatform++
-				continue
-			}
-			platformScore = downloader.PlatformPriority(dlPlatform, currentPlatform)
-		}
-
-		score := platformScore + downloader.ScoreLinkHost(link.Host) + bonus
-		candidates = append(candidates, scoredLink{link: link, score: score})
-	}
-
-	if len(candidates) == 0 {
+	if len(result.Links) == 0 {
 		target := string(currentPlatform)
 		if installKnown {
 			target = string(opts.Installed) + " install"
 		}
 		return nil, fmt.Errorf("no compatible download link found for %s (have %d links: %d extras/mods, %d patches for other versions, %d other platforms)",
-			target, len(links), skippedExtra, skippedPatch, skippedPlatform)
+			target, len(links), result.SkippedExtra, result.SkippedPatch, result.SkippedPlatform)
 	}
 
-	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
-	ranked := make([]DesktopDownloadLink, len(candidates))
-	for i, c := range candidates {
-		ranked[i] = c.link
+	ranked := make([]DesktopDownloadLink, len(result.Links))
+	for i, c := range result.Links {
+		ranked[i] = links[c.Link.ID]
 	}
 	return ranked, nil
 }
@@ -5267,31 +5220,19 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 	// parallel update workers must not contend on netBusy.
 	if err := a.syncSingleGame(gameID); err != nil {
 		slog.Error("game update: sync failed", "gameID", gameID, "error", err)
-		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
-			"gameID":  gameID,
-			"step":    "sync",
-			"message": err.Error(),
-		})
+		a.emitUpdateError(gameID, "sync", err)
 		return fmt.Errorf("sync single game: %w", err)
 	}
 
 	// Get the refreshed game record.
 	game, err = a.db.GetGame(gameID)
 	if err != nil {
-		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
-			"gameID":  gameID,
-			"step":    "lookup",
-			"message": err.Error(),
-		})
+		a.emitUpdateError(gameID, "lookup", err)
 		return fmt.Errorf("get game: %w", err)
 	}
 	if game == nil {
 		err = fmt.Errorf("game with id %d not found", gameID)
-		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
-			"gameID":  gameID,
-			"step":    "lookup",
-			"message": err.Error(),
-		})
+		a.emitUpdateError(gameID, "lookup", err)
 		return err
 	}
 
@@ -5303,11 +5244,7 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 	// through the Downloads view first.
 	if db.IsVirtualPath(game.Path) {
 		err = fmt.Errorf("%q was added from F95Zone but not yet downloaded — install it from the Downloads view before updating", title)
-		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
-			"gameID":  gameID,
-			"step":    "check",
-			"message": err.Error(),
-		})
+		a.emitUpdateError(gameID, "check", err)
 		return err
 	}
 
@@ -5337,11 +5274,7 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 
 	links, err := a.freshRankedDownloadLinks(gameID, updateRankOpts(game))
 	if err != nil {
-		runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
-			"gameID":  gameID,
-			"step":    "select-link",
-			"message": err.Error(),
-		})
+		a.emitUpdateError(gameID, "select-link", err)
 		return err
 	}
 
@@ -5355,6 +5288,9 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 
 	archivePath, selectedLink, err := a.downloadWithFreshLinks(ctx, "game-update", gameID, updateRankOpts(game), links)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		// downloadGameFile already emits its own error events. Automatic
 		// downloads are frequently blocked by Cloudflare-protected hosts
 		// (HTTP 403/404 on the resolved file host), so additionally signal
@@ -5365,6 +5301,7 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 			"title":         title,
 			"host":          selectedLink.Host,
 			"latestVersion": game.LatestVersion,
+			"kind":          updateErrorKind(err, "download"),
 		})
 		// Watch the browser download directory: the page Moxie just opened is
 		// where the user is likely to save the archive by hand.
@@ -5384,7 +5321,7 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 	return err
 }
 
-// recordAppliedVersion stamps game as running the F95Zone latest version after
+// recordAppliedVersion records the payload/thread version after
 // an update or install. The install directory usually keeps its old version in
 // its name (e.g. ".../Condemned Bunker v0.16"), and the merge/install file
 // writes trip the directory watcher: its non-force auto-scan re-detects that
@@ -5392,11 +5329,12 @@ func (a *App) runSingleGameUpdate(ctx context.Context, gameID int64) (err error)
 // applied — UpdateGameScanFields only preserves versions whose source is 'user'
 // or 'f95'. Marking the applied version F95Zone-authoritative keeps the scan
 // from reverting it.
-func recordAppliedVersion(game *db.Game) {
-	if game.LatestVersion == "" {
+func recordAppliedVersion(game *db.Game, archivePath string, patch bool) {
+	candidate := commands.RecordedVersion(game.Version, game.LatestVersion, archivePath, patch)
+	if version.Compare(candidate, game.Version) == version.Same {
 		return
 	}
-	game.Version = game.LatestVersion
+	game.Version = candidate
 	game.VersionSource = "f95"
 }
 
@@ -5420,7 +5358,7 @@ func (a *App) applyGameUpdateArchive(ctx context.Context, game *db.Game, archive
 	extractDir, err := gameWorkTempDir(fmt.Sprintf("moxie-extract-%d-*", gameID))
 	if err != nil {
 		a.emitUpdateError(gameID, "extract",
-			fmt.Sprintf("Failed to create extraction temp directory: %v", err))
+			fmt.Errorf("Failed to create extraction temp directory: %w", err))
 		return fmt.Errorf("create extract temp dir: %w", err)
 	}
 	defer os.RemoveAll(extractDir)
@@ -5436,7 +5374,7 @@ func (a *App) applyGameUpdateArchive(ctx context.Context, game *db.Game, archive
 
 	extractedRoot, err := extractor.Extract(ctx, archivePath, extractDir, extractProgressCb)
 	if err != nil {
-		a.emitUpdateError(gameID, "extract", fmt.Sprintf("Extraction failed: %v", err))
+		a.emitUpdateError(gameID, "extract", fmt.Errorf("Extraction failed: %w", err))
 		return fmt.Errorf("extract archive: %w", err)
 	}
 	slog.Info("game update extracted", "game", title, "root", extractedRoot)
@@ -5467,7 +5405,7 @@ func (a *App) applyGameUpdateArchive(ctx context.Context, game *db.Game, archive
 		mergeResult, err = updater.Merge(ctx, game.Path, game.Engine, extractedRoot, true)
 	}
 	if err != nil {
-		a.emitUpdateError(gameID, "merge", fmt.Sprintf("Merge failed: %v", err))
+		a.emitUpdateError(gameID, "merge", fmt.Errorf("Merge failed: %w", err))
 		return fmt.Errorf("merge update: %w", err)
 	}
 	// Drop the full-merge snapshot once the launcher is confirmed present;
@@ -5494,13 +5432,13 @@ func (a *App) applyGameUpdateArchive(ctx context.Context, game *db.Game, archive
 		"phase":  "updating-db",
 	})
 
-	recordAppliedVersion(game)
+	recordAppliedVersion(game, archivePath, patch)
 	game.SizeBytes = updateDirSize(ctx, game.Path)
 	game.LastScannedAt = time.Now()
 
 	if err := a.db.UpdateGame(game); err != nil {
 		a.emitUpdateError(gameID, "update-db",
-			fmt.Sprintf("Database update failed: %v", err))
+			fmt.Errorf("Database update failed: %w", err))
 		return fmt.Errorf("update game in db: %w", err)
 	}
 
@@ -5516,12 +5454,65 @@ func (a *App) applyGameUpdateArchive(ctx context.Context, game *db.Game, archive
 	return nil
 }
 
+// updateErrorKind classifies wrapped pipeline errors without relying on display text.
+func updateErrorKind(err error, step string) string {
+	if err == nil {
+		return ""
+	}
+	var sessionErr *scraper.SessionError
+	if errors.As(err, &sessionErr) || errors.Is(err, scraper.ErrSessionExpired) || errors.Is(err, downloader.ErrF95LoginRequired) || errors.Is(err, downloader.ErrF95CookiesRequired) || errors.Is(err, errNoF95Cookies) {
+		return "auth"
+	}
+	if scraper.IsCloudflareChallenge(err) || errors.Is(err, downloader.ErrCFChallengeStale) || errors.Is(err, downloader.ErrF95Challenge) || downloader.IsF95BrowserCheckError(err) || errors.Is(err, downloader.ErrBrowserCheckRequired) {
+		return "challenge"
+	}
+	var blocked *scraper.BlockedError
+	var status *scraper.HTTPStatusError
+	var downloadStatus *downloader.HTTPStatusError
+	if (errors.As(err, &blocked) && (blocked.Kind == scraper.BlockRateLimit || blocked.StatusCode == http.StatusTooManyRequests)) || (errors.As(err, &status) && status.StatusCode == http.StatusTooManyRequests) || (errors.As(err, &downloadStatus) && downloadStatus.StatusCode == http.StatusTooManyRequests) {
+		return "rate_limit"
+	}
+	if errors.Is(err, downloader.ErrF95LinkGone) || (errors.As(err, &downloadStatus) && (downloadStatus.StatusCode == http.StatusNotFound || downloadStatus.StatusCode == http.StatusGone)) {
+		return "dead_link"
+	}
+	// Transport failures only mean "network" while a transfer is in flight; a
+	// short read during extract/merge is a corrupt payload, not a connection.
+	transferStep := step == "" || step == "download" || step == "sync" || step == "update" || step == "select-link"
+	if transferStep {
+		// Any dial/read/write failure (DNS, unreachable network, reset) is a
+		// transport problem, whatever errno the OS reports.
+		var opErr *net.OpError
+		if errors.As(err, &opErr) {
+			return "network"
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return "network"
+		}
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) ||
+			errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
+			errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
+			errors.Is(err, downloader.ErrDownloadTruncated) {
+			return "network"
+		}
+	}
+	// A plain 5xx is an outage, not a challenge: surfaces as retryable network.
+	if (errors.As(err, &blocked) && blocked.Kind == scraper.BlockUnavailable) ||
+		(errors.As(err, &status) && status.StatusCode >= 500) ||
+		(errors.As(err, &downloadStatus) && downloadStatus.StatusCode >= 500) {
+		return "network"
+	}
+	if errors.Is(err, syscall.ENOSPC) {
+		return "disk"
+	}
+	return "unknown"
+}
+
 // emitUpdateError publishes a game-update:error event for a pipeline step.
-func (a *App) emitUpdateError(gameID int64, step, message string) {
+func (a *App) emitUpdateError(gameID int64, step string, err error) {
 	runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
-		"gameID":  gameID,
-		"step":    step,
-		"message": message,
+		"gameID": gameID, "step": step, "message": err.Error(), "kind": updateErrorKind(err, step),
 	})
 }
 
@@ -5535,8 +5526,8 @@ func (a *App) emitUpdateError(gameID int64, step, message string) {
 //	game-update:phase       { gameID, phase }
 //	game-update:download-progress { gameID, bytesDownloaded, totalBytes, speedBytesPerSec, percent }
 //	game-update:extract-progress  { gameID, filesExtracted, totalFiles, currentFile }
-//	game-update:error       { gameID, step, message }
-//	game-update:manual-required   { gameID, title, host, latestVersion } — auto-download
+//	game-update:error       { gameID, step, message, kind }
+//	game-update:manual-required   { gameID, title, host, latestVersion, kind } — auto-download
 //	                            failed (Cloudflare-blocked host, dead link, …);
 //	                            the user can complete the update by providing
 //	                            the archive via ProvideUpdateFile
@@ -5680,7 +5671,7 @@ func (a *App) waitUpdateSlot(ctx context.Context, gameID int64) bool {
 		"phase":  "queued",
 	})
 	if err := gate.acquire(ctx); err != nil {
-		a.emitUpdateError(gameID, "queued", "Cancelled while queued")
+		a.emitUpdateError(gameID, "queued", errors.New("Cancelled while queued"))
 		return false
 	}
 	return true
@@ -5771,6 +5762,60 @@ func (a *App) CancelGameUpdateFor(gameID int64) bool {
 	return true
 }
 
+const (
+	updateSkipNotInstalled       = "not-installed"
+	updateSkipNoUpdate           = "no-update"
+	updateSkipUnknownVersion     = "unknown-version"
+	updateSkipUnorderableVersion = "unorderable-version"
+	updateSkipAlreadyUpdating    = "already-updating"
+)
+
+// selectBatchUpdates claims eligible games and emits one event for each skip.
+func selectBatchUpdates(all []DesktopGameSummary, claim func(DesktopGameSummary) bool, emit func(string, ...interface{})) []DesktopGameSummary {
+	var selected []DesktopGameSummary
+	skipped := func(g DesktopGameSummary, reason string) {
+		emit("game-update:skipped", map[string]interface{}{"gameID": g.ID, "title": g.Title, "reason": reason})
+	}
+	for _, g := range all {
+		if db.IsVirtualPath(g.Path) {
+			skipped(g, updateSkipNotInstalled)
+			continue
+		}
+		// Unknown-version games are listed for a deliberate per-game
+		// choice (Update or Mark as current), never swept into a batch.
+		if g.UpdateState != updateAvailable {
+			if g.UpdateState == updateUnknown {
+				skipped(g, updateSkipUnknownVersion)
+			} else {
+				skipped(g, updateSkipNoUpdate)
+			}
+			continue
+		}
+		// Only an unambiguously newer version may be installed without a
+		// human decision. A "changed" ordering (date form replacing a
+		// number, a dropped segment) stays visible in the list and can be
+		// updated per game, but a batch must not guess — the live batch
+		// spent minutes syncing games it then refused to install.
+		if !version.IsNewer(
+			scraper.StripVersionQualifier(g.LatestVersion),
+			scraper.StripVersionQualifier(g.Version),
+		) {
+			slog.Info("batch update: version ordering unclear, needs a manual update",
+				"gameID", g.ID, "version", g.Version, "latest", g.LatestVersion)
+			skipped(g, updateSkipUnorderableVersion)
+			continue
+		}
+		if !claim(g) {
+			slog.Info("batch update: game already updating, skipping", "gameID", g.ID)
+			skipped(g, updateSkipAlreadyUpdating)
+			continue
+		}
+
+		selected = append(selected, g)
+	}
+	return selected
+}
+
 // DownloadAllUpdates downloads and applies updates for all games that have
 // updates available. This is a Wails-bound method that runs the batch update
 // pipeline in a background goroutine. Games run in parallel, up to the
@@ -5782,10 +5827,11 @@ func (a *App) CancelGameUpdateFor(gameID int64) bool {
 //
 //	game-update:batch-start     { total }
 //	game-update:batch-progress  { current, total, currentGameTitle } — a game started
-//	game-update:game-done       { gameID, title, success, error }
+//	game-update:game-done       { gameID, title, success, error, kind }
+//	game-update:skipped         { gameID, title, reason }
 //	game-update:idle            { gameID } — per game, after its claim is released
 //	game-update:batch-complete  { succeeded, failed, total }
-//	game-update:error           { gameID, step, message }
+//	game-update:error           { gameID, step, message, kind }
 func (a *App) DownloadAllUpdates() error {
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
@@ -5809,11 +5855,7 @@ func (a *App) DownloadAllUpdates() error {
 
 		all, err := a.GetUpdatableGames()
 		if err != nil {
-			runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
-				"gameID":  0,
-				"step":    "list-updatable",
-				"message": err.Error(),
-			})
+			a.emitUpdateError(0, "list-updatable", err)
 			return
 		}
 
@@ -5828,36 +5870,17 @@ func (a *App) DownloadAllUpdates() error {
 			cancel context.CancelFunc
 		}
 		var jobs []job
-		for _, g := range all {
-			if db.IsVirtualPath(g.Path) {
-				continue
-			}
-			// Unknown-version games are listed for a deliberate per-game
-			// choice (Update or Mark as current), never swept into a batch.
-			if g.UpdateState != updateAvailable {
-				continue
-			}
-			// Only an unambiguously newer version may be installed without a
-			// human decision. A "changed" ordering (date form replacing a
-			// number, a dropped segment) stays visible in the list and can be
-			// updated per game, but a batch must not guess — the live batch
-			// spent minutes syncing games it then refused to install.
-			if !version.IsNewer(
-				scraper.StripVersionQualifier(g.LatestVersion),
-				scraper.StripVersionQualifier(g.Version),
-			) {
-				slog.Info("batch update: version ordering unclear, needs a manual update",
-					"gameID", g.ID, "version", g.Version, "latest", g.LatestVersion)
-				continue
-			}
+		selectBatchUpdates(all, func(g DesktopGameSummary) bool {
 			if !gate.claimGame(g.ID) {
-				slog.Info("batch update: game already updating, skipping", "gameID", g.ID)
-				continue
+				return false
 			}
 			jctx, jcancel := context.WithCancel(ctx)
 			gate.setCancel(g.ID, jcancel)
 			jobs = append(jobs, job{g: g, ctx: jctx, cancel: jcancel})
-		}
+			return true
+		}, func(name string, data ...interface{}) {
+			runtime.EventsEmit(a.ctx, name, data...)
+		})
 		if skipped := len(all) - len(jobs); skipped > 0 {
 			slog.Info("batch update: skipping games", "count", skipped)
 		}
@@ -5868,11 +5891,7 @@ func (a *App) DownloadAllUpdates() error {
 				gate.release(j.g.ID)
 				runtime.EventsEmit(a.ctx, "game-update:idle", map[string]interface{}{"gameID": j.g.ID})
 			}
-			runtime.EventsEmit(a.ctx, "game-update:error", map[string]interface{}{
-				"gameID":  0,
-				"step":    "list-updatable",
-				"message": "a scan is in progress; cannot update right now",
-			})
+			a.emitUpdateError(0, "list-updatable", errors.New("a scan is in progress; cannot update right now"))
 			return
 		}
 
@@ -5892,6 +5911,7 @@ func (a *App) DownloadAllUpdates() error {
 			if err != nil {
 				failed++
 				ev["error"] = err.Error()
+				ev["kind"] = updateErrorKind(err, "update")
 			} else {
 				succeeded++
 			}
@@ -5957,21 +5977,21 @@ func (a *App) ProvideUpdateFile(gameID int64) error {
 
 		game, err := a.db.GetGame(gameID)
 		if err != nil {
-			a.emitUpdateError(gameID, "lookup", err.Error())
+			a.emitUpdateError(gameID, "lookup", err)
 			return
 		}
 		if game == nil {
-			a.emitUpdateError(gameID, "lookup", fmt.Sprintf("game with id %d not found", gameID))
+			a.emitUpdateError(gameID, "lookup", fmt.Errorf("game with id %d not found", gameID))
 			return
 		}
 		if db.IsVirtualPath(game.Path) {
 			a.emitUpdateError(gameID, "check",
-				fmt.Sprintf("%q was added from F95Zone but not yet downloaded — install it from the Downloads view before updating", game.Title))
+				fmt.Errorf("%q was added from F95Zone but not yet downloaded — install it from the Downloads view before updating", game.Title))
 			return
 		}
 		if !updatable(game.LatestVersion, game.Version) {
 			a.emitUpdateError(gameID, "check",
-				fmt.Sprintf("no update available (current version: %s)", game.Version))
+				fmt.Errorf("no update available (current version: %s)", game.Version))
 			return
 		}
 
@@ -5992,7 +6012,7 @@ func (a *App) ProvideUpdateFile(gameID int64) error {
 		})
 		if err != nil {
 			a.emitUpdateError(gameID, "select-file",
-				fmt.Sprintf("File dialog failed: %v", err))
+				fmt.Errorf("File dialog failed: %w", err))
 			return
 		}
 		if archivePath == "" {
@@ -6002,17 +6022,17 @@ func (a *App) ProvideUpdateFile(gameID int64) error {
 			// by the goroutine's defer, so the row returns to its error
 			// state with Retry / Provide-file still available.
 			slog.Info("game update: manual file selection cancelled", "gameID", gameID)
-			a.emitUpdateError(gameID, "select-file", "No file selected — update not applied")
+			a.emitUpdateError(gameID, "select-file", errors.New("No file selected — update not applied"))
 			return
 		}
 		if _, err := os.Stat(archivePath); err != nil {
 			a.emitUpdateError(gameID, "select-file",
-				fmt.Sprintf("Selected file not found: %v", err))
+				fmt.Errorf("Selected file not found: %w", err))
 			return
 		}
 		if !archive.IsArchiveFile(archivePath) {
 			a.emitUpdateError(gameID, "select-file",
-				"Selected file is not a recognized archive (zip, 7z, rar, tar, tar.gz, tar.bz2, tar.xz)")
+				errors.New("Selected file is not a recognized archive (zip, 7z, rar, tar, tar.gz, tar.bz2, tar.xz)"))
 			return
 		}
 
@@ -6231,7 +6251,7 @@ func (a *App) runGameInstall(ctx context.Context, gameID int64, destParent strin
 	game.LastScannedAt = time.Now().UTC()
 	game.DirMTime = dirModTime(targetDir)
 	if game.LatestVersion != "" {
-		recordAppliedVersion(game)
+		recordAppliedVersion(game, archivePath, false)
 	}
 	if err := a.db.UpdateGame(game); err != nil {
 		return emitErr("update-db", fmt.Errorf("update game in db: %w", err))

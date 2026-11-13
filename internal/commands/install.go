@@ -110,7 +110,7 @@ func Install(args []string) {
 	// Update version in DB — the thread version or the archive name,
 	// whichever is genuinely newer. Older candidates are never written.
 	previousVersion := game.Version
-	if installed, err := recordInstalledVersion(database, game, archivePath); err != nil {
+	if installed, err := RecordInstalledVersion(database, game, archivePath, false); err != nil {
 		log.Warn("failed to update game version", "game_id", game.ID, "error", err)
 		fmt.Fprintf(os.Stderr, "  Warning: could not record version: %v\n", err)
 	} else if installed != previousVersion {
